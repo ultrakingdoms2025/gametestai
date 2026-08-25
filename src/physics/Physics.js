@@ -427,6 +427,19 @@ export class Physics {
      * @type {Collider[]}
      */
     this.heightfields = [];
+
+    /**
+     * How many broadphase cells have ever been written, for the lifetime of
+     * this instance.
+     *
+     * Wall clock on this machine has been caught reporting the same work as
+     * 700 ms and as 14,700 ms, so a timing that moves is not on its own
+     * evidence that the WORK moved. This counter is exact and reproducible:
+     * one increment per (collider, cell) pair pushed into the grid. A change
+     * that claims to stop rebuilding the broadphase has to show this number
+     * falling, not just a faster frame.
+     */
+    this.gridWrites = 0;
   }
 
   clear() {
@@ -489,6 +502,7 @@ export class Physics {
         let list = this._grid.get(key);
         if (!list) this._grid.set(key, (list = []));
         list.push(collider);
+        this.gridWrites++;
       }
     }
   }

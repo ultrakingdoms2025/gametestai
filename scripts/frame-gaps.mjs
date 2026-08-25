@@ -111,9 +111,10 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
-  --profile background|entry   CPU-sample the background world chain, or the
-                     first world entry, and fold the samples into a self-time
-                     table. Use with --serve dev, where names survive.
+  --profile background|entry|repeat   CPU-sample the background world chain,
+                     the first world entry, or one repeated crossing pair, and
+                     fold the samples into a self-time table. Use with
+                     --serve dev, where names survive.
   --gl               time every WebGL call that can block and charge each frame
                      gap to the driver entry points it was spent inside. Works
                      on the PRODUCTION bundle - a driver entry point keeps its
@@ -806,11 +807,26 @@ async function runOnce(args, pageUrl, runIndex) {
       for (let i = 0; i < 3; i++) {
         const label = `repeat:${i}`;
         await mark(label);
+        /* `--profile repeat` samples the SECOND crossing pair, not the first.
+         * The first re-entry into a world still pays whatever one-time cost
+         * the world's own activation carries; the criterion is about the
+         * repeat, and the repeat is what iteration 1 onward measures. */
+        const profiling = args.profile === 'repeat' && i === 1;
+        if (profiling) await profileOn();
         await evalIn(`window.HARNESS.goto(${JSON.stringify(b)}).then(() => 1)`);
+        /* `WorldManager.activationCost` - the crossing broken into its named
+         * steps, written by the world manager itself. String labels, so this
+         * is readable on the minified bundle where a CPU profile is not. */
+        const costTo = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
         await sleep(900);
         await evalIn(`window.HARNESS.goto(${JSON.stringify(a)}).then(() => 1)`);
+        const costBack = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
         await sleep(900);
+        if (profiling) await profileOff(label);
         out.events[label] = await closePhase(label);
+        if (out.events[label]) {
+          out.events[label].cost = [JSON.parse(costTo), JSON.parse(costBack)];
+        }
       }
     }
 

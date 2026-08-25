@@ -1,5 +1,22 @@
-import { sql } from '@vercel/postgres';
+import { Client } from 'pg';
 import { WORLDS, type WorldId } from './worlds';
+
+/**
+ * RAW `pg`, not `@vercel/postgres`, for the reason `playerDb.ts` states in its
+ * own header: "to support direct Neon connection strings". `@vercel/postgres`
+ * refuses one and this module answered 503 on it - which mattered more here
+ * than anywhere else, because this is the module that gets the rest right and
+ * was the only Postgres-backed route still answering 200 during the
+ * `server_id` outage. Thirty modules had already moved; this was the last.
+ *
+ * All three statements below are PARAMETERLESS, so the conversion carries no
+ * placeholder risk - there is nothing to renumber.
+ */
+function makeClient() {
+  const connStr = process.env.POSTGRES_URL ?? '';
+  const ssl = connStr.includes('sslmode=disable') ? false : { rejectUnauthorized: false };
+  return new Client({ connectionString: connStr, ssl });
+}
 
 export interface ResolvedLore { title: string; body: string; sign_label: string; }
 export interface LoreEntryRow { scope: string; title: string; sign_label: string; body: string; updated_at?: unknown; }
@@ -8,38 +25,44 @@ export type LoreFetcher = () => Promise<LoreEntryRow[]>;
 
 /** Shared query used by BOTH the API route and server-side getLore — no HTTP self-fetch. */
 export const getLoreEntries: LoreFetcher = async () => {
-  await sql`
-    CREATE TABLE IF NOT EXISTS lore_entries (
-      scope TEXT PRIMARY KEY, title TEXT NOT NULL,
-      sign_label TEXT NOT NULL DEFAULT 'Lorekeeper', body TEXT NOT NULL,
-      updated_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
-  /* Additive, and declared HERE as well as in `customServers.ts` because this
-   * function creates the table it reads and must not depend on another module
-   * having run first. Without it, a database where the custom-server schema has
-   * not been ensured answers the SELECT below with "column server_id does not
-   * exist" — which `getLore` catches and turns into every world showing its
-   * fallback prose. A silent, total content outage from a missing column. */
-  await sql`ALTER TABLE lore_entries ADD COLUMN IF NOT EXISTS server_id TEXT`;
-  /* `server_id IS NULL` is the platform partition.
-   * Every row in this table is NULL today, so this changes nothing now — and
-   * that is exactly why it is added now: the read states its scope while the
-   * column is still always NULL, so there is no later "and now add the filter"
-   * step to forget. The same argument `leaderboard.ts` makes for stamping the
-   * progress tables before a writer existed.
-   *
-   * Owner lore lives in `server_lore_entries`, a table of its own — see
-   * `customServers.ts` for why relaxing this table's `scope` primary key was
-   * refused. So this clause is belt as well as braces, and it is cheap. */
-  const { rows } = await sql`
-    SELECT scope, title, sign_label, body, updated_at FROM lore_entries
-    WHERE server_id IS NULL
-    ORDER BY CASE scope
-      WHEN 'overall' THEN 0 WHEN 'station' THEN 1 WHEN 'medieval' THEN 2
-      WHEN 'sports' THEN 3 WHEN 'citadel' THEN 4 WHEN 'race' THEN 5
-      WHEN 'maze' THEN 6 WHEN 'dock' THEN 7 WHEN 'space' THEN 8
-      ELSE 99 END, scope`;
-  return rows as LoreEntryRow[];
+  const client = makeClient();
+  await client.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lore_entries (
+        scope TEXT PRIMARY KEY, title TEXT NOT NULL,
+        sign_label TEXT NOT NULL DEFAULT 'Lorekeeper', body TEXT NOT NULL,
+        updated_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    /* Additive, and declared HERE as well as in `customServers.ts` because this
+     * function creates the table it reads and must not depend on another module
+     * having run first. Without it, a database where the custom-server schema has
+     * not been ensured answers the SELECT below with "column server_id does not
+     * exist" — which `getLore` catches and turns into every world showing its
+     * fallback prose. A silent, total content outage from a missing column. */
+    await client.query(`ALTER TABLE lore_entries ADD COLUMN IF NOT EXISTS server_id TEXT`);
+    /* `server_id IS NULL` is the platform partition.
+     * Every row in this table is NULL today, so this changes nothing now — and
+     * that is exactly why it is added now: the read states its scope while the
+     * column is still always NULL, so there is no later "and now add the filter"
+     * step to forget. The same argument `leaderboard.ts` makes for stamping the
+     * progress tables before a writer existed.
+     *
+     * Owner lore lives in `server_lore_entries`, a table of its own — see
+     * `customServers.ts` for why relaxing this table's `scope` primary key was
+     * refused. So this clause is belt as well as braces, and it is cheap. */
+    const { rows } = await client.query(`
+      SELECT scope, title, sign_label, body, updated_at FROM lore_entries
+      WHERE server_id IS NULL
+      ORDER BY CASE scope
+        WHEN 'overall' THEN 0 WHEN 'station' THEN 1 WHEN 'medieval' THEN 2
+        WHEN 'sports' THEN 3 WHEN 'citadel' THEN 4 WHEN 'race' THEN 5
+        WHEN 'maze' THEN 6 WHEN 'dock' THEN 7 WHEN 'space' THEN 8
+        ELSE 99 END, scope`);
+    return rows as LoreEntryRow[];
+  } finally {
+    await client.end();
+  }
 };
 
 /* Prose fallback for EVERY world, sourced from `src/content/Lore.js`

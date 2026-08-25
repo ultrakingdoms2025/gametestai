@@ -600,6 +600,16 @@ export const GEO_FREE_BYTES = 64 * 1024 * 1024;
 export const GEO_FREE_HARD_BYTES = GEO_FREE_BYTES * 2;
 
 /**
+ * Canvas bytes of lettered vendor boards to keep for the session.
+ *
+ * See `CharacterAssets.signMaterial`. About seventy-five boards at 512 x 160,
+ * which is every sign in the game with room to grow - and past it a board is
+ * private to its character exactly as all of them were before there was a
+ * cache, so the cap fails toward the old cost rather than toward a leak.
+ */
+export const SIGN_CACHE_BYTES = 24 * 1024 * 1024;
+
+/**
  * Roughly what a geometry costs to keep: its attribute buffers and its index.
  *
  * "Roughly" is the right precision. This decides eviction order and when a
@@ -650,6 +660,58 @@ export class CharacterAssets {
     this._free = new Map();
     /** Bytes held in `_free`. The quantity the bound is expressed in. */
     this._freeBytes = 0;
+    /**
+     * Lettered vendor boards, by their text. See `signMaterial`.
+     * @type {Map<string, THREE.SpriteMaterial>}
+     */
+    this._sign = new Map();
+    /** Canvas bytes held in `_sign`. The quantity its cap is expressed in. */
+    this._signBytes = 0;
+  }
+
+  /**
+   * A lettered vendor board, shared by every character standing under those
+   * words.
+   *
+   * ── Why this is a memo and not the parked cache above ─────────────────────
+   *
+   * A sign is its TEXT and the text is AUTHORED - `signLines` in a world file,
+   * a trade name, a settlement's display name. The set is closed and small,
+   * where the appearance combinations that key `geoCache` are neither, so there
+   * is nothing here for a holder count to protect: nobody ever asks for a sign
+   * that will not be asked for again.
+   *
+   * ── Which makes the cap the only thing standing in for one ────────────────
+   *
+   * Never evicting is only safe because it is never unbounded. Each board is a
+   * 512 x 160 canvas - 320 KB, near 440 KB once three has mipmapped it - so
+   * {@link SIGN_CACHE_BYTES} is written in bytes for the same reason the
+   * geometry budget is, and it holds about seventy-five boards: comfortably
+   * every sign in the game as it stands, with room to grow.
+   *
+   * Past the cap the board is PRIVATE and its character disposes it, which is
+   * precisely what every sign did before this existed. The failure mode of the
+   * cap is therefore the old cost, not a leak and not a freed live texture.
+   *
+   * @param {string} key the sign's text, joined
+   * @param {() => THREE.SpriteMaterial|null} make
+   * @returns {THREE.SpriteMaterial|null}
+   */
+  signMaterial(key, make) {
+    const had = this._sign.get(key);
+    if (had) return had;
+    const m = make();
+    if (!m) return null;
+    const img = m.map?.image;
+    const bytes = (img?.width ?? 0) * (img?.height ?? 0) * 4;
+    if (this._signBytes + bytes > SIGN_CACHE_BYTES) {
+      m.userData.sharedSign = false;
+      return m;
+    }
+    m.userData.sharedSign = true;
+    this._sign.set(key, m);
+    this._signBytes += bytes;
+    return m;
   }
 
   _t(key, make) {
@@ -1416,12 +1478,15 @@ export class CharacterAssets {
     for (const m of this._mat.values()) m.dispose();
     for (const g of this.geoCache.values()) g.dispose();
     for (const g of this._free.values()) g.dispose();
+    for (const s of this._sign.values()) { s.map?.dispose?.(); s.dispose(); }
     this._tex.clear();
     this._mat.clear();
     this.geoCache.clear();
     this._geoRefs.clear();
     this._free.clear();
     this._freeBytes = 0;
+    this._sign.clear();
+    this._signBytes = 0;
   }
 }
 

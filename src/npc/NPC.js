@@ -59,6 +59,52 @@ const wrapPi = (a) => {
   return a;
 };
 
+/** The lettered board's canvas, in pixels. Its area is what the cache budgets. */
+export const SIGN_W = 512;
+export const SIGN_H = 160;
+
+/**
+ * Letter a vendor's board and wrap it in a sprite material.
+ *
+ * Lifted out of `NPC._attachSign` unchanged so that the material can be CACHED
+ * by its text - see the note there. Nothing about the drawing depends on which
+ * character stands under it, which is exactly why two of them can share one.
+ *
+ * @param {string[]} lines up to two, the first large
+ * @returns {THREE.SpriteMaterial|null} null outside a browser
+ */
+export function makeSignMaterial(lines) {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIGN_W;
+  canvas.height = SIGN_H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(8, 12, 18, 0.72)';
+  ctx.fillRect(18, 18, 476, 124);
+  ctx.strokeStyle = 'rgba(112, 211, 255, 0.9)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(18, 18, 476, 124);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+  ctx.fillRect(30, 30, 452, 10);
+  ctx.fillStyle = '#eaf8ff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 48px sans-serif';
+  ctx.fillText(String(lines[0] ?? ''), 256, lines.length > 1 ? 62 : 80);
+  if (lines.length > 1) {
+    ctx.font = '500 24px sans-serif';
+    ctx.fillStyle = 'rgba(234, 248, 255, 0.82)';
+    ctx.fillText(String(lines[1] ?? ''), 256, 108);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+}
+
 let _nextId = 1;
 
 export class NPC {
@@ -923,39 +969,36 @@ export class NPC {
     this.humanoid.setDetailVisible(lod.detail);
   }
 
+  /**
+   * The lettered board a vendor stands under.
+   *
+   * ── Why the material is asked for rather than built ───────────────────────
+   *
+   * It used to be built here, every time, and thrown away with the character.
+   * A crossing therefore disposed every sign in the world it left and lettered
+   * every sign in the world it arrived in: measured on the production bundle,
+   * **+25 textures and +1 linked program** on the frame that receives a world,
+   * and those two were the whole of what was left of the crossing's frame gap
+   * once its JavaScript had been dealt with - 233 ms against a 250 ms budget,
+   * of which only ~90 ms was the crossing itself. @see
+   * docs/superpowers/specs/2026-08-24-crossing-subsystems-ledger.md
+   *
+   * The program is the sharper half of that. A sprite material is the only
+   * `SpriteMaterial` in the frame; disposing the last one releases its program,
+   * and the next cast re-links it - which is exactly the `linkProgram` stall
+   * three branches of this phase have been driving to zero.
+   *
+   * A sign is its TEXT, and the text is authored. Two merchants under the same
+   * words are the same board, so `CharacterAssets` keeps it and both wear it.
+   */
   _attachSign(lines) {
     this.signLines = Array.isArray(lines) ? lines.slice(0, 2) : null;
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 160;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'rgba(8, 12, 18, 0.72)';
-    ctx.fillRect(18, 18, 476, 124);
-    ctx.strokeStyle = 'rgba(112, 211, 255, 0.9)';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(18, 18, 476, 124);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
-    ctx.fillRect(30, 30, 452, 10);
-    ctx.fillStyle = '#eaf8ff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '700 48px sans-serif';
-    ctx.fillText(String(lines[0] ?? ''), 256, lines.length > 1 ? 62 : 80);
-    if (lines.length > 1) {
-      ctx.font = '500 24px sans-serif';
-      ctx.fillStyle = 'rgba(234, 248, 255, 0.82)';
-      ctx.fillText(String(lines[1] ?? ''), 256, 108);
-    }
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.needsUpdate = true;
-    const mat = new THREE.SpriteMaterial({
-      map: tex,
-      transparent: true,
-      depthWrite: false,
-    });
+    const key = (this.signLines ?? []).map((s) => String(s ?? '')).join('');
+    const assets = this.humanoid?.assets ?? null;
+    const mat = assets
+      ? assets.signMaterial(key, () => makeSignMaterial(lines))
+      : makeSignMaterial(lines);
+    if (!mat) return;
     const sprite = new THREE.Sprite(mat);
     sprite.position.set(0, this.height + 0.95, 0);
     sprite.scale.set(2.6, 0.82, 1);
@@ -964,23 +1007,32 @@ export class NPC {
     this.sign = sprite;
   }
 
-  setSignLines(lines) {
-    if (this.sign) {
-      this.sign.material?.map?.dispose?.();
-      this.sign.material?.dispose?.();
-      this.sign.removeFromParent();
-      this.sign = null;
+  /**
+   * Take the sign down.
+   *
+   * A SHARED board is never freed here: another merchant may be standing under
+   * the same words right now, and the next world to use them will want it. A
+   * private one - the overflow past the cache's cap - is this character's and
+   * goes with it, which is what every sign did before the cache existed.
+   */
+  _dropSign() {
+    if (!this.sign) return;
+    const mat = this.sign.material;
+    if (!mat?.userData?.sharedSign) {
+      mat?.map?.dispose?.();
+      mat?.dispose?.();
     }
+    this.sign.removeFromParent();
+    this.sign = null;
+  }
+
+  setSignLines(lines) {
+    this._dropSign();
     if (Array.isArray(lines) && lines.length) this._attachSign(lines);
   }
 
   dispose() {
-    if (this.sign) {
-      this.sign.material?.map?.dispose?.();
-      this.sign.material?.dispose?.();
-      this.sign.removeFromParent();
-      this.sign = null;
-    }
+    this._dropSign();
     this.humanoid.dispose();
   }
 }

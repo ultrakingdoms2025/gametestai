@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {
   CharacterAssets, Humanoid, GEO_FREE_BYTES, GEO_FREE_HARD_BYTES, geometryBytes,
+  SIGN_CACHE_BYTES,
 } from '../../src/npc/Humanoid.js';
+import { SIGN_W, SIGN_H } from '../../src/npc/NPC.js';
 
 /* Why this file exists.
  *
@@ -340,6 +342,75 @@ test('between casts the hard ceiling holds, and it is wide enough for two', () =
     `release-time churn reached ${Math.round(peak / MB)} MB with no world change to trim it`);
   assert.ok(GEO_FREE_HARD_BYTES >= GEO_FREE_BYTES * 2,
     'the between-casts ceiling cannot hold the departing cast and the arriving one');
+});
+
+/* ------------------------------------------------------------------ */
+/* The lettered boards, which are a texture and a linked program        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A stand-in for `makeSignMaterial`, which needs a `<canvas>`.
+ *
+ * Only the shape matters here: a material with a map whose image has a width
+ * and a height, because the cap is written in canvas bytes.
+ */
+function fakeSign(w = SIGN_W, h = SIGN_H) {
+  const map = new THREE.Texture();
+  map.image = { width: w, height: h };
+  return new THREE.SpriteMaterial({ map });
+}
+
+test('two merchants under the same words wear the same board', () => {
+  /* A crossing disposed every sign in the world it left and lettered every sign
+   * in the world it arrived in: +25 textures and +1 linked program on the frame
+   * that receives a world, which was what remained of the crossing's frame gap
+   * once its JavaScript was dealt with. */
+  const A = new CharacterAssets(null);
+  let drawn = 0;
+  const make = () => { drawn++; return fakeSign(); };
+
+  const a = A.signMaterial('PROVISIONSRATIONS', make);
+  const b = A.signMaterial('PROVISIONSRATIONS', make);
+
+  assert.equal(drawn, 1, 'the same board was lettered twice');
+  assert.equal(a, b);
+  assert.equal(a.userData.sharedSign, true, 'a cached board is not marked shared, so a death frees it');
+});
+
+test('past the cap a board is private, and private means the old behaviour', () => {
+  /* Never evicting is only safe because it is never unbounded, and the cap is
+   * the whole of that. What it must NOT do at the boundary is start handing out
+   * shared boards it did not keep - that would be a character disposing a
+   * texture another character is wearing, which is the exact failure the
+   * geometry cases above exist for. */
+  const A = new CharacterAssets(null);
+  const each = SIGN_W * SIGN_H * 4;
+  const fits = Math.floor(SIGN_CACHE_BYTES / each);
+
+  const kept = [];
+  for (let i = 0; i < fits; i++) kept.push(A.signMaterial(`sign|${i}`, () => fakeSign()));
+  for (const m of kept) assert.equal(m.userData.sharedSign, true);
+  assert.equal(A._sign.size, fits);
+
+  const over = A.signMaterial('one|too|many', () => fakeSign());
+  assert.equal(over.userData.sharedSign, false, 'an uncached board was handed out as a shared one');
+  assert.equal(A._sign.size, fits, 'the cap did not hold');
+  assert.ok(A._signBytes <= SIGN_CACHE_BYTES,
+    `${A._signBytes} bytes of boards against a ${SIGN_CACHE_BYTES} byte cap`);
+
+  // And the cap is wide enough to be worth having: every sign in the game.
+  assert.ok(fits >= 64, `the cap holds only ${fits} boards`);
+});
+
+test('dispose() frees the boards as well', () => {
+  const A = new CharacterAssets(null);
+  const m = A.signMaterial('YARD CHANDLERY', () => fakeSign());
+  let mapGone = false;
+  m.map.addEventListener('dispose', () => { mapGone = true; });
+
+  A.dispose();
+  assert.equal(mapGone, true, 'a cached board survived teardown - that is a leak');
+  assert.equal(A._signBytes, 0);
 });
 
 test('dispose() frees the parked list too', () => {

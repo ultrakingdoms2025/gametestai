@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { heroParts } from './HeroAssets.js';
+import { useBindPoseBounds } from '../gfx/SkinBounds.js';
 
 /**
  * Procedural humanoid characters.
@@ -5341,6 +5342,15 @@ export class HumanoidFactory {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;
+    /* The bound the culler tests, handed over rather than left to be found.
+     *
+     * `SkinnedMesh.boundingSphere` starts null and three fills it by CPU-skinning
+     * every vertex of the body on the first frustum test - 4.6 ms per character,
+     * 124 ms of the frame a world arrives on, because a crossing builds a new
+     * cast. `mergeParts` has already computed and padded the bind-pose sphere
+     * for exactly this purpose and the culler has never read it.
+     * @see gfx/SkinBounds.js */
+    useBindPoseBounds(mesh);
 
     const rig = new THREE.Object3D();
     rig.name = 'rig';

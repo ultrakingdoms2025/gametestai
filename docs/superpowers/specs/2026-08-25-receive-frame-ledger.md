@@ -1,0 +1,352 @@
+# The frame that receives a world, measured
+
+*perf-receive-frame, 25 Aug 2026. Every number here is from the PRODUCTION
+bundle — `node scripts/frame-gaps.mjs --serve prod`, the hashed assets the site
+serves. It continues
+[the crossing cost ledger](2026-08-24-crossing-cost-ledger.md) and
+[the crossing subsystems ledger](2026-08-24-crossing-subsystems-ledger.md),
+which drove a station crossing from 1,228 ms of JavaScript to 80 and then said
+the crossing was no longer the problem.*
+
+## What was handed over
+
+Two ledgers had taken the crossing apart and left one number standing. With
+**both** offending subsystems stubbed out entirely — the dart budget and all
+12,256 physics probes still running — the phase still cost **166.7 ms, of which
+only 64 ms was the crossing**. `--gl` charged **1 ms** of a 233 ms gap to
+`bindVertexArray` across 2,055 calls, so it was not submission and not the
+driver. The brief that came with it named four suspects:
+
+> ~135 ms of every crossing frame is the frame that RECEIVES a world:
+> `updateMatrixWorld`, culling, the shadow pass, sixty characters' first update.
+
+Three of the four are wrong outright and the fourth is right about the place and
+wrong about the reason. Measured on the frame the station arrives on:
+
+| | ms | calls |
+| --- | ---: | ---: |
+| `scene.updateMatrixWorld` | **1.9** | 2 |
+| the shadow pass | **3.3** | 27 |
+| every frame updater, sixty characters' first update included | **4.4** | 5 |
+| `renderBufferDirect` — all submission | **8.6** | 1,737 |
+| **`SkinnedMesh.computeBoundingSphere`** | **123.6** | **27** |
+
+Culling is where it lands and culling is not what it is. The frustum test is 0.4
+ms on every other frame of the same run; on this one it is 124, because
+`Frustum.intersectsObject` is also the place three lazily builds a bound, and
+for a `SkinnedMesh` building one means CPU-skinning the whole body.
+
+## 1. The instrument, because nothing existing could see this
+
+`--profile` on the production bundle reads `ya`, `wU`, `mt`, and it turned a
+1,366 ms crossing into 11,450 ms the one time it was pointed at one. What
+survives minification is PROPERTY names, so `--frames` instruments the loop
+through them: the engine's two updater sets wrapped per member, each gameplay
+subsystem by the key it hangs off `GAME`, `PostFX.render` and every composer
+pass by name, and inside the render `scene.updateMatrixWorld`,
+`WebGLShadowMap.render` and `renderBufferDirect`. Culling has no entry point to
+wrap, so it is read as `r.render − r.matrixWorld − r.shadow − r.draw`.
+
+The accumulator is drained by the recorder's own rAF callback, which is
+installed before the first module of the bundle is parsed and therefore runs
+before the engine loop every frame. What it drains at frame N is frame N−1's
+loop — exactly the work inside the gap it is closing.
+
+Two harness defects surfaced on the way and are fixed here:
+
+- **`--floor` never reached the page.** It has been documented since the first
+  version of this script and the recorder carried a hard-coded 24; every run
+  that passed the flag silently got 24 anyway. It is the knob that decides
+  which frames carry a breakdown, so it had to start working first.
+- `blockedMs` is charged one gap late on a fully blocked gap: after a long
+  block Chrome services the pending animation frame before the pending timer,
+  so the heartbeat records `beats 0, blocked 0` for the gap that blocked and
+  the whole stall against the next one. Both neighbours are in the report, so
+  this is a reading rule rather than a fix.
+
+## 2. What the receive frame actually is
+
+The station's receive frame, and a steady station frame from the same run:
+
+```
+  216.6 ms  receive                    33.3 ms  steady
+    131.8  x1     postfx                 13.4  x1     postfx
+    125.7  x1     fx.scene                8.4  x1     fx.scene
+    115.4  x3968  x.frustum               0.4  x4145  x.frustum
+      9.8  x5     fixed                   1.3  x1     fixed
+      8.6  x1737  r.draw                  5.2  x1522  r.draw
+      6.0  x1     fx.gtao                 4.8  x1     fx.gtao
+      4.4  x5     frame                   1.9  x5     frame
+      3.3  x27    r.shadow                3.3  x26    r.shadow
+      1.9  x2     r.matrixWorld           1.5  x2     r.matrixWorld
+```
+
+The same 4,000 frustum tests, 2,500 draw calls and 9M triangles: 29.1 µs per
+frustum test on the receive frame against 0.097 µs on the steady one. **The same
+function, three hundred times more expensive per call.** `Frustum.intersectsObject` is
+arithmetic — a sphere copy, a matrix multiply and six plane distances — except
+for one branch:
+
+```js
+if ( object.boundingSphere !== undefined ) {
+  if ( object.boundingSphere === null ) object.computeBoundingSphere();
+```
+
+`SkinnedMesh` declares `boundingSphere` and initialises it to `null`, and
+`SkinnedMesh.computeBoundingSphere()` **CPU-skins every vertex of the body** —
+`getVertexPosition` per vertex, four bone lookups and four `Matrix4` multiplies
+each. Wrapping it directly:
+
+| frame | `x.frustum` | of which `x.skinBound` | characters |
+| --- | ---: | ---: | ---: |
+| station arrives | 123.9 ms / 4,574 calls | **123.6 ms** | 27 |
+| medieval arrives | 85.2 ms / 3,578 calls | **84.3 ms** | 28 |
+| the frame after | 44.3 ms / 2,750 calls | **43.5 ms** | 15 |
+| every other frame | 0.4 ms / 4,145 calls | — | 0 |
+
+4.6 ms per character, and 99% of the frustum time is that one call.
+
+Nothing ever invalidates the result, so it is paid exactly once per
+`SkinnedMesh` — and a crossing builds a whole new cast, so it is paid once per
+character per crossing, on the frame that receives the world. It is invisible to
+every instrument this repository already had: no programs, no geometries, no
+textures, nothing in `--gl`, and on the only bundle whose numbers count, a CPU
+profile that gives it a two-letter name.
+
+## 3. The answer was already in the geometry
+
+`mergeParts` in `src/npc/Humanoid.js` has always ended like this:
+
+```js
+geo.computeBoundingSphere();
+// Animation moves vertices outside the bind pose; pad so frustum culling and
+// shadow bounds do not pop limbs away at the edge of the screen.
+geo.boundingSphere.radius *= 1.5;
+```
+
+A padded bind-pose sphere, computed once per body geometry, authored for exactly
+this job — **and the culler has never read it**, because `SkinnedMesh` shadows
+`geometry.boundingSphere` with its own.
+
+`src/gfx/SkinBounds.js` hands it over, and `HumanoidFactory` calls it at the one
+place in the game that constructs a `SkinnedMesh`.
+
+This is not a new approximation. What ships today is the skinned sphere of ONE
+arbitrary pose — whichever pose a character held on its first rendered frame —
+frozen for that character's life. A padded bind-pose sphere is the same kind of
+value and a strictly larger one, so it can only ever keep on screen something the
+current sphere would have culled. The only other reader is `SkinnedMesh.raycast`,
+where a larger sphere means more candidate triangles tested and never a missed
+hit.
+
+### The pad is 1.4 and both numbers in it were measured
+
+- **synthetic** (`scripts/tests/skin-bounds.test.mjs`): a rig carrying vertices
+  at every bone of the real humanoid spec, every joint driven to 86° on every
+  axis in both directions and then all of them at once. The worst pose escapes
+  a 1.5-padded sphere by **2.7%**.
+- **real** (`frame-gaps.mjs --frames`, which walks every live character in the
+  station and medieval after six seconds of play and compares the assigned
+  sphere against the one three would compute for the pose it is actually in):
+  118 characters, worst containment ratio **0.979** at a pad of 1.15.
+
+The real measurement is the harsher of the two — one live character reached a
+pose the synthetic sweep does not produce and came within 2% of leaving its
+bound, and at a pad of 1.0 would have escaped it outright. 1.4 puts that
+character at 0.80 and the synthetic worst at 0.73. The first draft of the
+synthetic rig weighted every vertex to a single bone, which made bending the
+lower spine swing the whole mesh about the pelvis; it demanded a margin to fix a
+body no character has, and it is recorded in the test file so the next person
+does not rebuild it.
+
+## 4. The ablation, both ways round
+
+Neither number below is an estimate. Both are the same session, the same bytes,
+three crossing pairs each.
+
+**Before the fix**, with `SkinnedMesh.computeBoundingSphere` replaced by a
+bind-pose sphere from the harness:
+
+| | worst gap |
+| --- | ---: |
+| `repeat:1`, `repeat:2` — as it ships | **233.2, 233.3 ms** |
+| the same crossings, method ablated | **116.7, 116.7, 116.8 ms** |
+
+**After the fix**, with the fix taken back out by nulling `boundingSphere` in
+`SkinnedMesh.bind` — the last thing `HumanoidFactory` does to a body, so the
+character is left in exactly the state it shipped in:
+
+| | worst gap | `x.skinBound` |
+| --- | ---: | ---: |
+| `repeat:2` — with the fix | **133.2 ms** | — |
+| `unbound:0/1/2` — fix removed | **233.3, 233.4, 216.6 ms** | 125.3, 122.6, 120.5 ms / x27 |
+
+The receive frame's `postfx` falls from 131–145 ms to **8.6–21 ms**, and what is
+left of the worst gap is the crossing's own JavaScript (83–86 ms) plus one
+ordinary frame.
+
+## 5. The budget
+
+`stats().warm.programs` is **151** in every run in this branch — nine of them,
+before and after. Every true repeat measured here carries `dProg 0`; the only
+crossings that link anything are the first-entry `repeat:0` and the one
+program-linking tail, both in §6, and both were there before this change.
+
+`world-shot --world station` on both trees — this branch, and this branch with
+`useBindPoseBounds` taken back out — diffed with `budget-diff.mjs` across all
+21 framings:
+
+| axis | before | after | delta |
+| --- | ---: | ---: | ---: |
+| materials | 225 | 225 | 0 |
+| renderables | 1,354 | 1,354 | 0 |
+| instancedMeshes | 217 | 217 | 0 |
+| instances | 54,837 | 54,837 | 0 |
+| worldLights / worldLightsLit | 226 / 0 | 226 / 0 | 0 |
+| worldTriangles | 2,120,816..3,370,082 | identical | 0 |
+| npcs | 68 | 68 | 0 |
+| unculledMeshes | 101 | 101 | 0 |
+| programs (last framing) | 270 | 270 | 0 |
+| geometries | | | −93..+56 |
+| textures | | | −68..+19 |
+| drawCalls | | | −352..+348 |
+
+### The three that moved are the instrument, and the shape says so
+
+`drawCalls` moved on 17 of 21 framings and **almost every delta is ±289 to
+±292**: ten up, seven down, four exactly zero. A larger culling sphere can only
+ever ADD draw calls and would add them in ones and twos, so a symmetric ±290 is
+not this change.
+
+`StationWorld._buildLights` names the number: *"A shadow pass is a second render
+of everything in the box - measured at ~300 draw calls. Refreshing it seven
+times a second instead of every frame..."*. `drawCalls` is
+`renderer.info.render.calls` for the single frame a shot lands on, and the plaza
+key shadow refreshes on a timer — so whether that frame carried a shadow pass is
+a coin flip worth ~290 calls. `geometries` and `textures` drift both ways for
+the same reason: they are `renderer.info.memory` counts of pools built on
+demand.
+
+The subsystems ledger hit the same thing and re-ran to find it (*"2,409 before
+and 2,723 after ... Re-running the BEFORE tree gave 2,721"*). This is that
+artefact identified rather than re-discovered: on the station, `drawCalls` from
+a single framing has a ±290 quantum in it and is not a comparable axis without
+pinning the shadow cadence.
+
+## 6. The verdict
+
+Three clean production runs — `--serve prod --events repeat --repeat 3`, no
+instrumentation of any kind, which is the gate as the criterion is written
+against it:
+
+| run | `repeat:0` | `repeat:1` | `repeat:2` | `warm.programs` |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 866.6 (dProg 7) | **100.0** | **100.0** | 151 |
+| 2 | 1,300.2 (dProg 8) | **100.0** | **100.0** | 151 |
+| 3 | 1,383.3 (dProg 8) | **116.6** | **116.7** | 151 |
+
+**Six true repeats: 100.0, 100.0, 100.0, 100.0, 116.6, 116.7 ms against a 250 ms
+budget.** The whole distribution now sits at 40–47% of the budget, where it
+previously sat at 87–100% with three of five failures a tenth of a millisecond
+over. In those six phases the only gaps above the 24 ms floor at all are the
+crossing's own 83–100 ms and the occasional 33 ms double-frame; the receive
+frame no longer registers.
+
+### `repeat:0` is a first entry wearing a repeat's label
+
+It is not a repeat and this branch did not make it one. With `--events repeat`
+alone the destination has never been entered in the session, so `repeat:0`'s
+first crossing builds medieval's entire cast from scratch — `npcs 455–487 ms`,
+`dGeometries +215` — and links 7–8 shader programs. That is 565–600 ms of
+crossing inside an 866–1,383 ms gap, and it is the same cost the criterion's
+`entry` line is for. The three earlier branches' ledgers report the same
+distribution shape with two long tails in fifteen samples, which is what a
+per-run first entry looks like.
+
+The instrument now says so at the call site, and `--events entry,repeat` makes
+all three phases true repeats.
+
+### What is left, and it is not the receive frame
+
+A crossing that LINKS A PROGRAM is still in a class of its own. In an
+instrumented run one such crossing carried `dProg 1` and cost **5,433 ms**, of
+which 5,314 ms was inside `renderBufferDirect` — one `linkProgram` and the
+`LINK_STATUS` read that waits for it, in the driver, on the frame a player is
+in. This phase has spent three branches on that axis and the remaining named
+lever is sports' fog type. Nothing in this branch touches it.
+
+## 7. World entry, and how much worse the receive frame was than the gate said
+
+`--events entry,repeat --frames`, production bundle, every world entered once
+before any repeat is measured. Eleven worlds pass at **16.8–17.0 ms**; six do
+not, and every one of the six is either a first cast build, a program link, or
+both:
+
+| world | worst gap | dProg | what it is |
+| --- | ---: | ---: | --- |
+| race | 31,284.1 | 0 | a volatile world rebuilt (`dGeom -217`) |
+| dock | 7,967.1 | 7 | program links |
+| **sports** | **6,350.2** | **52** | program links — §8 |
+| maze | 4,600.1 | 7 | program links, volatile |
+| citadel | 1,050.1 | -3 | `dGeom +322` — first cast + build |
+| medieval | 816.8 | 7 | first cast (`dGeom +207`) + links |
+| the other eleven | 16.8 – 17.0 | 0 | — |
+
+The same run's ablation is worth reading twice. With every world entered and
+resident, the station↔medieval crossing puts **68** characters on the receive
+frame rather than 27:
+
+| | worst gap | `x.skinBound` |
+| --- | ---: | ---: |
+| `repeat:2` — with the fix | **100.1 ms** | — |
+| `unbound:0/1/2` — fix removed | **400.0, 383.3, 416.8 ms** | 305.6, 305.7, 324.0 ms / **x68** |
+
+The cost scales with how many characters become visible on the frame a world
+arrives on, so the 233 ms the gate was failing at was the *cheap* case. After a
+session that has actually visited the game, it was 400.
+
+## 8. Sports, with and without its fog — the art decision is not moot
+
+The receive-frame fix does not reach sports' entry, so the question was measured
+rather than argued. Two runs, same bytes apart from the fog, same command
+(`--serve prod --events entry --worlds sports --frames`), each a fresh session
+that boots into the station and crosses to sports once:
+
+| sports, first entry | worst gap | dProg | inside `renderBufferDirect` | programs |
+| --- | ---: | ---: | ---: | ---: |
+| its own `FogExp2`, as it ships | **6,467.0 ms** | **52** | 6,043 ms / 1,225 draws | 270 → 322 |
+| the linear fog every other world uses | **466.6 ms** | **12** | 59.9 ms / 1,231 draws | 258 → 270 |
+
+**The fog is worth 6.0 seconds and 40 of the 52 programs — and it is not
+sufficient.** 466.6 ms is still 1.9x the budget on the twelve programs that
+remain, which are not fog-keyed and would have to be found some other way.
+
+That is the whole of what this branch has to say about it. The fog was changed
+only for the length of the second run — `sceneFog` returning null and
+`_updateSunRig` no longer claiming the scene fog, which is the minimal
+expression of the lever — and reverted before anything was committed:
+`src/worlds/SportsWorld.js` is untouched on this branch.
+
+For scale, the same run's other failures are not fog and not this frame:
+
+| world | worst gap | where it is |
+| --- | ---: | --- |
+| race | 31,284 ms | 31,275 ms outside the engine loop — a volatile world rebuilt |
+| dock | 7,967 ms | 7,594 ms in draws, `dProg 7` |
+| maze | 4,600 ms | 1,301 ms in draws, `dProg 7`, plus a rebuild |
+| citadel | 1,050 ms | 1,026 ms outside the loop — a build |
+| medieval | 817 ms | 590 ms outside the loop (first cast), 104 ms world update, 82 ms in draws |
+
+## 9. Reading it yourself
+
+```
+node scripts/frame-gaps.mjs --serve prod --events repeat --repeat 3       # the gate
+node scripts/frame-gaps.mjs --serve prod --events entry,repeat --frames   # every criterion world, and three TRUE repeats
+node scripts/frame-gaps.mjs --serve prod --events repeat --frames         # the loop, the containment check, the ablation
+node --test scripts/tests/skin-bounds.test.mjs
+```
+
+`--frames` reports, per kept gap, every stage of the engine loop that ran inside
+it; `skinBounds`, the containment ratio of every live character in both
+criterion worlds; and `unbound:*`, the same crossings with this branch's change
+taken back out.

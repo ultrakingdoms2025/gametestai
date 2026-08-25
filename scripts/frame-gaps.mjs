@@ -71,7 +71,7 @@ function parseArgs(argv) {
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
     profile: null, events: 'keybind,weapon,mount,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
-    gl: false, listeners: false,
+    gl: false, listeners: false, frames: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -94,6 +94,7 @@ function parseArgs(argv) {
     else if (a === '--cache-keys') out.cacheKeys = true;
     else if (a === '--gl') out.gl = true;
     else if (a === '--listeners') out.listeners = true;
+    else if (a === '--frames') out.frames = true;
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -121,6 +122,13 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
                      on the PRODUCTION bundle - a driver entry point keeps its
                      name where a minified JS function does not. Off by default:
                      the criterion is measured without it.
+  --frames           break every recorded frame gap into the engine loop's own
+                     stages - fixed updaters, frame updaters, the bus flush,
+                     and inside the render: scene.updateMatrixWorld, culling,
+                     the shadow pass and the draw submission - plus a named
+                     row per gameplay subsystem. Property names survive
+                     minification, so this reads on the PRODUCTION bundle.
+                     Off by default: the criterion is measured without it.
   --listeners        time every \`world:changed\` listener across the crossings
                      and report each one's total, with the source of the
                      handler. Property names survive minification, so a
@@ -363,6 +371,275 @@ const GL_SHIM = `(() => {
   T.snap = () => ({ ms: { ...T.ms }, n: { ...T.n } });
 })()`;
 
+/**
+ * THE FRAME, FROM THE OUTSIDE.
+ *
+ *   --frames, installed after boot because it needs `window.GAME` and a built
+ *   composer. Never on for the gate.
+ *
+ * The two ledgers before this one drove a station crossing from 1,228 ms of
+ * JavaScript to 80, and the frame gap that CARRIES the crossing did not follow
+ * it down: with both offending subsystems stubbed out entirely the phase still
+ * cost 166.7 ms of which 64 was the crossing. `--gl` charges 1 ms of that to
+ * the driver across 2,055 calls, so the residue is neither uploads nor
+ * submission. It is CPU work in the frame, and nothing in this script could say
+ * WHICH.
+ *
+ * `--profile` cannot answer it either: on the production bundle the table reads
+ * `ya`, `wU`, `mt`, and the profiler inflated a 1,366 ms crossing to 11,450 ms
+ * the one time it was pointed at one. What survives minification is PROPERTY
+ * names, so this instruments the loop through them:
+ *
+ *   fixed / frame        the engine's two updater sets, wrapped per member
+ *   u:<name>/f:<name>    each gameplay subsystem's own update, by GAME key
+ *   busFlush             the deferred event drain
+ *   postfx               PostFX.render, and each composer pass by name
+ *   r.render             every WebGLRenderer.render, wherever it is called from
+ *   r.matrixWorld        `scene.updateMatrixWorld` - the whole graph, per call
+ *   r.shadow             `WebGLShadowMap.render`
+ *   r.draw / r.shadowDraw  `renderBufferDirect`, split by whether the shadow
+ *                        pass is on the stack
+ *
+ * The rows OVERLAP by construction - `r.matrixWorld` is inside `r.render` is
+ * inside `fx.scene` is inside `postfx`, and none of those is inside an updater
+ * - and that is the point: culling has no entry point to wrap, so `r.cull*` is
+ * read as `r.render - r.matrixWorld - r.shadow - r.draw`. It is the only number
+ * in the table that is a subtraction and the only one that can lie: `r.draw`
+ * counts the portal previews' draws and `r.render` (main scene only) does not,
+ * so on a frame heavy with preview work it under-reports. `x.frustum` is the
+ * direct measurement, and it is what the receive-frame finding rests on.
+ *
+ * The accumulator is drained by the recorder's own rAF callback, which is
+ * registered before the bundle is parsed and therefore runs BEFORE the engine
+ * loop every frame. So what it drains at frame N is frame N-1's loop, which is
+ * exactly the work inside the gap it is closing.
+ */
+
+/** One census of the scene graph the renderer walks. --frames only. */
+const GRAPH_PROBE = `(() => {
+  const S = window.GAME.engine.scene;
+  let nodes = 0, meshes = 0, culled = 0, inst = 0, batch = 0, skinned = 0, lights = 0, sprites = 0;
+  let instances = 0, noBound = 0;
+  S.traverse((o) => {
+    nodes++;
+    if (o.isLight) lights++;
+    if (o.isSprite) sprites++;
+    if (!o.isMesh && !o.isLine && !o.isPoints) return;
+    meshes++;
+    if (o.frustumCulled) culled++;
+    if (o.isInstancedMesh) { inst++; instances += o.count; }
+    if (o.isBatchedMesh) batch++;
+    if (o.isSkinnedMesh) skinned++;
+    if (o.geometry && o.geometry.boundingSphere === null) noBound++;
+  });
+  return JSON.stringify({ nodes, meshes, culled, inst, instances, batch, skinned, lights, sprites, noBound });
+})()`;
+
+/**
+ * DOES THE BOUND WE HAND THE CULLER STILL CONTAIN THE ONE THREE WOULD COMPUTE?
+ *
+ * `gfx/SkinBounds.js` gives every character the padded bind-pose sphere its
+ * geometry already carries, instead of letting three CPU-skin the body to find
+ * one. The risk that buys is the only one worth a gate: a sphere that is too
+ * SMALL culls a character that is on screen.
+ *
+ * So this walks every live `SkinnedMesh` in whatever world is up, computes the
+ * sphere three would have computed FOR THE POSE IT IS IN RIGHT NOW, and reports
+ * the containment ratio - (distance between centres + the true radius) over the
+ * assigned radius. Anything at or under 1 is contained. It is run after the cast
+ * has been walking for seconds, not at spawn, because a check at bind pose would
+ * pass by construction and prove nothing.
+ *
+ * three's own method is restored to the mesh afterwards, so nothing downstream
+ * sees the probe's value.
+ */
+const SKIN_CONTAIN = `(() => {
+  const S = window.GAME.engine.scene;
+  const rows = [];
+  let n = 0, assigned = 0, worst = 0, worstName = null;
+  S.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    n++;
+    const mine = o.boundingSphere;
+    if (!mine) return;
+    assigned++;
+    const keep = mine.clone();
+    o.boundingSphere = null;
+    o.computeBoundingSphere();
+    const truth = o.boundingSphere;
+    const ratio = truth && truth.radius >= 0
+      ? (keep.center.distanceTo(truth.center) + truth.radius) / keep.radius
+      : 0;
+    o.boundingSphere = keep;
+    if (ratio > worst) { worst = ratio; worstName = o.parent && o.parent.parent ? o.parent.parent.name : o.name; }
+    rows.push(Math.round(ratio * 1000) / 1000);
+  });
+  rows.sort((a, b) => b - a);
+  return JSON.stringify({
+    world: window.GAME.worldManager.active && window.GAME.worldManager.active.id,
+    skinned: n, assigned, worst: Math.round(worst * 1000) / 1000, worstName,
+    top: rows.slice(0, 8),
+  });
+})()`;
+const FRAME_SHIM = `(() => {
+  if (window.__FR) return 'already';
+  const G = window.GAME;
+  if (!G || !G.engine) return 'no game';
+  const E = G.engine, R = E.renderer, S = E.scene;
+  const now = performance.now.bind(performance);
+  const A = Object.create(null), N = Object.create(null);
+  const add = (k, ms) => { A[k] = (A[k] || 0) + ms; N[k] = (N[k] || 0) + 1; };
+
+  const FR = window.__FR = {
+    /** Everything since the last drain, or null if nothing ran. */
+    take() {
+      let has = false;
+      for (const k in A) { has = true; break; }
+      if (!has) return null;
+      const ms = {}, n = {};
+      for (const k in A) { ms[k] = Math.round(A[k] * 100) / 100; n[k] = N[k]; }
+      for (const k in A) { delete A[k]; delete N[k]; }
+      const inf = R && R.info;
+      if (inf) { ms['#calls'] = inf.render.calls; ms['#tris'] = inf.render.triangles; }
+      return { ms, n };
+    },
+  };
+
+  const wrap = (obj, key, label) => {
+    if (!obj || typeof obj[key] !== 'function') return false;
+    const orig = obj[key];
+    if (orig.__fr) return false;
+    const w = function () {
+      const t = now();
+      try { return orig.apply(this, arguments); } finally { add(label, now() - t); }
+    };
+    w.__fr = 1;
+    obj[key] = w;
+    return true;
+  };
+  FR.wrap = wrap;
+
+  /* ---- inside the render ---- */
+  let inShadow = 0;
+  if (R.shadowMap && typeof R.shadowMap.render === 'function') {
+    const sh = R.shadowMap.render;
+    R.shadowMap.render = function (a, b, c) {
+      const t = now(); inShadow++;
+      try { return sh.call(this, a, b, c); } finally { inShadow--; add('r.shadow', now() - t); }
+    };
+  }
+  /* An own property over the prototype method, so the scene's traversal is
+   * timed and every other Object3D in the tree is untouched. */
+  wrap(S, 'updateMatrixWorld', 'r.matrixWorld');
+  if (typeof R.renderBufferDirect === 'function') {
+    const rbd = R.renderBufferDirect;
+    R.renderBufferDirect = function (a, b, c, d, e, f) {
+      const t = now();
+      try { return rbd.call(this, a, b, c, d, e, f); }
+      finally { add(inShadow ? 'r.shadowDraw' : 'r.draw', now() - t); }
+    };
+  }
+  {
+    /* Split by the scene handed in. A portal preview parks a whole destination
+     * world in its own scene and draws it, and a frame that does that 26 times
+     * is a different animal from one that draws the live scene once. */
+    const rr = R.render;
+    R.render = function (sc, cam) {
+      const t = now();
+      try { return rr.call(this, sc, cam); }
+      finally { add(sc === S ? 'r.render' : 'r.renderAux', now() - t); }
+    };
+  }
+  wrap(R, 'compile', 'r.compile');
+
+  /* ---- the three.js internals culling actually runs through ----
+   *
+   * projectObject has no entry point to wrap, but the two things it does per
+   * candidate do: the frustum test, and the lazily-computed bound the test
+   * needs. A bound that is recomputed once per crossing walks every vertex of
+   * the geometry it belongs to, and nothing in the gap deltas would show it. */
+  const T = window.GAME.THREE;
+  if (T) {
+    wrap(T.Frustum.prototype, 'intersectsObject', 'x.frustum');
+    wrap(T.BufferGeometry.prototype, 'computeBoundingSphere', 'x.geomBound');
+    if (T.InstancedMesh) wrap(T.InstancedMesh.prototype, 'computeBoundingSphere', 'x.instBound');
+    if (T.BatchedMesh) {
+      wrap(T.BatchedMesh.prototype, 'computeBoundingSphere', 'x.batchBound');
+      wrap(T.BatchedMesh.prototype, 'onBeforeRender', 'x.batchCull');
+    }
+    if (T.SkinnedMesh) wrap(T.SkinnedMesh.prototype, 'computeBoundingSphere', 'x.skinBound');
+    if (T.Skeleton) wrap(T.Skeleton.prototype, 'update', 'x.skeleton');
+    if (T.SkinnedMesh) wrap(T.SkinnedMesh.prototype, 'updateMatrixWorld', 'x.skinMatrix');
+  }
+
+  /* ---- the composer ---- */
+  const fx = E.postfx;
+  if (fx) {
+    wrap(fx, 'render', 'postfx');
+    const named = [['renderPass', 'fx.scene'], ['gtaoPass', 'fx.gtao'], ['shaftPass', 'fx.shafts'],
+      ['bloomPass', 'fx.bloom'], ['gradePass', 'fx.grade'], ['outputPass', 'fx.output'],
+      ['smaaPass', 'fx.smaa'], ['filmPass', 'fx.film']];
+    for (let i = 0; i < named.length; i++) wrap(fx[named[i][0]], 'render', named[i][1]);
+  }
+  wrap(E.bus, 'flush', 'busFlush');
+
+  /* ---- the gameplay subsystems, by the key they hang off GAME ---- */
+  const SUBS = ['materials', 'player', 'cameraRig', 'piloting', 'spaceCombat', 'avatar', 'mounts',
+    'npcManager', 'projectiles', 'loadout', 'portals', 'combat', 'inventory', 'market', 'caches',
+    'contracts', 'relics', 'viewpoints', 'interiors', 'mining', 'objectives', 'minigames',
+    'questSystem', 'hud', 'physics', 'loot', 'stamina', 'race', 'itemUse', 'waterVolumes',
+    'unstuck', 'mapOverlay', 'ships', 'flightHUD', 'mazeMap', 'audio', 'cosmetics', 'economy'];
+  for (let i = 0; i < SUBS.length; i++) {
+    const o = G[SUBS[i]];
+    if (!o) continue;
+    wrap(o, 'update', 'u:' + SUBS[i]);
+    wrap(o, 'fixedUpdate', 'f:' + SUBS[i]);
+  }
+
+  /* The active world is a different object after every crossing, so its own
+   * update has to be re-wrapped when it changes rather than once here. */
+  let lastWorld = null;
+  const ensureWorld = () => {
+    const w = G.worldManager && G.worldManager.active;
+    if (w && w !== lastWorld) { lastWorld = w; wrap(w, 'update', 'u:world'); }
+  };
+
+  /* ---- the two updater sets ----
+   *
+   * Replaced by a stand-in rather than repopulated with wrappers: the engine's
+   * onFrameUpdate hands back a closure that DELETES the function it was given,
+   * and a set full of wrappers would leak every one of those. This delegates
+   * add/delete/has to the real Set and wraps only on iteration. */
+  const timed = (inner, label) => {
+    const seen = new WeakMap();
+    const wrapFn = (fn) => {
+      let f = seen.get(fn);
+      if (!f) {
+        f = function (a, b) { const t = now(); try { return fn(a, b); } finally { add(label, now() - t); } };
+        seen.set(fn, f);
+      }
+      return f;
+    };
+    const o = {
+      add(fn) { inner.add(fn); return o; },
+      delete(fn) { return inner.delete(fn); },
+      has(fn) { return inner.has(fn); },
+      clear() { return inner.clear(); },
+      forEach(cb, t) { inner.forEach(cb, t); },
+    };
+    Object.defineProperty(o, 'size', { get: () => inner.size });
+    o[Symbol.iterator] = function* () {
+      ensureWorld();
+      for (const fn of inner) yield wrapFn(fn);
+    };
+    return o;
+  };
+  E._fixedUpdaters = timed(E._fixedUpdaters, 'fixed');
+  E._frameUpdaters = timed(E._frameUpdaters, 'frame');
+  ensureWorld();
+  return 'installed';
+})()`;
+
 const RECORDER = `(() => {
   if (window.__FG) return;
   const F = window.__FG = {
@@ -446,6 +723,10 @@ const RECORDER = `(() => {
     if (dt > p.worst) p.worst = Math.round(dt * 10) / 10;
     if (dt > 250) p.over++;
     const glNow = window.__GL ? window.__GL.snap() : null;
+    /* The engine loop stages that ran inside this gap, if --frames. Drained
+     * every frame whether the gap is kept or not: the accumulator has to start
+     * each frame empty or a 20 ms frame would carry the 200 ms one before it. */
+    const parts = window.__FR ? window.__FR.take() : null;
     if (dt >= F.floor) {
       F.gaps.push({
         at: Math.round(t), ms: Math.round(dt * 10) / 10, phase: owner,
@@ -458,6 +739,7 @@ const RECORDER = `(() => {
         /* Which driver entry points the gap was spent inside, if --gl. Only
          * rows worth a millisecond survive, most gaps carry two or three. */
         ...(glNow ? { gl: window.__GL.since(prevGl).filter((r) => r[1] >= 1).slice(0, 8) } : {}),
+        ...(parts ? { parts } : {}),
       });
       if (F.gaps.length > 8000) F.gaps.splice(0, 2000);
     }
@@ -561,6 +843,15 @@ async function runOnce(args, pageUrl, runIndex) {
     // recorder's first frame.
     if (args.gl) await call('Page.addScriptToEvaluateOnNewDocument', { source: GL_SHIM });
     await call('Page.addScriptToEvaluateOnNewDocument', { source: RECORDER });
+    /* `--floor` was documented from the first version of this script and never
+     * reached the page: the recorder carried a hard-coded 24 and every run that
+     * passed the flag silently got 24 anyway. It is the knob that decides which
+     * frames carry a `--frames` breakdown, so it had to start working before any
+     * of that could be read. */
+    await call('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => { const set = () => { if (window.__FG) window.__FG.floor = ${args.floor};`
+        + ` else setTimeout(set, 0); }; set(); })()`,
+    });
     await call('Page.navigate', { url: pageUrl });
 
     const evalIn = async (expr, awaitPromise = true) => {
@@ -591,6 +882,17 @@ async function runOnce(args, pageUrl, runIndex) {
     await evalIn('window.HARNESS.dismissBoot(), window.HARNESS.setGameplayDriven(true), 1');
     out.warm = await evalIn('JSON.stringify(window.HARNESS.stats().warm)').then((s) => JSON.parse(s));
     out.events.boot = await closePhase('boot');
+    /* AFTER the boot phase closes, and after the composer exists. The boot
+     * warm is not what this is aimed at, and instrumenting it would only add
+     * wrappers to the one phase that already has an explanation. */
+    if (args.frames) {
+      out.framesShim = await evalIn(FRAME_SHIM);
+      /* How big the graph the culler walks actually is. A per-frame counter
+       * would cost more than it could find; this is the same number and it is
+       * read once. */
+      out.graph = JSON.parse(await evalIn(GRAPH_PROBE));
+      console.log('frame instrumentation: ' + out.framesShim);
+    }
     out.cacheKeysAfterBoot = args.cacheKeys
       ? JSON.parse(await evalIn('JSON.stringify(window.GAME.engine.renderer.info.programs.map((p) => p.cacheKey))'))
       : null;
@@ -857,7 +1159,21 @@ async function runOnce(args, pageUrl, runIndex) {
       })()`);
     }
 
-    /* --- repeated entry/exit ------------------------------------------ */
+    /* --- repeated entry/exit ------------------------------------------
+     *
+     * READ `repeat:0` CAREFULLY WHEN `entry` IS NOT IN `--events`.
+     *
+     * With `--events repeat` alone, the destination has never been entered in
+     * this session, so `repeat:0`'s first crossing is a FIRST ENTRY wearing a
+     * repeat's label: measured on the production bundle it builds medieval's
+     * whole cast from scratch - `npcs 455-487 ms` - and links 7-8 programs,
+     * which is 565-600 ms of crossing inside an 820-1,300 ms gap. `repeat:1`
+     * and `repeat:2` in the same runs are 100 ms.
+     *
+     * That cost is real and it is what the `entry` line of the criterion is
+     * for. It is not what the `repeat` line is about, and charging it to a
+     * repeat is the instrument answering a different question from the one on
+     * the label. Run `--events entry,repeat` and all three are true repeats. */
     if (wants.has('repeat')) {
       const a = args.entryWorld;
       const b = worlds.find((w) => w !== a) ?? 'medieval';
@@ -1135,6 +1451,70 @@ async function runOnce(args, pageUrl, runIndex) {
         return 1;
       })()`);
     }
+    if (args.frames) {
+      /* MARKED, and that is not tidiness. The check itself calls
+       * `computeBoundingSphere` on every character - the expensive path, on
+       * purpose - and a phase left open would charge those hundreds of
+       * milliseconds to whichever criterion phase happened to be last. The gate
+       * has already closed its books by here; this keeps the GAP LIST honest
+       * too. */
+      await mark('skincheck');
+      out.skinBounds = [];
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      for (const id of [args.entryWorld, other]) {
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(id)}).then(() => 1)`);
+        /* Seconds of real gameplay first. A containment check taken at spawn
+         * compares a bind-pose sphere against a bind pose. */
+        await sleep(6000);
+        out.skinBounds.push(JSON.parse(await evalIn(SKIN_CONTAIN)));
+      }
+      out.events.skincheck = await closePhase('skincheck');
+    }
+
+    /* --- THE FIX, TAKEN BACK OUT ---------------------------------------
+     *
+     * `gfx/SkinBounds.js` hands every character the bind-pose sphere its
+     * geometry already carries, so `Frustum.intersectsObject` never calls
+     * `SkinnedMesh.computeBoundingSphere` - which CPU-skins the whole body.
+     * This puts three's lazy path back and crosses three more times.
+     *
+     * The hook is `SkinnedMesh.bind`, because it is the last thing
+     * `HumanoidFactory` does to a body and nulling the sphere there leaves the
+     * character in exactly the state it shipped in before the fix. Nothing the
+     * gate reports is measured through it: it runs after the last repeat has
+     * been closed, and it is undone afterwards.
+     */
+    if (args.frames) {
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      out.unboundPatch = await evalIn(`(() => {
+        const proto = window.GAME.THREE.SkinnedMesh.prototype;
+        if (proto.__unbound) return 'already';
+        const orig = proto.bind;
+        proto.__unboundOrig = orig;
+        proto.__unbound = 1;
+        proto.bind = function (skeleton, bindMatrix) {
+          const r = orig.call(this, skeleton, bindMatrix);
+          this.boundingSphere = null;
+          return r;
+        };
+        return 'patched';
+      })()`);
+      for (let i = 0; i < 3; i++) {
+        const label = `unbound:${i}`;
+        await mark(label);
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
+        await sleep(900);
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
+        await sleep(900);
+        out.events[label] = await closePhase(label);
+      }
+      await evalIn(`(() => {
+        const proto = window.GAME.THREE.SkinnedMesh.prototype;
+        if (proto.__unboundOrig) proto.bind = proto.__unboundOrig;
+        delete proto.__unboundOrig; delete proto.__unbound;
+        return 1;
+      })()`);
+    }
     if (args.listeners) {
       out.listeners = JSON.parse(await evalIn('JSON.stringify(window.__LISTENERS ?? [])'))
         .filter((r) => r.calls > 0)
@@ -1258,6 +1638,11 @@ function printListeners(run) {
       + ` total ${run.ablated.total} ms (npcs ${run.ablated.npcs}, changed ${run.ablated.changed},`
       + ` physicsAdd ${run.ablated.physicsAdd})`);
   }
+  for (const b of run.skinBounds ?? []) {
+    console.log(`\nskinned bounds in "${b.world}": ${b.assigned}/${b.skinned} carry an assigned sphere,`
+      + ` worst containment ratio ${b.worst} (${b.worst <= 1 ? 'contained' : 'NOT CONTAINED'})`
+      + ` on ${b.worstName ?? '?'}; top ${JSON.stringify(b.top)}`);
+  }
   if (run.autopsy) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
     for (const [k, v] of Object.entries(run.autopsy)) {
@@ -1265,6 +1650,61 @@ function printListeners(run) {
       const s = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
       console.log(`${s.length > 9 ? s : s.padStart(9)}  ${k}`);
     }
+  }
+}
+
+/**
+ * WHAT THE FRAME ITSELF SPENT. Present only with --frames.
+ *
+ * One row per kept gap, worst first, and under it the engine loop stages that
+ * ran inside it. The rows nest, so they are printed in nesting order and the
+ * culling line is the subtraction `r.render - r.matrixWorld - r.shadow -
+ * r.draw`: three.js has no entry point for `projectObject` and this is the
+ * only honest way to size it from outside.
+ *
+ * `acct` is the gap MINUS the engine loop's own three top-level stages
+ * (fixed, frame, busFlush, postfx). Whatever is left ran outside the loop -
+ * a world build in an idle callback, a CDP eval, or the compositor simply not
+ * scheduling - and a large one is the instrument telling you it is looking in
+ * the wrong place.
+ */
+function printFrames(run, opts = {}) {
+  const want = opts.phases ?? null;
+  const top = opts.top ?? 6;
+  const gaps = (run.gaps ?? [])
+    .filter((g) => g.parts && (!want || want.some((w) => String(g.phase).startsWith(w))))
+    .sort((a, b) => b.ms - a.ms)
+    .slice(0, top);
+  if (!gaps.length) return;
+  const TOP = ['fixed', 'frame', 'busFlush', 'postfx'];
+  const ORDER = ['fixed', 'frame', 'busFlush', 'postfx', 'fx.scene', 'r.render', 'r.matrixWorld',
+    'r.cull*', 'r.shadow', 'r.shadowDraw', 'r.draw', 'fx.gtao', 'fx.shafts', 'fx.bloom',
+    'fx.grade', 'fx.output', 'fx.smaa', 'fx.film', 'r.compile'];
+  console.log('\nthe frames themselves (--frames), worst gaps first');
+  for (const g of gaps) {
+    const ms = { ...g.parts.ms };
+    const n = { ...g.parts.n };
+    ms['r.cull*'] = Math.round(((ms['r.render'] ?? 0) - (ms['r.matrixWorld'] ?? 0)
+      - (ms['r.shadow'] ?? 0) - (ms['r.draw'] ?? 0)) * 100) / 100;
+    const acct = TOP.reduce((a, k) => a + (ms[k] ?? 0), 0);
+    console.log(
+      `\n  ${g.ms} ms  phase ${g.phase}  dProg ${g.dPrograms} dGeom ${g.dGeometries} dTex ${g.dTextures}`
+      + `  blocked ${g.blockedMs}  loop ${Math.round(acct * 10) / 10}`
+      + `  outside-loop ${Math.round((g.ms - acct) * 10) / 10}`
+      + `  [${ms['#calls'] ?? '-'} calls, ${ms['#tris'] ?? '-'} tris]`,
+    );
+    const seen = new Set();
+    const line = (k) => {
+      if (seen.has(k) || ms[k] == null) return;
+      seen.add(k);
+      if (k !== 'r.cull*' && !(ms[k] >= 0.5)) return;
+      console.log(`    ${String(ms[k]).padStart(9)}  x${n[k] ?? '-'}  ${k}`);
+    };
+    for (const k of ORDER) line(k);
+    const rest = Object.keys(ms)
+      .filter((k) => !seen.has(k) && !k.startsWith('#') && ms[k] >= 0.5)
+      .sort((a, b) => ms[b] - ms[a]);
+    for (const k of rest.slice(0, 12)) line(k);
   }
 }
 /* ---------------------------------------------------------------- */
@@ -1325,6 +1765,7 @@ async function main() {
       printTable(rows, args.budget);
       printCrossings(run);
       printListeners(run);
+      if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
       runs.push({ run: i, rows, warm: run.warm });
     }
   } finally {

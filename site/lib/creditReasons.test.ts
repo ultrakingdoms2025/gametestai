@@ -54,6 +54,43 @@ function argsAt(text: string, openIndex: number): string {
   return '';
 }
 
+/**
+ * Split an argument list on its TOP-LEVEL commas.
+ *
+ * This replaced a regex that read the LAST argument, on the assumption that
+ * `reason` is always last. It stopped being: `Economy.spend` now takes an
+ * optional third argument, and a marketplace buy passes it — so
+ * `spend(cost, 'market', buyMeta)` read as a call with a variable reason, and
+ * the scrape reported a phantom dynamic site rather than 'market'.
+ *
+ * The reason has always been the SECOND argument. Reading it by position rather
+ * than by "the one on the end" is what the contract actually says, and it does
+ * not care how many arguments come after.
+ */
+function topLevelArgs(args: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) {
+      out.push(args.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(args.slice(start));
+  return out.map((s) => s.trim());
+}
+
 interface Site {
   file: string;
   line: number;
@@ -75,7 +112,8 @@ const CALL = /economy\??\.(add|spend)\??\.?\(/g;
  */
 const SELF_CALL = /this\.(add|spend)\(/g;
 const SELF_FILE = 'systems/Economy.js';
-const TAIL = /,\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_$][\w$]*))\s*$/;
+/** A whole argument that is one string literal, e.g. `'market'`. */
+const LITERAL = /^(?:'([^']*)'|"([^"]*)")$/;
 
 /**
  * Strip comments before scanning.
@@ -121,7 +159,10 @@ function scan(): Site[] {
     while ((m = pattern.exec(text)) !== null) {
       const open = text.indexOf('(', m.index + m[0].length - 1);
       const args = argsAt(text, open);
-      const tail = TAIL.exec(args);
+      // The reason is argument two of `add(amount, reason)` / `spend(amount,
+      // reason, meta?)`. By position, not by "the last one" — see topLevelArgs.
+      const parts = topLevelArgs(args);
+      const tail = parts.length >= 2 ? LITERAL.exec(parts[1]) : null;
       const literal = tail ? (tail[1] ?? tail[2] ?? null) : null;
       sites.push({
         file: file.slice(SRC.length + 1).split(String.fromCharCode(92)).join('/'),

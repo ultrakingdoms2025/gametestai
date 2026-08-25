@@ -607,6 +607,21 @@ async function balanceOf(db: PurchaseDb, playerId: string): Promise<number> {
  * has already spent the credits, so a naive second pass sees the reduced balance
  * and answers `insufficient`, telling the client a purchase failed that in fact
  * succeeded. The client would then show an error for an item the player owns.
+ *
+ * ── `itemId` is a REFERENCE: a row id, or a `source_key` ──────────────────
+ *
+ * Both, because the shop the player is looking at is not always the API's. When
+ * `/api/marketplace/items` is unreachable the client falls back to the bundled
+ * catalogue (`src/systems/MarketplaceOffline.js`), whose rows carry
+ * `id = \`${source_key}:${world}\`` — which is exactly the key the seeder writes
+ * into `marketplace_items.source_key`, deliberately, so "an offline purchase and
+ * an online one name the same row". Accepting only the UUID would have made
+ * every offline purchase unresolvable and therefore FREE, which is a new hole in
+ * the act of closing one.
+ *
+ * `source_key` is UNIQUE and NULL on every owner-authored row, so a lookup by
+ * key can only ever reach the platform partition — which is the only partition
+ * the offline catalogue contains.
  */
 export async function purchaseMarketplaceItem(
   db: PurchaseDb,
@@ -642,12 +657,13 @@ export async function purchaseMarketplaceItem(
   if (typeof eventKey !== 'string' || eventKey.length === 0 || eventKey.length > 200) {
     return refuse('invalid');
   }
-  if (typeof itemId !== 'string' || !UUID_RE.test(itemId)) {
-    // Not found rather than invalid: a syntactically impossible id and a deleted
-    // one are the same thing to a caller, and handing it to Postgres would raise
-    // "invalid input syntax for type uuid" and 500 the route.
-    return refuse('not_found');
-  }
+  const ref = typeof itemId === 'string' ? itemId.trim() : '';
+  if (ref.length === 0 || ref.length > 200) return refuse('not_found');
+  /* Which column the reference names. Decided HERE rather than in the SQL,
+   * because `id` is a UUID column and handing it a `source_key` raises
+   * "invalid input syntax for type uuid" (22P02) — a 500 out of a route, for a
+   * request that should simply not find anything. */
+  const byRowId = UUID_RE.test(ref);
 
   await db.query('BEGIN');
   try {
@@ -669,15 +685,31 @@ export async function purchaseMarketplaceItem(
       };
     }
 
-    const found = await db.query(
-      `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
-              is_active, world_name
-         FROM marketplace_items
-        WHERE id = $1
-          AND (server_id IS NULL OR server_id = COALESCE($2, ''))
-          FOR UPDATE`,
-      [itemId, scope]
-    );
+    /* Two whole statements rather than one with a clever predicate, and the
+     * scope clause written out LITERALLY in each. `contentScoping.test.ts` reads
+     * these strings out of the source — that is the only seam it has, because
+     * this module opens its own connections — and a clause assembled from a
+     * `${variable}` is a clause no source test can see. Duplication that a gate
+     * can read beats a single statement it cannot. */
+    const found = byRowId
+      ? await db.query(
+          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                  is_active, world_name
+             FROM marketplace_items
+            WHERE id = $1
+              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+              FOR UPDATE`,
+          [ref, scope]
+        )
+      : await db.query(
+          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                  is_active, world_name
+             FROM marketplace_items
+            WHERE source_key = $1
+              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+              FOR UPDATE`,
+          [ref, scope]
+        );
     const row = found.rows[0];
     if (!row) {
       await db.query('ROLLBACK');
@@ -740,7 +772,9 @@ export async function purchaseMarketplaceItem(
             SET quantity = quantity - 1, updated_at = NOW()
           WHERE id = $1 AND quantity > 0
           RETURNING quantity`,
-        [itemId]
+        // `item.id`, not the caller's reference: the reference may have been a
+        // source_key, and this UPDATE is against the row that was LOCKED above.
+        [item.id]
       );
       if (!dec.rows[0]) {
         // Unreachable while the row lock above is held. Left in because the

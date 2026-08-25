@@ -8,8 +8,11 @@ import {
   ensureOpeningBalance,
   applyReportedEvent,
   type ReportedEvent,
+  type ReportHandlers,
   type ReportResult,
 } from '@/lib/creditLedger';
+import { ensureMarketplaceSchema, purchaseMarketplaceItem } from '@/lib/marketplaceDb';
+import { currentServer } from '@/lib/serverRoutes';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,10 +30,28 @@ function makeClient() {
  *
  * Body: `{ events: [{ key, reason, delta }] }`.
  *
+ * Body: `{ events: [{ key, reason, delta, itemId? }] }`.
+ *
  * `delta` is the game's own number and is only honoured for the kinds the server
  * cannot price (see DECLARED_KINDS). For everything else it is discarded and the
  * server's price is used, which is the entire point of the endpoint: the browser
  * reports what happened, never what it is worth.
+ *
+ * ── `itemId`, and the buy that used to be priced by the buyer ─────────────
+ *
+ * A marketplace debit is a CATALOGUE PURCHASE, and the event carries which row
+ * it is for. The server reads `cost_buy` off that row through
+ * `purchaseMarketplaceItem`, which locks it, debits, decrements stock and writes
+ * the sale — all in one transaction. `delta` is not consulted at all.
+ *
+ * Before this, `{"reason":"market","delta":-1}` bought a 1,071-credit item for
+ * one credit, driven live. An event with no `itemId` is now refused
+ * (`unpriced_purchase`) rather than paid at the number it named, because a
+ * fallback an attacker can select by omitting a field is not a fallback.
+ *
+ * The scope comes from `currentServer`, never the body — the same rule the
+ * catalogue read uses, so a player cannot buy an item out of a server they are
+ * not in by pasting its id.
  *
  * Every event is answered individually. A refused one is not a failed request —
  * the client should drop it, not retry it — so the response is 200 with per-event
@@ -73,15 +94,52 @@ export async function POST(req: Request) {
     // started, or its first `balance_after` is a number with no provenance.
     await ensureOpeningBalance(client, playerId);
 
+    /* Resolved once for the whole batch, and lazily: `currentServer` re-checks
+     * membership against the database, and a batch of kills has no business
+     * paying for that. `null` is the platform partition, exactly as it is for
+     * the catalogue read. */
+    let scope: string | null | undefined;
+    const handlers: ReportHandlers = {
+      buyCatalogueItem: async ({ itemRef, eventKey }) => {
+        /* Ensured here rather than at the top of the route: it is memoised, but
+         * the first call on a cold lambda seeds 505 catalogue rows, and a batch
+         * of kills must not pay for a table it never reads. Any player who has
+         * opened the shop has already warmed it through /api/marketplace/items. */
+        await ensureMarketplaceSchema();
+        if (scope === undefined) scope = await currentServer(playerId);
+        const r = await purchaseMarketplaceItem(client, playerId, {
+          itemId: itemRef,
+          eventKey,
+          serverId: scope,
+        });
+        /* `cost` is the price the SERVER read off the row. It is reported back as
+         * the delta so the client's mirror converges on the real charge rather
+         * than on the number it sent. */
+        return {
+          applied: r.applied,
+          delta: r.applied ? -r.cost : 0,
+          balance: r.balance,
+          reason: r.reason,
+        };
+      },
+    };
+
     const results: ReportResult[] = [];
     for (const item of raw) {
       const event = item as ReportedEvent;
+      const itemId = (event as { itemId?: unknown })?.itemId;
       results.push(
-        await applyReportedEvent(client, playerId, {
-          key: String((event as { key?: unknown })?.key ?? ''),
-          reason: String((event as { reason?: unknown })?.reason ?? ''),
-          delta: Number((event as { delta?: unknown })?.delta),
-        })
+        await applyReportedEvent(
+          client,
+          playerId,
+          {
+            key: String((event as { key?: unknown })?.key ?? ''),
+            reason: String((event as { reason?: unknown })?.reason ?? ''),
+            delta: Number((event as { delta?: unknown })?.delta),
+            ...(typeof itemId === 'string' ? { itemId } : {}),
+          },
+          handlers
+        )
       );
     }
 

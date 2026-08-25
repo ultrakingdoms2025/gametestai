@@ -151,9 +151,22 @@ describe('the quest flip and the quest credit are one transaction', () => {
 /* The consequence, against a real Postgres                                */
 /* ---------------------------------------------------------------------- */
 
-/* ...0008. Every DB suite here claims its own player id because vitest runs
- * files in parallel against one database. */
-const PLAYER = '00000000-0000-4000-8000-000000000008';
+/* ...0011, and CHECKED against the register rather than guessed.
+ *
+ * This file first took ...0008, which `serverCredits.test.ts` already owns, and
+ * `marketplaceBuyContract.test.ts` took ...0009, which `serverChat.test.ts`
+ * owns — whose four tests then failed in the full run and passed alone, because
+ * this suite's `afterAll` DELETEs its player and the FK cascaded their chat away.
+ * Vitest runs these files in parallel against one shared database, and the
+ * register is the grep:
+ *
+ *   grep -rhoE "00000000-0000-4000-8000-[0-9a-f]{12}" lib/*.test.ts | sort -u
+ *
+ * ...0001 creditLedger, ...0002 marketplacePurchase, ...0003 creditReport,
+ * ...0004 progressLedger, ...0005 leaderboard, ...0006 customServers,
+ * ...0007 serverContent, ...0008 serverCredits, ...0009 serverChat,
+ * ...0010 premium, ...0011 THIS FILE, ...0012 marketplaceBuyContract. */
+const PLAYER = '00000000-0000-4000-8000-000000000011';
 const QUEST = 'quest-ledger-test-quest';
 const QUEST_NUMBER = 987_654;
 const REWARD = 150;

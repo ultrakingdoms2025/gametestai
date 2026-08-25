@@ -427,9 +427,29 @@ export interface ReportedEvent {
   reason: string;
   /** Signed: positive is an earn, negative is a spend. */
   delta: number;
+  /**
+   * WHICH CATALOGUE ROW a marketplace debit is for — its id, or its `source_key`
+   * for a client shopping the bundled offline catalogue.
+   *
+   * The event could not express this, and that is what made a marketplace buy
+   * client-priced: `{key, reason, delta}` carries no item, so the server had
+   * nothing to look `cost_buy` up by even though it holds the row. Absent on a
+   * marketplace debit, the event is REFUSED — never priced from `delta`.
+   */
+  itemId?: string;
 }
 
-export type ReportOutcome = LedgerReason | 'unknown_source' | 'refused' | 'too_large';
+export type ReportOutcome =
+  | LedgerReason
+  | 'unknown_source'
+  | 'refused'
+  | 'too_large'
+  /** A marketplace debit that did not say which item. */
+  | 'unpriced_purchase'
+  /** The catalogue's own refusals, passed through so a client can tell them apart. */
+  | 'not_found'
+  | 'inactive'
+  | 'stock';
 
 export interface ReportResult {
   key: string;
@@ -437,6 +457,31 @@ export interface ReportResult {
   delta: number;
   balance: number;
   reason: ReportOutcome;
+}
+
+/**
+ * How a reported catalogue purchase is actually carried out.
+ *
+ * ── Why this is injected rather than imported ─────────────────────────────
+ *
+ * The destination is `marketplaceDb.purchaseMarketplaceItem`, and
+ * `marketplaceDb` already imports `debitInTransaction` from THIS file. Importing
+ * it back would make a cycle — one that works today because both sides are used
+ * inside function bodies, and that breaks in a bundler long after whoever
+ * created it has stopped looking. The route holds both modules already, so it
+ * hands the destination in.
+ *
+ * ── And it fails CLOSED ───────────────────────────────────────────────────
+ *
+ * A caller that supplies no handler cannot buy: the event is refused, not paid
+ * at the client's number. That is the whole point of the shape. There is no
+ * arrangement of these arguments that ends in a browser naming a purchase price.
+ */
+export interface ReportHandlers {
+  buyCatalogueItem?: (request: {
+    itemRef: string;
+    eventKey: string;
+  }) => Promise<{ applied: boolean; delta: number; balance: number; reason: ReportOutcome }>;
 }
 
 /**
@@ -449,7 +494,8 @@ export interface ReportResult {
 export async function applyReportedEvent(
   db: Db,
   playerId: string,
-  event: ReportedEvent
+  event: ReportedEvent,
+  handlers: ReportHandlers = {}
 ): Promise<ReportResult> {
   const key = event?.key;
   if (!validKey(key)) {
@@ -462,7 +508,7 @@ export async function applyReportedEvent(
     };
   }
 
-  const resolved = resolveReportedEvent(event.reason, event.delta);
+  const resolved = resolveReportedEvent(event.reason, event.delta, event.itemId);
   if (!resolved.ok) {
     return {
       key,
@@ -471,6 +517,24 @@ export async function applyReportedEvent(
       balance: await currentBalance(db, playerId),
       reason: resolved.reason,
     };
+  }
+
+  if (resolved.itemRef !== undefined) {
+    /* A catalogue purchase. `resolveReportedEvent` only sets `itemRef` for one,
+     * and it discards `delta` entirely when it does — so there is no path from
+     * here to a price the browser chose, including when no handler was given. */
+    const buy = handlers.buyCatalogueItem;
+    if (!buy) {
+      return {
+        key,
+        applied: false,
+        delta: 0,
+        balance: await currentBalance(db, playerId),
+        reason: 'unpriced_purchase',
+      };
+    }
+    const r = await buy({ itemRef: resolved.itemRef, eventKey: key });
+    return { key, applied: r.applied, delta: r.delta, balance: r.balance, reason: r.reason };
   }
 
   if (resolved.kind === 'spend') {

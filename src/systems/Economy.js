@@ -83,17 +83,29 @@ export class Economy {
 
   /**
    * Deduct credits if the balance covers it.
+   *
+   * `itemId` is the one piece of context the server needs and the reason tag
+   * cannot carry. A marketplace debit is a CATALOGUE PURCHASE: the server prices
+   * it from `cost_buy` on the row, and refuses a marketplace debit that does not
+   * say which row, because the alternative is the browser naming the price — a
+   * 1,071-credit item was bought for 1 credit that way. The funnel is the only
+   * thing between `Marketplace.buy` and the report, so the id travels here.
+   *
+   * Nothing else passes it and nothing else needs to: `Inventory`'s virtual-credit
+   * spend is not a purchase and stays a plain declared debit.
+   *
    * @param {number} amount
    * @param {string} [reason]
+   * @param {{itemId?: string}} [meta] extra context surfaced on `credits:changed`
    * @returns {boolean} true when the balance was actually debited
    */
-  spend(amount, reason = 'unknown') {
+  spend(amount, reason = 'unknown', meta = null) {
     const cost = Math.floor(Number(amount));
     if (!Number.isFinite(cost) || cost <= 0) return false;
     if (cost > this._credits) return false;
     this._credits -= cost;
     this._spent += cost;
-    this._emit(-cost, reason, 'spend');
+    this._emit(-cost, reason, 'spend', meta);
     return true;
   }
 
@@ -160,6 +172,7 @@ export class Economy {
    * @param {number} delta
    * @param {string} reason
    * @param {'add'|'spend'|'set'} op which call produced this change
+   * @param {{itemId?: string}|null} [meta] extra context, spread onto the event
    *
    * `op` exists because `reason` cannot be trusted to say what happened.
    * `CreditReporter` must report gameplay and must NOT report bookkeeping, and
@@ -168,8 +181,12 @@ export class Economy {
    * filtering on tags alone would re-report the whole balance as if it were
    * fresh earnings. The operation is the honest discriminator.
    */
-  _emit(delta, reason, op) {
-    this.bus?.emit('credits:changed', { credits: this._credits, delta, reason, op });
+  _emit(delta, reason, op, meta = null) {
+    const event = { credits: this._credits, delta, reason, op };
+    // Only the fields that are actually present, so a listener can test for one
+    // rather than for `undefined`.
+    if (meta && typeof meta.itemId === 'string' && meta.itemId) event.itemId = meta.itemId;
+    this.bus?.emit('credits:changed', event);
   }
 
   /** Stable de-duplication key for an NPC. */

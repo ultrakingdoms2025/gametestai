@@ -103,6 +103,66 @@ test('reports the sign of the change, so buying and selling are distinguishable'
   assert.deepEqual(deltas, [30, -80]);
 });
 
+/* ══════════════════════════════════════════════════════════════════════════
+ *  WHICH ROW WAS BOUGHT
+ *
+ *  A marketplace debit is a CATALOGUE PURCHASE and the server prices it from
+ *  `marketplace_items.cost_buy`. The event has to say which row, because
+ *  `{key, reason, delta}` could not — and that is what let a 1,071-credit item
+ *  be bought for 1 credit, driven live against production.
+ *
+ *  A purchase that arrives with no item id is REFUSED, not charged at the
+ *  browser's number. So every place the id can be dropped between
+ *  `Marketplace.buy` and the request body is a place where purchases silently
+ *  stop being charged, and each one gets a test here rather than a scrape.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+test('carries the item id of a purchase all the way into the request body', async () => {
+  const { economy, reporter, fetchImpl } = setup({ balance: 20 });
+  reporter.start();
+  economy.spend(80, 'market', { itemId: 'aa11bb22-cc33-4d44-8e55-ff6677889900' });
+  await reporter.flush();
+  const [event] = fetchImpl.calls[0].body.events;
+  assert.equal(event.itemId, 'aa11bb22-cc33-4d44-8e55-ff6677889900');
+  assert.equal(event.delta, -80);
+});
+
+test('carries a source_key reference too, for the offline catalogue', () => {
+  // The bundled shop keys its rows `${source_key}:${world}` deliberately, so an
+  // offline purchase and an online one name the same row. Accepting only a UUID
+  // would make every offline purchase unresolvable, and therefore free.
+  const { economy, reporter } = setup();
+  reporter.start();
+  economy.spend(40, 'market', { itemId: 'spell_velocity_25:station' });
+  assert.equal(reporter._queue[0].itemId, 'spell_velocity_25:station');
+});
+
+test('a queued purchase survives a reload with its item id', () => {
+  // The queue is durable precisely because a crash must not cost the player.
+  // A restored purchase that lost its item id is one the server will refuse.
+  const storage = makeStorage();
+  const first = setup({ storage });
+  first.reporter.start();
+  first.economy.spend(80, 'market', { itemId: 'aa11bb22-cc33-4d44-8e55-ff6677889900' });
+
+  const second = setup({ storage });
+  assert.equal(second.reporter.pending, 1);
+  assert.equal(second.reporter._queue[0].itemId, 'aa11bb22-cc33-4d44-8e55-ff6677889900');
+});
+
+test('puts no item id on anything that is not a purchase', () => {
+  // `credits:changed` is the funnel for all 22 credit sources. A field that
+  // appeared on every event would be one more thing for the server to ignore.
+  const { economy, reporter } = setup();
+  reporter.start();
+  economy.add(5, 'kill');
+  economy.add(30, 'market');
+  economy.spend(10, 'inventory');
+  for (const e of reporter._queue) {
+    assert.equal('itemId' in e, false, `${e.reason} carried an itemId`);
+  }
+});
+
 test('NEVER reports a set, whatever it is tagged', () => {
   // The defect this guards: QuestSystem writes the server's absolute balance
   // with economy.set(next, 'quest'), and a reason-based filter would report the

@@ -476,9 +476,23 @@ export class Marketplace {
 
     const cost = preview.cost;
 
+    /* WHICH ROW WAS BOUGHT travels with every debit below.
+     *
+     * `cost` here is the client's arithmetic and always was; what changed is
+     * that the server no longer believes it. A marketplace debit is priced from
+     * `marketplace_items.cost_buy`, and an event that does not name the row is
+     * refused rather than charged at whatever the browser sent -- a
+     * 1,071-credit item was bought for 1 credit before this.
+     *
+     * `item.id` is the reference the server resolves: a UUID from the API, or
+     * the seeded `source_key` when the row came from the bundled offline
+     * catalogue, which `MarketplaceOffline` keys deliberately so that "an
+     * offline purchase and an online one name the same row". */
+    const buyMeta = { itemId: String(item.id ?? '') };
+
     // Mount upgrade: spend, announce, let MountManager apply the stat. No bag.
     if (preview.power) {
-      if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
+      if (!this.economy.spend(cost, 'market', buyMeta)) return { ok: false, reason: 'credits' };
       if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
       this.bus?.emit('mount:power:buy', {
         mount: preview.power.mount,
@@ -501,7 +515,7 @@ export class Marketplace {
 
     // Cosmetic unlock: spend, announce, let the wardrobe record the skin. No bag.
     if (preview.cosmetic) {
-      if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
+      if (!this.economy.spend(cost, 'market', buyMeta)) return { ok: false, reason: 'credits' };
       if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
       this.bus?.emit('cosmetic:buy', {
         cosmeticId: preview.cosmetic.cosmeticId,
@@ -524,7 +538,7 @@ export class Marketplace {
     if (!preview.grant || !this.inventory) return { ok: false, reason: preview.reason ?? 'unavailable' };
     const grant = preview.grant;
 
-    if (!this.economy.spend(cost, 'market')) return { ok: false, reason: 'credits' };
+    if (!this.economy.spend(cost, 'market', buyMeta)) return { ok: false, reason: 'credits' };
 
     const got = this.inventory.acquire(grant.itemId, grant.qty);
     if (got.taken < grant.qty) {

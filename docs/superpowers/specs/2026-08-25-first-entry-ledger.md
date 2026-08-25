@@ -274,7 +274,35 @@ The programs survive the re-roll because the materials do —
 `MazeMaterials`'s module cache is left alone by `MazeWorld.dispose()` on
 purpose, and the file says so: *"materials survive re-rolls — see dispose()"*.
 
-**That is also what makes the fix viable, and it is why it is worth costing.**
+### The harness enters the maze twice and a player enters it once
+
+Worth knowing before anyone tunes this number. From the run's own log, inside
+one `entry:maze`:
+
+```
+152466 [World] built "maze" in 1883ms (8666 colliders, 1 npc spawns)
+152712 [World] built "maze" in 244ms  (8603 colliders, 1 npc spawns)
+```
+
+Two generations, different collider counts, so two different mazes — the first
+one discarded. `Harness.goto` builds a world it finds unbuilt and then calls
+`activate`, and `activate` calls `build` again; for a volatile world that
+second call disposes the fresh layout and generates another.
+
+`Portals` does not do this, deliberately, and says so at the call site: *"this
+kicked build usually finishes before activate's own call runs, so that call's
+`build()` disposes the fresh layout and generates a second one rather than
+reusing it"* — which is why it skips the pre-build for volatile targets
+entirely. `Harness.goto` never got the same guard.
+
+It does not move the numbers above: a world build yields, so it lands in
+background frames rather than in the crossing's gap, and `_activate` for the
+maze is 20.4–21.0 ms either way. It does mean the harness's maze entry costs
+about two seconds of wall clock a player never pays, and it is one condition in
+`src/dev/Harness.js`, which is outside this branch's file boundary.
+
+**Persistence is also what makes a background warm viable, and it is why it is
+worth costing.**
 A single background build of the maze, warmed and then left to be re-rolled by
 the first real entry, would link those seven programs behind the loading screen
 and they would still be there afterwards. The price is one maze build in the
@@ -330,6 +358,10 @@ every one of those would have been a per-world cost in a table.
   the seven the rim was minting are gone from its arrival too, which is worth
   saying because the fog is not all of sports and the rest of it is now smaller.
 - **Maze's background warm.** §4, costed. `main.js`, outside the boundary.
+- **`Harness.goto`'s double build of a volatile world.** §4. Two full maze
+  generations per harness entry where a player gets one, and the guard
+  `Portals` already carries is the fix. `src/dev/Harness.js` is outside the
+  boundary.
 - **`spawnForWorld`'s first cast.** 244–460 ms in four worlds, and the largest
   single remaining first-entry cost in the game. It is a build, not a cache
   miss: there is no earlier moment to move it to that is not the background

@@ -411,6 +411,26 @@ const GL_SHIM = `(() => {
  * loop every frame. So what it drains at frame N is frame N-1's loop, which is
  * exactly the work inside the gap it is closing.
  */
+
+/** One census of the scene graph the renderer walks. --frames only. */
+const GRAPH_PROBE = `(() => {
+  const S = window.GAME.engine.scene;
+  let nodes = 0, meshes = 0, culled = 0, inst = 0, batch = 0, skinned = 0, lights = 0, sprites = 0;
+  let instances = 0, noBound = 0;
+  S.traverse((o) => {
+    nodes++;
+    if (o.isLight) lights++;
+    if (o.isSprite) sprites++;
+    if (!o.isMesh && !o.isLine && !o.isPoints) return;
+    meshes++;
+    if (o.frustumCulled) culled++;
+    if (o.isInstancedMesh) { inst++; instances += o.count; }
+    if (o.isBatchedMesh) batch++;
+    if (o.isSkinnedMesh) skinned++;
+    if (o.geometry && o.geometry.boundingSphere === null) noBound++;
+  });
+  return JSON.stringify({ nodes, meshes, culled, inst, instances, batch, skinned, lights, sprites, noBound });
+})()`;
 const FRAME_SHIM = `(() => {
   if (window.__FR) return 'already';
   const G = window.GAME;
@@ -469,8 +489,37 @@ const FRAME_SHIM = `(() => {
       finally { add(inShadow ? 'r.shadowDraw' : 'r.draw', now() - t); }
     };
   }
-  wrap(R, 'render', 'r.render');
+  {
+    /* Split by the scene handed in. A portal preview parks a whole destination
+     * world in its own scene and draws it, and a frame that does that 26 times
+     * is a different animal from one that draws the live scene once. */
+    const rr = R.render;
+    R.render = function (sc, cam) {
+      const t = now();
+      try { return rr.call(this, sc, cam); }
+      finally { add(sc === S ? 'r.render' : 'r.renderAux', now() - t); }
+    };
+  }
   wrap(R, 'compile', 'r.compile');
+
+  /* ---- the three.js internals culling actually runs through ----
+   *
+   * projectObject has no entry point to wrap, but the two things it does per
+   * candidate do: the frustum test, and the lazily-computed bound the test
+   * needs. A bound that is recomputed once per crossing walks every vertex of
+   * the geometry it belongs to, and nothing in the gap deltas would show it. */
+  const T = window.GAME.THREE;
+  if (T) {
+    wrap(T.Frustum.prototype, 'intersectsObject', 'x.frustum');
+    wrap(T.BufferGeometry.prototype, 'computeBoundingSphere', 'x.geomBound');
+    if (T.InstancedMesh) wrap(T.InstancedMesh.prototype, 'computeBoundingSphere', 'x.instBound');
+    if (T.BatchedMesh) {
+      wrap(T.BatchedMesh.prototype, 'computeBoundingSphere', 'x.batchBound');
+      wrap(T.BatchedMesh.prototype, 'onBeforeRender', 'x.batchCull');
+    }
+    if (T.Skeleton) wrap(T.Skeleton.prototype, 'update', 'x.skeleton');
+    if (T.SkinnedMesh) wrap(T.SkinnedMesh.prototype, 'updateMatrixWorld', 'x.skinMatrix');
+  }
 
   /* ---- the composer ---- */
   const fx = E.postfx;
@@ -778,6 +827,10 @@ async function runOnce(args, pageUrl, runIndex) {
      * wrappers to the one phase that already has an explanation. */
     if (args.frames) {
       out.framesShim = await evalIn(FRAME_SHIM);
+      /* How big the graph the culler walks actually is. A per-frame counter
+       * would cost more than it could find; this is the same number and it is
+       * read once. */
+      out.graph = JSON.parse(await evalIn(GRAPH_PROBE));
       console.log('frame instrumentation: ' + out.framesShim);
     }
     out.cacheKeysAfterBoot = args.cacheKeys

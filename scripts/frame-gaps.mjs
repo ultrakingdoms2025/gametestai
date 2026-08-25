@@ -1016,6 +1016,49 @@ function printTable(rows, budget) {
   }
 }
 
+/**
+ * What each crossing cost, step by step.
+ *
+ * The gate reports the worst rAF gap, which is the number the criterion is
+ * written in and which says nothing about what to do next. This is the same
+ * block of time broken into the steps WorldManager names, off the same run.
+ */
+function printCrossings(run) {
+  const rows = [];
+  for (const [name, ev] of Object.entries(run.events)) {
+    for (const c of ev?.cost ?? []) if (c) rows.push([name, c]);
+  }
+  if (!rows.length) return;
+  const steps = ['changing', 'teardown', 'physicsClear', 'physicsAdd', 'sceneIn',
+    'portals', 'arrival', 'npcs', 'changed', 'total'];
+  console.log(`\ncrossing        into        colliders  ${steps.map((s) => s.padStart(8)).join(' ')}`);
+  for (const [name, c] of rows) {
+    console.log(
+      `${name.padEnd(15)} ${String(c.world).padEnd(11)} ${String(c.colliders).padStart(9)}  `
+      + steps.map((s) => String(c[s] ?? '-').padStart(8)).join(' '),
+    );
+  }
+}
+
+/**
+ * Who spent the world:changed fan-out, and what each named rebuild costs.
+ * Present only with --listeners.
+ */
+function printListeners(run) {
+  if (run.listeners?.length) {
+    console.log('\nworld:changed listeners, ms over every crossing in this run');
+    for (const l of run.listeners.slice(0, 8)) {
+      console.log(`${String(l.ms).padStart(9)}  x${l.calls}  ${l.src.slice(0, 96)}`);
+    }
+  }
+  if (run.autopsy) {
+    console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
+    for (const [k, v] of Object.entries(run.autopsy)) {
+      if (k === 'world') continue;
+      console.log(`${String(v).padStart(9)}  ${k}`);
+    }
+  }
+}
 /* ---------------------------------------------------------------- */
 /* Main                                                              */
 /* ---------------------------------------------------------------- */
@@ -1072,6 +1115,8 @@ async function main() {
       await writeFile(path.join(outDir, `run-${i}.json`), JSON.stringify(run, null, 2));
       const rows = summarise(run, args.budget);
       printTable(rows, args.budget);
+      printCrossings(run);
+      printListeners(run);
       runs.push({ run: i, rows, warm: run.warm });
     }
   } finally {

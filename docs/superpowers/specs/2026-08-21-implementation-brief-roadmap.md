@@ -25,6 +25,27 @@ frame, at 4.6 ms per character per crossing. `mergeParts` had computed the right
 along, with a comment naming the job; the culler never read it because `SkinnedMesh` shadows
 `geometry.boundingSphere`.
 
+**Eleven of seventeen worlds enter at 16.8-17.1 ms.** Of the six that do not, four are now a
+first cast being built with no shader link at all - dock 316-367 ms, citadel 450-467, race
+450-483, medieval 683-750. Maze (1.9-6.4 s) is `static volatile`, so the background warm
+filters it out and nothing ever warms it; it costs that once per session rather than per entry.
+
+**A CORRECTION, because this file carried the wrong number.** An earlier ledger recorded race
+at **31,284 ms** as "a volatile world rebuilt" and I repeated it as the worst number in the
+game. It was neither. The gap's own heartbeat - 4 ms, same main thread, ungated on the
+compositor - ticked **8,004 times inside it**, one every 4.06 ms end to end: the thread was
+FREE. The page had already said so in the console (*"no animation frame for 10000ms - the
+window is very likely backgrounded or occluded"*), and `Harness.js` had been counting those
+into `__HARNESS_RAF_STALLS__` since it was written - `frame-gaps.mjs` never read it. Windows
+computes native occlusion for headless windows, so it lands on a DIFFERENT WORLD every run.
+Race is not volatile either; `MazeWorld` is the only volatile world. The harness now prints
+`beats` beside `blocked` and labels such a gap STARVED.
+
+**And the seven program links in dock and medieval were six IDENTICAL shaders.** `addRim`
+folded rim colour, strength, falloff and forward into `customProgramCacheKey`, under a comment
+defending it - and all six are uniforms, cloned per material before `onBeforeCompile` runs, so
+the distinct key bought nothing and cost a link per palette per crossing. dock 7 -> 0,
+medieval 7 -> 1, warm programs 151 -> 143, and sports 52 -> 45 for free.
 **World entry passes in 15 of 16 worlds at 16.8 ms. Sports is the exception, deliberately.**
 Its `FogExp2` costs 6.0 seconds and 40 of 52 programs on FIRST entry - and swapping it to the
 linear fog every other world uses is **not sufficient**: 466.6 ms is still 1.9x budget on twelve

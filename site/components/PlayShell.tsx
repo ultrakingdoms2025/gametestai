@@ -24,9 +24,15 @@ import { ServerChatPanel } from './ServerChatPanel';
 export function PlayShell({ src }: { src: string }) {
   const [entered, setEntered] = useState(false);
 
+  /* `play-gate`, NOT `play-shell`. The shell is `position: fixed; inset: 0`,
+   * which is right for a full-bleed game iframe and wrong for a panel that
+   * shares the page with a sticky 54 px header at z-index 200: the panel
+   * pins to the viewport top, the header covers its controls, and
+   * elementFromPoint at the button centre returns the header. A paid,
+   * signed-in player saw a black page they could not click. */
   if (!entered) {
     return (
-      <main className="play-shell" style={{ display: 'grid', alignContent: 'start' }}>
+      <main className="play-gate">
         <ServerStartPanel onEnter={() => setEntered(true)} />
       </main>
     );

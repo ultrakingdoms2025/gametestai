@@ -6,6 +6,7 @@
 import { Client } from 'pg';
 import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ensureCreditSchema } from './creditLedger';
+import { earnServerCredits } from './serverCredits';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -946,11 +947,13 @@ export async function completeQuestEngagement(
     quest_reward: number | null;
     engagement_reward: number | null;
     credit_balance: number;
+    server_id: string | null;
   }>(
     `SELECT e.status,
             q.reward_credits AS quest_reward,
             e.reward_credits AS engagement_reward,
-            pl.credit_balance
+            pl.credit_balance,
+            e.server_id
      FROM player_quest_engagements e
      JOIN players pl ON pl.id = e.player_id
      LEFT JOIN quests q ON q.id = e.quest_id
@@ -981,6 +984,61 @@ export async function completeQuestEngagement(
 
   const rawReward = Number(engagement.quest_reward ?? engagement.engagement_reward ?? 0);
   const reward = Number.isFinite(rawReward) ? Math.max(0, Math.trunc(rawReward)) : 0;
+
+  /* A SERVER-SCOPED QUEST MUST NEVER TOUCH THE PLATFORM BALANCE.
+   *
+   * Phase 7 separated the two economies structurally, and the separation holds
+   * everywhere it was built: `serverCredits.ts` never names `players` or
+   * `credit_balance`. But quest rewards never went through that module. This
+   * function took `(engagementId, playerId)` and never read `server_id` at all,
+   * while the engagement row it updates is correctly stamped with one - so the
+   * UPDATE below added an owner-authored reward to `players.credit_balance`.
+   *
+   * Driven live against a test database: an owner authored a quest at
+   * `rewardCredits: 1000000000, repeatable: true`, and two request pairs later
+   * `players.credit_balance` read 2,000,510,348 while `server_credit_balances`
+   * stayed empty. AN INVITED MEMBER WITH NO SUBSCRIPTION DID THE SAME. The cost
+   * of unlimited platform credits for everyone an owner invites was one
+   * subscription.
+   *
+   * The destination was already designed and simply unwired:
+   * `SERVER_CREDIT_KINDS.quest` caps one payout at 5,000 and its `why` names
+   * this exact case - "the owner sets reward_credits; this bounds one payout,
+   * not the owner's economy". `earnServerCredits` is idempotent on `eventKey`,
+   * so the engagement id makes a replayed completion pay once. */
+  if (engagement.server_id) {
+    const client = makeClient();
+    await client.connect();
+    try {
+      const { rows: done } = await client.query(
+        `UPDATE player_quest_engagements
+            SET status = 'completed', credits_rewarded = $1::int, percent_complete = 100,
+                completed_at = NOW(), updated_at = NOW()
+          WHERE id = $2 AND player_id = $3 AND status = 'in_progress'
+          RETURNING id`,
+        [reward, engagementId, playerId]
+      );
+      if (!done[0]) {
+        return {
+          ok: true, alreadyCompleted: true, creditsAwarded: 0,
+          creditBalance: balanceBefore, status: 'completed',
+        };
+      }
+      const paid = await earnServerCredits(client, engagement.server_id, playerId, {
+        kind: 'quest', amount: reward, eventKey: `quest:${engagementId}`,
+      });
+      /* `creditBalance` stays the PLATFORM balance, unchanged and read before
+       * this branch: that is the number this contract has always meant, and
+       * quietly returning a server balance in its place would be the same
+       * conflation this fix exists to remove. */
+      return {
+        ok: true, alreadyCompleted: false, creditsAwarded: paid.applied ? paid.delta : 0,
+        creditBalance: balanceBefore, status: 'completed',
+      };
+    } finally {
+      await client.end();
+    }
+  }
 
   const { rows: credited } = await pgQuery<{ id: string; credit_balance: number }>(
     `WITH finished AS (

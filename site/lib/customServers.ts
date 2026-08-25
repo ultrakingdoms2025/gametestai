@@ -567,7 +567,17 @@ export async function updateServer(
     [
       name,
       patch.description === undefined ? current.description : String(patch.description).slice(0, 2000),
-      patch.status === 'suspended' ? 'suspended' : 'active',
+      /* ABSENT MEANS UNCHANGED, like `name` and `description` two lines up.
+       * This read `patch.status === 'suspended' ? 'suspended' : 'active'`, so an
+       * omitted status coerced to `active` and any PATCH re-activated the row.
+       * The route's own guard is correct - a non-admin asking to set `status`
+       * gets a 403 - but a non-admin owner sending `{"name": "..."}` never asks,
+       * and un-suspended their own server. Suspension is how a platform admin
+       * contains an abusive server, so a suspension that any later edit undoes
+       * is not containment at all. */
+      patch.status === undefined
+        ? current.status
+        : (patch.status === 'suspended' ? 'suspended' : 'active'),
       serverId,
     ]
   );

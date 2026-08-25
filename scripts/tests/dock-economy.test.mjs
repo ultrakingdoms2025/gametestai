@@ -74,14 +74,43 @@ const ALL_CATEGORIES = (() => {
  * is a plain const, and refusing to read it because a sibling export needs a
  * database is how a mirror goes unchecked.
  */
+/**
+ * No database in a unit test.
+ *
+ * This named `@vercel/postgres` alone, which was every server module's client
+ * at the time. `lore.ts` has since moved to raw `pg` - the last of thirty-one
+ * to do so, for the reason `playerDb.ts` states in its own header: to support
+ * direct Neon connection strings. `pg` reaches Node built-ins through CommonJS
+ * `require`, so an un-stubbed bundle fails at import with "Dynamic require of
+ * \"events\" is not supported" - which is what this test caught.
+ *
+ * Built with `new RegExp` rather than a literal so the pattern needs no escape
+ * for the slash in the scoped package name.
+ */
+/**
+ * No database in a unit test.
+ *
+ * This named `@vercel/postgres` alone, which was every server module's client
+ * at the time. `lore.ts` has since moved to raw `pg` - the last of thirty-one
+ * to do so, for the reason `playerDb.ts` states in its own header: to support
+ * direct Neon connection strings. `pg` reaches Node built-ins through CommonJS
+ * require, so an un-stubbed bundle fails at import with "Dynamic require of
+ * events is not supported" - which is exactly what this test caught.
+ *
+ * Built with `new RegExp` rather than a literal so the pattern needs no escape
+ * for the slash in the scoped package name.
+ */
+const STUB_SOURCE = [
+  'export const sql = () => { throw new Error("no database in a unit test"); };',
+  'export class Client { constructor() { throw new Error("no database in a unit test"); } }',
+  'export default { Client };',
+].join(String.fromCharCode(10));
+
 const stubServerDeps = {
   name: 'stub-server-deps',
   setup(b) {
-    b.onResolve({ filter: /^@vercel\/postgres$/ }, (a) => ({ path: a.path, namespace: 'stub' }));
-    b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
-      contents: 'export const sql = () => { throw new Error("no database in a unit test"); };',
-      loader: 'js',
-    }));
+    b.onResolve({ filter: new RegExp('^(@vercel/postgres|pg)$') }, (a) => ({ path: a.path, namespace: 'stub' }));
+    b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: STUB_SOURCE, loader: 'js' }));
   },
 };
 

@@ -1159,7 +1159,21 @@ async function runOnce(args, pageUrl, runIndex) {
       })()`);
     }
 
-    /* --- repeated entry/exit ------------------------------------------ */
+    /* --- repeated entry/exit ------------------------------------------
+     *
+     * READ `repeat:0` CAREFULLY WHEN `entry` IS NOT IN `--events`.
+     *
+     * With `--events repeat` alone, the destination has never been entered in
+     * this session, so `repeat:0`'s first crossing is a FIRST ENTRY wearing a
+     * repeat's label: measured on the production bundle it builds medieval's
+     * whole cast from scratch - `npcs 455-487 ms` - and links 7-8 programs,
+     * which is 565-600 ms of crossing inside an 820-1,300 ms gap. `repeat:1`
+     * and `repeat:2` in the same runs are 100 ms.
+     *
+     * That cost is real and it is what the `entry` line of the criterion is
+     * for. It is not what the `repeat` line is about, and charging it to a
+     * repeat is the instrument answering a different question from the one on
+     * the label. Run `--events entry,repeat` and all three are true repeats. */
     if (wants.has('repeat')) {
       const a = args.entryWorld;
       const b = worlds.find((w) => w !== a) ?? 'medieval';

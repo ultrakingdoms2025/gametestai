@@ -266,7 +266,39 @@ The cost scales with how many characters become visible on the frame a world
 arrives on, so the 233 ms the gate was failing at was the *cheap* case. After a
 session that has actually visited the game, it was 400.
 
-## 8. Reading it yourself
+## 8. Sports, with and without its fog — the art decision is not moot
+
+The receive-frame fix does not reach sports' entry, so the question was measured
+rather than argued. Two runs, same bytes apart from the fog, same command
+(`--serve prod --events entry --worlds sports --frames`), each a fresh session
+that boots into the station and crosses to sports once:
+
+| sports, first entry | worst gap | dProg | inside `renderBufferDirect` | programs |
+| --- | ---: | ---: | ---: | ---: |
+| its own `FogExp2`, as it ships | **6,467.0 ms** | **52** | 6,043 ms / 1,225 draws | 270 → 322 |
+| the linear fog every other world uses | **466.6 ms** | **12** | 59.9 ms / 1,231 draws | 258 → 270 |
+
+**The fog is worth 6.0 seconds and 40 of the 52 programs — and it is not
+sufficient.** 466.6 ms is still 1.9x the budget on the twelve programs that
+remain, which are not fog-keyed and would have to be found some other way.
+
+That is the whole of what this branch has to say about it. The fog was changed
+only for the length of the second run — `sceneFog` returning null and
+`_updateSunRig` no longer claiming the scene fog, which is the minimal
+expression of the lever — and reverted before anything was committed:
+`src/worlds/SportsWorld.js` is untouched on this branch.
+
+For scale, the same run's other failures are not fog and not this frame:
+
+| world | worst gap | where it is |
+| --- | ---: | --- |
+| race | 31,284 ms | 31,275 ms outside the engine loop — a volatile world rebuilt |
+| dock | 7,967 ms | 7,594 ms in draws, `dProg 7` |
+| maze | 4,600 ms | 1,301 ms in draws, `dProg 7`, plus a rebuild |
+| citadel | 1,050 ms | 1,026 ms outside the loop — a build |
+| medieval | 817 ms | 590 ms outside the loop (first cast), 104 ms world update, 82 ms in draws |
+
+## 9. Reading it yourself
 
 ```
 node scripts/frame-gaps.mjs --serve prod --events repeat --repeat 3       # the gate

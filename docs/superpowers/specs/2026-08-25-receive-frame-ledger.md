@@ -284,13 +284,24 @@ both:
 
 | world | worst gap | dProg | what it is |
 | --- | ---: | ---: | --- |
-| race | 31,284.1 | 0 | a volatile world rebuilt (`dGeom -217`) |
+| race | 31,284.1 | 0 | ~~a volatile world rebuilt (`dGeom -217`)~~ **WRONG — see below** |
 | dock | 7,967.1 | 7 | program links |
 | **sports** | **6,350.2** | **52** | program links — §8 |
 | maze | 4,600.1 | 7 | program links, volatile |
 | citadel | 1,050.1 | -3 | `dGeom +322` — first cast + build |
 | medieval | 816.8 | 7 | first cast (`dGeom +207`) + links |
 | the other eleven | 16.8 – 17.0 | 0 | — |
+
+> **The race row is wrong and the instrument had already said so.** Race is not
+> volatile — `MazeWorld` is the only world that is — and its `_activate` is
+> 442–487 ms, measured four times. The 31 s is an occluded headless window: no
+> `BeginFrame`, so no `requestAnimationFrame`, while timers and CDP evals ran
+> at full rate. The gap's own `beats` field says the main thread was free for
+> all of it, `printFrames` was not printing `beats`, and `outside-loop` — a
+> subtraction — cannot tell a frame that never arrived from a frame spent
+> elsewhere. It lands on a different world every run. See
+> [the first-entry ledger](2026-08-25-first-entry-ledger.md) §1, which also
+> takes the seven links in dock and medieval down to zero and one.
 
 The same run's ablation is worth reading twice. With every world entered and
 resident, the station↔medieval crossing puts **68** characters on the receive
@@ -331,7 +342,7 @@ For scale, the same run's other failures are not fog and not this frame:
 
 | world | worst gap | where it is |
 | --- | ---: | --- |
-| race | 31,284 ms | 31,275 ms outside the engine loop — a volatile world rebuilt |
+| race | 31,284 ms | ~~31,275 ms outside the engine loop — a volatile world rebuilt~~ — an occluded window; §7's note |
 | dock | 7,967 ms | 7,594 ms in draws, `dProg 7` |
 | maze | 4,600 ms | 1,301 ms in draws, `dProg 7`, plus a rebuild |
 | citadel | 1,050 ms | 1,026 ms outside the loop — a build |

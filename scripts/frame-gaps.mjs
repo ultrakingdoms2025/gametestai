@@ -824,12 +824,31 @@ async function runOnce(args, pageUrl, runIndex) {
         if (!set) return 0;
         const rows = [];
         const wrapped = new Set();
+        /* The upload triple per LISTENER, not per gap.
+         *
+         * Once a crossing's JavaScript is gone its frame gap does not go with
+         * it, and what is left is uploads. The gate reports dProg/dGeom/dTex
+         * against the gap, which cannot say which subsystem made them. */
+        const R = window.GAME.engine && window.GAME.engine.renderer;
         for (const fn of set) {
-          const row = { ms: 0, calls: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
+          const row = { ms: 0, calls: 0, tex: 0, geom: 0, prog: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
           rows.push(row);
           wrapped.add((payload) => {
+            const t0 = R ? R.info.memory.textures : 0;
+            const g0 = R ? R.info.memory.geometries : 0;
+            const p0 = R ? R.info.programs.length : 0;
             const t = performance.now();
-            try { return fn(payload); } finally { row.ms += performance.now() - t; row.calls++; }
+            try {
+              return fn(payload);
+            } finally {
+              row.ms += performance.now() - t;
+              row.calls++;
+              if (R) {
+                row.tex += R.info.memory.textures - t0;
+                row.geom += R.info.memory.geometries - g0;
+                row.prog += R.info.programs.length - p0;
+              }
+            }
           });
         }
         bus._handlers.set('world:changed', wrapped);
@@ -885,10 +904,25 @@ async function runOnce(args, pageUrl, runIndex) {
       out.autopsy = JSON.parse(await evalIn(`(() => {
         const G = window.GAME, w = G.worldManager.active, id = w && w.id;
         const out = {};
+        /* Time, and the GPU-object deltas beside it.
+         *
+         * Once the JavaScript in a crossing is gone the gap does not go with
+         * it, and the difference is uploads: the gate reports dProg/dGeom/dTex
+         * per gap and says nothing about WHICH subsystem created them. Same
+         * triple, per named rebuild. */
+        const R = G.engine && G.engine.renderer;
+        const info = () => (R ? {
+          t: R.info.memory.textures, g: R.info.memory.geometries, p: R.info.programs.length,
+        } : { t: 0, g: 0, p: 0 });
         const time = (name, fn) => {
+          const a = info();
           const t = performance.now();
           try { fn(); } catch (err) { out[name + ':error'] = String(err && err.message || err); }
           out[name] = Math.round((performance.now() - t) * 10) / 10;
+          const b = info();
+          if (b.t !== a.t || b.g !== a.g || b.p !== a.p) {
+            out[name + ':uploads'] = 'tex ' + (b.t - a.t) + ' geom ' + (b.g - a.g) + ' prog ' + (b.p - a.p);
+          }
         };
         /* THE 811 ms, SPLIT AT ITS OWN BOUNDARY.
          *
@@ -1204,7 +1238,9 @@ function printListeners(run) {
   if (run.listeners?.length) {
     console.log('\nworld:changed listeners, ms over every crossing in this run');
     for (const l of run.listeners.slice(0, 8)) {
-      console.log(`${String(l.ms).padStart(9)}  x${l.calls}  ${l.src.slice(0, 96)}`);
+      const up = (l.tex || l.geom || l.prog)
+        ? ` [tex ${l.tex} geom ${l.geom} prog ${l.prog}]` : '';
+      console.log(`${String(l.ms).padStart(9)}  x${l.calls}${up}  ${l.src.slice(0, 84)}`);
     }
   }
   if (run.ablated) {

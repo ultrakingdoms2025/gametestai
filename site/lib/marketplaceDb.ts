@@ -227,6 +227,47 @@ function normalizeImage(value: unknown): string {
   throw new Error('Image must be an http(s) URL or data:image/* data URI.');
 }
 
+/**
+ * ── ONE UNREADABLE ROW MUST NOT COST THE WHOLE CATALOGUE ───────────────────
+ *
+ * `rowToItem` throws on a `game_action`, `category` or `world_name` it does not
+ * recognise, and `listMarketplaceItems` maps EVERY row through it — so one row
+ * an owner authored with `gameAction: "totally_bogus"` answered
+ * `GET /api/marketplace/items` with a bodiless 500 for every member of that
+ * server, the 612 platform items included. Driven live through the real routes.
+ *
+ * The fix is at the write (`serverContent.ts` now validates against the same
+ * constants this file reads with). This is containment for rows written BEFORE
+ * that check existed, which exist in real databases: the site's own
+ * `marketplacePurchase.test.ts` seeds six platform rows with
+ * `game_action = 'grant_item'` — an `action_config.effect`, never an action id —
+ * and never removes them.
+ *
+ * SKIPPED, not coerced. A `?? 'tools'` fallback would be worse than the 500 it
+ * replaces: `game_action` is what the client turns into a GRANT, so a coerced
+ * action hands the buyer something other than what the row says, silently and
+ * for money. A row nobody can serve honestly is a row nobody should be sold.
+ * The console line is the only trace, and it names the row so an owner or an
+ * admin can delete it.
+ */
+export function parseMarketplaceRows(
+  rows: Array<Record<string, unknown>>
+): MarketplaceItemRecord[] {
+  const out: MarketplaceItemRecord[] = [];
+  for (const row of rows) {
+    try {
+      out.push(rowToItem(row));
+    } catch (err) {
+      console.warn(
+        `[marketplace] skipping unreadable item ${String(row.id)} `
+          + `(server_id=${row.server_id == null ? 'NULL' : String(row.server_id)}): `
+          + `${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return out;
+}
+
 function rowToItem(row: Record<string, unknown>): MarketplaceItemRecord {
   return {
     id: String(row.id),
@@ -318,14 +359,19 @@ export async function listMarketplaceItems(filters: {
   const extra = clauses.length ? `AND ${clauses.join(' AND ')}` : '';
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, source_key, name, description, category, image, game_action, action_config,
-            quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at
+            quantity, cost_buy, cost_sell, world_name, is_active, sort_order, server_id,
+            created_at, updated_at
      FROM marketplace_items
      WHERE (server_id IS NULL OR server_id = COALESCE($1, ''))
      ${extra}
      ORDER BY sort_order ASC, name ASC, created_at ASC`,
     values
   );
-  return rows.map(rowToItem);
+  /* `parseMarketplaceRows`, not `rows.map(rowToItem)`: one row this module
+   * cannot parse used to throw out of here and 500 the catalogue for every
+   * caller in scope. See that function for why a bad row is skipped and not
+   * coerced. */
+  return parseMarketplaceRows(rows);
 }
 
 /**

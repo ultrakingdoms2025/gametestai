@@ -301,15 +301,21 @@ maze is 20.4–21.0 ms either way. It does mean the harness's maze entry costs
 about two seconds of wall clock a player never pays, and it is one condition in
 `src/dev/Harness.js`, which is outside this branch's file boundary.
 
-**Persistence is also what makes a background warm viable, and it is why it is
-worth costing.**
-A single background build of the maze, warmed and then left to be re-rolled by
-the first real entry, would link those seven programs behind the loading screen
-and they would still be there afterwards. The price is one maze build in the
-background chain — measured in this run's own log at **1,883 ms** — plus its
-warm slices, against **963–4,151 ms** off the first maze entry. It is one
-filter in `scheduleBackgroundBuilds` and `main.js` is outside this branch's file
-boundary, so it is written down here and not taken.
+### What a fix would cost
+
+Persistence is also what makes a background warm viable. A single background
+build of the maze, warmed and then left to be re-rolled by the first real
+entry, would link those six or seven programs behind the loading screen, and
+the repeat table above is the evidence that they would still be there
+afterwards — that is exactly the shape of a re-roll.
+
+The price is one cold maze generation added to the background chain — the log
+above prices one at **1,883 ms**, and the 244 ms figure beside it is a SECOND
+generation with every cache already warm, so it is not the number to quote —
+plus its warm slices, against **963–4,151 ms** taken off the first maze entry.
+
+It is one filter in `scheduleBackgroundBuilds`, and `main.js` is outside this
+branch's file boundary, so it is written down here and not taken.
 
 ## 5. Where the six now stand, and what each one is
 

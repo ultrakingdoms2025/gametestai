@@ -798,6 +798,30 @@ async function runOnce(args, pageUrl, runIndex) {
     '--no-first-run', '--no-default-browser-check',
     '--hide-scrollbars', '--mute-audio', '--disable-extensions',
     '--force-device-scale-factor=1',
+    /* AN OCCLUDED WINDOW STOPS DELIVERING ANIMATION FRAMES AND NOTHING ELSE.
+     *
+     * Windows computes native window occlusion for headless windows too, and a
+     * renderer it decides is occluded stops receiving BeginFrame - so
+     * `requestAnimationFrame` stops while timers, promises and CDP evals all
+     * keep running at full rate. Every gap this script measures is an rAF
+     * interval, so an occluded stretch is recorded as one enormous frame gap
+     * with an idle main thread inside it.
+     *
+     * Measured: a 32,517.5 ms gap carrying 8,004 heartbeats of a 4 ms timer -
+     * one every 4.06 ms, end to end - and a single 445 ms genuine block inside
+     * it. The game's own `dev/Harness.js` watchdog printed "no animation frame
+     * for 10000ms - the window is very likely backgrounded or occluded" from
+     * inside the same gap. It lands on a different world every run, and one
+     * such gap was written into a ledger as "race: 31,284.1 ms, a volatile
+     * world rebuilt" - race is not volatile, and its crossing was 442 ms.
+     *
+     * These four are the standard set; `CalculateNativeWinOcclusion` is the
+     * one that matters on this platform. `beats` on every gap is the check
+     * that they are still working. */
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+    '--disable-features=CalculateNativeWinOcclusion',
     ...(process.env.FRAME_GAPS_GL === 'swiftshader'
       ? ['--use-angle=swiftshader']
       : ['--use-angle=default', '--enable-gpu-rasterization', '--ignore-gpu-blocklist']),
@@ -1081,7 +1105,20 @@ async function runOnce(args, pageUrl, runIndex) {
         if (profiling) await profileOff(label);
         const phase = await closePhase(label);
         const post = JSON.parse(await evalIn(KEY));
-        out.events[label] = { ...phase, builtBefore: pre.built, key: { pre, post } };
+        /* THE CROSSING, BESIDE THE GAP IT IS BLAMED FOR.
+         *
+         * `--events repeat` has always recorded `WorldManager.activationCost`
+         * either side of a crossing pair; `entry` never did, so every first
+         * entry in the §7 table was a bare gap with no statement of what the
+         * crossing itself cost. That is how race's 31 s came to be written
+         * down as "a volatile world rebuilt": nothing in the report said the
+         * crossing was 46 ms. It is the same field, read the same way, one
+         * line after the phase closes. */
+        const cost = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
+        out.events[label] = {
+          ...phase, builtBefore: pre.built, key: { pre, post },
+          cost: [cost ? JSON.parse(cost) : null],
+        };
         if (args.cacheKeys) {
           const after = JSON.parse(await evalIn(KEYS));
           const had = new Set(keysBefore);
@@ -1536,6 +1573,12 @@ async function runOnce(args, pageUrl, runIndex) {
     out.pageErrors = parsed.errors;
     out.log = parsed.log;
     out.stats = await evalIn('JSON.stringify(window.HARNESS.stats())').then((s) => JSON.parse(s));
+    /* The game's own watchdog. `dev/Harness.js` counts every await of an
+     * animation frame that waited 10 s without one and says the window is
+     * probably occluded. It has been there the whole time and this script has
+     * never read it; a run that reports a multi-second gap AND a non-zero
+     * count here is reporting the compositor, not the game. */
+    out.rafStalls = await evalIn('window.__HARNESS_RAF_STALLS__ ?? 0');
   } finally {
     client?.close();
     browser.kill();
@@ -1570,13 +1613,42 @@ function foldProfile(profile, top = 30) {
     .map(([fn, ms]) => ({ fn, ms: Math.round(ms) }));
 }
 
+/**
+ * WAS THE THREAD BUSY, OR WAS THE FRAME JUST NOT COMING?
+ *
+ * `blockedMs` is the longest stretch the 4 ms heartbeat lost inside a gap, and
+ * that timer is on the same main thread and is NOT gated on the compositor. So
+ * a gap whose heartbeat kept ticking is a gap in which no JavaScript ran: the
+ * frame simply never arrived. That is a real freeze for a player, but it is
+ * not a cost anything in `src/` can be changed to remove, and reading one as
+ * though it were has already put "race: 31,284.1 ms, a volatile world rebuilt"
+ * into a ledger about a world that is not volatile.
+ *
+ * Both halves are printed. A starved gap still counts against the budget - the
+ * screen was frozen - but it is labelled, so it can never be attributed to the
+ * phase's own work by someone reading the table alone.
+ */
+function isStarved(g, budget) {
+  return g.ms > budget && g.blockedMs <= budget && g.beats * 4 >= g.ms * 0.5;
+}
+
 function summarise(run, budget) {
   const rows = [];
+  /* The worst GAP per phase, so the summary can say how much of the phase's
+   * worst number was the main thread. The recorder keeps only the scalar. */
+  const worstGap = new Map();
+  for (const g of run.gaps ?? []) {
+    const cur = worstGap.get(g.phase);
+    if (!cur || g.ms > cur.ms) worstGap.set(g.phase, g);
+  }
   for (const [name, p] of Object.entries(run.events)) {
     if (!p) continue;
+    const g = worstGap.get(name) ?? null;
     rows.push({
       event: name, worst: p.worst ?? 0, over: p.over ?? 0, frames: p.frames ?? 0,
       dPrograms: p.dPrograms ?? 0, dGeometries: p.dGeometries ?? 0, dTextures: p.dTextures ?? 0,
+      blocked: g ? g.blockedMs : null,
+      starved: g ? isStarved(g, budget) : false,
       pass: (p.worst ?? 0) <= budget,
     });
   }
@@ -1585,13 +1657,14 @@ function summarise(run, budget) {
 
 function printTable(rows, budget) {
   const w = Math.max(...rows.map((r) => r.event.length), 10);
-  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'>250'.padStart(5)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
-  console.log('-'.repeat(w + 45));
+  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'blocked'.padStart(8)} ${'>250'.padStart(5)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
+  console.log('-'.repeat(w + 54));
   for (const r of rows) {
     console.log(
-      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.over).padStart(5)} `
+      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.blocked ?? '-').padStart(8)} ${String(r.over).padStart(5)} `
       + `${String(r.dPrograms).padStart(6)} ${String(r.dGeometries).padStart(6)} ${String(r.dTextures).padStart(5)}  `
-      + (r.pass ? 'pass' : `FAIL (>${budget})`),
+      + (r.pass ? 'pass' : `FAIL (>${budget})`)
+      + (r.starved ? '  STARVED - no rAF, main thread idle; not this phase\'s work' : ''),
     );
   }
 }
@@ -1624,6 +1697,84 @@ function printCrossings(run) {
  * Who spent the world:changed fan-out, and what each named rebuild costs.
  * Present only with --listeners.
  */
+/* THE TAIL OF A THREE PROGRAM CACHE KEY, IN ORDER.
+ *
+ * `WebGLPrograms.getProgramCacheKey` joins an array with commas. Its HEAD is
+ * variable - `shaderID`, or a `customVertexShaderID`/`customFragmentShaderID`
+ * pair, followed by every `defines` name and value - so nothing can be located
+ * by counting from the front. Its TAIL is fixed at 52 entries for every
+ * non-raw material: the 48 `getProgramCacheKeyParameters` pushes, the two
+ * `getProgramCacheKeyBooleans` bitmasks, `renderer.outputColorSpace`, and
+ * `customProgramCacheKey`. Counting backwards therefore names a field exactly.
+ *
+ * Copied from three 0.185.1. If it drifts, `--cache-keys` mislabels fields and
+ * says nothing false about how MANY differ, which is the load-bearing half.
+ */
+const KEY_TAIL = [
+  'precision', 'outputColorSpace', 'envMapMode', 'envMapCubeUVHeight', 'mapUv', 'alphaMapUv',
+  'lightMapUv', 'aoMapUv', 'bumpMapUv', 'normalMapUv', 'displacementMapUv', 'emissiveMapUv',
+  'metalnessMapUv', 'roughnessMapUv', 'anisotropyMapUv', 'clearcoatMapUv', 'clearcoatNormalMapUv',
+  'clearcoatRoughnessMapUv', 'iridescenceMapUv', 'iridescenceThicknessMapUv', 'sheenColorMapUv',
+  'sheenRoughnessMapUv', 'specularMapUv', 'specularColorMapUv', 'specularIntensityMapUv',
+  'transmissionMapUv', 'thicknessMapUv', 'combine', 'fogExp2', 'sizeAttenuation',
+  'morphTargetsCount', 'morphAttributeCount', 'numDirLights', 'numPointLights', 'numSpotLights',
+  'numSpotLightMaps', 'numHemiLights', 'numRectAreaLights', 'numDirLightShadows',
+  'numPointLightShadows', 'numSpotLightShadows', 'numSpotLightShadowsWithMaps', 'numLightProbes',
+  'shadowMapType', 'toneMapping', 'numClippingPlanes', 'numClipIntersection', 'depthPacking',
+  'bools:instancing..vertexNormals', 'bools:fog..hasPositionAttribute',
+  'renderer.outputColorSpace', 'customProgramCacheKey',
+];
+
+/** Name the field at `i` in a key of `n` fields. */
+function keyFieldName(i, n) {
+  const t = i - (n - KEY_TAIL.length);
+  if (t >= 0 && t < KEY_TAIL.length) return KEY_TAIL[t];
+  if (i === 0) return 'shaderID|customVertexShaderID';
+  if (i === 1) return 'customFragmentShaderID|define';
+  return `head[${i}]`;
+}
+
+/**
+ * WHICH PROGRAMS AN ARRIVAL LINKED, AND WHAT MADE THEM NOVEL. --cache-keys.
+ *
+ * A count of linked programs says a crossing is expensive; it never says what
+ * to change. This takes each cache key that did not exist before the crossing,
+ * finds the nearest key that did, and prints the fields that differ. One
+ * predecessor did this by hand and it named the whole finding in a line -
+ * `customVertexShaderID 60 -> 92, every other field equal` is a shader stage
+ * evicted and rebuilt, `fogExp2 0 -> 1` is a warm keyed to the wrong scene,
+ * and "no near neighbour" is a material the warm never reached at all.
+ */
+function printCacheKeys(run) {
+  const rows = Object.entries(run.events)
+    .filter(([, ev]) => ev?.newCacheKeys?.length);
+  if (!rows.length) return;
+  console.log('\nprograms linked by the arrival (--cache-keys), against the nearest key that existed');
+  for (const [name, ev] of rows) {
+    console.log(`\n  ${name}  +${ev.newCacheKeys.length} programs`);
+    for (const key of ev.newCacheKeys) {
+      const a = key.split(',');
+      let best = null;
+      for (const old of ev.oldCacheKeys ?? []) {
+        const b = old.split(',');
+        if (b.length !== a.length) continue;
+        const diff = [];
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
+        if (!best || diff.length < best.diff.length) best = { b, diff };
+      }
+      if (!best) {
+        console.log(`      no near neighbour (${a.length} fields, head ${a.slice(0, 2).join()})`);
+        continue;
+      }
+      const shown = best.diff.slice(0, 4).map(
+        (i) => `${keyFieldName(i, a.length)} ${best.b[i]} -> ${a[i]}`,
+      ).join('; ');
+      console.log(`      ${best.diff.length} field${best.diff.length === 1 ? '' : 's'} differ: ${shown}`
+        + (best.diff.length > 4 ? ' ...' : ''));
+    }
+  }
+}
+
 function printListeners(run) {
   if (run.listeners?.length) {
     console.log('\nworld:changed listeners, ms over every crossing in this run');
@@ -1667,6 +1818,17 @@ function printListeners(run) {
  * a world build in an idle callback, a CDP eval, or the compositor simply not
  * scheduling - and a large one is the instrument telling you it is looking in
  * the wrong place.
+ *
+ * READ `beats` BEFORE `outside-loop`. The 4 ms heartbeat is on the same main
+ * thread and is NOT gated on the compositor, so `beats` counts the times that
+ * thread was free INSIDE the gap. A gap whose `beats` is roughly `ms / 4` had
+ * an idle main thread from end to end: no JavaScript ran in it, and no amount
+ * of reading `outside-loop` as "a build" or "a rebuild" can make it one.
+ * `outside-loop` cannot tell those apart - it is a subtraction, so a frame
+ * that never arrived and a frame spent in a foreign task look identical in it.
+ * A previous ledger read a 31 s `outside-loop` on race's entry as "a volatile
+ * world rebuilt"; `beats` on the same record said the thread was idle for the
+ * whole 31 s, and race is not volatile.
  */
 function printFrames(run, opts = {}) {
   const want = opts.phases ?? null;
@@ -1689,7 +1851,7 @@ function printFrames(run, opts = {}) {
     const acct = TOP.reduce((a, k) => a + (ms[k] ?? 0), 0);
     console.log(
       `\n  ${g.ms} ms  phase ${g.phase}  dProg ${g.dPrograms} dGeom ${g.dGeometries} dTex ${g.dTextures}`
-      + `  blocked ${g.blockedMs}  loop ${Math.round(acct * 10) / 10}`
+      + `  blocked ${g.blockedMs} beats ${g.beats}  loop ${Math.round(acct * 10) / 10}`
       + `  outside-loop ${Math.round((g.ms - acct) * 10) / 10}`
       + `  [${ms['#calls'] ?? '-'} calls, ${ms['#tris'] ?? '-'} tris]`,
     );
@@ -1763,8 +1925,14 @@ async function main() {
       await writeFile(path.join(outDir, `run-${i}.json`), JSON.stringify(run, null, 2));
       const rows = summarise(run, args.budget);
       printTable(rows, args.budget);
+      if (run.rafStalls) {
+        console.log(`\n!! the page's own watchdog counted ${run.rafStalls} stretch(es) of 10 s with no`
+          + ' animation frame. Every STARVED row above is that, and no row is safe to attribute'
+          + " to the phase's own work until it reads zero.");
+      }
       printCrossings(run);
       printListeners(run);
+      printCacheKeys(run);
       if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
       runs.push({ run: i, rows, warm: run.warm });
     }

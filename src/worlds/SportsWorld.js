@@ -2251,6 +2251,30 @@ export class SportsWorld extends World {
    * long note on `World.sceneFog`. The gateway preview warm reads this so it
    * warms the program set the ARRIVAL asks for instead of one keyed to a
    * linear fog that only the preview window ever uses.
+   *
+   * ── KEEPING IT IS A DECISION, NOT AN OVERSIGHT ───────────────────────────
+   *
+   * This fog is the single most expensive thing in the game's first minute,
+   * and it was measured rather than estimated. Sports' FIRST entry, on the
+   * production bundle, two runs of the same command with only the fog changed:
+   *
+   *   its own FogExp2, as it ships   6,467.0 ms   52 programs   6,043 ms in draws
+   *   the linear fog others use        466.6 ms   12 programs      59.9 ms
+   *
+   * Worth SIX SECONDS and 40 of 52 programs - and it was still kept, because
+   * swapping it IS NOT SUFFICIENT. 466.6 ms is 1.9x the 250 ms budget on twelve
+   * programs that are not fog-keyed at all, so the world's aerial perspective
+   * would be spent and the criterion still missed. Trading a world's look for a
+   * partial win is a worse deal than paying six seconds once per session.
+   *
+   * It costs nothing on RE-ENTRY - repeated entry/exit passes at 100-117 ms
+   * against 250 - and the other fifteen worlds already enter at 16.8 ms.
+   *
+   * If you come here to make this world load faster, the twelve non-fog-keyed
+   * programs are the thing to attack. Four of them are the GTAO prepass and six
+   * the shadow pass, which are the renderer's OWN override materials that
+   * compile() never sees by construction; the rest are effect pools built on
+   * demand. Changing the fog is the lever that looks obvious and is not enough.
    */
   get sceneFog() {
     return this._fog;

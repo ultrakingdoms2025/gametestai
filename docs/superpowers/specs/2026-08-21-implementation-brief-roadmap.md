@@ -14,19 +14,23 @@ have caught** - `/api/game/quests` and `/api/marketplace/items` had been HTTP 50
 since Phase 7 deployed. Both fixed; production verified serving 23 station quests and 612
 marketplace items.
 
-**Phase 1's acceptance criterion is now measured and effectively met.** First keybind, first
-weapon change and first mount launch PASS on the production bundle. **Repeated entry/exit sits
-ON the line rather than past it**: of fifteen true repeat phases over five runs, ten pass, and
-three of the five failures are **0.1 ms over** a budget that gaps are quantised to in 16.7 ms
-vsync steps - the distribution is one frame wide. A crossing into station went from
-1,228-1,371 ms to **79.6-97.9 ms**.
+**Phase 1's acceptance criterion is now MET, with margin.** First keybind, first weapon change
+and first mount launch pass on the production bundle, and **repeated entry/exit passes at
+100.0-116.7 ms against 250** - 40-47% of budget, over six true repeats in three clean runs.
+A station crossing went from 1,228-1,371 ms to 79.6-97.9 ms.
 
-What is left is NOT the crossing and is measured, not assumed: with both offending subsystems
-stubbed out entirely the phase still costs 166.7 ms, of which only 64 ms is the crossing. The
-other ~135 ms is the frame that RECEIVES a world - `updateMatrixWorld`, culling, the shadow
-pass, sixty characters' first update - in `src/core/Engine.js` and `src/gfx/**`. That is the
-only thing between this criterion and a comfortable margin.
+The last of it was `SkinnedMesh` declaring `boundingSphere` and leaving it null, so the culler
+CPU-skinned every vertex of every character to find out where it was - 123.6 ms of a 135 ms
+frame, at 4.6 ms per character per crossing. `mergeParts` had computed the right sphere all
+along, with a comment naming the job; the culler never read it because `SkinnedMesh` shadows
+`geometry.boundingSphere`.
 
+**World entry passes in 15 of 16 worlds at 16.8 ms. Sports is the exception, deliberately.**
+Its `FogExp2` costs 6.0 seconds and 40 of 52 programs on FIRST entry - and swapping it to the
+linear fog every other world uses is **not sufficient**: 466.6 ms is still 1.9x budget on twelve
+programs that are not fog-keyed. The decision was to keep the world looking as designed rather
+than spend its aerial perspective for a partial win; it costs nothing on re-entry. The twelve
+are the thing to attack, and the reasoning is recorded at `SportsWorld.sceneFog`.
 The criterion's own wording is wrong in three places; see the Phase 1 section.
 The four decisions in section 8 were taken 2026-08-22 and are folded into the phases below.
 

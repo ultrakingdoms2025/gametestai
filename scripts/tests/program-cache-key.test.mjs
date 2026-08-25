@@ -158,3 +158,171 @@ test('every prefiltered environment map lands on the same cubeUV height', async 
     + 'delete this test; if it is not, a world has lost its image-based lighting',
   );
 });
+
+/* ==========================================================================
+ * THE RENDER TARGET IS A CACHE KEY TOO
+ * ==========================================================================
+ *
+ * Three folds the bound render target into every program's key twice:
+ * `outputColorSpace` is the renderer's (`srgb`) when nothing is bound and the
+ * working space (`srgb-linear`) when something is, and `toneMapping` is the
+ * renderer's when nothing is bound and `NoToneMapping` when something is. So a
+ * bare `renderer.compile()` builds the DIRECT-to-canvas set, and with the
+ * PostFX chain up the game never draws that way.
+ *
+ * Read off the production bundle, tallying the cache key of every program at
+ * the moment the background world chain finished:
+ *
+ *     254 of 485   srgb-linear   the set every frame in the session drew with
+ *     230 of 485   srgb          the set nothing drew with, ever
+ *
+ * and every program a world entry linked in front of the player - 46 for
+ * sports, 12 for dock, 11 for medieval, 5 for the citadel - was `srgb-linear`.
+ *
+ * The link wait those programs cost is not small and is not proportional to
+ * how many there are: with the WebGL calls timed on that same bundle, the race
+ * arrival spent 6,068 ms inside `getProgramInfoLog` for THREE programs.
+ * ========================================================================== */
+
+test('PostFX publishes the render target a scene draw actually lands in', async () => {
+  const code = await readCode('src/gfx/PostFX.js');
+  assert.match(
+    code,
+    /get\s+scenePassTarget\s*\(\s*\)\s*\{/,
+    'PostFX has no `scenePassTarget`. Without it a warm cannot ask which render '
+    + 'path this session takes, and `renderer.compile()` silently builds the '
+    + 'direct-to-canvas program set instead of the one every frame draws with.',
+  );
+  const start = code.indexOf('get scenePassTarget()');
+  const body = code.slice(start, code.indexOf('\n  }', start));
+  assert.match(
+    body,
+    /if\s*\(\s*!this\._enabled\s*\|\|\s*!this\.composer\s*\)\s*return\s+null/,
+    '`scenePassTarget` must answer null when the chain is off. A session that '
+    + 'asked for `?postfx=0`, or whose composer failed to build, really does '
+    + 'draw to the canvas, and warming it for a target it will never bind is '
+    + 'the same defect facing the other way.',
+  );
+});
+
+test('no warm in main.js compiles with nothing bound', async () => {
+  /* `warmCompile` is the one place allowed to call `renderer.compile`, because
+   * it is the one place that binds `PostFX.scenePassTarget` first. A bare call
+   * anywhere else is a hundred-odd programs built for a render path the session
+   * will not take, while the set it does take is still linked lazily, in front
+   * of the player, at up to two seconds each. */
+  const code = await readCode('src/main.js');
+  const start = code.indexOf('function warmCompile(');
+  assert.ok(start > 0, 'main.js has no warmCompile() - the target-bound compile is gone');
+  const end = code.indexOf('\n}', start);
+  const outside = code.slice(0, start) + code.slice(end);
+  const stray = [...outside.matchAll(/\brenderer\.compile\s*\(/g)];
+  assert.equal(
+    stray.length,
+    0,
+    `main.js calls renderer.compile() directly ${stray.length} time(s) outside `
+    + '`warmCompile`. Route it through `warmCompile` so the programs are keyed '
+    + 'to the render path the session will actually run.',
+  );
+});
+
+test('the destination warm wears the destination fog, and reaches what is in no world group', async () => {
+  const code = await readCode('src/main.js');
+  assert.match(
+    code,
+    /function\s+withArrivalKey\s*\(/,
+    'main.js has no `withArrivalKey`. `warmWorld` then compiles the destination '
+    + 'against the fog and environment of the world the player is STANDING in, '
+    + 'and every program it builds is keyed to the wrong one - which is the '
+    + 'whole reason an arrival still links anything.',
+  );
+  const start = code.indexOf('function warmWorld(');
+  assert.ok(start > 0, 'main.js has no warmWorld()');
+  const body = code.slice(start, start + 3000);
+  assert.match(
+    body,
+    /withArrivalKey\s*\(\s*world\s*,/,
+    '`warmWorld` no longer dresses the scene in the destination\'s fog and '
+    + 'environment before compiling. Its programs go back to being keyed to the '
+    + 'departure world and the arrival frame re-links them one at a time.',
+  );
+  assert.match(
+    body,
+    /persistentWarmRoots\s*\(\s*\)/,
+    '`warmWorld` no longer reaches the avatar, the viewmodels, the mounts, the '
+    + 'gateways, the NPCs and the loot pool. They hang off the SCENE, not off a '
+    + 'world group, so nothing else reaches them either - and 23 of the 46 '
+    + 'programs the sports arrival used to link were exactly those, differing '
+    + 'from an existing program in `fogExp2` and in nothing else.',
+  );
+});
+
+test('one set of gateway materials outlives clear(), so their shader ids hold still', async () => {
+  /* Three caches a ShaderMaterial's compiled stages by SOURCE STRING and
+   * `WebGLShaderCache.remove()` deletes a stage the instant its last material
+   * is disposed. The gateway's four shaders come from four module constants -
+   * byte-identical for every gateway in the game - but the cache entry carries
+   * an incrementing `id` and that id is IN the program cache key. So disposing
+   * the departure world's gateways evicted the stages, `buildForWorld` made
+   * fresh materials from the same source milliseconds later, they got new ids,
+   * and the identical GLSL was compiled and linked again from cold.
+   *
+   * Measured on the production bundle: every crossing to a gateway world
+   * linked exactly four such programs - disc, halo, motes, embers - and the
+   * key diff said `customVertexShaderID 60 -> 92` with every other field
+   * equal. Repeated entry/exit paid it again on every crossing and could never
+   * converge, because no warm can pre-build a program whose id will not exist
+   * until the material does.
+   *
+   * Retaining one set holds `usedTimes` above zero and the ids steady. It reads
+   * like a leak, which is exactly why it needs a test standing next to it. */
+  const code = await readCode('src/systems/Portals.js');
+  const start = code.indexOf('clear() {');
+  assert.ok(start > 0, 'PortalSystem has no clear()');
+  const body = code.slice(start, code.indexOf('\n  }', start));
+  assert.match(
+    body,
+    /if\s*\(\s*!this\._shaderAnchor\s*\)/,
+    'PortalSystem.clear() no longer retains a set of gateway materials. Every '
+    + 'world crossing goes back to re-linking the disc, the halo, the motes and '
+    + 'the embers from byte-identical GLSL, and repeated entry/exit never '
+    + 'converges.',
+  );
+  for (const mat of ['discMat', 'haloMat', 'moteMat', 'emberMat']) {
+    assert.match(
+      body,
+      new RegExp(`_shaderAnchor\\s*=\\s*\\{[\\s\\S]{0,240}${mat}:`),
+      `the retained set does not include ${mat}. A shader stage held by nothing `
+      + 'is evicted, and that one material\'s program is re-linked on every crossing.',
+    );
+  }
+  /* And the other half: it is retained, not leaked once per crossing. */
+  assert.match(
+    body,
+    /\}\s*else\s*\{[\s\S]{0,240}discMat\.dispose\(\)/,
+    'clear() no longer disposes the gateway materials once an anchor exists, so '
+    + 'every crossing leaks a full set. One is a fixed cost; one per crossing is '
+    + 'a leak with a shader program attached to it.',
+  );
+});
+
+test('withArrivalKey restores what it swapped, and swaps nothing across a yield', async () => {
+  const code = await readCode('src/main.js');
+  const start = code.indexOf('function withArrivalKey(');
+  const body = code.slice(start, code.indexOf('\n}', start));
+  assert.match(
+    body,
+    /finally\s*\{[\s\S]*scene\.fog\s*=[\s\S]*scene\.environment\s*=/,
+    '`withArrivalKey` must restore the scene\'s fog and environment in a '
+    + '`finally`. A compile that throws with sports\' exponential fog still on '
+    + 'the station leaves every material in the game re-keyed, and the next '
+    + 'frame re-links all of them.',
+  );
+  assert.doesNotMatch(
+    body,
+    /\bawait\b|\basync\b/,
+    '`withArrivalKey` has become asynchronous. The swap is only safe because it '
+    + 'spans a SYNCHRONOUS compile: a yield between the swap and the restore is '
+    + 'a rendered frame wearing another world\'s fog.',
+  );
+});

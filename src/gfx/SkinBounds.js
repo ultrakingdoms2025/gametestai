@@ -59,17 +59,26 @@ import * as THREE from 'three';
  * Extra radius on top of the geometry's own sphere.
  *
  * `mergeParts` already pads the bind-pose sphere by 1.5 for animation, so this
- * is not that judgement made twice - it is the headroom the containment test
- * MEASURED as missing. On a rig carrying vertices at every bone of the real
- * humanoid spec, the worst pose in `skin-bounds.test.mjs` - a thigh at 86
- * degrees, which is a side splits and not a gait - escapes a 1.5-padded sphere
- * by 2.7%. 1.15 clears that by four times over.
+ * is not that judgement made twice - it is the headroom two measurements said
+ * was missing, and the second one is the reason it is not smaller:
  *
- * It is nearly free in the only direction it can be wrong: a larger sphere can
- * only keep a character on screen that a smaller one would have culled, and it
- * changes nothing at all except within one sphere-radius of the frustum plane.
+ * - **synthetic**, `skin-bounds.test.mjs`: a rig carrying vertices at every
+ *   bone of the real humanoid spec, every joint driven to 86 degrees on every
+ *   axis and then all of them at once. Worst pose escapes a 1.5-padded sphere
+ *   by 2.7%.
+ * - **real**, `frame-gaps.mjs --frames` walking 118 live characters in the
+ *   station and medieval after six seconds of play: worst containment ratio
+ *   **0.979** at a pad of 1.15 - i.e. one real character in a pose the
+ *   synthetic sweep does not reach came within 2% of leaving its bound, and at
+ *   a pad of 1.0 would have escaped it outright.
+ *
+ * 1.4 puts that character at 0.80 and the synthetic worst at 0.73. It buys the
+ * margin in the only direction the error matters and costs almost nothing: a
+ * larger sphere can only keep a character on screen that a smaller one would
+ * have culled, and it changes nothing at all beyond one sphere-radius of the
+ * frustum plane.
  */
-export const SKIN_BOUND_PAD = 1.15;
+export const SKIN_BOUND_PAD = 1.4;
 
 /**
  * Give a `SkinnedMesh` the bind-pose bound its geometry already carries, so the

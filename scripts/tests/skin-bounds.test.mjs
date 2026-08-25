@@ -153,6 +153,13 @@ test('the assigned sphere contains the posed one across the skeleton', () => {
   check('every joint at -1.2/0/1.2 rad');
 
   assert.ok(worst <= 1, `a posed body escapes its bound at ${worstAt}: ratio ${worst.toFixed(3)}`);
+  /* And the margin, not only the pass. A sweep that scrapes in at 0.999 is one
+   * animation away from failing and would say nothing about it on the way past.
+   * The number this is set from is the REAL one - 118 live characters measured
+   * at 0.979 with a 1.15 pad - because the sweep above is the WEAKER of the two
+   * instruments (a real character reached a pose it never produces) and must not
+   * be read as the tighter bound. */
+  assert.ok(worst <= 0.85, `only ${((1 - worst) * 100).toFixed(1)}% of margin left at ${worstAt}`);
 });
 
 test('the bound moves with the character rather than being frozen in world space', () => {

@@ -53,7 +53,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const flat = (s: string) => s.replace(new RegExp(String.fromCharCode(92) + "s+", "g"), " ").toUpperCase();
 
 /** Tables that gained `server_id` in Phase 7. */
-const GUARDED = ['quests', 'marketplace_items', 'lore_entries'] as const;
+/* Every table that gained `server_id` in Phase 7 — derived by scraping the
+ * ALTERs rather than typed from memory, because THIS LIST WAS WRONG ONCE:
+ * it named three of the six, and the signed-in survey showed that dropping
+ * `player_quest_engagements.server_id` produces a bodiless 500 from
+ * `POST /api/game/quests` — the same shape as the incident this file exists
+ * to prevent, on a table the gate was not watching. */
+const GUARDED = [
+  'quests',
+  'marketplace_items',
+  'lore_entries',
+  'player_quest_engagements',
+  'player_progress_items',
+  'player_progress_values',
+] as const;
 
 /** Does this module issue SQL against the table at all? */
 const touches = (flatSrc: string, table: string) =>

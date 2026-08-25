@@ -620,6 +620,15 @@ async function runQuestSchema(): Promise<void> {
    * ensure belongs with the READ that needs it, not with whichever module
    * happened to introduce the column. */
   await pgQuery(`ALTER TABLE quests ADD COLUMN IF NOT EXISTS server_id TEXT`).catch(() => {});
+  /* And the ENGAGEMENT carries one too, which `completeQuestEngagement` now
+   * reads to decide which economy a reward belongs to. Added in the same
+   * commit as that read, because adding a read without its ensure is exactly
+   * the fault that took /api/game/quests to 500 for every caller - and
+   * `serverIdMigrations.test.ts` caught this one within a minute of being
+   * widened from three tables to six. */
+  await pgQuery(
+    `ALTER TABLE player_quest_engagements ADD COLUMN IF NOT EXISTS server_id TEXT`
+  ).catch(() => {});
   await pgQuery(
     `ALTER TABLE quests ADD COLUMN IF NOT EXISTS repeatable BOOLEAN NOT NULL DEFAULT FALSE`
   ).catch(() => {});

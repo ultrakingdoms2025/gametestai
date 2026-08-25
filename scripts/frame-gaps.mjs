@@ -1637,6 +1637,84 @@ function printCrossings(run) {
  * Who spent the world:changed fan-out, and what each named rebuild costs.
  * Present only with --listeners.
  */
+/* THE TAIL OF A THREE PROGRAM CACHE KEY, IN ORDER.
+ *
+ * `WebGLPrograms.getProgramCacheKey` joins an array with commas. Its HEAD is
+ * variable - `shaderID`, or a `customVertexShaderID`/`customFragmentShaderID`
+ * pair, followed by every `defines` name and value - so nothing can be located
+ * by counting from the front. Its TAIL is fixed at 52 entries for every
+ * non-raw material: the 48 `getProgramCacheKeyParameters` pushes, the two
+ * `getProgramCacheKeyBooleans` bitmasks, `renderer.outputColorSpace`, and
+ * `customProgramCacheKey`. Counting backwards therefore names a field exactly.
+ *
+ * Copied from three 0.185.1. If it drifts, `--cache-keys` mislabels fields and
+ * says nothing false about how MANY differ, which is the load-bearing half.
+ */
+const KEY_TAIL = [
+  'precision', 'outputColorSpace', 'envMapMode', 'envMapCubeUVHeight', 'mapUv', 'alphaMapUv',
+  'lightMapUv', 'aoMapUv', 'bumpMapUv', 'normalMapUv', 'displacementMapUv', 'emissiveMapUv',
+  'metalnessMapUv', 'roughnessMapUv', 'anisotropyMapUv', 'clearcoatMapUv', 'clearcoatNormalMapUv',
+  'clearcoatRoughnessMapUv', 'iridescenceMapUv', 'iridescenceThicknessMapUv', 'sheenColorMapUv',
+  'sheenRoughnessMapUv', 'specularMapUv', 'specularColorMapUv', 'specularIntensityMapUv',
+  'transmissionMapUv', 'thicknessMapUv', 'combine', 'fogExp2', 'sizeAttenuation',
+  'morphTargetsCount', 'morphAttributeCount', 'numDirLights', 'numPointLights', 'numSpotLights',
+  'numSpotLightMaps', 'numHemiLights', 'numRectAreaLights', 'numDirLightShadows',
+  'numPointLightShadows', 'numSpotLightShadows', 'numSpotLightShadowsWithMaps', 'numLightProbes',
+  'shadowMapType', 'toneMapping', 'numClippingPlanes', 'numClipIntersection', 'depthPacking',
+  'bools:instancing..vertexNormals', 'bools:fog..hasPositionAttribute',
+  'renderer.outputColorSpace', 'customProgramCacheKey',
+];
+
+/** Name the field at `i` in a key of `n` fields. */
+function keyFieldName(i, n) {
+  const t = i - (n - KEY_TAIL.length);
+  if (t >= 0 && t < KEY_TAIL.length) return KEY_TAIL[t];
+  if (i === 0) return 'shaderID|customVertexShaderID';
+  if (i === 1) return 'customFragmentShaderID|define';
+  return `head[${i}]`;
+}
+
+/**
+ * WHICH PROGRAMS AN ARRIVAL LINKED, AND WHAT MADE THEM NOVEL. --cache-keys.
+ *
+ * A count of linked programs says a crossing is expensive; it never says what
+ * to change. This takes each cache key that did not exist before the crossing,
+ * finds the nearest key that did, and prints the fields that differ. One
+ * predecessor did this by hand and it named the whole finding in a line -
+ * `customVertexShaderID 60 -> 92, every other field equal` is a shader stage
+ * evicted and rebuilt, `fogExp2 0 -> 1` is a warm keyed to the wrong scene,
+ * and "no near neighbour" is a material the warm never reached at all.
+ */
+function printCacheKeys(run) {
+  const rows = Object.entries(run.events)
+    .filter(([, ev]) => ev?.newCacheKeys?.length);
+  if (!rows.length) return;
+  console.log('\nprograms linked by the arrival (--cache-keys), against the nearest key that existed');
+  for (const [name, ev] of rows) {
+    console.log(`\n  ${name}  +${ev.newCacheKeys.length} programs`);
+    for (const key of ev.newCacheKeys) {
+      const a = key.split(',');
+      let best = null;
+      for (const old of ev.oldCacheKeys ?? []) {
+        const b = old.split(',');
+        if (b.length !== a.length) continue;
+        const diff = [];
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
+        if (!best || diff.length < best.diff.length) best = { b, diff };
+      }
+      if (!best) {
+        console.log(`      no near neighbour (${a.length} fields, head ${a.slice(0, 2).join()})`);
+        continue;
+      }
+      const shown = best.diff.slice(0, 4).map(
+        (i) => `${keyFieldName(i, a.length)} ${best.b[i]} -> ${a[i]}`,
+      ).join('; ');
+      console.log(`      ${best.diff.length} field${best.diff.length === 1 ? '' : 's'} differ: ${shown}`
+        + (best.diff.length > 4 ? ' ...' : ''));
+    }
+  }
+}
+
 function printListeners(run) {
   if (run.listeners?.length) {
     console.log('\nworld:changed listeners, ms over every crossing in this run');
@@ -1789,6 +1867,7 @@ async function main() {
       printTable(rows, args.budget);
       printCrossings(run);
       printListeners(run);
+      printCacheKeys(run);
       if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
       runs.push({ run: i, rows, warm: run.warm });
     }

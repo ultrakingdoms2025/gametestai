@@ -300,10 +300,10 @@ function makeSiteWorld(id) {
        * runs against. Some stand on the ground, some on the deck, and some
        * hang in the air where nothing else is - so the height band matters. */
       const person = new THREE.InstancedMesh(
-        new THREE.BoxGeometry(0.5, 1.8, 0.5), SITE_MAT, 320,
+        new THREE.BoxGeometry(0.5, 1.8, 0.5), SITE_MAT, 360,
       );
       const m = new THREE.Matrix4();
-      for (let i = 0; i < 320; i++) {
+      for (let i = 0; i < 360; i++) {
         if (i < 200) {
           // On the ground, walking a spiral, where the plate already answers.
           const a = (i / 200) * Math.PI * 2 * 7;
@@ -311,7 +311,7 @@ function makeSiteWorld(id) {
           m.makeTranslation(Math.cos(a) * rad, 0.9, Math.sin(a) * rad);
         } else if (i < 240) {
           m.makeTranslation(60 + ((i % 5) - 2), 12.9, 60 + ((i % 7) - 3));
-        } else {
+        } else if (i < 300) {
           /* SKY LANTERNS, on the same lattice the equivalence grid walks and at
            * a height nothing else in this world reaches. These are the only
            * points where an instance DECIDES the answer, and without them the
@@ -321,6 +321,19 @@ function makeSiteWorld(id) {
            * instance fails that case only because these exist. */
           const j = i - 240;
           m.makeTranslation(-140 + (j % 10) * 20, 30, -140 + Math.floor(j / 10) * 20);
+        } else {
+          /* COLLAPSED, exactly the way `StationActors._hideActor` collapses a
+           * distance-culled figure: an all-zero matrix, chosen because a
+           * degenerate triangle is rejected at setup where an off-screen one is
+           * still transformed and clipped.
+           *
+           * Its bottom-right element is zero as well, so `applyMatrix4` divides
+           * by w = 0 and any bound taken from it comes back infinite. Most of
+           * the station's ~1,900 figures are in this state at any moment, and
+           * treating one of them as "cannot be bounded" is what put the entire
+           * crowd back into the ask-always list and made two attempts at this
+           * index worth nothing. */
+          m.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
         person.setMatrixAt(i, m);
       }
@@ -513,4 +526,46 @@ test('the narrowed probe answers exactly what the whole-tree probe answered', as
   }
   assert.ok(found > 100,
     `only ${found} of ${points.length} probes found a floor - the grid missed the world`);
+});
+
+test('a collapsed crowd instance does not put the whole crowd back in every probe', async () => {
+  /* THE FAILURE THAT COST TWO ATTEMPTS, PINNED.
+   *
+   * `StationActors._hideActor` collapses a distance-culled figure to an
+   * all-zero matrix, and most of the station's ~1,900 figures are collapsed at
+   * any moment. A zero matrix has a zero w, so anything derived from it through
+   * `applyMatrix4` is infinite - and an index that reads "cannot be bounded" as
+   * "must be asked every time" hands the raycaster the entire crowd on every
+   * probe. Twice, that was the whole of the 830 ms this index exists to remove,
+   * and both times the equivalence case above passed: the answers were right
+   * and the work was not saved.
+   *
+   * So this is a case about the CANDIDATE LIST rather than about the answer. It
+   * is the only property here that a timing would have caught and no assertion
+   * about placement can. */
+  const { manager, caches } = makeSiteManager();
+  await manager.activate('deckworld');
+  const world = manager.getWorld('deckworld');
+  const crowd = world.group.children.find((o) => o.name === 'crowd');
+  assert.ok(crowd?.isInstancedMesh, 'the crowd is not in this world, so this proves nothing');
+
+  caches._indexVisible(world.group);
+  assert.equal(caches._vis.always.length, 0,
+    'something is a candidate for every probe - an unbounded leaf is worth the whole index');
+  assert.equal(caches._vis.stats.collapsed, 60,
+    'the collapsed instances were not recognised as collapsed');
+
+  // Over the deck, where the crowd IS: the mesh is a candidate, and once.
+  const onDeck = caches._visibleNear(60, 15, 7, 60);
+  assert.equal(onDeck.filter((o) => o === crowd).length, 1,
+    'the crowd was handed to the raycaster more than once for one probe');
+
+  /* And a hundred metres up, where nothing is. The whole point: an empty
+   * candidate list is what a probe over open sky must cost. */
+  const inSky = caches._visibleNear(60, 103, 95, 60);
+  assert.equal(inSky.length, 0,
+    `a probe 100 m above everything was still handed ${inSky.length} meshes`);
+
+  caches._vis = null;
+  caches._visOut = null;
 });

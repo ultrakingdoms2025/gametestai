@@ -1216,7 +1216,7 @@ function printListeners(run) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
     for (const [k, v] of Object.entries(run.autopsy)) {
       if (k === 'world') continue;
-      const s = Array.isArray(v) ? JSON.stringify(v) : String(v);
+      const s = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
       console.log(`${s.length > 9 ? s : s.padStart(9)}  ${k}`);
     }
   }

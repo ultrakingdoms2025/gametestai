@@ -128,8 +128,6 @@ const VIS_STRIDE = 100003;
  * test is exact where the cell is only a bucket.
  */
 const VIS_MAX_CELLS = 64;
-/** An instance wider than this is not a prop - fall back to the whole object. */
-const VIS_MAX_INSTANCE_R = VIS_CELL * 8;
 
 /**
  * A leaf's world-space bounding box, or null when it cannot be trusted.
@@ -735,7 +733,7 @@ export class Caches {
     const always = [];
     const base = THREE.Object3D.prototype.raycast;
     /** Diagnostics, read by scripts/frame-gaps.mjs. Cheap and worth having. */
-    const stats = { instanced: 0, instances: 0, wideFromInstances: 0 };
+    const stats = { instanced: 0, instances: 0, collapsed: 0, wideFromInstances: 0 };
 
     const leafIndex = (o) => {
       let li = indexOf.get(o);
@@ -811,27 +809,38 @@ export class Caches {
           const li = leafIndex(o);
           const arr = o.instanceMatrix.array;
           const n = Math.min(o.count, (arr.length / 16) | 0);
-          let ok = true;
           for (let k = 0; k < n; k++) {
             _m4.fromArray(arr, k * 16).premultiply(o.matrixWorld);
             _sph.copy(g.boundingSphere).applyMatrix4(_m4);
             const r = _sph.radius;
             const c = _sph.center;
-            const before = wide.length;
-            if (!file(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r)) {
-              // A matrix with no finite bound at all. Nothing can be said about
-              // where this object is, so it goes back to being asked always.
-              ok = false;
-              break;
+            /* A COLLAPSED INSTANCE, AND WHY SKIPPING IT IS NOT A SHORTCUT.
+             *
+             * `StationActors._hideActor` collapses a distance-culled figure
+             * with an ALL-ZERO matrix - deliberately, because a degenerate
+             * triangle is rejected at setup where an off-screen one is still
+             * transformed and clipped. Its bottom-right element is zero too, so
+             * `Vector3.applyMatrix4` divides by w = 0 and the sphere comes back
+             * infinite. Most of the station's ~1,900 figures are collapsed at
+             * any moment, and treating one such instance as "unboundable" put
+             * the whole mesh back in `always` - which is precisely how the
+             * first two attempts at this index moved nothing.
+             *
+             * Skipping it is exactly what three does. `InstancedMesh.raycast`
+             * runs the same `Sphere.applyMatrix4` per instance and rejects on
+             * `intersectsSphere`, which is false for any non-finite sphere, so
+             * a collapsed instance cannot contribute a hit to begin with. */
+            if (!Number.isFinite(r) || !Number.isFinite(c.x)
+              || !Number.isFinite(c.y) || !Number.isFinite(c.z)) {
+              stats.collapsed++;
+              continue;
             }
+            const before = wide.length;
+            file(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r);
             if (wide.length > before) stats.wideFromInstances++;
           }
-          if (ok) {
-            stats.instanced++;
-            stats.instances += n;
-            return;
-          }
-          always.push(o);
+          stats.instanced++;
+          stats.instances += n;
           return;
         }
       }

@@ -1382,35 +1382,14 @@ function withArrivalKey(world, fn) {
  */
 function persistentWarmRoots() {
   const roots = [];
+  const push = (o) => { if (o) roots.push(o); };
   try {
-    /* EVERY SCENE CHILD THAT IS NOT THE WORLD, rather than a list of the ones
-     * somebody remembered.
-     *
-     * The hand-written list - avatar, viewmodels, mounts, gateways, NPCs, loot
-     * - was measured and it was short. Sports' arrival still linked 45 programs
-     * keyed `fogExp2` after it: eleven `basic`, seven custom shaders, a
-     * `points`, two `sprite`. Those belong to the pools the effect systems park
-     * on the scene, and no list assembled by naming systems was ever going to
-     * stay complete, because the next pool is added by someone who has never
-     * read this function.
-     *
-     * Exactly one world group is a scene child at a time - `_activate` removes
-     * the previous before adding the next - so "not the active world" is the
-     * whole of the filter, and it needs no lookup that could construct a world
-     * as a side effect. Lights and cameras come along and cost nothing:
-     * `compile()` only collects materials.
-     *
-     * The mounts are the one exception and the reason the list is not purely
-     * structural: `prewarm`'s `unpark` takes their roots back out of the scene,
-     * so they are not children of anything - and a mount is drawn on every
-     * arrival frame the player is riding one. */
-    const activeGroup = worldManager.active?.group ?? null;
-    for (const child of engine.scene.children) {
-      if (child !== activeGroup) roots.push(child);
-    }
-    for (const root of _parkedMountRoots) {
-      if (root && !root.parent) roots.push(root);
-    }
+    push(avatar?.root);
+    for (const inst of loadout?.instances ?? []) push(inst.root);
+    for (const root of _parkedMountRoots) push(root);
+    for (const p of portals?.portals ?? []) push(p.root);
+    for (const npc of npcManager?.npcs ?? []) push(npc.root);
+    push(loot?.group);
   } catch (err) {
     console.warn('[warm] persistent roots unavailable:', err);
   }

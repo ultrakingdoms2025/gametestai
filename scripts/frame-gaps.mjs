@@ -1435,6 +1435,13 @@ async function runOnce(args, pageUrl, runIndex) {
       })()`);
     }
     if (args.frames) {
+      /* MARKED, and that is not tidiness. The check itself calls
+       * `computeBoundingSphere` on every character - the expensive path, on
+       * purpose - and a phase left open would charge those hundreds of
+       * milliseconds to whichever criterion phase happened to be last. The gate
+       * has already closed its books by here; this keeps the GAP LIST honest
+       * too. */
+      await mark('skincheck');
       out.skinBounds = [];
       const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
       for (const id of [args.entryWorld, other]) {
@@ -1444,6 +1451,7 @@ async function runOnce(args, pageUrl, runIndex) {
         await sleep(6000);
         out.skinBounds.push(JSON.parse(await evalIn(SKIN_CONTAIN)));
       }
+      out.events.skincheck = await closePhase('skincheck');
     }
 
     /* --- THE FIX, TAKEN BACK OUT ---------------------------------------

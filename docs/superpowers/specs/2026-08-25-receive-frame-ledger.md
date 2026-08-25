@@ -236,7 +236,37 @@ which 5,314 ms was inside `renderBufferDirect` — one `linkProgram` and the
 in. This phase has spent three branches on that axis and the remaining named
 lever is sports' fog type. Nothing in this branch touches it.
 
-## 7. Reading it yourself
+## 7. World entry, and how much worse the receive frame was than the gate said
+
+`--events entry,repeat --frames`, production bundle, every world entered once
+before any repeat is measured. Eleven worlds pass at **16.8–17.0 ms**; six do
+not, and every one of the six is either a first cast build, a program link, or
+both:
+
+| world | worst gap | dProg | what it is |
+| --- | ---: | ---: | --- |
+| race | 31,284.1 | 0 | a volatile world rebuilt (`dGeom -217`) |
+| dock | 7,967.1 | 7 | program links |
+| **sports** | **6,350.2** | **52** | program links — §8 |
+| maze | 4,600.1 | 7 | program links, volatile |
+| citadel | 1,050.1 | -3 | `dGeom +322` — first cast + build |
+| medieval | 816.8 | 7 | first cast (`dGeom +207`) + links |
+| the other eleven | 16.8 – 17.0 | 0 | — |
+
+The same run's ablation is worth reading twice. With every world entered and
+resident, the station↔medieval crossing puts **68** characters on the receive
+frame rather than 27:
+
+| | worst gap | `x.skinBound` |
+| --- | ---: | ---: |
+| `repeat:2` — with the fix | **100.1 ms** | — |
+| `unbound:0/1/2` — fix removed | **400.0, 383.3, 416.8 ms** | 305.6, 305.7, 324.0 ms / **x68** |
+
+The cost scales with how many characters become visible on the frame a world
+arrives on, so the 233 ms the gate was failing at was the *cheap* case. After a
+session that has actually visited the game, it was 400.
+
+## 8. Reading it yourself
 
 ```
 node scripts/frame-gaps.mjs --serve prod --events repeat --repeat 3       # the gate

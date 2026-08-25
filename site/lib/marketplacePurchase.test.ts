@@ -121,7 +121,25 @@ suite('marketplace purchase (integration)', () => {
   });
 
   afterAll(async () => {
-    if (db) await db.end();
+    /* TAKE THE FIXTURES BACK OUT.
+     *
+     * These rows have `server_id IS NULL`, which makes them PLATFORM catalogue
+     * rows, and they were left behind by every run. The signed-in survey found
+     * them still sitting in `aether_test` and named it (§6 F9): six test rows
+     * carrying `game_action = 'grant_item'` — an `action_config.effect`, never an
+     * action `id` — which is precisely the row `rowToItem` throws on. The site's
+     * own suite was planting the catalogue bomb it has no test for.
+     *
+     * Both halves are fixed: the action id is real now, and the rows do not
+     * outlive the suite. A fixture that survives its run is a fixture the next
+     * reader has to explain.
+     */
+    if (db) {
+      await db
+        .query('DELETE FROM marketplace_items WHERE description = $1', ['test row'])
+        .catch(() => {});
+      await db.end();
+    }
   });
 
   beforeEach(async () => {
@@ -144,7 +162,7 @@ suite('marketplace purchase (integration)', () => {
         `INSERT INTO marketplace_items
            (id, source_key, name, description, category, game_action, quantity,
             cost_buy, cost_sell, world_name, is_active)
-         VALUES ($1, $2, $3, 'test row', 'tools', 'grant_item', $4, $5, 1, 'station', $6)
+         VALUES ($1, $2, $3, 'test row', 'tools', 'ship_part', $4, $5, 1, 'station', $6)
          ON CONFLICT (id) DO UPDATE
            SET quantity = EXCLUDED.quantity,
                cost_buy = EXCLUDED.cost_buy,
@@ -202,7 +220,7 @@ suite('marketplace purchase (integration)', () => {
       `INSERT INTO marketplace_items
          (id, source_key, name, description, category, game_action, quantity,
           cost_buy, cost_sell, world_name, is_active)
-       VALUES ($1, 'credits', 'Credit Chip', 'test row', 'tools', 'grant_item', 5, 10, 1, 'station', TRUE)
+       VALUES ($1, 'credits', 'Credit Chip', 'test row', 'tools', 'ship_part', 5, 10, 1, 'station', TRUE)
        ON CONFLICT (id) DO UPDATE SET source_key = 'credits', cost_buy = 10`,
       ['11111111-1111-4111-8111-111111111106']
     );

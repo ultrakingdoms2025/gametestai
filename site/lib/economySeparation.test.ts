@@ -64,11 +64,23 @@ describe('a server-scoped quest cannot pay platform credits', () => {
     ).toBe(true);
   });
 
+  /* CHANGED DELIBERATELY. Both this assertion and the last one in this block
+   * used to look for the literal `SET credit_balance = credit_balance +`, which
+   * was the platform payout's own CTE. That statement is gone: the platform
+   * reward now moves through `creditInTransaction`, because moving the balance
+   * with no `credit_events` row was a second defect on this same path — the
+   * ledger read 95 -> 250 on a +5 event, and `SUM(delta)` was 100 against a
+   * balance of 250.
+   *
+   * The property both tests were pinning is unchanged and is still pinned; only
+   * the marker for "the platform payout" moved. The new marker is strictly
+   * better as a marker: it is a function call this module has to import, not a
+   * fragment of SQL that a reformat could break. */
   it('branches on it before touching the platform balance', () => {
     const branchAt = fn.indexOf('engagement.server_id');
-    const payAt = fn.indexOf('SET credit_balance = credit_balance +');
+    const payAt = fn.indexOf('creditInTransaction');
     expect(branchAt, 'no branch on the engagement server_id').toBeGreaterThan(-1);
-    expect(payAt, 'the platform payout statement moved — re-read this test').toBeGreaterThan(-1);
+    expect(payAt, 'the platform payout call moved — re-read this test').toBeGreaterThan(-1);
     expect(branchAt,
       'the server_id branch must come BEFORE the platform payout, or the payout happens anyway'
     ).toBeLessThan(payAt);
@@ -83,9 +95,26 @@ describe('a server-scoped quest cannot pay platform credits', () => {
   });
 
   it('still pays a platform quest, so the fix did not just delete the feature', () => {
-    expect(fn.includes('SET credit_balance = credit_balance +'),
+    expect(fn.includes('creditInTransaction'),
       'the platform payout is gone entirely — a quest with no server must still pay'
     ).toBe(true);
+    expect(/kind:\s*'quest'/.test(fn),
+      "the platform payout must use the 'quest' kind, so the ledger row says what it was"
+    ).toBe(true);
+  });
+
+  it('and does not move the balance itself any more — only the ledger may', () => {
+    /* The new half of this defect, and the reason the marker above moved. The
+     * ledger's docblock says it is "the only thing allowed to move
+     * players.credit_balance"; this function was the exception, and the cost was
+     * a `balance_after` column nobody could derive. */
+    expect(fn.includes('SET credit_balance = credit_balance +'),
+      'completeQuestEngagement is moving credit_balance directly again — that is the '
+      + 'payout with no credit_events row, verbatim'
+    ).toBe(false);
+    expect(/UPDATE\s+players\b/i.test(fn),
+      'completeQuestEngagement is issuing its own UPDATE against players'
+    ).toBe(false);
   });
 });
 

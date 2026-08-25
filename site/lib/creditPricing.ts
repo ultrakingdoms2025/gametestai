@@ -307,6 +307,10 @@ export const REASON_KIND: Record<string, CreditEventKind | 'refused'> = {
   // Marketplace. `market` is BIDIRECTIONAL in the game — selling calls add() and
   // buying calls spend() with the same tag — so direction is taken from the sign
   // of the delta, never from the tag.
+  //
+  // This mapping is now only half the story: a NEGATIVE delta on either tag is a
+  // catalogue purchase and is priced from the row, not from the number the
+  // browser sent. See CATALOGUE_PURCHASE_REASONS below.
   market: 'sell',
   'market-refund': 'sell',
 
@@ -327,6 +331,24 @@ export const REASON_KIND: Record<string, CreditEventKind | 'refused'> = {
  * `ore` properly means porting the ore tables and having the client report the
  * cargo manifest rather than the total; that is worth doing and is not this
  * change.
+ *
+ * ── One of them has since been taken off this list: buying ─────────────────
+ *
+ * A marketplace DEBIT is no longer bounded, it is priced — see
+ * `CATALOGUE_PURCHASE_REASONS`. `sell` stays here, and stays bounded, because
+ * SELLING is the genuinely harder half and nothing in this change addresses it:
+ *
+ *   - buying names ONE catalogue row and the price is `cost_buy` on it;
+ *   - selling names a quantity of an item the client says it is carrying, at
+ *     `sellValue(itemId, n)` out of `src/systems/ItemDefs.js` — a table the
+ *     server does not have — and the server also cannot see the bag, so it
+ *     cannot tell whether the goods existed to sell.
+ *
+ * Pricing a sale would need all three: the `sellValue` table ported or served,
+ * the event carrying `{itemId, qty}` instead of a total, and a server-side
+ * inventory to debit the goods from. Only the first two are cheap. Until then
+ * `PER_EVENT_MAX.sell` is 500,000 against a largest legitimate stack of ~1,736
+ * at a rate cap of 400/hour, and that ceiling is what stands there.
  */
 export const DECLARED_KINDS = new Set<CreditEventKind>([
   'loot',
@@ -367,9 +389,64 @@ export const PER_EVENT_MAX: Partial<Record<CreditEventKind, number>> = {
   spend: 1_000_000, // catalogue-driven, no code constant to measure
 };
 
+/**
+ * Reasons whose DEBIT is a catalogue purchase, and must be priced from the row.
+ *
+ * ── The hole this closes ───────────────────────────────────────────────────
+ *
+ * "Nobody forges a spend in their own favour" was the argument for taking a
+ * reported debit at face value, and it is wrong in exactly one place:
+ * UNDERSTATING a purchase price IS forging a spend in your own favour, because
+ * the goods are granted by the client and only the price travels to the server.
+ * Driven live, signed in:
+ *
+ *   POST /api/game/credits {"events":[{"key":"…","reason":"market","delta":-1}]}
+ *     200 applied:true delta:-1   <- "bought" a 1,071-credit item for 1 credit
+ *
+ * So a marketplace debit is no longer a spend the browser prices. It names an
+ * item; the server reads `cost_buy` off that row, locks it, debits, decrements
+ * stock and records the sale — `marketplaceDb.purchaseMarketplaceItem`, which
+ * was built, tested and never called by anything.
+ *
+ * `market-refund` is in here as well as `market`. A refund is only ever a
+ * CREDIT in the game, so a negative one is nonsense — but leaving it out would
+ * leave one tag on which "name your own purchase price" still worked, and a
+ * bypass that needs one word changed is not a bypass anyone would miss.
+ *
+ * ── What this does NOT buy, said plainly ───────────────────────────────────
+ *
+ * A modified client can still take an item without paying, by reporting nothing
+ * at all: the bag is client-side and the server has no simulation. What changes
+ * is that the endpoint no longer OFFERS a priced-by-the-buyer purchase, that
+ * every purchase the shipped client makes is charged the catalogue price, and
+ * that stock and the `purchases` sale record move with the money.
+ */
+export const CATALOGUE_PURCHASE_REASONS = new Set<string>(['market', 'market-refund']);
+
 export type ResolvedEvent =
-  | { ok: true; kind: CreditEventKind; detail: string; amount: number | null }
-  | { ok: false; reason: 'unknown_source' | 'refused' | 'too_large' | 'invalid' };
+  | {
+      ok: true;
+      kind: CreditEventKind;
+      detail: string;
+      amount: number | null;
+      /**
+       * Present only on a catalogue purchase. The row to price from — its id, or
+       * its `source_key` for a client shopping the bundled offline catalogue,
+       * whose `id` IS the seeded source key (`MarketplaceOffline.js:697`).
+       */
+      itemRef?: string;
+    }
+  | {
+      ok: false;
+      reason: 'unknown_source' | 'refused' | 'too_large' | 'invalid' | 'unpriced_purchase';
+    };
+
+/** A reference is only ever read as a string, and only within sane bounds. */
+function itemRefOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  return v.length > 0 && v.length <= 200 ? v : null;
+}
 
 /**
  * Turn one reported `credits:changed` into something the ledger can apply.
@@ -378,7 +455,12 @@ export type ResolvedEvent =
  * by the game for BOTH selling (a credit) and buying (a debit), so a tag-based
  * rule would get one of them backwards.
  */
-export function resolveReportedEvent(reason: unknown, delta: unknown): ResolvedEvent {
+export function resolveReportedEvent(
+  reason: unknown,
+  delta: unknown,
+  /** Which catalogue row a marketplace debit is for. Required for one. */
+  itemRef?: unknown
+): ResolvedEvent {
   if (typeof reason !== 'string' || reason.length === 0 || reason.length > 64) {
     return { ok: false, reason: 'invalid' };
   }
@@ -394,8 +476,36 @@ export function resolveReportedEvent(reason: unknown, delta: unknown): ResolvedE
   }
   if (mapped === 'refused') return { ok: false, reason: 'refused' };
 
-  // A debit. Nobody forges a spend in their own favour, so the amount is taken
-  // as reported and only sanity-bounded.
+  /* A CATALOGUE PURCHASE. The reported amount is not read at all — not as a
+   * price, not as a bound, not as a hint. The caller prices it from the row.
+   *
+   * ── What an old client gets, and why ─────────────────────────────────────
+   *
+   * A bundle that predates this contract sends no `itemId`, and is REFUSED:
+   * nothing is written and the balance does not move. That is deliberate, and
+   * the alternative was considered and rejected.
+   *
+   * Falling back to the reported number is not a compatibility measure, it is
+   * the defect with a condition in front of it: anyone who wanted the old
+   * behaviour would omit the field. A fallback that an attacker can select is
+   * not a fallback.
+   *
+   * Be honest about what the refusal costs: a player on a stale bundle is not
+   * charged for a purchase their client already granted them. That is a leak,
+   * and it fails toward NOT TAKING A PLAYER'S CREDITS, which is the recoverable
+   * direction — a debit at a forged price is not. It is bounded, too: the site
+   * serves a content-hashed bundle, so a stale one survives a reload, and the
+   * refusal is reported per event rather than swallowed.
+   */
+  if (d < 0 && CATALOGUE_PURCHASE_REASONS.has(reason)) {
+    const ref = itemRefOf(itemRef);
+    if (!ref) return { ok: false, reason: 'unpriced_purchase' };
+    return { ok: true, kind: 'purchase', detail: reason, amount: null, itemRef: ref };
+  }
+
+  // Any other debit. Nobody forges one of these in their own favour — there are
+  // no goods on the other side of it — so the amount is taken as reported and
+  // only sanity-bounded.
   if (d < 0) {
     const cost = -d;
     if (cost > (PER_EVENT_MAX.spend ?? Infinity)) return { ok: false, reason: 'too_large' };

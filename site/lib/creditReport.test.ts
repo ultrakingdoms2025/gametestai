@@ -151,28 +151,43 @@ suite('reported credit events (integration)', () => {
     expect(await balance()).toBe(1000);
   });
 
+  /* THESE THREE USED TO DRIVE 'market' DEBITS, AND WERE CHANGED DELIBERATELY.
+   *
+   * A negative `market` delta is no longer a spend the browser prices — it is a
+   * catalogue purchase, priced from `cost_buy` on the named row, and refused
+   * outright when no row is named (`marketplaceBuyContract.test.ts` owns that
+   * behaviour). What these three are actually about — sign decides direction, a
+   * debit is recorded as a spend, an overdraw is refused — is unchanged, so they
+   * now drive `inventory`, which is the game's OTHER debit and the only one left
+   * that the server bounds rather than prices (`Inventory.js:156,249`, spending
+   * the virtual `credits` item; no goods come off a catalogue row, so there is
+   * nothing to price it from). */
   it('debits on a negative delta and records it as a spend', async () => {
-    const r = await applyReportedEvent(db, PLAYER, { key: 's1', reason: 'market', delta: -400 });
+    const r = await applyReportedEvent(db, PLAYER, { key: 's1', reason: 'inventory', delta: -400 });
     expect(r.applied).toBe(true);
     expect(r.delta).toBe(-400);
     expect(await balance()).toBe(600);
     const [row] = await rows();
     expect(row.kind).toBe('spend');
-    expect(row.detail).toBe('market');
+    expect(row.detail).toBe('inventory');
   });
 
   it('reads direction from the sign, not the tag', async () => {
-    // 'market' is used by the game for BOTH selling (add) and buying (spend).
-    // A tag-based rule would get one of them backwards.
-    await applyReportedEvent(db, PLAYER, { key: 'm-buy', reason: 'market', delta: -300 });
-    await applyReportedEvent(db, PLAYER, { key: 'm-sell', reason: 'market', delta: 250 });
-    expect(await balance()).toBe(950);
-    const kinds = (await rows()).map((r) => r.kind);
-    expect(kinds).toEqual(['spend', 'sell']);
+    // 'market' is used by the game for BOTH selling (add) and buying (spend), so
+    // a tag-based rule would get one of them backwards. It still holds, and it
+    // now discriminates harder: the positive one is a bounded `sell`, the
+    // negative one is not a sell at all but a purchase the server prices.
+    const buy = await applyReportedEvent(db, PLAYER, { key: 'm-buy', reason: 'market', delta: -300 });
+    const sell = await applyReportedEvent(db, PLAYER, { key: 'm-sell', reason: 'market', delta: 250 });
+    expect(buy.applied, 'a buy with no item named must not be paid at the browser price').toBe(false);
+    expect(buy.reason).toBe('unpriced_purchase');
+    expect(sell.applied).toBe(true);
+    expect(await balance()).toBe(1250);
+    expect((await rows()).map((r) => r.kind)).toEqual(['sell']);
   });
 
   it('refuses a spend the balance cannot cover', async () => {
-    const r = await applyReportedEvent(db, PLAYER, { key: 's2', reason: 'market', delta: -5000 });
+    const r = await applyReportedEvent(db, PLAYER, { key: 's2', reason: 'inventory', delta: -5000 });
     expect(r.applied).toBe(false);
     expect(r.reason).toBe('insufficient');
     expect(await balance()).toBe(1000);

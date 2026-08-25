@@ -173,8 +173,15 @@ describe('the owner CRUD stamps every row it writes', () => {
       sql.startsWith('INSERT INTO marketplace_items') ? [{ id: 'i1' }] : []
     );
     await createServerMarketplaceItem(db, SERVER, {
+      /* `ship_part`, not `grant_item`. This fixture said `grant_item`, which is
+       * an `action_config.effect` and never an action `id` — so it was authoring
+       * exactly the row that 500s the whole catalogue (`catalogueIntegrity.test.ts`),
+       * and `createServerMarketplaceItem` now refuses it. The intent here is the
+       * stamp, not the action, so it takes the real id whose effect IS
+       * `grant_item`. Changed deliberately: this fixture asserted a write that
+       * should never have been allowed. */
       name: 'A very profitable rock', description: 'd', category: 'tools',
-      image: '', gameAction: 'grant_item', actionConfig: {}, quantity: null,
+      image: '', gameAction: 'ship_part', actionConfig: {}, quantity: null,
       costBuy: 1, costSell: 10_000, worldName: 'citadel', sortOrder: 0,
     });
     const insert = db.only('INSERT INTO marketplace_items');
@@ -453,8 +460,9 @@ suite('the hostile quest, end to end (integration)', () => {
 
   it('an owner marketplace item is invisible to the default catalogue', async () => {
     await createServerMarketplaceItem(db, SERVER, {
+      // `ship_part` for the reason recorded on the fixture above.
       name: 'Infinite money rock', description: 'd', category: 'tools', image: '',
-      gameAction: 'grant_item', actionConfig: {}, quantity: null,
+      gameAction: 'ship_part', actionConfig: {}, quantity: null,
       costBuy: 1, costSell: 10_000, worldName: 'citadel', sortOrder: 0,
     });
     const global = await db.query(

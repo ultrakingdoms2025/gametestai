@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Client, PoolClient } from 'pg';
+import {
+  MARKETPLACE_ACTIONS,
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_WORLDS,
+} from './marketplaceCatalog';
 
 /**
  * Owner CRUD over an owner's OWN lore, quests and marketplace items — and the
@@ -87,6 +92,79 @@ function nonNegativeInt(value: unknown, fallback = 0): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(0, Math.trunc(n));
+}
+
+/**
+ * A refusal the owner can act on, as opposed to a fault.
+ *
+ * `requireServerId` throws a bare `Error` because a blank stamp is a CALL that
+ * should not have been written — nothing the person at the keyboard did. These
+ * are the other thing: the owner typed a value the catalogue does not define,
+ * and the route owes them a 400 saying which value and what is allowed, not the
+ * 500 that a bare throw becomes.
+ */
+export class ServerContentInputError extends Error {
+  readonly field: string;
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = 'ServerContentInputError';
+    this.field = field;
+  }
+}
+
+/**
+ * ── THE WRITE MUST NOT ACCEPT WHAT THE READ CANNOT SURVIVE ─────────────────
+ *
+ * `game_action`, `category` and `world_name` were written here as free text —
+ * `text(input.gameAction, 60)` — and read back through `marketplaceDb`'s
+ * `normalizeAction` / `normalizeCategory` / `normalizeWorld`, all three of which
+ * THROW on a value they do not recognise. `listMarketplaceItems` maps every row
+ * through `rowToItem`, so ONE stored row the read cannot parse took the whole
+ * catalogue down.
+ *
+ * Driven live through the real routes: an owner authored one item with
+ * `gameAction: "totally_bogus"`, and `GET /api/marketplace/items` went from 200
+ * with 612 items to a bodiless 500 — for the owner AND for every other member of
+ * that server, platform items included. Anonymous callers were unaffected,
+ * because the scope clause excludes the row from their query, which is what made
+ * it a denial of service inside one server rather than platform-wide.
+ *
+ * The fix is at the write, and it is deliberately the SAME CONSTANT the read
+ * validates against rather than a second list that agrees today: a copied
+ * vocabulary is how the two paths disagreed in the first place. The reader is
+ * also made defensive (`marketplaceDb.listMarketplaceItems` skips a row it
+ * cannot parse), because rows written before this check exist in real databases
+ * — but a defensive reader is containment, not the fix. A write that stores what
+ * no reader accepts is a fault whichever way the reader handles it.
+ */
+function oneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string
+): T {
+  const v = String(value ?? '').trim().toLowerCase();
+  if ((allowed as readonly string[]).includes(v)) return v as T;
+  throw new ServerContentInputError(
+    field,
+    `${field} must be one of: ${allowed.join(', ')} (received ${JSON.stringify(String(value ?? ''))}).`
+  );
+}
+
+/**
+ * `game_action` is the one of the three that is case-SENSITIVE, because
+ * `marketplaceDb.normalizeAction` compares the stored text to
+ * `MARKETPLACE_ACTIONS[].id` with no case folding at all. Lower-casing here
+ * would accept `Ammo_Pack_Rifle` and store something the reader still throws on
+ * — the exact class of disagreement this check exists to remove.
+ */
+function oneAction(value: unknown): string {
+  const v = String(value ?? '').trim();
+  if (MARKETPLACE_ACTIONS.some((a) => a.id === v)) return v;
+  throw new ServerContentInputError(
+    'gameAction',
+    `gameAction must be one of: ${MARKETPLACE_ACTIONS.map((a) => a.id).join(', ')} `
+      + `(received ${JSON.stringify(String(value ?? ''))}).`
+  );
 }
 
 /* ---------------------------------------------------------------------- */
@@ -488,14 +566,14 @@ export async function createServerMarketplaceItem(
       id,
       text(input.name, 120),
       text(input.description, 2000),
-      text(input.category, 40).toLowerCase(),
+      oneOf(input.category, MARKETPLACE_CATEGORIES, 'category'),
       text(input.image, 4000),
-      text(input.gameAction, 60),
+      oneAction(input.gameAction),
       JSON.stringify(input.actionConfig ?? {}),
       input.quantity == null ? null : nonNegativeInt(input.quantity),
       nonNegativeInt(input.costBuy),
       nonNegativeInt(input.costSell),
-      text(input.worldName, 40).toLowerCase(),
+      oneOf(input.worldName, MARKETPLACE_WORLDS, 'worldName'),
       input.isActive !== false,
       nonNegativeInt(input.sortOrder),
       sid,
@@ -533,13 +611,13 @@ export async function updateServerMarketplaceItem(
       sid,
       patch.name === undefined ? null : text(patch.name, 120),
       patch.description === undefined ? null : text(patch.description, 2000),
-      patch.category === undefined ? null : text(patch.category, 40).toLowerCase(),
+      patch.category === undefined ? null : oneOf(patch.category, MARKETPLACE_CATEGORIES, 'category'),
       patch.image === undefined ? null : text(patch.image, 4000),
-      patch.gameAction === undefined ? null : text(patch.gameAction, 60),
+      patch.gameAction === undefined ? null : oneAction(patch.gameAction),
       patch.quantity === undefined || patch.quantity === null ? null : nonNegativeInt(patch.quantity),
       patch.costBuy === undefined ? null : nonNegativeInt(patch.costBuy),
       patch.costSell === undefined ? null : nonNegativeInt(patch.costSell),
-      patch.worldName === undefined ? null : text(patch.worldName, 40).toLowerCase(),
+      patch.worldName === undefined ? null : oneOf(patch.worldName, MARKETPLACE_WORLDS, 'worldName'),
       patch.isActive === undefined ? null : !!patch.isActive,
       patch.sortOrder === undefined ? null : nonNegativeInt(patch.sortOrder),
     ]

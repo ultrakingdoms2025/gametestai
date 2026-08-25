@@ -5,7 +5,7 @@
  */
 import { Client } from 'pg';
 import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { ensureCreditSchema } from './creditLedger';
+import { creditInTransaction, ensureCreditSchema, ensureOpeningBalance } from './creditLedger';
 import { earnServerCredits } from './serverCredits';
 
 function makeClient() {
@@ -1092,32 +1092,104 @@ export async function completeQuestEngagement(
     }
   }
 
-  const { rows: credited } = await pgQuery<{ id: string; credit_balance: number }>(
-    `WITH finished AS (
-       UPDATE player_quest_engagements
-          SET status = 'completed', credits_rewarded = $1::int, percent_complete = 100,
-              completed_at = NOW(), updated_at = NOW()
-        WHERE id = $2 AND player_id = $3 AND status = 'in_progress'
-        RETURNING id, player_id
-     )
-     UPDATE players p
-        SET credit_balance = credit_balance + $1::int, updated_at = NOW()
-       FROM finished f
-      WHERE p.id = f.player_id
-      RETURNING f.id, p.credit_balance`,
-    [reward, engagementId, playerId]
-  );
-  if (!credited[0]) {
-    // Lost the race with a concurrent completion — that one paid, this one must not.
-    return {
-      ok: true, alreadyCompleted: true, creditsAwarded: 0,
-      creditBalance: await readCreditBalance(playerId), status: 'completed',
-    };
+  /* A PLATFORM QUEST REWARD MUST LEAVE A LEDGER ROW.
+   *
+   * This was one data-modifying CTE: flip the engagement to 'completed' and add
+   * the reward to `players.credit_balance`, atomically and with no
+   * `credit_events` row anywhere in the function or in its only caller. Phase 2
+   * paired the balance move with a ledger insert on every other payout path —
+   * Stripe purchases and admin grants both do — and missed this one.
+   *
+   * Measured live against a real database: the ledger read 95 -> 250 on a +5
+   * event, and `SUM(delta)` was 100 against a balance of 250. `balance_after`
+   * becomes underivable from a player's FIRST quest completion onward, which is
+   * every player. `ensureOpeningBalance` masks it on a brand-new account — the
+   * account a smoke test uses — so it could have looked fine indefinitely.
+   *
+   * ── Why this is not "add an applyCreditEvent call after the CTE" ──────────
+   *
+   * `applyCreditEvent` opens its own `BEGIN`, and Postgres has no nested
+   * transactions, so the flip and the credit would be two commits with a window
+   * between them: crash there and the quest is completed and unpaid, with
+   * nothing recording that it should have been. `creditInTransaction` is the
+   * earn half without a transaction of its own, so both live in one.
+   *
+   * ── Idempotency: two guards that must agree, not fight ───────────────────
+   *
+   *   - the flip only matches `status = 'in_progress'`, so a replayed or
+   *     concurrent completion flips nothing and pays nothing;
+   *   - the ledger's `UNIQUE (player_id, event_key)` refuses a second row for
+   *     `quest:<engagementId>`.
+   *
+   * They agree because a REPEATABLE quest gets a fresh engagement row per
+   * acceptance (`acceptQuestEngagement` only reuses an `in_progress` one), so
+   * the engagement id is unique per completion and the ledger key never
+   * collides with a legitimate repeat. The server-scoped branch above already
+   * keys `earnServerCredits` the same way.
+   *
+   * ── The cap is deliberately not applied ──────────────────────────────────
+   *
+   * `CAPS.quest` is 120/hour and is dead code today: `REASON_KIND.quest` is
+   * 'refused', so no path ever reaches `applyCreditEvent` with this kind.
+   * Honouring it here would ACTIVATE a rate limit nobody asked for, on the one
+   * payout the client cannot inflate — the amount comes from `quests.reward_credits`
+   * and the completion is gated by a row the client cannot write. Its only
+   * possible effect is to mark a quest completed and pay zero for it, which is
+   * the silent theft `creditPricing.ts` says a ceiling must never cause.
+   */
+  const client = makeClient();
+  await client.connect();
+  try {
+    await ensureCreditSchema(client);
+    /* Before the balance moves, or the ledger's first row for this player is a
+     * number with no provenance and `SUM(delta)` disagrees with the balance for
+     * the life of the account. */
+    await ensureOpeningBalance(client, playerId);
+
+    await client.query('BEGIN');
+    try {
+      const { rows: finished } = await client.query<{ id: string }>(
+        `UPDATE player_quest_engagements
+            SET status = 'completed', credits_rewarded = $1::int, percent_complete = 100,
+                completed_at = NOW(), updated_at = NOW()
+          WHERE id = $2 AND player_id = $3 AND status = 'in_progress'
+          RETURNING id`,
+        [reward, engagementId, playerId]
+      );
+      if (!finished[0]) {
+        // Lost the race with a concurrent completion — that one paid, this one must not.
+        await client.query('ROLLBACK');
+        return {
+          ok: true, alreadyCompleted: true, creditsAwarded: 0,
+          creditBalance: await readCreditBalance(playerId), status: 'completed',
+        };
+      }
+
+      const paid = await creditInTransaction(client, playerId, {
+        kind: 'quest',
+        detail: `quest:${engagementId}`,
+        eventKey: `quest:${engagementId}`,
+        amount: reward,
+        ignoreCap: true,
+      });
+      /* COMMIT even when the credit was refused. The flip won, so this player
+       * completed the quest; rolling that back would re-open a quest they have
+       * finished. A refusal here is `duplicate` — the reward was already
+       * ledgered — and the balance returned is the authoritative one either way. */
+      await client.query('COMMIT');
+      return {
+        ok: true, alreadyCompleted: false,
+        creditsAwarded: paid.applied ? paid.delta : 0,
+        creditBalance: paid.balance,
+        status: 'completed',
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    }
+  } finally {
+    await client.end();
   }
-  return {
-    ok: true, alreadyCompleted: false, creditsAwarded: reward,
-    creditBalance: Number(credited[0].credit_balance), status: 'completed',
-  };
 }
 
 /** Ownership-scoped for the same reason as updateQuestStepStates. */

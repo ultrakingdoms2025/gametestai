@@ -227,6 +227,47 @@ function normalizeImage(value: unknown): string {
   throw new Error('Image must be an http(s) URL or data:image/* data URI.');
 }
 
+/**
+ * ── ONE UNREADABLE ROW MUST NOT COST THE WHOLE CATALOGUE ───────────────────
+ *
+ * `rowToItem` throws on a `game_action`, `category` or `world_name` it does not
+ * recognise, and `listMarketplaceItems` maps EVERY row through it — so one row
+ * an owner authored with `gameAction: "totally_bogus"` answered
+ * `GET /api/marketplace/items` with a bodiless 500 for every member of that
+ * server, the 612 platform items included. Driven live through the real routes.
+ *
+ * The fix is at the write (`serverContent.ts` now validates against the same
+ * constants this file reads with). This is containment for rows written BEFORE
+ * that check existed, which exist in real databases: the site's own
+ * `marketplacePurchase.test.ts` seeds six platform rows with
+ * `game_action = 'grant_item'` — an `action_config.effect`, never an action id —
+ * and never removes them.
+ *
+ * SKIPPED, not coerced. A `?? 'tools'` fallback would be worse than the 500 it
+ * replaces: `game_action` is what the client turns into a GRANT, so a coerced
+ * action hands the buyer something other than what the row says, silently and
+ * for money. A row nobody can serve honestly is a row nobody should be sold.
+ * The console line is the only trace, and it names the row so an owner or an
+ * admin can delete it.
+ */
+export function parseMarketplaceRows(
+  rows: Array<Record<string, unknown>>
+): MarketplaceItemRecord[] {
+  const out: MarketplaceItemRecord[] = [];
+  for (const row of rows) {
+    try {
+      out.push(rowToItem(row));
+    } catch (err) {
+      console.warn(
+        `[marketplace] skipping unreadable item ${String(row.id)} `
+          + `(server_id=${row.server_id == null ? 'NULL' : String(row.server_id)}): `
+          + `${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return out;
+}
+
 function rowToItem(row: Record<string, unknown>): MarketplaceItemRecord {
   return {
     id: String(row.id),
@@ -318,14 +359,19 @@ export async function listMarketplaceItems(filters: {
   const extra = clauses.length ? `AND ${clauses.join(' AND ')}` : '';
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, source_key, name, description, category, image, game_action, action_config,
-            quantity, cost_buy, cost_sell, world_name, is_active, sort_order, created_at, updated_at
+            quantity, cost_buy, cost_sell, world_name, is_active, sort_order, server_id,
+            created_at, updated_at
      FROM marketplace_items
      WHERE (server_id IS NULL OR server_id = COALESCE($1, ''))
      ${extra}
      ORDER BY sort_order ASC, name ASC, created_at ASC`,
     values
   );
-  return rows.map(rowToItem);
+  /* `parseMarketplaceRows`, not `rows.map(rowToItem)`: one row this module
+   * cannot parse used to throw out of here and 500 the catalogue for every
+   * caller in scope. See that function for why a bad row is skipped and not
+   * coerced. */
+  return parseMarketplaceRows(rows);
 }
 
 /**
@@ -561,6 +607,21 @@ async function balanceOf(db: PurchaseDb, playerId: string): Promise<number> {
  * has already spent the credits, so a naive second pass sees the reduced balance
  * and answers `insufficient`, telling the client a purchase failed that in fact
  * succeeded. The client would then show an error for an item the player owns.
+ *
+ * ── `itemId` is a REFERENCE: a row id, or a `source_key` ──────────────────
+ *
+ * Both, because the shop the player is looking at is not always the API's. When
+ * `/api/marketplace/items` is unreachable the client falls back to the bundled
+ * catalogue (`src/systems/MarketplaceOffline.js`), whose rows carry
+ * `id = \`${source_key}:${world}\`` — which is exactly the key the seeder writes
+ * into `marketplace_items.source_key`, deliberately, so "an offline purchase and
+ * an online one name the same row". Accepting only the UUID would have made
+ * every offline purchase unresolvable and therefore FREE, which is a new hole in
+ * the act of closing one.
+ *
+ * `source_key` is UNIQUE and NULL on every owner-authored row, so a lookup by
+ * key can only ever reach the platform partition — which is the only partition
+ * the offline catalogue contains.
  */
 export async function purchaseMarketplaceItem(
   db: PurchaseDb,
@@ -596,12 +657,13 @@ export async function purchaseMarketplaceItem(
   if (typeof eventKey !== 'string' || eventKey.length === 0 || eventKey.length > 200) {
     return refuse('invalid');
   }
-  if (typeof itemId !== 'string' || !UUID_RE.test(itemId)) {
-    // Not found rather than invalid: a syntactically impossible id and a deleted
-    // one are the same thing to a caller, and handing it to Postgres would raise
-    // "invalid input syntax for type uuid" and 500 the route.
-    return refuse('not_found');
-  }
+  const ref = typeof itemId === 'string' ? itemId.trim() : '';
+  if (ref.length === 0 || ref.length > 200) return refuse('not_found');
+  /* Which column the reference names. Decided HERE rather than in the SQL,
+   * because `id` is a UUID column and handing it a `source_key` raises
+   * "invalid input syntax for type uuid" (22P02) — a 500 out of a route, for a
+   * request that should simply not find anything. */
+  const byRowId = UUID_RE.test(ref);
 
   await db.query('BEGIN');
   try {
@@ -623,15 +685,31 @@ export async function purchaseMarketplaceItem(
       };
     }
 
-    const found = await db.query(
-      `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
-              is_active, world_name
-         FROM marketplace_items
-        WHERE id = $1
-          AND (server_id IS NULL OR server_id = COALESCE($2, ''))
-          FOR UPDATE`,
-      [itemId, scope]
-    );
+    /* Two whole statements rather than one with a clever predicate, and the
+     * scope clause written out LITERALLY in each. `contentScoping.test.ts` reads
+     * these strings out of the source — that is the only seam it has, because
+     * this module opens its own connections — and a clause assembled from a
+     * `${variable}` is a clause no source test can see. Duplication that a gate
+     * can read beats a single statement it cannot. */
+    const found = byRowId
+      ? await db.query(
+          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                  is_active, world_name
+             FROM marketplace_items
+            WHERE id = $1
+              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+              FOR UPDATE`,
+          [ref, scope]
+        )
+      : await db.query(
+          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                  is_active, world_name
+             FROM marketplace_items
+            WHERE source_key = $1
+              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+              FOR UPDATE`,
+          [ref, scope]
+        );
     const row = found.rows[0];
     if (!row) {
       await db.query('ROLLBACK');
@@ -694,7 +772,9 @@ export async function purchaseMarketplaceItem(
             SET quantity = quantity - 1, updated_at = NOW()
           WHERE id = $1 AND quantity > 0
           RETURNING quantity`,
-        [itemId]
+        // `item.id`, not the caller's reference: the reference may have been a
+        // source_key, and this UPDATE is against the row that was LOCKED above.
+        [item.id]
       );
       if (!dec.rows[0]) {
         // Unreachable while the row lock above is held. Left in because the

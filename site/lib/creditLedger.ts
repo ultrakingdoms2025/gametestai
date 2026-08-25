@@ -68,6 +68,33 @@ export interface EarnRequest {
    * caller cannot talk the server into a better rate for a kill.
    */
   amount?: number;
+  /**
+   * Skip the per-kind rate cap. Defaults to false; say why at every call site.
+   *
+   * The caps in `creditPricing.ts` bound how often a CLAIM is honoured — the
+   * client says a hostile died and the server, which has no simulation, cannot
+   * refuse a well-formed lie. That argument does not reach a payout the server
+   * priced itself off a row the client cannot write. For those, a cap has
+   * nothing to bound and one failure mode: it records the event at zero, and the
+   * player is told they earned nothing for something they really did. The
+   * pricing module's own comment says a ceiling that clips a real payout is
+   * silent theft, and this is the shape of it.
+   */
+  ignoreCap?: boolean;
+}
+
+/**
+ * The result of a ledger write that runs inside a transaction the CALLER owns.
+ *
+ * `recorded` is not `applied`. A CAPPED event is deliberately written at zero —
+ * "a capped player is exactly the one worth being able to see afterwards" — so
+ * it is `applied: false` and `recorded: true`, and a caller that rolled back on
+ * `!applied` would throw that row away. The two callers below get this right
+ * because the flag says which question they are answering.
+ */
+export interface TransactionalResult extends LedgerResult {
+  /** True when this call WROTE a row. The caller must COMMIT, not ROLLBACK. */
+  recorded: boolean;
 }
 
 export interface SpendRequest {
@@ -187,82 +214,128 @@ function validKey(key: unknown): key is string {
 }
 
 /**
+ * Credit a player inside a transaction the CALLER owns.
+ *
+ * The exact mirror of `debitInTransaction`, and it exists for the same reason
+ * that one does: something has to be atomic with the money.
+ *
+ * ── What was wrong without it ──────────────────────────────────────────────
+ *
+ * `completeQuestEngagement` flipped the engagement to 'completed' and added the
+ * reward to `players.credit_balance` in one data-modifying CTE — atomic, and
+ * with NO `credit_events` row. Measured live on a real database:
+ *
+ *   event_key        kind       delta  balance_after
+ *   migration:…      migration    +90             90
+ *   survey-kill-1    kill          +5             95
+ *   survey-kill-2    kill          +5            250   <- +155 on a +5 event
+ *
+ *   SELECT SUM(delta) FROM credit_events -> 100
+ *   SELECT credit_balance FROM players   -> 250
+ *
+ * Row 3's `balance_after` cannot be derived from row 2's plus its own delta. The
+ * 150-credit quest reward is invisible to the chain, and every `balance_after`
+ * after a player's FIRST quest completion is underivable — which is every
+ * player. `ensureOpeningBalance` hides it on a brand-new account, which is
+ * exactly the account a smoke test uses.
+ *
+ * The obvious repair — call `applyCreditEvent` after the CTE — trades one defect
+ * for another: `applyCreditEvent` opens its own `BEGIN`, Postgres has no nested
+ * transactions, and a crash between the two statements leaves a quest completed
+ * and unpaid with no way to tell. So the quest flip and the credit share ONE
+ * transaction, and this is the half that can live inside it.
+ *
+ * ── The contract, and it matters ───────────────────────────────────────────
+ *
+ * The caller must already have issued `BEGIN`, and must `COMMIT` whenever
+ * `recorded` is true — INCLUDING when `applied` is false, which is the capped
+ * case, because that row is deliberately written at zero. Roll back only on
+ * `recorded === false`.
+ */
+export async function creditInTransaction(
+  db: Db,
+  playerId: string,
+  request: EarnRequest
+): Promise<TransactionalResult> {
+  const { kind, detail = null, eventKey, ignoreCap = false } = request;
+
+  const refuse = async (reason: LedgerReason): Promise<TransactionalResult> => ({
+    applied: false,
+    delta: 0,
+    balance: await currentBalance(db, playerId),
+    reason,
+    recorded: false,
+  });
+
+  if (!validKey(eventKey)) return refuse('invalid');
+
+  const priced = priceEvent({ kind, detail: detail ?? undefined } as CreditEvent);
+  if (priced === null) {
+    // Unknown or forbidden kind — 'cheat' lands here. Nothing is recorded,
+    // because nothing about the request is trustworthy enough to record.
+    return refuse('unknown_kind');
+  }
+
+  let delta = priced;
+  if (CALLER_PRICED.has(kind)) {
+    const supplied = Number(request.amount);
+    if (!Number.isInteger(supplied) || supplied < 0) return refuse('invalid');
+    delta = supplied;
+  }
+
+  const balance = await readBalanceLocked(db, playerId);
+  if (balance === null) {
+    return { applied: false, delta: 0, balance: 0, reason: 'invalid', recorded: false };
+  }
+
+  const cap = ignoreCap ? null : capFor(kind);
+  if (cap) {
+    const used = await countInWindow(db, playerId, kind, cap.windowSeconds);
+    if (used >= cap.maxEvents) {
+      // Record the attempt at zero rather than hiding it: a capped player is
+      // exactly the one worth being able to see afterwards.
+      await insertEvent(db, playerId, eventKey, kind, detail, 0, balance);
+      return { applied: false, delta: 0, balance, reason: 'capped', recorded: true };
+    }
+  }
+
+  const next = balance + delta;
+  const id = await insertEvent(db, playerId, eventKey, kind, detail, delta, next);
+  if (!id) {
+    return { applied: false, delta: 0, balance, reason: 'duplicate', recorded: false };
+  }
+
+  await db.query('UPDATE players SET credit_balance = $1, updated_at = NOW() WHERE id = $2', [
+    next,
+    playerId,
+  ]);
+  return { applied: true, delta, balance: next, reason: 'ok', recorded: true };
+}
+
+/**
  * Credit a player for something the client says happened.
  *
  * The server cannot know whether it really did — there is no simulation. What it
  * does is price the claim, bound how often it is honoured, and refuse a kind it
  * does not recognise.
+ *
+ * The transaction, and nothing else: the work is `creditInTransaction`, exactly
+ * as `spendCredits` is `debitInTransaction` plus a transaction. Two copies of
+ * "read locked, check the cap, insert, update" is one copy that eventually
+ * disagrees with the other about what a capped event does.
  */
 export async function applyCreditEvent(
   db: Db,
   playerId: string,
   request: EarnRequest
 ): Promise<LedgerResult> {
-  const { kind, detail = null, eventKey } = request;
-
-  if (!validKey(eventKey)) {
-    return { applied: false, delta: 0, balance: await currentBalance(db, playerId), reason: 'invalid' };
-  }
-
-  const priced = priceEvent({ kind, detail: detail ?? undefined } as CreditEvent);
-  if (priced === null) {
-    // Unknown or forbidden kind — 'cheat' lands here. Nothing is recorded,
-    // because nothing about the request is trustworthy enough to record.
-    return {
-      applied: false,
-      delta: 0,
-      balance: await currentBalance(db, playerId),
-      reason: 'unknown_kind',
-    };
-  }
-
-  let delta = priced;
-  if (CALLER_PRICED.has(kind)) {
-    const supplied = Number(request.amount);
-    if (!Number.isInteger(supplied) || supplied < 0) {
-      return {
-        applied: false,
-        delta: 0,
-        balance: await currentBalance(db, playerId),
-        reason: 'invalid',
-      };
-    }
-    delta = supplied;
-  }
-
   await db.query('BEGIN');
   try {
-    const balance = await readBalanceLocked(db, playerId);
-    if (balance === null) {
-      await db.query('ROLLBACK');
-      return { applied: false, delta: 0, balance: 0, reason: 'invalid' };
-    }
-
-    const cap = capFor(kind);
-    if (cap) {
-      const used = await countInWindow(db, playerId, kind, cap.windowSeconds);
-      if (used >= cap.maxEvents) {
-        // Record the attempt at zero rather than hiding it: a capped player is
-        // exactly the one worth being able to see afterwards.
-        await insertEvent(db, playerId, eventKey, kind, detail, 0, balance);
-        await db.query('COMMIT');
-        return { applied: false, delta: 0, balance, reason: 'capped' };
-      }
-    }
-
-    const next = balance + delta;
-    const id = await insertEvent(db, playerId, eventKey, kind, detail, delta, next);
-    if (!id) {
-      await db.query('ROLLBACK');
-      return { applied: false, delta: 0, balance, reason: 'duplicate' };
-    }
-
-    await db.query('UPDATE players SET credit_balance = $1, updated_at = NOW() WHERE id = $2', [
-      next,
-      playerId,
-    ]);
-    await db.query('COMMIT');
-    return { applied: true, delta, balance: next, reason: 'ok' };
+    const { recorded, ...result } = await creditInTransaction(db, playerId, request);
+    // COMMIT on `recorded`, not on `applied` — a capped event writes a zero row
+    // and must keep it.
+    await db.query(recorded ? 'COMMIT' : 'ROLLBACK');
+    return result;
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {});
     throw err;
@@ -354,9 +427,29 @@ export interface ReportedEvent {
   reason: string;
   /** Signed: positive is an earn, negative is a spend. */
   delta: number;
+  /**
+   * WHICH CATALOGUE ROW a marketplace debit is for — its id, or its `source_key`
+   * for a client shopping the bundled offline catalogue.
+   *
+   * The event could not express this, and that is what made a marketplace buy
+   * client-priced: `{key, reason, delta}` carries no item, so the server had
+   * nothing to look `cost_buy` up by even though it holds the row. Absent on a
+   * marketplace debit, the event is REFUSED — never priced from `delta`.
+   */
+  itemId?: string;
 }
 
-export type ReportOutcome = LedgerReason | 'unknown_source' | 'refused' | 'too_large';
+export type ReportOutcome =
+  | LedgerReason
+  | 'unknown_source'
+  | 'refused'
+  | 'too_large'
+  /** A marketplace debit that did not say which item. */
+  | 'unpriced_purchase'
+  /** The catalogue's own refusals, passed through so a client can tell them apart. */
+  | 'not_found'
+  | 'inactive'
+  | 'stock';
 
 export interface ReportResult {
   key: string;
@@ -364,6 +457,31 @@ export interface ReportResult {
   delta: number;
   balance: number;
   reason: ReportOutcome;
+}
+
+/**
+ * How a reported catalogue purchase is actually carried out.
+ *
+ * ── Why this is injected rather than imported ─────────────────────────────
+ *
+ * The destination is `marketplaceDb.purchaseMarketplaceItem`, and
+ * `marketplaceDb` already imports `debitInTransaction` from THIS file. Importing
+ * it back would make a cycle — one that works today because both sides are used
+ * inside function bodies, and that breaks in a bundler long after whoever
+ * created it has stopped looking. The route holds both modules already, so it
+ * hands the destination in.
+ *
+ * ── And it fails CLOSED ───────────────────────────────────────────────────
+ *
+ * A caller that supplies no handler cannot buy: the event is refused, not paid
+ * at the client's number. That is the whole point of the shape. There is no
+ * arrangement of these arguments that ends in a browser naming a purchase price.
+ */
+export interface ReportHandlers {
+  buyCatalogueItem?: (request: {
+    itemRef: string;
+    eventKey: string;
+  }) => Promise<{ applied: boolean; delta: number; balance: number; reason: ReportOutcome }>;
 }
 
 /**
@@ -376,7 +494,8 @@ export interface ReportResult {
 export async function applyReportedEvent(
   db: Db,
   playerId: string,
-  event: ReportedEvent
+  event: ReportedEvent,
+  handlers: ReportHandlers = {}
 ): Promise<ReportResult> {
   const key = event?.key;
   if (!validKey(key)) {
@@ -389,7 +508,7 @@ export async function applyReportedEvent(
     };
   }
 
-  const resolved = resolveReportedEvent(event.reason, event.delta);
+  const resolved = resolveReportedEvent(event.reason, event.delta, event.itemId);
   if (!resolved.ok) {
     return {
       key,
@@ -398,6 +517,24 @@ export async function applyReportedEvent(
       balance: await currentBalance(db, playerId),
       reason: resolved.reason,
     };
+  }
+
+  if (resolved.itemRef !== undefined) {
+    /* A catalogue purchase. `resolveReportedEvent` only sets `itemRef` for one,
+     * and it discards `delta` entirely when it does — so there is no path from
+     * here to a price the browser chose, including when no handler was given. */
+    const buy = handlers.buyCatalogueItem;
+    if (!buy) {
+      return {
+        key,
+        applied: false,
+        delta: 0,
+        balance: await currentBalance(db, playerId),
+        reason: 'unpriced_purchase',
+      };
+    }
+    const r = await buy({ itemRef: resolved.itemRef, eventKey: key });
+    return { key, applied: r.applied, delta: r.delta, balance: r.balance, reason: r.reason };
   }
 
   if (resolved.kind === 'spend') {

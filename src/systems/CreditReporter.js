@@ -84,7 +84,7 @@ export class CreditReporter {
     /** Nothing is queued until an account is known. */
     this.active = false;
 
-    /** @type {Array<{key:string, reason:string, delta:number}>} */
+    /** @type {Array<{key:string, reason:string, delta:number, itemId?:string}>} */
     this._queue = [];
     this._seq = 0;
     this._session = this._newSessionId();
@@ -134,7 +134,18 @@ export class CreditReporter {
       this._dropped++;
       return;
     }
-    this._queue.push({ key: `${this._session}:${this._seq++}`, reason, delta });
+    /* `itemId` travels with the event when there is one. A marketplace DEBIT is
+     * a catalogue purchase the server prices from `cost_buy`, and an event that
+     * cannot say which row is refused rather than paid at the number in `delta`
+     * -- so dropping this field here silently stops every purchase being
+     * charged. `Economy._emit` only sets it for a marketplace buy. */
+    const itemId = typeof event?.itemId === 'string' && event.itemId ? event.itemId : null;
+    this._queue.push({
+      key: `${this._session}:${this._seq++}`,
+      reason,
+      delta,
+      ...(itemId ? { itemId } : {}),
+    });
     this._persist();
     this.schedule();
   }
@@ -157,7 +168,16 @@ export class CreditReporter {
       // them is the whole point, and a fresh key would pay twice.
       this._queue = data.queue
         .filter((e) => e && typeof e.key === 'string' && typeof e.reason === 'string')
-        .map((e) => ({ key: e.key, reason: e.reason, delta: Math.trunc(Number(e.delta)) || 0 }))
+        .map((e) => ({
+          key: e.key,
+          reason: e.reason,
+          delta: Math.trunc(Number(e.delta)) || 0,
+          // Restored, not dropped. A queued purchase that comes back without its
+          // item id is a purchase the server will refuse to price, and the
+          // whole reason the queue is durable is that a crash must not cost the
+          // player -- or, here, cost the shop.
+          ...(typeof e.itemId === 'string' && e.itemId ? { itemId: e.itemId } : {}),
+        }))
         .filter((e) => e.delta !== 0)
         .slice(0, MAX_QUEUED);
     } catch { /* unreadable queue: better to lose it than to fail the boot */ }

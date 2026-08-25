@@ -9,12 +9,31 @@ import {
   listServerMarketplaceItems,
   listServerQuests,
   retireServerMarketplaceItem,
+  ServerContentInputError,
   updateServerMarketplaceItem,
   updateServerQuest,
   upsertServerLore,
 } from '@/lib/serverContent';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * A value the catalogue does not define is the OWNER'S mistake, not the
+ * server's, and it is owed a 400 that names the field.
+ *
+ * Before `serverContent` validated `gameAction`/`category`/`worldName`, an
+ * unrecognised one was stored happily and then took `GET /api/marketplace/items`
+ * down with a bodiless 500 for every member of that server. Now it is refused at
+ * the write — but refused through a `throw`, which this route's catch would
+ * otherwise turn into the same opaque 500 the owner could not act on. So the
+ * refusal is discriminated from a fault here, and only here.
+ */
+function inputRefusal(err: unknown) {
+  if (err instanceof ServerContentInputError) {
+    return NextResponse.json({ error: err.message, field: err.field }, { status: 400 });
+  }
+  return null;
+}
 
 /**
  * Owner CRUD (7c) over an owner's own lore, quests and marketplace items.
@@ -144,6 +163,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return NextResponse.json({ item }, { status: 201 });
   } catch (err) {
+    const refusal = inputRefusal(err);
+    if (refusal) return refusal;
     console.error('[servers/content] create failed:', err);
     return NextResponse.json({ error: 'Could not save that.' }, { status: 500 });
   } finally {
@@ -219,6 +240,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     });
     return NextResponse.json({ item });
   } catch (err) {
+    const refusal = inputRefusal(err);
+    if (refusal) return refusal;
     console.error('[servers/content] update failed:', err);
     return NextResponse.json({ error: 'Could not save that.' }, { status: 500 });
   } finally {

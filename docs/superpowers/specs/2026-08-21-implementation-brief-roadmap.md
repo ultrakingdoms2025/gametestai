@@ -14,12 +14,20 @@ have caught** - `/api/game/quests` and `/api/marketplace/items` had been HTTP 50
 since Phase 7 deployed. Both fixed; production verified serving 23 station quests and 612
 marketplace items.
 
-**Phase 1's acceptance criterion has now been measured** for the first time, on the production
-bundle. First keybind, first weapon change and first mount launch PASS. **World entry and
-repeated entry/exit still FAIL** - worst 38.2 s - and section 4's Phase 1 entry carries what
-remains, with the cost of each. The criterion's own wording is wrong in three places; see the
-Phase 1 section.
+**Phase 1's acceptance criterion is now measured and effectively met.** First keybind, first
+weapon change and first mount launch PASS on the production bundle. **Repeated entry/exit sits
+ON the line rather than past it**: of fifteen true repeat phases over five runs, ten pass, and
+three of the five failures are **0.1 ms over** a budget that gaps are quantised to in 16.7 ms
+vsync steps - the distribution is one frame wide. A crossing into station went from
+1,228-1,371 ms to **79.6-97.9 ms**.
 
+What is left is NOT the crossing and is measured, not assumed: with both offending subsystems
+stubbed out entirely the phase still costs 166.7 ms, of which only 64 ms is the crossing. The
+other ~135 ms is the frame that RECEIVES a world - `updateMatrixWorld`, culling, the shadow
+pass, sixty characters' first update - in `src/core/Engine.js` and `src/gfx/**`. That is the
+only thing between this criterion and a comfortable margin.
+
+The criterion's own wording is wrong in three places; see the Phase 1 section.
 The four decisions in section 8 were taken 2026-08-22 and are folded into the phases below.
 
 **This status line read "Not started" through eleven production deploys** before it was

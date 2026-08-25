@@ -75,8 +75,9 @@ The station's receive frame, and a steady station frame from the same run:
       1.9  x2     r.matrixWorld           1.5  x2     r.matrixWorld
 ```
 
-The same 4,000 frustum tests, 2,500 draw calls and 9M triangles. **The same
-function, 290 times more expensive per call.** `Frustum.intersectsObject` is
+The same 4,000 frustum tests, 2,500 draw calls and 9M triangles: 29.1 µs per
+frustum test on the receive frame against 0.097 µs on the steady one. **The same
+function, three hundred times more expensive per call.** `Frustum.intersectsObject` is
 arithmetic — a sphere copy, a matrix multiply and six plane distances — except
 for one branch:
 
@@ -103,7 +104,8 @@ Nothing ever invalidates the result, so it is paid exactly once per
 `SkinnedMesh` — and a crossing builds a whole new cast, so it is paid once per
 character per crossing, on the frame that receives the world. It is invisible to
 every instrument this repository already had: no programs, no geometries, no
-textures, no GL, and a CPU profile that names it `T` on the bundle that counts.
+textures, nothing in `--gl`, and on the only bundle whose numbers count, a CPU
+profile that gives it a two-letter name.
 
 ## 3. The answer was already in the geometry
 

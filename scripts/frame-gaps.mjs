@@ -928,7 +928,54 @@ async function runOnce(args, pageUrl, runIndex) {
         if (rawVis) delete C._hasVisibleFloor;
         time('relics._onWorld', () => G.relics && G.relics._onWorld(id, w));
         time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
+        /* --- WOULD A RETAINED CHARACTER GEOMETRY CACHE EVER HIT? -----------
+         *
+         * `CharacterAssets.geoCache` disposes on last release, so leaving a
+         * world frees the whole cast and re-entering welds every body again.
+         * The fix proposed for that is a bounded cache of released-but-unfreed
+         * keys - and a cache is worth exactly nothing unless the keys the
+         * SECOND visit asks for are the keys the first visit built.
+         *
+         * `spawnForWorld` below clears the live cast (which disposes every key
+         * it held) and builds a new one, which is what a re-entry does. So:
+         * snapshot the live key set first, record every acquire during the
+         * rebuild, and the overlap IS the hit rate a retained cache would get.
+         * `geoBuildMs` is the time inside the `make()` closures - the lofting,
+         * welding and merging a hit would skip. */
+        const A = G.npcManager && G.npcManager.assets;
+        const acquired = [];
+        let before = null, makeMs = 0, makes = 0;
+        if (A && A.geoCache) {
+          before = new Set(A.geoCache.keys());
+          const rawAcq = A.acquireGeometry;
+          A.acquireGeometry = function (key, make) {
+            acquired.push(key);
+            return rawAcq.call(this, key, () => {
+              const t = performance.now();
+              try { return make(); } finally { makeMs += performance.now() - t; makes++; }
+            });
+          };
+        }
         time('npcManager.spawnForWorld', () => G.npcManager && G.npcManager.spawnForWorld(w));
+        if (A && A.geoCache) {
+          delete A.acquireGeometry;
+          const uniq = new Set(acquired);
+          let hit = 0;
+          for (const k of uniq) if (before.has(k)) hit++;
+          let bytes = 0;
+          for (const g of A.geoCache.values()) {
+            for (const n in g.attributes) bytes += g.attributes[n].array.byteLength;
+            if (g.index) bytes += g.index.array.byteLength;
+          }
+          out.geoKeysInPreviousCast = before.size;
+          out.geoAcquires = acquired.length;
+          out.geoDistinctKeys = uniq.size;
+          out.geoKeysAlsoInPreviousCast = hit;
+          out.geoBuiltFromScratch = makes;
+          out.geoBuildMs = Math.round(makeMs * 10) / 10;
+          out.geoLiveEntries = A.geoCache.size;
+          out.geoLiveMB = Math.round(bytes / 1048576 * 100) / 100;
+        }
         time('loot._onWorld', () => G.loot && G.loot._onWorld && G.loot._onWorld(id, w));
         out.world = id;
         return JSON.stringify(out);

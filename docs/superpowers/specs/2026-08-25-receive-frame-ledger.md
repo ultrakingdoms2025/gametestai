@@ -181,11 +181,18 @@ ordinary frame.
 
 ## 5. The budget
 
-`stats().warm.programs` is **151** in every run in this branch, before and after.
-No crossing measured here carries `dProg` above 0 except the two documented tails
-in §6. Materials, renderables, instanced meshes, instances and world lights are
-untouched by construction: this changes one property on an object that was
-already in the scene.
+`stats().warm.programs` is **151** in every run in this branch — nine of them,
+before and after. Every true repeat measured here carries `dProg 0`; the only
+crossings that link anything are the first-entry `repeat:0` and the one
+program-linking tail, both in §6, and both were there before this change.
+
+Materials, renderables, instanced meshes, instances and world lights cannot move
+here by construction: the change sets one property on an object that is already
+in the scene and creates nothing. The one axis it can touch is culling at the
+frame edge — a character whose sphere is 1.4x the padded bind sphere survives the
+frustum test slightly further off screen than three's frozen one did — which can
+only ADD a draw call, never remove one, and only within one sphere-radius of a
+frustum plane.
 
 ## 6. The verdict
 

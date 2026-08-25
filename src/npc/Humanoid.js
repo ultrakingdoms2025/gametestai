@@ -331,7 +331,7 @@ const hairHeight = (u, v) =>
  * @param {number} strength linear radiance added at grazing angles
  * @param {number} power fresnel falloff exponent (higher = tighter edge)
  */
-function addRim(mat, rimHex, strength, power = 3.0, opts = {}) {
+export function addRim(mat, rimHex, strength, power = 3.0, opts = {}) {
   const col = new THREE.Color(rimHex);
   const fill = FILL_FOR.get(rimHex) ?? DEFAULT_FILL;
   const sky = new THREE.Color(fill.sky);
@@ -340,7 +340,6 @@ function addRim(mat, rimHex, strength, power = 3.0, opts = {}) {
   // decides whether a standing character has a face or a value hole.
   const fwdK = opts.forward ?? 0.45;
   const fwdCol = new THREE.Color(opts.forwardHex ?? fill.sky);
-  const key = `rim3|${rimHex}|${strength}|${power}|${fwdK}|${fwdCol.getHex()}`;
   mat.userData.rim = { hex: rimHex, strength, power };
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRimColor = { value: col };
@@ -449,9 +448,44 @@ function addRim(mat, rimHex, strength, power = 3.0, opts = {}) {
       shader.fragmentShader = shader.fragmentShader.replace(anchor, inject + anchor);
     }
   };
-  // Without a distinct cache key three would reuse the first compiled program
-  // for every rim colour.
-  mat.customProgramCacheKey = () => key;
+  /* ONE KEY FOR EVERY RIM, BECAUSE THERE IS ONLY EVER ONE SHADER.
+   *
+   * This used to be `rim3|${rimHex}|${strength}|${power}|${fwdK}|${fwd}`, under
+   * the note "without a distinct cache key three would reuse the first compiled
+   * program for every rim colour". It would - and that is CORRECT, because it
+   * is the same program. Every one of those six values is a UNIFORM
+   * (`uRimColor`, `uRimStrength`, `uRimPower`, `uFillSky`, `uFillGround`,
+   * `uFillStrength`, `uFillFwd`, `uFillFwdK`), and neither injected block above
+   * interpolates anything: the GLSL this function produces is byte-identical
+   * for every call.
+   *
+   * Sharing the program cannot leak a colour between characters.
+   * `WebGLRenderer.getProgram` does `parameters.uniforms =
+   * programCache.getUniforms(material)` - a fresh clone PER MATERIAL - runs
+   * `onBeforeCompile` on that clone, and stores it as
+   * `materialProperties.uniforms`. Only the compiled program is shared, and
+   * only when the source and every other cache-key field already match.
+   *
+   * What the per-colour key bought was a fresh link of identical GLSL for every
+   * distinct rim tuple. There are six tuples in a cast and a cast is rebuilt
+   * per world, so arriving in a world whose rim palette had not been seen
+   * linked six programs on the frame the player arrives on. Measured on the
+   * production bundle with `--cache-keys`: six of the seven programs dock's
+   * first entry linked, and six of medieval's seven, differed from an existing
+   * program in this field and in NOTHING else.
+   *
+   * A constant is still required, and not for tidiness: three's default
+   * `customProgramCacheKey()` returns `onBeforeCompile.toString()`, so without
+   * one every rim material would key on the whole function source instead.
+   *
+   * The property this rests on is that the source is CONSTANT.
+   * `scripts/tests/character-rim-programs.test.mjs` asserts it directly - two
+   * rims differing in every value must produce byte-identical vertex and
+   * fragment source and different uniform values - so interpolating anything
+   * into the injected GLSL fails a test rather than quietly handing two
+   * different shaders one program.
+   */
+  mat.customProgramCacheKey = () => 'rim3';
   return mat;
 }
 

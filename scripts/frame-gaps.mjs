@@ -71,7 +71,7 @@ function parseArgs(argv) {
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
     profile: null, events: 'keybind,weapon,mount,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
-    gl: false,
+    gl: false, listeners: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -93,6 +93,7 @@ function parseArgs(argv) {
     else if (a === '--env-warm-soak') out.envWarmSoak = Number(next());
     else if (a === '--cache-keys') out.cacheKeys = true;
     else if (a === '--gl') out.gl = true;
+    else if (a === '--listeners') out.listeners = true;
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -120,6 +121,10 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
                      on the PRODUCTION bundle - a driver entry point keeps its
                      name where a minified JS function does not. Off by default:
                      the criterion is measured without it.
+  --listeners        time every \`world:changed\` listener across the crossings
+                     and report each one's total, with the source of the
+                     handler. Property names survive minification, so a
+                     minified arrow still reads \`(e)=>this._onWorld(...)\`.
   --out <dir>        output directory (default: .probe/frame-gaps)
   --floor <ms>       keep every frame gap at least this long (default 24)
   --budget <ms>      the criterion (default 250)
@@ -800,6 +805,39 @@ async function runOnce(args, pageUrl, runIndex) {
       }
     }
 
+    /* --- WHICH LISTENER? ------------------------------------------------
+     *
+     * `WorldManager.activationCost.changed` is the whole `world:changed`
+     * fan-out in one number, and the fan-out is a Set of anonymous closures
+     * registered from a dozen modules. This wraps each of them in a timer.
+     *
+     * A minified arrow keeps its PROPERTY names - esbuild mangles locals, not
+     * members - so `({id:e,world:t})=>this._onWorld(e,t)` survives intact and
+     * says which subsystem the closure belongs to without a source map.
+     *
+     * Off by default and never on for the gate: it adds a wrapper frame per
+     * listener per crossing, and it defeats `bus.off` for the session. */
+    if (args.listeners) {
+      await evalIn(`(() => {
+        const bus = window.GAME.bus;
+        const set = bus._handlers.get('world:changed');
+        if (!set) return 0;
+        const rows = [];
+        const wrapped = new Set();
+        for (const fn of set) {
+          const row = { ms: 0, calls: 0, src: String(fn).replace(/\s+/g, ' ').slice(0, 140) };
+          rows.push(row);
+          wrapped.add((payload) => {
+            const t = performance.now();
+            try { return fn(payload); } finally { row.ms += performance.now() - t; row.calls++; }
+          });
+        }
+        bus._handlers.set('world:changed', wrapped);
+        window.__LISTENERS = rows;
+        return rows.length;
+      })()`);
+    }
+
     /* --- repeated entry/exit ------------------------------------------ */
     if (wants.has('repeat')) {
       const a = args.entryWorld;
@@ -828,6 +866,13 @@ async function runOnce(args, pageUrl, runIndex) {
           out.events[label].cost = [JSON.parse(costTo), JSON.parse(costBack)];
         }
       }
+    }
+
+    if (args.listeners) {
+      out.listeners = JSON.parse(await evalIn('JSON.stringify(window.__LISTENERS ?? [])'))
+        .filter((r) => r.calls > 0)
+        .map((r) => ({ ...r, ms: Math.round(r.ms * 10) / 10 }))
+        .sort((x, y) => y.ms - x.ms);
     }
 
     await mark('done');

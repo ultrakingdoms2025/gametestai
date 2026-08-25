@@ -431,6 +431,53 @@ const GRAPH_PROBE = `(() => {
   });
   return JSON.stringify({ nodes, meshes, culled, inst, instances, batch, skinned, lights, sprites, noBound });
 })()`;
+
+/**
+ * DOES THE BOUND WE HAND THE CULLER STILL CONTAIN THE ONE THREE WOULD COMPUTE?
+ *
+ * `gfx/SkinBounds.js` gives every character the padded bind-pose sphere its
+ * geometry already carries, instead of letting three CPU-skin the body to find
+ * one. The risk that buys is the only one worth a gate: a sphere that is too
+ * SMALL culls a character that is on screen.
+ *
+ * So this walks every live `SkinnedMesh` in whatever world is up, computes the
+ * sphere three would have computed FOR THE POSE IT IS IN RIGHT NOW, and reports
+ * the containment ratio - (distance between centres + the true radius) over the
+ * assigned radius. Anything at or under 1 is contained. It is run after the cast
+ * has been walking for seconds, not at spawn, because a check at bind pose would
+ * pass by construction and prove nothing.
+ *
+ * three's own method is restored to the mesh afterwards, so nothing downstream
+ * sees the probe's value.
+ */
+const SKIN_CONTAIN = `(() => {
+  const S = window.GAME.engine.scene;
+  const rows = [];
+  let n = 0, assigned = 0, worst = 0, worstName = null;
+  S.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    n++;
+    const mine = o.boundingSphere;
+    if (!mine) return;
+    assigned++;
+    const keep = mine.clone();
+    o.boundingSphere = null;
+    o.computeBoundingSphere();
+    const truth = o.boundingSphere;
+    const ratio = truth && truth.radius >= 0
+      ? (keep.center.distanceTo(truth.center) + truth.radius) / keep.radius
+      : 0;
+    o.boundingSphere = keep;
+    if (ratio > worst) { worst = ratio; worstName = o.parent && o.parent.parent ? o.parent.parent.name : o.name; }
+    rows.push(Math.round(ratio * 1000) / 1000);
+  });
+  rows.sort((a, b) => b - a);
+  return JSON.stringify({
+    world: window.GAME.worldManager.active && window.GAME.worldManager.active.id,
+    skinned: n, assigned, worst: Math.round(worst * 1000) / 1000, worstName,
+    top: rows.slice(0, 8),
+  });
+})()`;
 const FRAME_SHIM = `(() => {
   if (window.__FR) return 'already';
   const G = window.GAME;
@@ -793,6 +840,15 @@ async function runOnce(args, pageUrl, runIndex) {
     // recorder's first frame.
     if (args.gl) await call('Page.addScriptToEvaluateOnNewDocument', { source: GL_SHIM });
     await call('Page.addScriptToEvaluateOnNewDocument', { source: RECORDER });
+    /* `--floor` was documented from the first version of this script and never
+     * reached the page: the recorder carried a hard-coded 24 and every run that
+     * passed the flag silently got 24 anyway. It is the knob that decides which
+     * frames carry a `--frames` breakdown, so it had to start working before any
+     * of that could be read. */
+    await call('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => { const set = () => { if (window.__FG) window.__FG.floor = ${args.floor};`
+        + ` else setTimeout(set, 0); }; set(); })()`,
+    });
     await call('Page.navigate', { url: pageUrl });
 
     const evalIn = async (expr, awaitPromise = true) => {
@@ -1378,6 +1434,18 @@ async function runOnce(args, pageUrl, runIndex) {
         return 1;
       })()`);
     }
+    if (args.frames) {
+      out.skinBounds = [];
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      for (const id of [args.entryWorld, other]) {
+        await evalIn(`window.HARNESS.goto(${JSON.stringify(id)}).then(() => 1)`);
+        /* Seconds of real gameplay first. A containment check taken at spawn
+         * compares a bind-pose sphere against a bind pose. */
+        await sleep(6000);
+        out.skinBounds.push(JSON.parse(await evalIn(SKIN_CONTAIN)));
+      }
+    }
+
     /* --- THE SKINNED BOUND, ABLATED ------------------------------------
      *
      * `Frustum.intersectsObject` reads `object.boundingSphere` when the object
@@ -1549,6 +1617,11 @@ function printListeners(run) {
     console.log(`\nthe same crossing into "${run.ablated.world}" with the two stubbed out:`
       + ` total ${run.ablated.total} ms (npcs ${run.ablated.npcs}, changed ${run.ablated.changed},`
       + ` physicsAdd ${run.ablated.physicsAdd})`);
+  }
+  for (const b of run.skinBounds ?? []) {
+    console.log(`\nskinned bounds in "${b.world}": ${b.assigned}/${b.skinned} carry an assigned sphere,`
+      + ` worst containment ratio ${b.worst} (${b.worst <= 1 ? 'contained' : 'NOT CONTAINED'})`
+      + ` on ${b.worstName ?? '?'}; top ${JSON.stringify(b.top)}`);
   }
   if (run.autopsy) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);

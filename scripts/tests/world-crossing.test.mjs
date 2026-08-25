@@ -5,6 +5,7 @@ import { EventBus } from '../../src/core/EventBus.js';
 import { Physics } from '../../src/physics/Physics.js';
 import { World } from '../../src/worlds/World.js';
 import { WorldManager } from '../../src/worlds/WorldManager.js';
+import { Caches } from '../../src/systems/Caches.js';
 
 /**
  * WHAT A CROSSING MUST STILL BE TRUE OF, AND WHAT IT COSTS.
@@ -226,4 +227,243 @@ test('clearing and re-adding restores the identical broadphase', async () => {
   for (const b of boxes) p.add(b);
   assert.equal(p.gridWrites, writes * 2, 'the re-add did not do the same work');
   assert.equal(p._grid.size, cells, 'the rebuilt broadphase has a different shape');
+});
+
+/* ------------------------------------------------------------------ */
+/* ... and a cache is still on something the player can stand on       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHY THESE CASES ARE ABOUT REACHABILITY AND NOT ABOUT PLACEMENT.
+ *
+ * `Caches._hasVisibleFloor` was 75% of a station crossing - eleven
+ * `THREE.Raycaster` calls against the whole world group at 86 ms each - and the
+ * fix is an index that narrows what the raycaster is handed. The cheapest
+ * version of that fix is the one these cases exist to forbid: keep the ANSWERS
+ * across the crossing, because the placement is seeded and the colliders did
+ * not change. It removes the whole cost and it is wrong in a way nothing
+ * reports, because the `[Caches]` log line only prints when something LANDED. A
+ * site that survives a crossing it should not have survived is a cache floating
+ * in mid-air; a site that is not re-found is a world that has quietly lost its
+ * reason to fly.
+ *
+ * So these do not assert "the same three sites came back". They assert
+ * "whatever came back has a floor under it that the player can see and stand
+ * on, on THIS crossing" - and both directions of staleness are injected between
+ * crossings to prove they bite: geometry taken away must lose its site, and
+ * geometry put there must be able to gain one.
+ */
+
+const SITE_MAT = new THREE.MeshBasicMaterial();
+
+/** A visible slab centred on (x, y, z), with a collider that matches it. */
+function slab(world, x, y, z, w, h, d) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), SITE_MAT);
+  m.position.set(x, y, z);
+  world.addSolid(m);
+  return m;
+}
+
+/**
+ * A world with a deck you can see, a ledge you cannot, and floor under both.
+ *
+ * The ground plate is far wider than the content box on purpose. `_findHigh`
+ * darts inside the box, and a dart near the plate's edge finds open air on its
+ * ring probes and reads it as a drop; keeping every dart well inside the plate
+ * means no dart can place anything. The only sites in this world are therefore
+ * the AUTHORED ones - which go through `_highAt`, the same predicate the dart
+ * has to satisfy, and are deterministic enough to assert on by name.
+ */
+function makeSiteWorld(id) {
+  return class extends World {
+    static id = id;
+    static displayName = id;
+
+    async build() {
+      slab(this, 0, -0.5, 0, 800, 1, 800);
+      // A deck the player can see: a plate 12 m up with a long drop all round.
+      this.deck = slab(this, 60, 11.5, 60, 12, 1, 12);
+      /* And a boundary collider: solid, and nothing whatsoever to look at.
+       * This is the shape `_hasVisibleFloor` exists to refuse - `groundHeight`
+       * reports a perfectly good surface 14 m up and there is no renderable
+       * geometry within a hundred metres of it. */
+      this.track(this.physics.addBox(-60, 13.5, -60, 6, 0.5, 6));
+
+      this.contentBounds = new THREE.Box3(
+        new THREE.Vector3(-150, 0, -150),
+        new THREE.Vector3(150, 40, 150),
+      );
+      this.cacheSites = [
+        { x: 60, z: 60, label: 'deck' },
+        { x: -60, z: -60, label: 'boundary ledge' },
+      ];
+      this.playerSpawn.set(0, 1, 0);
+    }
+  };
+}
+
+/** Enough of Loot for Caches to stock a site against. */
+function fakeLoot() {
+  return {
+    spawned: [],
+    spawn(pos, contents, opts) {
+      const p = { pos: pos.clone(), contents, opts };
+      this.spawned.push(p);
+      return p;
+    },
+    despawn(p) { this.spawned = this.spawned.filter((x) => x !== p); },
+  };
+}
+
+function makeSiteManager() {
+  const bus = new EventBus();
+  const scene = new THREE.Scene();
+  const physics = new Physics(bus);
+  const manager = new WorldManager({
+    scene, engine: { running: false }, physics, bus, materials: {},
+  });
+  manager.register(makeSiteWorld('deckworld'));
+  manager.register(makeWorld('elsewhere', { wallX: 40, props: 40 }));
+  const loot = fakeLoot();
+  const caches = new Caches({ bus, physics, loot, worldManager: manager });
+  return { manager, physics, bus, scene, caches, loot };
+}
+
+/** Where the RENDER TREE says the floor is at (x, z), or null. */
+function seenFloorY(group, x, z, from = 40) {
+  const ray = new THREE.Raycaster(
+    new THREE.Vector3(x, from, z), new THREE.Vector3(0, -1, 0), 0, 400,
+  );
+  const hits = ray.intersectObject(group, true);
+  return hits.length ? hits[0].point.y : null;
+}
+
+/** Drop a capsule onto (x, z) from just above and report where it rests. */
+function settleAt(physics, x, y, z) {
+  const pos = new THREE.Vector3(x, y + 1.5, z);
+  for (let i = 0; i < 400; i++) {
+    pos.y -= 0.06;
+    physics.resolveCapsule(pos, 0.35, 1.75);
+  }
+  return pos.y;
+}
+
+/** Sites near (x, z), the way the assertions below want to ask. */
+function siteNear(caches, x, z, r = 8) {
+  return caches.all.find((s) => Math.abs(s.pos.x - x) < r && Math.abs(s.pos.z - z) < r) ?? null;
+}
+
+test('every cache placed on re-entry is standing on geometry the player can see', async () => {
+  const { manager, physics, caches } = makeSiteManager();
+
+  await manager.activate('deckworld');
+  await manager.activate('elsewhere');
+  await manager.activate('deckworld');
+
+  const group = manager.getWorld('deckworld').group;
+  assert.ok(caches.all.length > 0, 'the world came back with no caches at all');
+  for (const s of caches.all) {
+    const seen = seenFloorY(group, s.pos.x, s.pos.z);
+    assert.notEqual(seen, null,
+      `cache ${s.id} hangs over nothing a player can see - a cache in the sky`);
+    assert.ok(Math.abs(seen - (s.pos.y - 0.2)) < 1.2,
+      `cache ${s.id} sits at y=${s.pos.y} and the nearest visible floor is y=${seen}`);
+    const rest = settleAt(physics, s.pos.x, s.pos.y, s.pos.z);
+    assert.ok(Math.abs(rest - (s.pos.y - 0.2)) < 1.2,
+      `a player dropped on cache ${s.id} fell to y=${rest} instead of standing at y=${s.pos.y}`);
+  }
+});
+
+test('a boundary collider never gets a cache, however many times the world is entered', async () => {
+  const { manager, caches } = makeSiteManager();
+
+  for (let i = 0; i < 3; i++) {
+    await manager.activate('deckworld');
+    await manager.activate('elsewhere');
+  }
+  await manager.activate('deckworld');
+
+  assert.equal(siteNear(caches, -60, -60), null,
+    'a cache landed on the invisible boundary ledge');
+  assert.ok(siteNear(caches, 60, 60),
+    'the visible deck lost its cache across repeated crossings');
+});
+
+test('STALE, taking away: geometry removed between crossings loses its cache', async () => {
+  const { manager, caches } = makeSiteManager();
+
+  await manager.activate('deckworld');
+  const world = manager.getWorld('deckworld');
+  assert.ok(siteNear(caches, 60, 60),
+    'the deck did not get a cache on first entry, so this case proves nothing');
+
+  /* The deck is demolished while the player is away. Its collider stays - it is
+   * still solid - and there is no longer anything to see standing on. An answer
+   * kept from the previous crossing would put the cache back on a deck that is
+   * not there. */
+  world.deck.removeFromParent();
+  await manager.activate('elsewhere');
+  await manager.activate('deckworld');
+
+  assert.equal(siteNear(caches, 60, 60), null,
+    'a cache came back on a deck that had been removed - the probe answered from a stale index');
+});
+
+test('STALE, putting back: geometry added between crossings can gain a cache', async () => {
+  const { manager, caches } = makeSiteManager();
+
+  await manager.activate('deckworld');
+  const world = manager.getWorld('deckworld');
+  assert.equal(siteNear(caches, 120, 120), null,
+    'something was already at the second deck before it was built');
+
+  /* A new deck, and a nomination for it. An index built once and kept would
+   * have been built before this existed, and the site would be refused for
+   * having no visible floor - which is how a world loses its high caches
+   * silently, because the [Caches] line only prints what landed. */
+  slab(world, 120, 11.5, 120, 12, 1, 12);
+  world.cacheSites = [...world.cacheSites, { x: 120, z: 120, label: 'new deck' }];
+
+  await manager.activate('elsewhere');
+  await manager.activate('deckworld');
+
+  const found = siteNear(caches, 120, 120);
+  assert.ok(found, 'a deck built between crossings never got its cache');
+  const seen = seenFloorY(world.group, found.pos.x, found.pos.z);
+  assert.ok(seen !== null && Math.abs(seen - (found.pos.y - 0.2)) < 1.2,
+    `the new deck's cache is at y=${found.pos.y} and its visible floor at y=${seen}`);
+});
+
+test('the narrowed probe answers exactly what the whole-tree probe answered', async () => {
+  const { manager, caches } = makeSiteManager();
+  await manager.activate('deckworld');
+  const world = manager.getWorld('deckworld');
+
+  /* The index is scoped to one `_onWorld` call, so outside one
+   * `_hasVisibleFloor` takes the whole-tree branch. Run both branches over the
+   * same grid - the deck, the boundary ledge, open ground, and the empty air
+   * between them - and they must not disagree anywhere. A narrowing that drops
+   * a candidate deletes a cache site; one that invents a hit puts a cache in
+   * the sky. Neither would show up in a timing. */
+  const points = [];
+  for (let x = -140; x <= 140; x += 10) {
+    for (let z = -140; z <= 140; z += 10) {
+      for (const y of [0, 11.7, 13.9, 26]) points.push([x, y, z]);
+    }
+  }
+
+  const whole = points.map(([x, y, z]) => caches._hasVisibleFloor(x, y, z));
+  caches._indexVisible(world.group);
+  const narrowed = points.map(([x, y, z]) => caches._hasVisibleFloor(x, y, z));
+  caches._vis = null;
+  caches._visOut = null;
+
+  let found = 0;
+  for (let i = 0; i < points.length; i++) {
+    if (whole[i]) found++;
+    assert.equal(narrowed[i], whole[i],
+      `the index disagreed at ${points[i].join(', ')}: whole tree ${whole[i]}, narrowed ${narrowed[i]}`);
+  }
+  assert.ok(found > 100,
+    `only ${found} of ${points.length} probes found a floor - the grid missed the world`);
 });

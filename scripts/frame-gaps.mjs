@@ -917,7 +917,59 @@ async function runOnce(args, pageUrl, runIndex) {
             try { return rawVis.apply(this, a); } finally { visMs += performance.now() - t; visN++; }
           };
         }
+        /* WHAT THE VISIBLE-FLOOR PROBE IS ACTUALLY HANDED.
+         *
+         * _hasVisibleFloor narrows the render tree to the leaves whose world
+         * box overlaps its eight-metre segment. Whether that is worth anything
+         * depends entirely on the SHAPE of the world group, which no static
+         * read of the source can tell you: a district merged into one mesh
+         * whose box spans the map is a candidate for every probe no matter how
+         * the index is built. So record, per probe, how many leaves survived
+         * the filter and how many triangles they carry. */
+        const probes = [];
+        if (rawVis && C._visibleNear) {
+          const rawNear = C._visibleNear;
+          C._visibleNear = function (...a) {
+            const list = rawNear.apply(this, a);
+            let tris = 0;
+            for (const o of list) {
+              const g = o.geometry;
+              const n = g ? (g.index ? g.index.count : (g.attributes.position?.count ?? 0)) / 3 : 0;
+              tris += n * (o.isInstancedMesh ? o.count : 1);
+            }
+            probes.push({ n: list.length, tris: Math.round(tris) });
+            return list;
+          };
+        }
         time('caches._onWorld', () => C && C._onWorld(id, w));
+        if (rawVis && C._visibleNear) delete C._visibleNear;
+        if (probes.length) {
+          out.visProbeCandidates = probes.map((p) => p.n);
+          out.visProbeTriangles = probes.map((p) => p.tris);
+        }
+        /* The index itself, built once more so its shape can be reported. */
+        if (C && C._indexVisible && w.group) {
+          const t = performance.now();
+          C._indexVisible(w.group);
+          out.visIndexMs = Math.round((performance.now() - t) * 10) / 10;
+          out.visLeaves = C._vis.leaves.length;
+          out.visAlways = C._vis.always.length;
+          out.visCells = C._vis.cells.size;
+          let allTris = 0, alwaysTris = 0, biggest = [];
+          const tri = (o) => {
+            const g = o.geometry;
+            const n = g ? (g.index ? g.index.count : (g.attributes.position?.count ?? 0)) / 3 : 0;
+            return Math.round(n * (o.isInstancedMesh ? o.count : 1));
+          };
+          for (const o of C._vis.leaves) { const t2 = tri(o); allTris += t2; biggest.push([o.name || o.type, t2]); }
+          for (const o of C._vis.always) { const t2 = tri(o); alwaysTris += t2; allTris += t2; biggest.push([(o.name || o.type) + ' [always]', t2]); }
+          biggest.sort((x, y) => y[1] - x[1]);
+          out.visTriangles = allTris;
+          out.visAlwaysTriangles = alwaysTris;
+          out.visBiggest = biggest.slice(0, 10);
+          C._vis = null;
+          C._visOut = null;
+        }
         /* The render-tree raycast calls no physics, so the two are disjoint
          * and rayMs here is the physics half whole. */
         out.physicsRaycastMs = Math.round(rayMs * 10) / 10;
@@ -930,17 +982,17 @@ async function runOnce(args, pageUrl, runIndex) {
         time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
         /* --- WOULD A RETAINED CHARACTER GEOMETRY CACHE EVER HIT? -----------
          *
-         * `CharacterAssets.geoCache` disposes on last release, so leaving a
+         * CharacterAssets.geoCache disposes on last release, so leaving a
          * world frees the whole cast and re-entering welds every body again.
          * The fix proposed for that is a bounded cache of released-but-unfreed
          * keys - and a cache is worth exactly nothing unless the keys the
          * SECOND visit asks for are the keys the first visit built.
          *
-         * `spawnForWorld` below clears the live cast (which disposes every key
+         * spawnForWorld below clears the live cast (which disposes every key
          * it held) and builds a new one, which is what a re-entry does. So:
          * snapshot the live key set first, record every acquire during the
          * rebuild, and the overlap IS the hit rate a retained cache would get.
-         * `geoBuildMs` is the time inside the `make()` closures - the lofting,
+         * geoBuildMs is the time inside the make() closures - the lofting,
          * welding and merging a hit would skip. */
         const A = G.npcManager && G.npcManager.assets;
         const acquired = [];
@@ -1144,7 +1196,8 @@ function printListeners(run) {
     console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
     for (const [k, v] of Object.entries(run.autopsy)) {
       if (k === 'world') continue;
-      console.log(`${String(v).padStart(9)}  ${k}`);
+      const s = Array.isArray(v) ? JSON.stringify(v) : String(v);
+      console.log(`${s.length > 9 ? s : s.padStart(9)}  ${k}`);
     }
   }
 }

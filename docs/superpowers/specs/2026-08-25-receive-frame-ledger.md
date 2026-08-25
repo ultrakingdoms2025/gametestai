@@ -187,7 +187,45 @@ already in the scene.
 
 ## 6. The verdict
 
-(filled in below from the clean gate runs)
+Three clean production runs — `--serve prod --events repeat --repeat 3`, no
+instrumentation of any kind, which is the gate as the criterion is written
+against it:
+
+| run | `repeat:0` | `repeat:1` | `repeat:2` | `warm.programs` |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 866.6 (dProg 7) | **100.0** | **100.0** | 151 |
+| 2 | 1,300.2 (dProg 8) | **100.0** | **100.0** | 151 |
+| 3 | 1,383.3 (dProg 8) | **116.6** | **116.7** | 151 |
+
+**Six true repeats: 100.0, 100.0, 100.0, 100.0, 116.6, 116.7 ms against a 250 ms
+budget.** The whole distribution now sits at 40–47% of the budget, where it
+previously sat at 87–100% with three of five failures a tenth of a millisecond
+over. In those six phases the only gaps above the 24 ms floor at all are the
+crossing's own 83–100 ms and the occasional 33 ms double-frame; the receive
+frame no longer registers.
+
+### `repeat:0` is a first entry wearing a repeat's label
+
+It is not a repeat and this branch did not make it one. With `--events repeat`
+alone the destination has never been entered in the session, so `repeat:0`'s
+first crossing builds medieval's entire cast from scratch — `npcs 455–487 ms`,
+`dGeometries +215` — and links 7–8 shader programs. That is 565–600 ms of
+crossing inside an 866–1,383 ms gap, and it is the same cost the criterion's
+`entry` line is for. The three earlier branches' ledgers report the same
+distribution shape with two long tails in fifteen samples, which is what a
+per-run first entry looks like.
+
+The instrument now says so at the call site, and `--events entry,repeat` makes
+all three phases true repeats.
+
+### What is left, and it is not the receive frame
+
+A crossing that LINKS A PROGRAM is still in a class of its own. In an
+instrumented run one such crossing carried `dProg 1` and cost **5,433 ms**, of
+which 5,314 ms was inside `renderBufferDirect` — one `linkProgram` and the
+`LINK_STATUS` read that waits for it, in the driver, on the frame a player is
+in. This phase has spent three branches on that axis and the remaining named
+lever is sports' fog type. Nothing in this branch touches it.
 
 ## 7. Reading it yourself
 

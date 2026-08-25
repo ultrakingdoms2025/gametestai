@@ -890,7 +890,42 @@ async function runOnce(args, pageUrl, runIndex) {
           try { fn(); } catch (err) { out[name + ':error'] = String(err && err.message || err); }
           out[name] = Math.round((performance.now() - t) * 10) / 10;
         };
-        time('caches._onWorld', () => G.caches && G.caches._onWorld(id, w));
+        /* THE 811 ms, SPLIT AT ITS OWN BOUNDARY.
+         *
+         * Caches._onWorld darts at the content box and probes each candidate
+         * two ways: Physics.groundHeight, which is this repository's own
+         * broadphase raycast, and _hasVisibleFloor, which is a THREE.Raycaster
+         * against the whole render tree. Those live on opposite sides of a
+         * file boundary and have completely different fixes, so the number is
+         * worth nothing until it is split.
+         *
+         * Both are wrapped as OWN properties over the prototype methods and
+         * deleted afterwards, so the instrumentation cannot outlive the
+         * measurement. */
+        const P = G.physics;
+        const C = G.caches;
+        let rayMs = 0, rayN = 0, visMs = 0, visN = 0;
+        const rawRay = P.raycast;
+        const rawVis = C && C._hasVisibleFloor;
+        P.raycast = function (...a) {
+          const t = performance.now();
+          try { return rawRay.apply(this, a); } finally { rayMs += performance.now() - t; rayN++; }
+        };
+        if (rawVis) {
+          C._hasVisibleFloor = function (...a) {
+            const t = performance.now();
+            try { return rawVis.apply(this, a); } finally { visMs += performance.now() - t; visN++; }
+          };
+        }
+        time('caches._onWorld', () => C && C._onWorld(id, w));
+        /* The render-tree raycast calls no physics, so the two are disjoint
+         * and rayMs here is the physics half whole. */
+        out.physicsRaycastMs = Math.round(rayMs * 10) / 10;
+        out.physicsRaycastCalls = rayN;
+        out.hasVisibleFloorMs = Math.round(visMs * 10) / 10;
+        out.hasVisibleFloorCalls = visN;
+        delete P.raycast;
+        if (rawVis) delete C._hasVisibleFloor;
         time('relics._onWorld', () => G.relics && G.relics._onWorld(id, w));
         time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
         time('npcManager.spawnForWorld', () => G.npcManager && G.npcManager.spawnForWorld(w));

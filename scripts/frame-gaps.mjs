@@ -1081,7 +1081,20 @@ async function runOnce(args, pageUrl, runIndex) {
         if (profiling) await profileOff(label);
         const phase = await closePhase(label);
         const post = JSON.parse(await evalIn(KEY));
-        out.events[label] = { ...phase, builtBefore: pre.built, key: { pre, post } };
+        /* THE CROSSING, BESIDE THE GAP IT IS BLAMED FOR.
+         *
+         * `--events repeat` has always recorded `WorldManager.activationCost`
+         * either side of a crossing pair; `entry` never did, so every first
+         * entry in the §7 table was a bare gap with no statement of what the
+         * crossing itself cost. That is how race's 31 s came to be written
+         * down as "a volatile world rebuilt": nothing in the report said the
+         * crossing was 46 ms. It is the same field, read the same way, one
+         * line after the phase closes. */
+        const cost = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
+        out.events[label] = {
+          ...phase, builtBefore: pre.built, key: { pre, post },
+          cost: [cost ? JSON.parse(cost) : null],
+        };
         if (args.cacheKeys) {
           const after = JSON.parse(await evalIn(KEYS));
           const had = new Set(keysBefore);
@@ -1667,6 +1680,17 @@ function printListeners(run) {
  * a world build in an idle callback, a CDP eval, or the compositor simply not
  * scheduling - and a large one is the instrument telling you it is looking in
  * the wrong place.
+ *
+ * READ `beats` BEFORE `outside-loop`. The 4 ms heartbeat is on the same main
+ * thread and is NOT gated on the compositor, so `beats` counts the times that
+ * thread was free INSIDE the gap. A gap whose `beats` is roughly `ms / 4` had
+ * an idle main thread from end to end: no JavaScript ran in it, and no amount
+ * of reading `outside-loop` as "a build" or "a rebuild" can make it one.
+ * `outside-loop` cannot tell those apart - it is a subtraction, so a frame
+ * that never arrived and a frame spent in a foreign task look identical in it.
+ * A previous ledger read a 31 s `outside-loop` on race's entry as "a volatile
+ * world rebuilt"; `beats` on the same record said the thread was idle for the
+ * whole 31 s, and race is not volatile.
  */
 function printFrames(run, opts = {}) {
   const want = opts.phases ?? null;
@@ -1689,7 +1713,7 @@ function printFrames(run, opts = {}) {
     const acct = TOP.reduce((a, k) => a + (ms[k] ?? 0), 0);
     console.log(
       `\n  ${g.ms} ms  phase ${g.phase}  dProg ${g.dPrograms} dGeom ${g.dGeometries} dTex ${g.dTextures}`
-      + `  blocked ${g.blockedMs}  loop ${Math.round(acct * 10) / 10}`
+      + `  blocked ${g.blockedMs} beats ${g.beats}  loop ${Math.round(acct * 10) / 10}`
       + `  outside-loop ${Math.round((g.ms - acct) * 10) / 10}`
       + `  [${ms['#calls'] ?? '-'} calls, ${ms['#tris'] ?? '-'} tris]`,
     );

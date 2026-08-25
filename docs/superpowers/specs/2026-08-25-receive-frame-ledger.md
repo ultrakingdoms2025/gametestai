@@ -239,8 +239,9 @@ lever is sports' fog type. Nothing in this branch touches it.
 ## 7. Reading it yourself
 
 ```
-node scripts/frame-gaps.mjs --serve prod --events repeat                    # the gate
-node scripts/frame-gaps.mjs --serve prod --events repeat --frames           # + the loop, the containment check, the ablation
+node scripts/frame-gaps.mjs --serve prod --events repeat --repeat 3       # the gate
+node scripts/frame-gaps.mjs --serve prod --events entry,repeat --frames   # every criterion world, and three TRUE repeats
+node scripts/frame-gaps.mjs --serve prod --events repeat --frames         # the loop, the containment check, the ablation
 node --test scripts/tests/skin-bounds.test.mjs
 ```
 

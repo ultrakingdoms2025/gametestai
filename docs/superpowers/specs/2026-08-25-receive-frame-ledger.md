@@ -192,13 +192,46 @@ before and after. Every true repeat measured here carries `dProg 0`; the only
 crossings that link anything are the first-entry `repeat:0` and the one
 program-linking tail, both in §6, and both were there before this change.
 
-Materials, renderables, instanced meshes, instances and world lights cannot move
-here by construction: the change sets one property on an object that is already
-in the scene and creates nothing. The one axis it can touch is culling at the
-frame edge — a character whose sphere is 1.4x the padded bind sphere survives the
-frustum test slightly further off screen than three's frozen one did — which can
-only ADD a draw call, never remove one, and only within one sphere-radius of a
-frustum plane.
+`world-shot --world station` on both trees — this branch, and this branch with
+`useBindPoseBounds` taken back out — diffed with `budget-diff.mjs` across all
+21 framings:
+
+| axis | before | after | delta |
+| --- | ---: | ---: | ---: |
+| materials | 225 | 225 | 0 |
+| renderables | 1,354 | 1,354 | 0 |
+| instancedMeshes | 217 | 217 | 0 |
+| instances | 54,837 | 54,837 | 0 |
+| worldLights / worldLightsLit | 226 / 0 | 226 / 0 | 0 |
+| worldTriangles | 2,120,816..3,370,082 | identical | 0 |
+| npcs | 68 | 68 | 0 |
+| unculledMeshes | 101 | 101 | 0 |
+| programs (last framing) | 270 | 270 | 0 |
+| geometries | | | −93..+56 |
+| textures | | | −68..+19 |
+| drawCalls | | | −352..+348 |
+
+### The three that moved are the instrument, and the shape says so
+
+`drawCalls` moved on 17 of 21 framings and **almost every delta is ±289 to
+±292**: ten up, seven down, four exactly zero. A larger culling sphere can only
+ever ADD draw calls and would add them in ones and twos, so a symmetric ±290 is
+not this change.
+
+`StationWorld._buildLights` names the number: *"A shadow pass is a second render
+of everything in the box - measured at ~300 draw calls. Refreshing it seven
+times a second instead of every frame..."*. `drawCalls` is
+`renderer.info.render.calls` for the single frame a shot lands on, and the plaza
+key shadow refreshes on a timer — so whether that frame carried a shadow pass is
+a coin flip worth ~290 calls. `geometries` and `textures` drift both ways for
+the same reason: they are `renderer.info.memory` counts of pools built on
+demand.
+
+The subsystems ledger hit the same thing and re-ran to find it (*"2,409 before
+and 2,723 after ... Re-running the BEFORE tree gave 2,721"*). This is that
+artefact identified rather than re-discovered: on the station, `drawCalls` from
+a single framing has a ±290 quantum in it and is not a comparable axis without
+pinning the shadow cadence.
 
 ## 6. The verdict
 

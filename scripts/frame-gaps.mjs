@@ -71,7 +71,7 @@ function parseArgs(argv) {
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
     profile: null, events: 'keybind,weapon,mount,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
-    gl: false,
+    gl: false, listeners: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -93,6 +93,7 @@ function parseArgs(argv) {
     else if (a === '--env-warm-soak') out.envWarmSoak = Number(next());
     else if (a === '--cache-keys') out.cacheKeys = true;
     else if (a === '--gl') out.gl = true;
+    else if (a === '--listeners') out.listeners = true;
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -111,14 +112,19 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
-  --profile background|entry   CPU-sample the background world chain, or the
-                     first world entry, and fold the samples into a self-time
-                     table. Use with --serve dev, where names survive.
+  --profile background|entry|repeat   CPU-sample the background world chain,
+                     the first world entry, or one repeated crossing pair, and
+                     fold the samples into a self-time table. Use with
+                     --serve dev, where names survive.
   --gl               time every WebGL call that can block and charge each frame
                      gap to the driver entry points it was spent inside. Works
                      on the PRODUCTION bundle - a driver entry point keeps its
                      name where a minified JS function does not. Off by default:
                      the criterion is measured without it.
+  --listeners        time every \`world:changed\` listener across the crossings
+                     and report each one's total, with the source of the
+                     handler. Property names survive minification, so a
+                     minified arrow still reads \`(e)=>this._onWorld(...)\`.
   --out <dir>        output directory (default: .probe/frame-gaps)
   --floor <ms>       keep every frame gap at least this long (default 24)
   --budget <ms>      the criterion (default 250)
@@ -799,6 +805,39 @@ async function runOnce(args, pageUrl, runIndex) {
       }
     }
 
+    /* --- WHICH LISTENER? ------------------------------------------------
+     *
+     * `WorldManager.activationCost.changed` is the whole `world:changed`
+     * fan-out in one number, and the fan-out is a Set of anonymous closures
+     * registered from a dozen modules. This wraps each of them in a timer.
+     *
+     * A minified arrow keeps its PROPERTY names - esbuild mangles locals, not
+     * members - so `({id:e,world:t})=>this._onWorld(e,t)` survives intact and
+     * says which subsystem the closure belongs to without a source map.
+     *
+     * Off by default and never on for the gate: it adds a wrapper frame per
+     * listener per crossing, and it defeats `bus.off` for the session. */
+    if (args.listeners) {
+      await evalIn(`(() => {
+        const bus = window.GAME.bus;
+        const set = bus._handlers.get('world:changed');
+        if (!set) return 0;
+        const rows = [];
+        const wrapped = new Set();
+        for (const fn of set) {
+          const row = { ms: 0, calls: 0, src: String(fn).replace(/\\s+/g, ' ').slice(0, 140) };
+          rows.push(row);
+          wrapped.add((payload) => {
+            const t = performance.now();
+            try { return fn(payload); } finally { row.ms += performance.now() - t; row.calls++; }
+          });
+        }
+        bus._handlers.set('world:changed', wrapped);
+        window.__LISTENERS = rows;
+        return rows.length;
+      })()`);
+    }
+
     /* --- repeated entry/exit ------------------------------------------ */
     if (wants.has('repeat')) {
       const a = args.entryWorld;
@@ -806,12 +845,138 @@ async function runOnce(args, pageUrl, runIndex) {
       for (let i = 0; i < 3; i++) {
         const label = `repeat:${i}`;
         await mark(label);
+        /* `--profile repeat` samples the SECOND crossing pair, not the first.
+         * The first re-entry into a world still pays whatever one-time cost
+         * the world's own activation carries; the criterion is about the
+         * repeat, and the repeat is what iteration 1 onward measures. */
+        const profiling = args.profile === 'repeat' && i === 1;
+        if (profiling) await profileOn();
         await evalIn(`window.HARNESS.goto(${JSON.stringify(b)}).then(() => 1)`);
+        /* `WorldManager.activationCost` - the crossing broken into its named
+         * steps, written by the world manager itself. String labels, so this
+         * is readable on the minified bundle where a CPU profile is not. */
+        const costTo = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
         await sleep(900);
         await evalIn(`window.HARNESS.goto(${JSON.stringify(a)}).then(() => 1)`);
+        const costBack = await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)');
         await sleep(900);
+        if (profiling) await profileOff(label);
         out.events[label] = await closePhase(label);
+        if (out.events[label]) {
+          out.events[label].cost = [JSON.parse(costTo), JSON.parse(costBack)];
+        }
       }
+    }
+
+    /* --- THE SUBSYSTEM AUTOPSY -----------------------------------------
+     *
+     * The listener table above says one closure spends nearly all of the
+     * fan-out, and five separate systems register the identical shape
+     * `({id, world}) => this._onWorld(id, world)`. Minification keeps the
+     * member name and throws the identity away, so the table cannot say WHICH.
+     *
+     * These call the same rebuilds again by name, on the live world, and time
+     * each one. Every entry is idempotent by construction - each resets its own
+     * list before repopulating it, which is exactly what it does on a normal
+     * crossing - so this measures a real second crossing rather than a
+     * half-state. It runs after the last repeat and before `done`, so nothing
+     * the gate reports is measured through it. */
+    if (args.listeners) {
+      out.autopsy = JSON.parse(await evalIn(`(() => {
+        const G = window.GAME, w = G.worldManager.active, id = w && w.id;
+        const out = {};
+        const time = (name, fn) => {
+          const t = performance.now();
+          try { fn(); } catch (err) { out[name + ':error'] = String(err && err.message || err); }
+          out[name] = Math.round((performance.now() - t) * 10) / 10;
+        };
+        /* THE 811 ms, SPLIT AT ITS OWN BOUNDARY.
+         *
+         * Caches._onWorld darts at the content box and probes each candidate
+         * two ways: Physics.groundHeight, which is this repository's own
+         * broadphase raycast, and _hasVisibleFloor, which is a THREE.Raycaster
+         * against the whole render tree. Those live on opposite sides of a
+         * file boundary and have completely different fixes, so the number is
+         * worth nothing until it is split.
+         *
+         * Both are wrapped as OWN properties over the prototype methods and
+         * deleted afterwards, so the instrumentation cannot outlive the
+         * measurement. */
+        const P = G.physics;
+        const C = G.caches;
+        let rayMs = 0, rayN = 0, visMs = 0, visN = 0;
+        const rawRay = P.raycast;
+        const rawVis = C && C._hasVisibleFloor;
+        P.raycast = function (...a) {
+          const t = performance.now();
+          try { return rawRay.apply(this, a); } finally { rayMs += performance.now() - t; rayN++; }
+        };
+        if (rawVis) {
+          C._hasVisibleFloor = function (...a) {
+            const t = performance.now();
+            try { return rawVis.apply(this, a); } finally { visMs += performance.now() - t; visN++; }
+          };
+        }
+        time('caches._onWorld', () => C && C._onWorld(id, w));
+        /* The render-tree raycast calls no physics, so the two are disjoint
+         * and rayMs here is the physics half whole. */
+        out.physicsRaycastMs = Math.round(rayMs * 10) / 10;
+        out.physicsRaycastCalls = rayN;
+        out.hasVisibleFloorMs = Math.round(visMs * 10) / 10;
+        out.hasVisibleFloorCalls = visN;
+        delete P.raycast;
+        if (rawVis) delete C._hasVisibleFloor;
+        time('relics._onWorld', () => G.relics && G.relics._onWorld(id, w));
+        time('waterVolumes.rebuildFromWorld', () => G.waterVolumes && G.waterVolumes.rebuildFromWorld(w, true));
+        time('npcManager.spawnForWorld', () => G.npcManager && G.npcManager.spawnForWorld(w));
+        time('loot._onWorld', () => G.loot && G.loot._onWorld && G.loot._onWorld(id, w));
+        out.world = id;
+        return JSON.stringify(out);
+      })()`));
+    }
+
+    /* --- THE ABLATION, ON THE SHIPPING BUNDLE ---------------------------
+     *
+     * The autopsy above says two subsystems are 97% of a crossing. That is
+     * arithmetic until the crossing is measured WITHOUT them, so this stubs
+     * both out and crosses once more.
+     *
+     * _hasVisibleFloor is replaced by the answer it gives for a real deck,
+     * so the dart budget, the physics probes and the placement rules all
+     * still run - only the render-tree raycast is gone. spawnForWorld is
+     * skipped outright, which removes MORE than a warm character-geometry
+     * cache would, so the number below is a floor for the crossing rather
+     * than a prediction of what fixing the cache would leave.
+     *
+     * Both stubs are own properties over prototype methods and are deleted
+     * afterwards. Nothing the gate reports is measured through them: this
+     * runs after the last repeat has been closed.
+     */
+    if (args.listeners) {
+      const other = worlds.find((w) => w !== args.entryWorld) ?? 'medieval';
+      await evalIn(`(() => {
+        const G = window.GAME;
+        if (G.caches) G.caches._hasVisibleFloor = () => true;
+        if (G.npcManager) G.npcManager.spawnForWorld = () => {};
+        return 1;
+      })()`);
+      await evalIn(`window.HARNESS.goto(${JSON.stringify(other)}).then(() => 1)`);
+      await sleep(900);
+      await evalIn(`window.HARNESS.goto(${JSON.stringify(args.entryWorld)}).then(() => 1)`);
+      out.ablated = JSON.parse(await evalIn('JSON.stringify(window.GAME.worldManager.activationCost ?? null)'));
+      await sleep(600);
+      await evalIn(`(() => {
+        const G = window.GAME;
+        if (G.caches) delete G.caches._hasVisibleFloor;
+        if (G.npcManager) delete G.npcManager.spawnForWorld;
+        return 1;
+      })()`);
+    }
+    if (args.listeners) {
+      out.listeners = JSON.parse(await evalIn('JSON.stringify(window.__LISTENERS ?? [])'))
+        .filter((r) => r.calls > 0)
+        .map((r) => ({ ...r, ms: Math.round(r.ms * 10) / 10 }))
+        .sort((x, y) => y.ms - x.ms);
     }
 
     await mark('done');
@@ -888,6 +1053,54 @@ function printTable(rows, budget) {
   }
 }
 
+/**
+ * What each crossing cost, step by step.
+ *
+ * The gate reports the worst rAF gap, which is the number the criterion is
+ * written in and which says nothing about what to do next. This is the same
+ * block of time broken into the steps WorldManager names, off the same run.
+ */
+function printCrossings(run) {
+  const rows = [];
+  for (const [name, ev] of Object.entries(run.events)) {
+    for (const c of ev?.cost ?? []) if (c) rows.push([name, c]);
+  }
+  if (!rows.length) return;
+  const steps = ['changing', 'teardown', 'physicsClear', 'physicsAdd', 'sceneIn',
+    'portals', 'arrival', 'npcs', 'changed', 'total'];
+  console.log(`\ncrossing        into        colliders  ${steps.map((s) => s.padStart(8)).join(' ')}`);
+  for (const [name, c] of rows) {
+    console.log(
+      `${name.padEnd(15)} ${String(c.world).padEnd(11)} ${String(c.colliders).padStart(9)}  `
+      + steps.map((s) => String(c[s] ?? '-').padStart(8)).join(' '),
+    );
+  }
+}
+
+/**
+ * Who spent the world:changed fan-out, and what each named rebuild costs.
+ * Present only with --listeners.
+ */
+function printListeners(run) {
+  if (run.listeners?.length) {
+    console.log('\nworld:changed listeners, ms over every crossing in this run');
+    for (const l of run.listeners.slice(0, 8)) {
+      console.log(`${String(l.ms).padStart(9)}  x${l.calls}  ${l.src.slice(0, 96)}`);
+    }
+  }
+  if (run.ablated) {
+    console.log(`\nthe same crossing into "${run.ablated.world}" with the two stubbed out:`
+      + ` total ${run.ablated.total} ms (npcs ${run.ablated.npcs}, changed ${run.ablated.changed},`
+      + ` physicsAdd ${run.ablated.physicsAdd})`);
+  }
+  if (run.autopsy) {
+    console.log(`\nrebuilt again by name on the live "${run.autopsy.world}":`);
+    for (const [k, v] of Object.entries(run.autopsy)) {
+      if (k === 'world') continue;
+      console.log(`${String(v).padStart(9)}  ${k}`);
+    }
+  }
+}
 /* ---------------------------------------------------------------- */
 /* Main                                                              */
 /* ---------------------------------------------------------------- */
@@ -944,6 +1157,8 @@ async function main() {
       await writeFile(path.join(outDir, `run-${i}.json`), JSON.stringify(run, null, 2));
       const rows = summarise(run, args.budget);
       printTable(rows, args.budget);
+      printCrossings(run);
+      printListeners(run);
       runs.push({ run: i, rows, warm: run.warm });
     }
   } finally {

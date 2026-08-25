@@ -55,6 +55,13 @@ export class WorldManager {
 
     this._active = null;
 
+    /**
+     * What the last crossing cost, step by step, in milliseconds.
+     * Written by `_activate`; read by `HARNESS.stats().activation`.
+     * @type {object|null}
+     */
+    this.activationCost = null;
+
     // Late-injected collaborators. See attach().
     this.npcManager = null;
     this.portals = null;
@@ -338,7 +345,31 @@ export class WorldManager {
 
     const { npcManager, portals, player } = this._deps();
 
+    /* ── THE COST OF A CROSSING, BROKEN DOWN, ON THE SHIPPING BUNDLE ──────
+     *
+     * A world swap is one synchronous block and the player feels all of it,
+     * but "the crossing took 1.6 s" names nothing you can fix. A CPU profile
+     * names functions - and on the production bundle those functions are
+     * called `pv` and `Hn`, so the profile that answers the question can only
+     * be taken on a build whose numbers do not satisfy the criterion.
+     *
+     * These labels are string constants, so they survive minification intact.
+     * Eight `performance.now()` calls per crossing is nothing against a block
+     * measured in seconds, and the result is readable from
+     * `HARNESS.stats().activation` on the same bytes the site serves.
+     *
+     * `changed` is the whole `world:changed` fan-out - water volumes, relics,
+     * caches, minigames, races, loot - which is a listener list, not a call
+     * site, and is otherwise invisible from here. */
+    const T = (typeof performance !== 'undefined' && performance.now)
+      ? () => performance.now() : () => 0;
+    const cost = { world: id, from: previous?.id ?? null, colliders: 0 };
+    let t = T();
+    const step = (name) => { const n = T(); cost[name] = Math.round((n - t) * 10) / 10; t = n; };
+    const t0 = t;
+
     this.bus.emit('world:changing', { from: previous?.id ?? null, to: id });
+    step('changing');
 
     // 1. Tear the old world down. Portals first: their colliders live in the
     //    same physics world and must not survive the clear/rebuild below.
@@ -348,6 +379,7 @@ export class WorldManager {
       previous.onDeactivate();
       this.scene.remove(previous.group);
     }
+    step('teardown');
 
     // 2. Rebuild the collision world from scratch so only this world is solid.
     //    Character proxies are owned by gameplay systems, not by worlds, so they
@@ -357,16 +389,22 @@ export class WorldManager {
       : null;
     this.physics.clear();
     if (survivingCharacters) for (const c of survivingCharacters) this.physics.characters.add(c);
+    step('physicsClear');
     for (let i = 0; i < world.colliders.length; i++) {
       const c = world.colliders[i];
       if (c) this.physics.add(c);
     }
+    cost.colliders = world.colliders.length;
+    cost.gridCells = this.physics._grid.size;
+    cost.gridWrites = this.physics.gridWrites;
+    step('physicsAdd');
 
     // 3. Bring the new world in.
     this.scene.add(world.group);
     world.onActivate();
     world.group.updateMatrixWorld(true);
     this._active = world;
+    step('sceneIn');
 
     // 4. Portals before the player: their plinths register colliders, and the
     //    arrival point is on top of one of them - without them the ground probe
@@ -376,6 +414,7 @@ export class WorldManager {
     } catch (err) {
       console.error(`[WorldManager] portal build failed for "${id}":`, err);
     }
+    step('portals');
 
     // 5. Place the player before anything queries their position.
     const arrival = this.arrivalFor(id, fromPortal ? fromPortal.worldId ?? previous?.id ?? null : null);
@@ -386,6 +425,7 @@ export class WorldManager {
         player.position.copy(arrival.position);
       }
     }
+    step('arrival');
 
     // 6. Populate. Optional, so a partially wired game still runs.
     try {
@@ -393,8 +433,13 @@ export class WorldManager {
     } catch (err) {
       console.error(`[WorldManager] npc spawn failed for "${id}":`, err);
     }
+    step('npcs');
 
     this.bus.emit('world:changed', { id, world });
+    step('changed');
+
+    cost.total = Math.round((T() - t0) * 10) / 10;
+    this.activationCost = cost;
     return world;
   }
 

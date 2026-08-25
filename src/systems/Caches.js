@@ -104,6 +104,8 @@ const _pl = new THREE.Vector3();
 const _hi = new THREE.Vector3();
 const _dn = new THREE.Vector3(0, -1, 0);
 const _box = new THREE.Box3();
+const _m4 = new THREE.Matrix4();
+const _sph = new THREE.Sphere();
 
 /**
  * XZ cell size for the render-tree index {@link Caches#_indexVisible} builds.
@@ -118,12 +120,16 @@ const VIS_CELL = 24;
 /** Multiplier that packs a signed (cx, cz) pair into one integer key. */
 const VIS_STRIDE = 100003;
 /**
- * A leaf spanning more cells than this is filed as an "always a candidate"
- * rather than bucketed. A ground plate the size of the map genuinely IS a
- * candidate for every query, and writing it into two thousand buckets costs
- * more than testing it two thousand times.
+ * A leaf spanning more cells than this is kept whole in the `wide` list and
+ * tested with its exact box instead of being written into every cell it covers.
+ *
+ * A merged district plate genuinely does span hundreds of cells; filing it in
+ * all of them costs more to build than the box test costs to run, and the box
+ * test is exact where the cell is only a bucket.
  */
-const VIS_MAX_CELLS = 256;
+const VIS_MAX_CELLS = 64;
+/** An instance wider than this is not a prop - fall back to the whole object. */
+const VIS_MAX_INSTANCE_R = VIS_CELL * 8;
 
 /**
  * A leaf's world-space bounding box, or null when it cannot be trusted.
@@ -713,15 +719,44 @@ export class Caches {
    * @param {THREE.Object3D} group
    */
   _indexVisible(group) {
-    /** @type {THREE.Object3D[]} */
+    /** Leaves reachable through a cell. An entry names one of these. */
     const leaves = [];
-    const yMin = [];
-    const yMax = [];
-    /** @type {Map<number, number[]>} cell key -> indices into `leaves` */
+    /** Cell key -> entry indices. */
     const cells = new Map();
-    /** @type {THREE.Object3D[]} leaves with no trustworthy box, or too wide. */
+    /** Entries: which leaf, and the height band it covers in its cells. */
+    const entLeaf = [];
+    const entMinY = [];
+    const entMaxY = [];
+    /** Leaves too wide to bucket, kept whole with their exact box. */
+    const wide = [];
+    /** Leaves with no bound that can be trusted: candidates for every query. */
     const always = [];
     const base = THREE.Object3D.prototype.raycast;
+
+    /** File one box against a leaf. False when it spans too many cells. */
+    const bucket = (li, minX, minY, minZ, maxX, maxY, maxZ) => {
+      const cx0 = Math.floor(minX / VIS_CELL);
+      const cx1 = Math.floor(maxX / VIS_CELL);
+      const cz0 = Math.floor(minZ / VIS_CELL);
+      const cz1 = Math.floor(maxZ / VIS_CELL);
+      if (!Number.isFinite(cx0) || !Number.isFinite(cx1)
+        || !Number.isFinite(cz0) || !Number.isFinite(cz1)) return false;
+      if ((cx1 - cx0 + 1) * (cz1 - cz0 + 1) > VIS_MAX_CELLS) return false;
+      const e = entLeaf.length;
+      entLeaf.push(li);
+      entMinY.push(minY);
+      entMaxY.push(maxY);
+      for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+          const key = cx * VIS_STRIDE + cz;
+          let list = cells.get(key);
+          if (!list) cells.set(key, (list = []));
+          list.push(e);
+        }
+      }
+      return true;
+    };
+
     group.traverse((o) => {
       /* Only things that answer a ray at all. `Object3D.raycast` is a no-op, so
        * an object that has not overridden it can never contribute a hit - and
@@ -729,34 +764,82 @@ export class Caches {
        * `raycast` to stop the traversal, which is what makes flattening the
        * tree equivalent to walking it. */
       if (o.raycast === base) return;
-      const b = leafBox(o);
-      if (!b) { always.push(o); return; }
-      const cx0 = Math.floor(b.min.x / VIS_CELL);
-      const cx1 = Math.floor(b.max.x / VIS_CELL);
-      const cz0 = Math.floor(b.min.z / VIS_CELL);
-      const cz1 = Math.floor(b.max.z / VIS_CELL);
-      if (!Number.isFinite(cx0) || !Number.isFinite(cz1)) { always.push(o); return; }
-      if ((cx1 - cx0 + 1) * (cz1 - cz0 + 1) > VIS_MAX_CELLS) { always.push(o); return; }
-      const i = leaves.length;
-      leaves.push(o);
-      yMin.push(b.min.y);
-      yMax.push(b.max.y);
-      for (let cx = cx0; cx <= cx1; cx++) {
-        for (let cz = cz0; cz <= cz1; cz++) {
-          const key = cx * VIS_STRIDE + cz;
-          let list = cells.get(key);
-          if (!list) cells.set(key, (list = []));
-          list.push(i);
+
+      /* AN INSTANCED MESH IS A THOUSAND THINGS WEARING ONE BOX, AND THAT BOX IS
+       * THE MAP.
+       *
+       * This is where the whole cost actually was, and it is not what the shape
+       * of the code suggests. Measured on the live station, EVERY probe was
+       * handed 2,287,006 triangles and 1.9 million of them were the ambient
+       * crowd - `StationActors:head` alone is 490,620 - because ten instanced
+       * body parts scattered over a 1,488 m station each bound to a box that
+       * covers everything. One box round all of them says nothing.
+       *
+       * So the INSTANCES are filed, not the object: a person-sized sphere each,
+       * and the object becomes a candidate only where one of its instances
+       * actually is. `Sphere.applyMatrix4` scales the radius by the largest
+       * axis scale, so the bound stays conservative under any transform. */
+      if (o.isInstancedMesh && o.count > 0 && o.instanceMatrix) {
+        const g = o.geometry;
+        if (g && !g.boundingSphere) g.computeBoundingSphere?.();
+        if (g?.boundingSphere) {
+          const li = leaves.length;
+          leaves.push(o);
+          const e0 = entLeaf.length;
+          const arr = o.instanceMatrix.array;
+          let ok = true;
+          for (let k = 0; k < o.count; k++) {
+            _m4.fromArray(arr, k * 16).premultiply(o.matrixWorld);
+            _sph.copy(g.boundingSphere).applyMatrix4(_m4);
+            const r = _sph.radius;
+            const c = _sph.center;
+            // `!(r < max)` rather than `r >= max`, so a NaN radius bails too.
+            if (!(r < VIS_MAX_INSTANCE_R)) { ok = false; break; }
+            if (!bucket(li, c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r)) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) return;
+          /* One instance is not a prop - a scattered ground plane, say. Retire
+           * the entries written so far by giving them an empty height band, and
+           * fall through to treat the object as one wide leaf. */
+          for (let e = e0; e < entLeaf.length; e++) {
+            entMinY[e] = Infinity;
+            entMaxY[e] = -Infinity;
+          }
         }
       }
+
+      const b = leafBox(o);
+      if (!b) { always.push(o); return; }
+      const li = leaves.length;
+      leaves.push(o);
+      if (!bucket(li, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z)) {
+        leaves.pop();
+        wide.push({
+          o,
+          minX: b.min.x, maxX: b.max.x,
+          minZ: b.min.z, maxZ: b.max.z,
+          minY: b.min.y, maxY: b.max.y,
+        });
+      }
     });
-    this._vis = { cells, always, leaves, yMin, yMax };
+
+    this._vis = {
+      cells, always, wide, leaves, entLeaf, entMinY, entMaxY,
+      /* One slot per leaf, holding the id of the query that last took it. An
+       * instanced leaf has an entry per instance and a wide-ish one an entry
+       * per cell, so a single query can reach the same object many times. */
+      seen: new Int32Array(leaves.length),
+      qid: 0,
+    };
     /** Reused query buffer - see `_visibleNear`. */
     this._visOut = [];
   }
 
   /**
-   * The leaves whose world box overlaps the vertical segment at (x, z) between
+   * The leaves that could put a hit on the vertical segment at (x, z) between
    * `yLo` and `yHi`.
    *
    * The height test is what earns the index: a district's ground plate and the
@@ -769,12 +852,21 @@ export class Caches {
     const v = this._vis;
     const out = this._visOut;
     out.length = 0;
+    const qid = ++v.qid;
     for (const o of v.always) out.push(o);
+    for (const w of v.wide) {
+      if (x < w.minX || x > w.maxX || z < w.minZ || z > w.maxZ) continue;
+      if (w.minY > yHi || w.maxY < yLo) continue;
+      out.push(w.o);
+    }
     const list = v.cells.get(Math.floor(x / VIS_CELL) * VIS_STRIDE + Math.floor(z / VIS_CELL));
     if (list) {
-      for (const i of list) {
-        if (v.yMin[i] > yHi || v.yMax[i] < yLo) continue;
-        out.push(v.leaves[i]);
+      for (const e of list) {
+        if (v.entMinY[e] > yHi || v.entMaxY[e] < yLo) continue;
+        const li = v.entLeaf[e];
+        if (v.seen[li] === qid) continue;
+        v.seen[li] = qid;
+        out.push(v.leaves[li]);
       }
     }
     return out;

@@ -954,6 +954,8 @@ async function runOnce(args, pageUrl, runIndex) {
           out.visIndexMs = Math.round((performance.now() - t) * 10) / 10;
           out.visLeaves = C._vis.leaves.length;
           out.visAlways = C._vis.always.length;
+          out.visWide = C._vis.wide.length;
+          out.visEntries = C._vis.entLeaf.length;
           out.visCells = C._vis.cells.size;
           let allTris = 0, alwaysTris = 0, biggest = [];
           const tri = (o) => {
@@ -963,6 +965,7 @@ async function runOnce(args, pageUrl, runIndex) {
           };
           for (const o of C._vis.leaves) { const t2 = tri(o); allTris += t2; biggest.push([o.name || o.type, t2]); }
           for (const o of C._vis.always) { const t2 = tri(o); alwaysTris += t2; allTris += t2; biggest.push([(o.name || o.type) + ' [always]', t2]); }
+          for (const w of C._vis.wide) { const t2 = tri(w.o); allTris += t2; biggest.push([(w.o.name || w.o.type) + ' [wide]', t2]); }
           biggest.sort((x, y) => y[1] - x[1]);
           out.visTriangles = allTris;
           out.visAlwaysTriangles = alwaysTris;

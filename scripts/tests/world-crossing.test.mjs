@@ -289,6 +289,45 @@ function makeSiteWorld(id) {
        * geometry within a hundred metres of it. */
       this.track(this.physics.addBox(-60, 13.5, -60, 6, 0.5, 6));
 
+      /* AN INSTANCED CROWD, because that is where the cost actually was.
+       *
+       * Measured on the live station, every visible-floor probe was handed 2.29
+       * million triangles and 1.9 million of them were the ambient crowd: ten
+       * instanced body parts, each scattered over the whole 1,488 m station and
+       * each therefore wearing one bounding box the size of the map. The index
+       * has to file the INSTANCES rather than the object, and the equivalence
+       * case below is only worth anything if this shape is in the world it
+       * runs against. Some stand on the ground, some on the deck, and some
+       * hang in the air where nothing else is - so the height band matters. */
+      const person = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(0.5, 1.8, 0.5), SITE_MAT, 320,
+      );
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < 320; i++) {
+        if (i < 200) {
+          // On the ground, walking a spiral, where the plate already answers.
+          const a = (i / 200) * Math.PI * 2 * 7;
+          const rad = 8 + (i % 130);
+          m.makeTranslation(Math.cos(a) * rad, 0.9, Math.sin(a) * rad);
+        } else if (i < 240) {
+          m.makeTranslation(60 + ((i % 5) - 2), 12.9, 60 + ((i % 7) - 3));
+        } else {
+          /* SKY LANTERNS, on the same lattice the equivalence grid walks and at
+           * a height nothing else in this world reaches. These are the only
+           * points where an instance DECIDES the answer, and without them the
+           * ground plate answers everywhere and the equivalence case cannot
+           * tell a per-instance filter that drops half its instances from one
+           * that does not. Confirmed by injection: bucketing every second
+           * instance fails that case only because these exist. */
+          const j = i - 240;
+          m.makeTranslation(-140 + (j % 10) * 20, 30, -140 + Math.floor(j / 10) * 20);
+        }
+        person.setMatrixAt(i, m);
+      }
+      person.instanceMatrix.needsUpdate = true;
+      person.name = 'crowd';
+      this.group.add(person);
+
       this.contentBounds = new THREE.Box3(
         new THREE.Vector3(-150, 0, -150),
         new THREE.Vector3(150, 40, 150),
@@ -329,13 +368,22 @@ function makeSiteManager() {
   return { manager, physics, bus, scene, caches, loot };
 }
 
-/** Where the RENDER TREE says the floor is at (x, z), or null. */
-function seenFloorY(group, x, z, from = 40) {
+/**
+ * How far the nearest thing the RENDER TREE shows at (x, z) is from height `y`.
+ *
+ * The nearest hit and not the first one, because the first thing a downward ray
+ * meets over a deck is whoever is standing on it. A cache is in the sky when
+ * there is nothing to see at its own height, which is what this measures.
+ */
+function visibleFloorGap(group, x, y, z) {
   const ray = new THREE.Raycaster(
-    new THREE.Vector3(x, from, z), new THREE.Vector3(0, -1, 0), 0, 400,
+    new THREE.Vector3(x, y + 20, z), new THREE.Vector3(0, -1, 0), 0, 400,
   );
-  const hits = ray.intersectObject(group, true);
-  return hits.length ? hits[0].point.y : null;
+  let best = Infinity;
+  for (const h of ray.intersectObject(group, true)) {
+    best = Math.min(best, Math.abs(h.point.y - y));
+  }
+  return best;
 }
 
 /** Drop a capsule onto (x, z) from just above and report where it rests. */
@@ -363,11 +411,10 @@ test('every cache placed on re-entry is standing on geometry the player can see'
   const group = manager.getWorld('deckworld').group;
   assert.ok(caches.all.length > 0, 'the world came back with no caches at all');
   for (const s of caches.all) {
-    const seen = seenFloorY(group, s.pos.x, s.pos.z);
-    assert.notEqual(seen, null,
-      `cache ${s.id} hangs over nothing a player can see - a cache in the sky`);
-    assert.ok(Math.abs(seen - (s.pos.y - 0.2)) < 1.2,
-      `cache ${s.id} sits at y=${s.pos.y} and the nearest visible floor is y=${seen}`);
+    const gap = visibleFloorGap(group, s.pos.x, s.pos.y - 0.2, s.pos.z);
+    assert.ok(gap < 1.2,
+      `cache ${s.id} at y=${s.pos.y} has nothing a player can SEE within ${gap} m of it`
+      + ' - a cache in the sky');
     const rest = settleAt(physics, s.pos.x, s.pos.y, s.pos.z);
     assert.ok(Math.abs(rest - (s.pos.y - 0.2)) < 1.2,
       `a player dropped on cache ${s.id} fell to y=${rest} instead of standing at y=${s.pos.y}`);
@@ -429,9 +476,9 @@ test('STALE, putting back: geometry added between crossings can gain a cache', a
 
   const found = siteNear(caches, 120, 120);
   assert.ok(found, 'a deck built between crossings never got its cache');
-  const seen = seenFloorY(world.group, found.pos.x, found.pos.z);
-  assert.ok(seen !== null && Math.abs(seen - (found.pos.y - 0.2)) < 1.2,
-    `the new deck's cache is at y=${found.pos.y} and its visible floor at y=${seen}`);
+  const gap = visibleFloorGap(world.group, found.pos.x, found.pos.y - 0.2, found.pos.z);
+  assert.ok(gap < 1.2,
+    `the new deck's cache at y=${found.pos.y} has nothing visible within ${gap} m of it`);
 });
 
 test('the narrowed probe answers exactly what the whole-tree probe answered', async () => {
@@ -448,7 +495,7 @@ test('the narrowed probe answers exactly what the whole-tree probe answered', as
   const points = [];
   for (let x = -140; x <= 140; x += 10) {
     for (let z = -140; z <= 140; z += 10) {
-      for (const y of [0, 11.7, 13.9, 26]) points.push([x, y, z]);
+      for (const y of [0, 11.7, 13.9, 26, 30]) points.push([x, y, z]);
     }
   }
 

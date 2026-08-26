@@ -1134,19 +1134,49 @@ async function runOnce(args, pageUrl, runIndex) {
      * @param {number} ms
      * @param {{ yawPerSec?: number, sliceMs?: number }} [opts] yaw in radians/s
      */
+    /* The renderer's own frame counter - increments once per render call, so
+     * it is the page's ground truth for "did any frame actually run". */
+    const FRAME_NOW = 'window.GAME?.engine?.renderer?.info?.render?.frame ?? 0';
+
     const hold = async (codes, ms, opts = {}) => {
       const yawPerSec = opts.yawPerSec ?? 0;
       const sliceMs = opts.sliceMs ?? 250;
+      /* WALL TIME IS NOT SIMULATED TIME on a starving runner. The enforcing
+       * gate's first red (run 32936933304) was `movement:station moved 0 m` -
+       * and the same run's watchdog counted five 10 s stretches with no
+       * animation frame. The game simulates per frame; a key held for eight
+       * wall seconds that happen to sit inside a starvation stretch moves the
+       * player exactly nowhere, and whether the hold overlaps a stretch is
+       * timing luck - the previous run passed the identical invariant. So a
+       * hold can demand a minimum number of RENDERED frames: after the
+       * nominal wall time it keeps holding, in slices, until the renderer's
+       * frame counter has advanced by `minFrames` or a hard cap of 6x the
+       * nominal time is spent. The cap rides through any 10 s stretch with
+       * room to spare, so a phase that still measured nothing after it is a
+       * page that is genuinely not rendering - which IS worth failing on. */
+      const minFrames = opts.minFrames ?? 0;
+      const f0 = minFrames ? Number(await evalIn(FRAME_NOW)) : 0;
       for (const code of codes) await call('Input.dispatchKeyEvent', keyEvents(code)[0]);
+      let framesDuring = 0;
       try {
         for (let done = 0; done < ms; done += sliceMs) {
           const dt = Math.min(sliceMs, ms - done);
           await sleep(dt);
           if (yawPerSec) await evalIn(LOOK(yawPerSec * (dt / 1000)));
         }
+        if (minFrames) {
+          const cap = Date.now() + ms * 5; // 6x total, nominal already spent
+          framesDuring = Number(await evalIn(FRAME_NOW)) - f0;
+          while (framesDuring < minFrames && Date.now() < cap) {
+            await sleep(sliceMs);
+            if (yawPerSec) await evalIn(LOOK(yawPerSec * (sliceMs / 1000)));
+            framesDuring = Number(await evalIn(FRAME_NOW)) - f0;
+          }
+        }
       } finally {
         for (const code of codes) await call('Input.dispatchKeyEvent', keyEvents(code)[1]);
       }
+      return framesDuring;
     };
 
     /* --- boot -------------------------------------------------------- */
@@ -1360,16 +1390,26 @@ async function runOnce(args, pageUrl, runIndex) {
      * @param {string} label the phase name
      */
     const measureMovement = async (label) => {
-      /* CLEAR THE BOARD FIRST. Movement runs after the per-world mount event,
-       * which opens the mount wheel and summons; any overlay still up owns the
-       * keyboard and W does nothing. One Escape costs 350 ms and is the
-       * difference between measuring a traversal and measuring a menu. */
-      await press('Escape');
-      await sleep(350);
+      /* CLEAR THE BOARD FIRST - AND CHECK THAT IT CLEARED. Movement runs
+       * after the per-world mount event, which opens the mount wheel; any
+       * overlay still up owns the keyboard and W does nothing. But Escape is
+       * a TOGGLE: with nothing open it OPENS the pause hub, so a
+       * fire-and-forget Escape can create the exact blockage it was sent to
+       * clear. Press, then read `blocks` back, and press again if the board
+       * is still (or newly) owned - recording how many it took, so a reader
+       * of the event can see the difference between "one close" and "the
+       * first press opened the hub". */
+      let escapes = 0;
+      for (; escapes < 3; escapes++) {
+        const state = JSON.parse(await evalIn(WHERE));
+        if (!state.blocks) break;
+        await press('Escape');
+        await sleep(350);
+      }
       const from = JSON.parse(await evalIn(WHERE));
       await mark(label);
-      await hold(['KeyW'], 4000, { yawPerSec: 0.5 });
-      await hold(['KeyW', 'ShiftLeft'], 4000, { yawPerSec: 0.5 });
+      const walkFrames = await hold(['KeyW'], 4000, { yawPerSec: 0.5, minFrames: 60 });
+      const sprintFrames = await hold(['KeyW', 'ShiftLeft'], 4000, { yawPerSec: 0.5, minFrames: 60 });
       await press('Space'); await sleep(500);
       await press('Space'); await sleep(900);
       const phase = await closePhase(label);
@@ -1387,6 +1427,12 @@ async function runOnce(args, pageUrl, runIndex) {
         moved: from.x == null || to.x == null
           ? -1  // the probe could not read a position; the gate fails on this
           : Math.round(Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) * 10) / 10,
+        /* How many frames actually RENDERED during each hold, and how many
+         * Escapes the board-clear took. `moved: 0` with `walkFrames: 2` is a
+         * starved page; `moved: 0` with `walkFrames: 200` is a player the
+         * input genuinely never reached - different bugs, and without these
+         * two numbers the gate's failure line cannot tell them apart. */
+        walkFrames, sprintFrames, escapes,
         yawAsked: 4,
         yawTurned: from.yaw == null || to.yaw == null
           ? null : Math.round(Math.abs(to.yaw - from.yaw) * 100) / 100,
@@ -2523,8 +2569,16 @@ function gateRun(run, args) {
     }
     if (name.startsWith('movement:')) {
       if (!(ev.moved >= GATE_MIN_MOVE)) {
+        const frames = (ev.walkFrames ?? 0) + (ev.sprintFrames ?? 0);
+        const why = ev.walkFrames == null
+          ? '' // an old report without the counters; say only what is known
+          : frames < 30
+            ? ` after only ${frames} rendered frame(s) across both holds - the page starved`
+              + ' through the extended hold, so the runner, not the game, is the suspect'
+            : ` across ${frames} rendered frames and ${ev.escapes ?? '?'} board-clearing`
+              + ' Escape(s) - the input genuinely never reached the player';
         failures.push(`${name} moved ${ev.moved} m - the player did not traverse anything,`
-          + ' so this phase measured a standing frame under a movement label');
+          + ` so this phase measured a standing frame under a movement label${why}`);
       }
       if (ev.worldChanged) failures.push(`${name} changed world mid-traversal; it measured a crossing`);
     }

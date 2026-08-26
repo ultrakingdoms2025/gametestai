@@ -1,6 +1,30 @@
 import { defineConfig } from 'vite';
+import { execSync } from 'node:child_process';
+
+/**
+ * The commit this bundle was built from, for the boot card's "build" line.
+ *
+ * Exists because "I am not sure if it pushed" is a question that has now been
+ * asked from a phone twice, and the only way to answer it was a curl of a
+ * hashed asset from a machine with a terminal. A seven-character stamp on the
+ * title card lets the owner read the deployed build off the screen. Vercel
+ * exposes the SHA as an env var (its build has no .git); a local build reads
+ * git; a checkout with neither says so rather than failing the build.
+ */
+function buildCommit() {
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA;
+  if (sha) return sha.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return 'local';
+  }
+}
 
 export default defineConfig({
+  define: {
+    __BUILD_COMMIT__: JSON.stringify(buildCommit()),
+  },
   server: {
     port: 5173,
     strictPort: true,

@@ -2954,6 +2954,8 @@ function createLoadingScreen(root, hooks = {}) {
    * here, before any pointer has landed - and a phone told to CLICK reads as
    * a page that does not know what it is running on. */
   const VERB = input.touchMode ? 'TAP' : 'CLICK';
+  /* Stamped by vite.config.js; undefined under node (tests, the harness). */
+  const BUILD = typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : 'dev';
   const el = document.createElement('div');
   el.className = 'boot-screen';
   el.innerHTML = `
@@ -2962,6 +2964,7 @@ function createLoadingScreen(root, hooks = {}) {
       <div class="boot-tagline">Seven worlds, one gateway ring, and the space beyond.</div>
       <div class="boot-bar"><div class="boot-bar-fill"></div></div>
       <div class="boot-status">Initialising</div>
+      <div class="boot-build">build ${BUILD}</div>
       <div class="boot-start" hidden>
         <div class="boot-start-title">${VERB} TO ENTER</div>
         <div class="boot-save" hidden>

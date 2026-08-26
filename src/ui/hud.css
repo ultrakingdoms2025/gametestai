@@ -494,6 +494,17 @@ body {
   }
 }
 
+/* The deployed commit, readable off a phone screen. See vite.config.js. */
+.boot-build {
+  margin-top: 6px;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--txt-dim);
+  opacity: 0.55;
+}
+
 /* --- start prompt -------------------------------------------------------- */
 .boot-start {
   margin-top: 30px;

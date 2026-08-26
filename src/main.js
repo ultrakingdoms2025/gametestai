@@ -64,6 +64,7 @@ import { Viewpoints } from './systems/Viewpoints.js';
 import { SpaceObjectives } from './systems/SpaceObjectives.js';
 import { Charters } from './systems/Charters.js';
 import { Retention } from './systems/Retention.js';
+import { Telemetry } from './systems/Telemetry.js';
 import { Onboarding } from './systems/Onboarding.js';
 import { Interiors } from './systems/Interiors.js';
 import { AudioDirector } from './audio/AudioDirector.js';
@@ -84,6 +85,7 @@ import { TennisPose } from './minigames/TennisPose.js';
 import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
+import { RecordsPanel } from './ui/RecordsPanel.js';
 import { forceDrawable } from './gfx/RehearsalDraw.js';
 import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
 
@@ -639,6 +641,19 @@ save.charters = charters;
  * next line for the same reason `charters` is. */
 const retention = new Retention({ bus, charters, caches });
 save.retention = retention;
+/* Write-only observation - fails silent, never touches balances, flushes on
+ * pagehide. The wiring is these two lines by design; everything else lives in
+ * the module, whose header says what it refuses to do. */
+const telemetry = new Telemetry({ bus });
+telemetry.start();
+/* THE BROWSABLE HALF OF THE OBJECTIVE. The HUD's charter face shows only the
+ * world the player is standing in; this sheet (Esc hub → Records, or N) is
+ * every world's record at once, plus the read surfaces that had zero callers:
+ * `charters.mastery()`, `charters.collection()`, `reputationOf` per world,
+ * retention's streak/best/season, and the server's leaderboards — which it
+ * reads same-origin the way `refreshLore` does, and never fakes: the refused
+ * boards render as the server's own refusal reasons. */
+const recordsPanel = new RecordsPanel({ root: uiRoot, bus, input, charters, retention });
 /* The cache restock ledger, so the 210-second timer survives a gateway. */
 save.caches = caches;
 const onboarding = new Onboarding({ bus, inventory });
@@ -901,6 +916,11 @@ hud.setPauseMenuItems([
        * own hide, or `openFromHub` needs an async-aware check. */
       { id: 'inventory', label: 'Inventory', hint: 'I', run: () => inventory.open() },
       { id: 'quests', label: 'Quest board', hint: 'J', run: () => questSystem.openBoard() },
+      /* The browsable objective: all eighteen records, standings, mastery,
+       * collection, streaks and the server's leaderboards in one sheet. The
+       * HUD's charter face stays the here-and-now summary; this is the board
+       * behind it. */
+      { id: 'records', label: 'Records', hint: 'N', run: () => recordsPanel.open() },
       /* Fast travel to the viewpoints already synchronised.
        *
        * A fixed block of `visible()`-gated rows rather than a submenu: the hub
@@ -1077,7 +1097,7 @@ if (overrides.dev) {
      * `creditReporter` is: the only way to check that a record actually fills
      * in is to play the world and read the board back, and a unit test proves
      * the arithmetic rather than the loop. */
-    charters, retention, onboarding,
+    charters, retention, onboarding, recordsPanel,
     /* The only door out of this file the harness is allowed through. Kept
      * behind `__dev` rather than spread across GAME so it is obvious at a call
      * site that a measurement is reaching into the integration layer. */
@@ -2688,6 +2708,13 @@ bus.on('hud:block', ({ id, block }) => {
 });
 bus.on('bug-report:open', () => setGameplayBlocked('bug-report', true));
 bus.on('bug-report:close', () => setGameplayBlocked('bug-report', false));
+/* The records sheet announces itself on `ui:modal` (that is what puts it in
+ * `HUD._overlays`); the same event pauses the world under it, so a touch
+ * session — which never had a pointer lock for `standby` to hang off — reads
+ * its records with the world stopped, like every other sheet. */
+bus.on('ui:modal', ({ id, open }) => {
+  if (id === 'records') setGameplayBlocked('records', !!open);
+});
 
 bus.on('input:lockchange', ({ locked }) => {
   // `devGameplayDriven` is false for every real player; see its declaration.

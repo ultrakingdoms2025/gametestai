@@ -68,6 +68,7 @@ import { HelpMenu } from '../../src/ui/HelpMenu.js';
 import { TouchControls } from '../../src/ui/TouchControls.js';
 import { Charters } from '../../src/systems/Charters.js';
 import { Onboarding } from '../../src/systems/Onboarding.js';
+import { Retention, dayKey } from '../../src/systems/Retention.js';
 
 /* The panels. Each one brings its own stylesheet in with it. */
 import { QuestBoard } from '../../src/ui/QuestBoard.js';
@@ -80,6 +81,7 @@ import { KeybindMenu } from '../../src/ui/KeybindMenu.js';
 import { MazeMap } from '../../src/ui/MazeMap.js';
 import { MountWheel } from '../../src/ui/MountWheel.js';
 import { BugReport } from '../../src/ui/BugReport.js';
+import { RecordsPanel } from '../../src/ui/RecordsPanel.js';
 
 /* Real content for the panels that have any. */
 import { Inventory } from '../../src/systems/Inventory.js';
@@ -354,6 +356,35 @@ function mazeCells() {
 /** The world manager the map and the wheel read. Swapped per scene. */
 const panelWorlds = { active: world };
 
+/* ---- the records sheet ----------------------------------------------
+ * The REAL `Charters` and the REAL `Retention`, seeded through their own
+ * `deserialize` (the same door `SaveGame` uses) so the board carries the
+ * widest realistic mix: a part-done world with deeds, three worlds with
+ * learned rosters at zero, and one never surveyed. Numerators stay honest —
+ * no relic system is wired here, so every learned column reads 0/N, which is
+ * exactly what those columns say on a fresh device. The leaderboard section
+ * renders its real unreachable state, because a Vite-only harness has no
+ * `/api/game/leaderboard` — the same state the game shows under `npm run dev`. */
+const recordsCharters = new Charters({ bus, worldManager: stubs.worldManager });
+recordsCharters.deserialize({
+  rosters: {
+    citadel: { relics: 17, viewpoints: 5, trials: 2 },
+    medieval: { relics: 24, seams: 6 },
+    space: { wings: 12, survey: 10 },
+  },
+  charters: [],
+  deeds: ['station/trade', 'station/mount'],
+});
+const recordsRetention = new Retention({ bus, charters: recordsCharters });
+recordsRetention.deserialize({
+  done: [
+    `daily/${dayKey(Date.now())}`,
+    `daily/${dayKey(Date.now() - 86400000)}`,
+    `daily/${dayKey(Date.now() - 2 * 86400000)}`,
+  ],
+  season: [],
+});
+
 const questBoard = new QuestBoard({ root, bus, input: stubs.input, questSystem });
 const inventoryUI = new InventoryUI({ bus, inventory, economy, input: stubs.input, root });
 const marketUI = new MarketplaceUI({ bus, market, inventory, economy, input: stubs.input, root });
@@ -364,6 +395,9 @@ const keybinds = new KeybindMenu({ root, bus, input: stubs.input });
 const mazeMap = new MazeMap({ root, bus, input: stubs.input, worldManager: panelWorlds, player: stubs.player });
 const mountWheel = new MountWheel({ root, bus, input: stubs.input, mounts, worldManager: panelWorlds });
 const bugReport = new BugReport({ root, bus, input: stubs.input, player: stubs.player, worldManager: stubs.worldManager });
+const recordsPanel = new RecordsPanel({
+  root, bus, input: stubs.input, charters: recordsCharters, retention: recordsRetention,
+});
 
 /* ---------------------------------------------------------------------- */
 /* Fill every panel with the widest realistic content it can carry.         */
@@ -382,6 +416,7 @@ hud.setPauseMenuItems([
       { id: 'ship', label: 'Customise ship', run() {} },
       { id: 'inventory', label: 'Inventory', hint: 'I', run() {} },
       { id: 'quests', label: 'Quest board', hint: 'J', run() {} },
+      { id: 'records', label: 'Records', hint: 'N', run() {} },
       { id: 'map', label: 'Map', run() {} },
     ],
   },
@@ -596,6 +631,21 @@ const SCENES = {
     bugReport.open();
     shown(document.querySelector('.br-root.open .br-panel'), 'bug report');
   },
+  /**
+   * N, and the hub's Records row.
+   *
+   * Opened AND a world row unfolded, by clicking it exactly as a player does —
+   * the per-column record only exists on screen once a known row is expanded,
+   * and those unfolded lines are the half a 390 px screen squeezes first. The
+   * leaderboard section is left in its real unreachable state; see the
+   * construction note above.
+   */
+  records() {
+    recordsPanel.open();
+    const panel = shown(document.querySelector('.rec-root.open .rec-panel'), 'records sheet');
+    panel.querySelector('.rec-row.openable')?.click();
+    shown(panel.querySelector('.rec-cols:not([hidden])'), 'records per-column record');
+  },
 };
 
 function clearScene() {
@@ -622,6 +672,7 @@ function clearScene() {
   mazeMap.close();
   mountWheel.close();
   bugReport.close();
+  recordsPanel.close();
   panelWorlds.active = world;
 }
 
@@ -644,7 +695,7 @@ window.__harness = {
    */
   panels: {
     questBoard, inventoryUI, marketUI, character, mountMenu,
-    shipMenu, keybinds, mazeMap, mountWheel, bugReport,
+    shipMenu, keybinds, mazeMap, mountWheel, bugReport, recordsPanel,
   },
 
   /**

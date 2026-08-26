@@ -134,6 +134,7 @@ const GROUPS = [
     rows: [
       ['T', 'Open comms / chat'],
       ['J', 'Quest board — from anywhere'],
+      ['N', 'Records — charters, standings, leaderboards'],
       ['Esc', 'Pause menu (everything below is in it)'],
       ['F1', 'This panel'],
       ['Esc', 'Close this panel'],

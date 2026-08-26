@@ -35,6 +35,7 @@ const CAPTURE_HINT = 'Press any key…  (Esc to cancel)';
  */
 const FIXED_KEYS = [
   { key: 'J', label: 'Quest board — anywhere' },
+  { key: 'N', label: 'Records — charters, standings, leaderboards' },
   { key: 'I', label: 'Inventory & bag' },
   { key: 'B', label: 'Marketplace (near a vendor)' },
   { key: 'K', label: 'Unstuck — teleport to safety' },

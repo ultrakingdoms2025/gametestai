@@ -121,6 +121,7 @@ const PANELS = [
   ['src/ui/MazeMap.js', 'src/ui/maze-map.css'],
   ['src/ui/MountWheel.js', 'src/ui/mountwheel.css'],
   ['src/ui/BugReport.js', 'src/ui/bug-report.css'],
+  ['src/ui/RecordsPanel.js', 'src/ui/records.css'],
 ];
 
 test('the layout probe still builds every panel, and one scene per panel', async () => {
@@ -147,7 +148,7 @@ test('the layout probe still builds every panel, and one scene per panel', async
 
   /* One scene per panel, named, and each of them proving the panel opened. */
   for (const name of ['quests', 'inventory', 'market', 'character', 'mount',
-    'ship', 'keybinds', 'map', 'wheel', 'bug']) {
+    'ship', 'keybinds', 'map', 'wheel', 'bug', 'records']) {
     assert.ok(new RegExp(`\\n  ${name}\\(\\) \\{`).test(scenes),
       `the layout harness has no \`${name}\` scene — that panel is built and never shown`);
   }

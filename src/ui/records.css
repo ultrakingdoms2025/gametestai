@@ -1,0 +1,445 @@
+/* ============================================================================
+   AETHER NEXUS — Records (charter board, standings, leaderboards)
+   z-index: 87  (above keybinds 85 and the race sheets 86; below the quest
+   board's 88 and the bug report's 95, so a report can always be filed over it)
+   Same design language as quest-board.css: dark glass, clipped corners,
+   cyan / amber rules, Chakra Petch + Rajdhani type.
+   ========================================================================== */
+
+.rec-root {
+  --rec-cy:    var(--cy,       #52e9ff);
+  --rec-amber: var(--amber,    #ffb44a);
+  --rec-lime:  var(--lime,     #b6ff5a);
+  --rec-txt:   var(--txt,      #cfe6f2);
+  --rec-dim:   var(--txt-dim,  #7f9db0);
+  --rec-rule:  var(--rule,     rgba(82, 233, 255, 0.28));
+  --rec-soft:  var(--rule-soft, rgba(120, 180, 210, 0.16));
+  --rec-glass: var(--glass,    rgba(9, 15, 25, 0.52));
+  --rec-hi:    var(--glass-hi, rgba(22, 38, 58, 0.42));
+  --rec-disp:  var(--f-disp, 'Chakra Petch', 'Rajdhani', sans-serif);
+  --rec-ui:    var(--f-ui, 'Rajdhani', 'Chakra Petch', sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 87;
+  display: grid;
+  place-items: center;
+  /* THE NOTCH — read through the four hud.css tokens, never env() directly;
+     `hud-source-checks.mjs` enforces one answer for the whole interface.
+     Padding the scrim's box keeps the dimmer full bleed under the island
+     while the card and its close button stay out from under it. */
+  padding:
+    calc(var(--sa-t, 0px) + 8px) calc(var(--sa-r, 0px) + 8px)
+    calc(var(--sa-b, 0px) + 8px) calc(var(--sa-l, 0px) + 8px);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s;
+  font-family: var(--rec-ui);
+  color: var(--rec-txt);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-root.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Scrim. `--glass-dim` shares its blur kernel with every other dimming
+   overlay on the boot path — see the budget note in hud.css. */
+.rec-root::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 45%, rgba(6, 14, 24, 0.5), rgba(2, 4, 9, 0.88));
+  backdrop-filter: var(--glass-dim);
+  -webkit-backdrop-filter: var(--glass-dim);
+}
+
+/* The STANDBY overlay is also up while this sheet holds the cursor (opening
+   released the pointer lock). Same rule quest-board.css, character.css and
+   maze-map.css carry: hide the card, not display:none, so its transitions
+   still settle. */
+body.records-open .pause {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* ── Panel shell ─────────────────────────────────────────────────────── */
+
+.rec-panel {
+  position: relative;
+  /* Measured from the VIEWPORT, not from 100% of a place-items:center track —
+     the circular-percentage trap quest-board.css documents. `dvh`, never
+     `vh`: a phone's URL bar sits inside the `vh` viewport. */
+  width: min(1040px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
+  max-height: min(88dvh, calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem));
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(155deg, var(--rec-hi), var(--rec-glass)),
+    linear-gradient(180deg, rgba(4, 8, 14, 0.9), rgba(4, 8, 14, 0.94));
+  border: 1px solid var(--rec-soft);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 30px 90px rgba(0, 0, 0, 0.66),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  transform: translateY(14px) scale(0.985);
+  opacity: 0;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
+}
+
+.rec-root.open .rec-panel {
+  transform: none;
+  opacity: 1;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+
+.rec-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--rec-rule);
+  flex-shrink: 0;
+}
+
+.rec-title {
+  font-family: var(--rec-disp);
+  font-size: 1.1rem;
+  letter-spacing: 0.14em;
+  color: var(--rec-cy);
+  text-shadow: 0 0 12px rgba(82, 233, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.rec-rank {
+  font-family: var(--rec-disp);
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  color: var(--rec-amber);
+  border: 1px solid rgba(255, 180, 74, 0.35);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.rec-rank:empty { display: none; }
+
+.rec-tally {
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  color: var(--rec-dim);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.rec-close {
+  background: none;
+  border: 1px solid var(--rec-soft);
+  color: var(--rec-dim);
+  font-size: 0.95rem;
+  line-height: 1;
+  width: 2rem;
+  height: 2rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.rec-close:hover {
+  color: var(--rec-cy);
+  border-color: var(--rec-rule);
+}
+
+/* ── Body: board left, career right ──────────────────────────────────── */
+
+.rec-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.rec-main,
+.rec-side {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 16px 16px;
+}
+
+.rec-main { border-right: 1px solid var(--rec-soft); }
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.rec-sec { margin-bottom: 16px; }
+.rec-sec:last-child { margin-bottom: 0; }
+
+.rec-sec-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--rec-disp);
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  color: var(--rec-cy);
+  border-bottom: 1px solid var(--rec-soft);
+  padding-bottom: 5px;
+  margin-bottom: 8px;
+}
+
+.rec-next {
+  margin-left: auto;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: var(--rec-dim);
+}
+
+.rec-hint {
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: var(--rec-amber);
+  margin: 2px 0 10px;
+}
+
+.rec-hint:empty { display: none; }
+
+/* ── World rows ──────────────────────────────────────────────────────── */
+
+.rec-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(120, 180, 210, 0.08);
+}
+
+.rec-row.openable { cursor: pointer; }
+.rec-row.openable:hover { background: rgba(82, 233, 255, 0.05); }
+.rec-row.expanded { background: rgba(82, 233, 255, 0.07); }
+
+.rec-w-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+}
+
+.rec-w-badge {
+  font-family: var(--rec-disp);
+  font-size: 0.58rem;
+  letter-spacing: 0.14em;
+  color: var(--rec-lime);
+  border: 1px solid rgba(182, 255, 90, 0.35);
+  padding: 1px 5px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.rec-w-rep {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rec-dim);
+}
+
+.rec-row.chartered .rec-w-rep { color: var(--rec-lime); }
+
+.rec-w-count {
+  flex: 0 0 auto;
+  min-width: 3.2rem;
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--rec-txt);
+}
+
+.rec-row.unsurveyed .rec-w-name,
+.rec-row.unsurveyed .rec-w-count { color: var(--rec-dim); }
+
+.rec-w-count.done,
+.rec-col-count.done { color: var(--rec-lime); }
+
+/* The unfolded per-column record. */
+.rec-cols {
+  padding: 4px 8px 8px 20px;
+  border-bottom: 1px solid rgba(120, 180, 210, 0.08);
+  background: rgba(9, 15, 25, 0.35);
+}
+
+.rec-cols[hidden] { display: none; }
+
+.rec-col {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 0.8rem;
+}
+
+.rec-col-name { flex: 1 1 auto; color: var(--rec-dim); }
+.rec-col-count { flex: 0 0 auto; }
+
+/* ── Generic label/value lines (journey, mastery, collection, entries) ── */
+
+.rec-rows { font-size: 0.85rem; }
+
+.rec-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.rec-line-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rec-txt);
+}
+
+.rec-line-count {
+  flex: 0 0 auto;
+  color: var(--rec-cy);
+}
+
+.rec-empty {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--rec-dim);
+}
+
+/* ── Leaderboards ────────────────────────────────────────────────────── */
+
+.rec-board { margin-bottom: 12px; }
+
+.rec-board-title {
+  font-family: var(--rec-disp);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  color: var(--rec-amber);
+  margin-bottom: 4px;
+}
+
+.rec-entry { font-size: 0.82rem; }
+
+.rec-entry-rank {
+  flex: 0 0 2.2rem;
+  color: var(--rec-dim);
+}
+
+.rec-entry.self .rec-line-name,
+.rec-entry.self .rec-entry-rank,
+.rec-entry.self .rec-line-count { color: var(--rec-lime); }
+
+.rec-refused { margin-top: 10px; }
+
+.rec-refused-title { color: var(--rec-dim); }
+
+.rec-refused-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.rec-refused-id {
+  flex: 0 0 6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--rec-dim);
+}
+
+.rec-refused-why {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--rec-dim);
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+
+.rec-footer {
+  padding: 8px 16px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--rec-dim);
+  border-top: 1px solid var(--rec-soft);
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   NARROW VIEWPORTS — under 720 px the two columns stack, and the BODY becomes
+   the one scroll container: two nested scrollers inside one 366 px card is a
+   scroll trap, and the quest board's breakpoint note records where 720 comes
+   from.
+   ========================================================================== */
+@media (max-width: 720px) {
+  .rec-header {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 10px 12px 8px;
+  }
+
+  .rec-title { font-size: 0.95rem; }
+  .rec-tally { font-size: 0.78rem; }
+
+  .rec-body {
+    display: block;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
+  }
+
+  .rec-main,
+  .rec-side {
+    overflow-y: visible;
+    min-height: auto;
+    padding: 10px 12px;
+  }
+
+  .rec-main { border-right: 0; border-bottom: 1px solid var(--rec-soft); }
+}
+
+/* ==========================================================================
+   SHORT VIEWPORTS — a phone in landscape (844x390) runs out of HEIGHT: 88dvh
+   of 390 px is ~343 px, so the fixed rows shrink to leave the scroll areas
+   worth having. Keyed on height, not width, because that is the axis that ran
+   out.
+   ========================================================================== */
+@media (max-height: 480px) {
+  .rec-header { padding: 6px 12px 5px; gap: 8px; }
+  .rec-title { font-size: 0.85rem; }
+  .rec-rank { font-size: 0.66rem; padding: 1px 6px; }
+  .rec-tally { font-size: 0.72rem; }
+  .rec-footer { padding: 4px 12px; font-size: 0.62rem; }
+  .rec-main, .rec-side { padding: 8px 12px 10px; }
+  .rec-sec { margin-bottom: 10px; }
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor. `--tap` is declared in hud.css; the
+   fallback covers this sheet being styled before that one lands. World rows
+   are hit targets even though they are divs — the same statement
+   quest-board.css makes about .qb-item.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .rec-close {
+    width: var(--tap, 2.75rem);
+    height: var(--tap, 2.75rem);
+  }
+
+  .rec-row {
+    min-height: var(--tap, 2.75rem);
+  }
+}

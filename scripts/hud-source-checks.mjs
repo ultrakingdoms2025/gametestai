@@ -88,6 +88,7 @@ const SHEETS = [
   'src/ui/maze-map.css',
   'src/ui/mountwheel.css',
   'src/ui/bug-report.css',
+  'src/ui/records.css',
 ];
 
 /**

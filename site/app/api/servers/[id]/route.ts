@@ -46,7 +46,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!actor) return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
   const { id } = await params;
 
-  let body: { name?: unknown; description?: unknown; status?: unknown };
+  let body: { name?: unknown; description?: unknown; status?: unknown; contentMode?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -69,14 +69,30 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       );
     }
 
+    /* The content mode is the OWNER's decision — `requireOwnedServer` above is
+     * the whole gate, unlike `status`. Present-but-invalid is a 400 rather
+     * than a coercion (a typo must not silently choose a mode for a whole
+     * community), and ABSENT MEANS UNCHANGED all the way down: an omitted
+     * field is simply not in the patch, the discipline `updateServer` records
+     * for `status`. */
+    const wantsMode = body.contentMode === 'extend' || body.contentMode === 'replace';
+    if (body.contentMode !== undefined && !wantsMode) {
+      return NextResponse.json(
+        { error: "contentMode must be 'extend' or 'replace'." },
+        { status: 400 }
+      );
+    }
+
     const server = await updateServer(db, id, {
       ...(body.name === undefined ? {} : { name: String(body.name) }),
       ...(body.description === undefined ? {} : { description: String(body.description) }),
       ...(wantsStatus ? { status: body.status as 'active' | 'suspended' } : {}),
+      ...(wantsMode ? { contentMode: body.contentMode as 'extend' | 'replace' } : {}),
     });
     await auditServerAction(db, actor, 'server.update', `server:${id}`, {
       name: body.name ?? null,
       status: wantsStatus ? body.status : null,
+      contentMode: wantsMode ? body.contentMode : null,
     });
     return NextResponse.json({ server });
   } catch (err) {

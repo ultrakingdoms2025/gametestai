@@ -309,6 +309,14 @@ export async function listMarketplaceItems(filters: {
   activeOnly?: boolean;
   /** A server's items, in addition to the defaults. Absent means platform only. */
   serverId?: string | null;
+  /**
+   * The server's content mode, from the SAME `currentContentScope` resolution
+   * that produced `serverId`. `'replace'` collapses the merge to "server rows
+   * only" — no platform items at all. Absent means `'extend'`, which is
+   * byte-for-byte the shipped behaviour, and it only narrows anything when a
+   * server was actually resolved.
+   */
+  contentMode?: 'extend' | 'replace';
 } = {}): Promise<MarketplaceItemRecord[]> {
   await ensureMarketplaceSchema();
   const clauses: string[] = [];
@@ -330,7 +338,8 @@ export async function listMarketplaceItems(filters: {
    * matches nothing — every server id is a UUID — so a player in default mode
    * gets exactly the platform partition. With an id it is the platform IN
    * ADDITION TO that server, which is decision D2 verbatim. */
-  values.push(String(filters.serverId ?? '').trim() || null);
+  const scope = String(filters.serverId ?? '').trim() || null;
+  values.push(scope);
   i += 1;
 
   if (filters.activeOnly !== false) {
@@ -355,18 +364,35 @@ export async function listMarketplaceItems(filters: {
 
   /* The scope is in the literal, and only the OPTIONAL filters are interpolated.
    * A scope hidden behind `${where}` is a scope no source test can see, and the
-   * failure being guarded against is a read path with no scope at all. */
+   * failure being guarded against is a read path with no scope at all.
+   *
+   * Two whole statements for the two modes, the same trade the purchase path
+   * makes below: in `replace` mode the merge collapses to the server's own
+   * rows, and the `extend` statement stays byte-identical to the one that
+   * shipped — pinned by `contentMode.test.ts`, so "extend is unchanged" is a
+   * fact a gate reads rather than a promise. */
   const extra = clauses.length ? `AND ${clauses.join(' AND ')}` : '';
-  const { rows } = await query<Record<string, unknown>>(
-    `SELECT id, source_key, name, description, category, image, game_action, action_config,
-            quantity, cost_buy, cost_sell, world_name, is_active, sort_order, server_id,
-            created_at, updated_at
-     FROM marketplace_items
-     WHERE (server_id IS NULL OR server_id = COALESCE($1, ''))
-     ${extra}
-     ORDER BY sort_order ASC, name ASC, created_at ASC`,
-    values
-  );
+  const { rows } = scope && filters.contentMode === 'replace'
+    ? await query<Record<string, unknown>>(
+        `SELECT id, source_key, name, description, category, image, game_action, action_config,
+                quantity, cost_buy, cost_sell, world_name, is_active, sort_order, server_id,
+                created_at, updated_at
+         FROM marketplace_items
+         WHERE server_id = COALESCE($1, '')
+         ${extra}
+         ORDER BY sort_order ASC, name ASC, created_at ASC`,
+        values
+      )
+    : await query<Record<string, unknown>>(
+        `SELECT id, source_key, name, description, category, image, game_action, action_config,
+                quantity, cost_buy, cost_sell, world_name, is_active, sort_order, server_id,
+                created_at, updated_at
+         FROM marketplace_items
+         WHERE (server_id IS NULL OR server_id = COALESCE($1, ''))
+         ${extra}
+         ORDER BY sort_order ASC, name ASC, created_at ASC`,
+        values
+      );
   /* `parseMarketplaceRows`, not `rows.map(rowToItem)`: one row this module
    * cannot parse used to throw out of here and 500 the catalogue for every
    * caller in scope. See that function for why a bad row is skipped and not
@@ -626,7 +652,20 @@ async function balanceOf(db: PurchaseDb, playerId: string): Promise<number> {
 export async function purchaseMarketplaceItem(
   db: PurchaseDb,
   playerId: string,
-  request: { itemId: string; eventKey: string; serverId?: string | null }
+  request: {
+    itemId: string;
+    eventKey: string;
+    serverId?: string | null;
+    /**
+     * The server's content mode, from the SAME `currentContentScope`
+     * resolution that produced `serverId`. THE PURCHASE MUST AGREE WITH THE
+     * LIST: in `replace` mode `listMarketplaceItems` serves the server's rows
+     * only, so this path refuses a platform item id with `not_found` — the
+     * same answer a cross-server id gets — or a replace-mode player could buy
+     * an item they cannot see. Absent means `'extend'`: the shipped behaviour.
+     */
+    contentMode?: 'extend' | 'replace';
+  }
 ): Promise<MarketplacePurchaseResult> {
   const { itemId, eventKey } = request;
   /* Which catalogue this buyer is shopping in. Absent means the platform one —
@@ -642,6 +681,10 @@ export async function purchaseMarketplaceItem(
    * a shared helper, for the reason `listMarketplaceItems` records: a
    * clause behind a `${variable}` is a clause the source test cannot read. */
   const scope = String(request.serverId ?? '').trim() || null;
+  /* Only meaningful WITH a server resolved: replace-with-no-server has
+   * nothing to replace with, so default mode buys from the platform partition
+   * exactly as it always has. */
+  const replaceOnly = request.contentMode === 'replace' && scope !== null;
 
   const refuse = async (
     reason: MarketplacePurchaseReason
@@ -685,31 +728,61 @@ export async function purchaseMarketplaceItem(
       };
     }
 
-    /* Two whole statements rather than one with a clever predicate, and the
+    /* Whole statements rather than one with a clever predicate, and the
      * scope clause written out LITERALLY in each. `contentScoping.test.ts` reads
      * these strings out of the source — that is the only seam it has, because
      * this module opens its own connections — and a clause assembled from a
      * `${variable}` is a clause no source test can see. Duplication that a gate
-     * can read beats a single statement it cannot. */
-    const found = byRowId
-      ? await db.query(
-          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
-                  is_active, world_name
-             FROM marketplace_items
-            WHERE id = $1
-              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
-              FOR UPDATE`,
-          [ref, scope]
-        )
-      : await db.query(
-          `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
-                  is_active, world_name
-             FROM marketplace_items
-            WHERE source_key = $1
-              AND (server_id IS NULL OR server_id = COALESCE($2, ''))
-              FOR UPDATE`,
-          [ref, scope]
-        );
+     * can read beats a single statement it cannot.
+     *
+     * The `replace` pair narrows to the server's own rows, agreeing with the
+     * list. Its `source_key` arm deserves a note: `source_key` is NULL on
+     * every owner-authored row, so in replace mode a source-key reference —
+     * which is how the OFFLINE fallback catalogue names items, and that
+     * catalogue is the platform's — can match nothing and answers `not_found`.
+     * That is correct, not incidental: the offline shop shows platform items,
+     * and in replace mode the platform is not for sale. The `extend` pair is
+     * byte-identical to the statements that shipped (`contentMode.test.ts`
+     * pins it). */
+    const found = replaceOnly
+      ? (byRowId
+        ? await db.query(
+            `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                    is_active, world_name
+               FROM marketplace_items
+              WHERE id = $1
+                AND server_id = COALESCE($2, '')
+                FOR UPDATE`,
+            [ref, scope]
+          )
+        : await db.query(
+            `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                    is_active, world_name
+               FROM marketplace_items
+              WHERE source_key = $1
+                AND server_id = COALESCE($2, '')
+                FOR UPDATE`,
+            [ref, scope]
+          ))
+      : (byRowId
+        ? await db.query(
+            `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                    is_active, world_name
+               FROM marketplace_items
+              WHERE id = $1
+                AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+                FOR UPDATE`,
+            [ref, scope]
+          )
+        : await db.query(
+            `SELECT id, source_key, name, game_action, action_config, quantity, cost_buy,
+                    is_active, world_name
+               FROM marketplace_items
+              WHERE source_key = $1
+                AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+                FOR UPDATE`,
+            [ref, scope]
+          ));
     const row = found.rows[0];
     if (!row) {
       await db.query('ROLLBACK');

@@ -26,8 +26,18 @@ export interface LoreEntryRow { scope: string; title: string; sign_label: string
  * filter". Same contract as `listActiveQuestsForWorld` and
  * `listMarketplaceItems`: a caller written before custom servers existed keeps
  * seeing exactly today's content without being edited.
+ *
+ * `mode` is the server's content mode, from the SAME `currentContentScope`
+ * resolution that produced `serverId` — the pair travels together, never
+ * re-derived here. `'replace'` serves the owner's overlay ONLY (no platform
+ * union at all); it defaults to `'extend'` and only narrows anything when a
+ * server was actually resolved, so every existing caller keeps today's
+ * behaviour byte-for-byte.
  */
-export type LoreFetcher = (serverId?: string | null) => Promise<LoreEntryRow[]>;
+export type LoreFetcher = (
+  serverId?: string | null,
+  mode?: 'extend' | 'replace'
+) => Promise<LoreEntryRow[]>;
 
 /**
  * The platform partition.
@@ -90,7 +100,7 @@ function orderedLore(inner: string): string {
 }
 
 /** Shared query used by BOTH the API route and server-side getLore — no HTTP self-fetch. */
-export const getLoreEntries: LoreFetcher = async (serverId = null) => {
+export const getLoreEntries: LoreFetcher = async (serverId = null, mode = 'extend') => {
   const scoped = String(serverId ?? '').trim() || null;
   const client = makeClient();
   await client.connect();
@@ -122,12 +132,23 @@ export const getLoreEntries: LoreFetcher = async (serverId = null) => {
      * exists to prevent.
      *
      * A non-null `scoped` cannot arrive on such a database. It comes from
-     * `currentServerId`, which reads `player_server_selection`, `custom_servers`
-     * and `server_members` through a connection `openServerDb` has already run
-     * `ensureCustomServerSchema` on. So by construction: if there is a server to
-     * scope to, the table exists. */
+     * `currentContentScope`, which reads `player_server_selection`,
+     * `custom_servers` and `server_members` through a connection `openServerDb`
+     * has already run `ensureCustomServerSchema` on. So by construction: if
+     * there is a server to scope to, the table exists.
+     *
+     * In `replace` mode the union is not issued at all — the overlay IS the
+     * lore, which is the merge rule collapsed to "server rows only". The same
+     * by-construction argument covers it: a `replace` mode can only arrive
+     * alongside a resolved server, so the overlay table exists. With no server
+     * resolved the platform partition is served exactly as before, whatever
+     * the mode argument claims. */
     const sql = orderedLore(
-      scoped ? `${PLATFORM_LORE_SELECT} UNION ALL ${SERVER_LORE_SELECT}` : PLATFORM_LORE_SELECT
+      scoped && mode === 'replace'
+        ? SERVER_LORE_SELECT
+        : scoped
+          ? `${PLATFORM_LORE_SELECT} UNION ALL ${SERVER_LORE_SELECT}`
+          : PLATFORM_LORE_SELECT
     );
     const { rows } = await client.query(sql, [scoped]);
     return rows as LoreEntryRow[];

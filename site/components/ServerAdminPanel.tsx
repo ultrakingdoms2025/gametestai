@@ -35,6 +35,8 @@ type ServerRow = {
   slug: string;
   description: string;
   status: 'active' | 'suspended';
+  /** `extend`: platform content plus this server's. `replace`: this server's only. */
+  contentMode: 'extend' | 'replace';
   ownerPlayerId: string;
   createdAt: string;
 };
@@ -453,6 +455,57 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                 </li>
               ))}
             </ul>
+          </section>
+
+          {/* ---- content mode --------------------------------------------
+              The owner's one decision about how everything authored below
+              meets the default game. Two radios, one honest sentence each —
+              the replace sentence says out loud that a thin server LOOKS
+              thin, because a member who finds an empty marketplace after
+              joining reads it as an outage. PATCHed alone; every other field
+              is absent, and absent means unchanged. */}
+          <section style={card}>
+            <h2 style={{ margin: 0, fontSize: 18 }}>Content mode</h2>
+            <div role="radiogroup" aria-label="Content mode" style={{ display: 'grid', gap: 10 }}>
+              {([
+                {
+                  value: 'extend' as const,
+                  title: 'Extend the default game',
+                  blurb: 'Members get every platform quest, marketplace item and lore entry, plus everything you author below. This is the default, and how every server behaved before this choice existed.',
+                },
+                {
+                  value: 'replace' as const,
+                  title: 'Replace the default game',
+                  blurb: 'Members see ONLY what you author below — a server with 3 quests shows exactly 3 quests, and the platform quests, marketplace items and lore are gone until you switch back.',
+                },
+              ]).map((opt) => (
+                <label key={opt.value}
+                  style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="contentMode"
+                    value={opt.value}
+                    checked={detail.server.contentMode === opt.value}
+                    disabled={busy}
+                    onChange={() => run(() => api(`/api/servers/${detail.server.id}`, {
+                      method: 'PATCH',
+                      body: JSON.stringify({ contentMode: opt.value }),
+                    }))}
+                  />
+                  <span style={{ display: 'grid', gap: 2 }}>
+                    <b>{opt.title}</b>
+                    <span style={{ color: '#9bb0c2', fontSize: 13 }}>{opt.blurb}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {detail.server.contentMode === 'replace' && (
+              <p style={{ margin: 0, color: '#ffdca6', fontSize: 13 }}>
+                Members keep any quest they had already started, including platform ones —
+                switching modes never cancels work in progress. The directory marks this
+                server &ldquo;curated&rdquo; so joining players know what to expect.
+              </p>
+            )}
           </section>
 
           {/* ---- quests -------------------------------------------------- */}

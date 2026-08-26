@@ -10,7 +10,7 @@ import {
   completeQuestEngagement,
   failQuestEngagement,
 } from '@/lib/playerDb';
-import { currentServer } from '@/lib/serverRoutes';
+import { currentContentScope } from '@/lib/serverRoutes';
 
 export async function GET(request: NextRequest) {
   const worldRaw = request.nextUrl.searchParams.get('world') ?? 'station';
@@ -37,13 +37,24 @@ export async function GET(request: NextRequest) {
   }
 
   const playerId = await findOrCreatePlayer(session.user.id, user.email);
-  /* D2: entry with that server's items IN ADDITION TO defaults. `currentServer`
-   * re-checks membership, so a player removed since their last request drops
-   * back to the platform catalogue on this very call. */
-  const serverId = await currentServer(playerId);
-  const quests = await listActiveQuestsForWorld(world, serverId);
+  /* The scope pair — which server AND how it merges — is resolved ONCE by
+   * `currentContentScope` and handed to the read whole. In `extend` mode this
+   * is D2 verbatim: the server's quests IN ADDITION TO defaults. In `replace`
+   * mode the board is the server's rows only — an owner who authored 3 quests
+   * shows 3 quests, and an owner who authored none shows the same empty board
+   * the shipped empty-state already renders. The resolver re-checks
+   * membership, so a player removed since their last request drops back to
+   * the platform catalogue on this very call. */
+  const scope = await currentContentScope(playerId);
+  const quests = await listActiveQuestsForWorld(world, scope.serverId, scope.mode);
   const engagements = await getPlayerQuestEngagements(playerId);
-  return NextResponse.json({ quests, engagements, player_id: playerId, server_id: serverId });
+  return NextResponse.json({
+    quests,
+    engagements,
+    player_id: playerId,
+    server_id: scope.serverId,
+    content_mode: scope.mode,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -75,12 +86,14 @@ export async function POST(request: NextRequest) {
     }
     /* The scope is resolved server-side, never read from the body.
      *
-     * It does two jobs: an owner quest is only acceptable by somebody in that
-     * owner's server, and a PLATFORM quest accepted inside a custom server
-     * accrues to that server (D2 gives a member both catalogues). Both are
-     * decided by acceptQuestEngagement, from the quest row plus this value. */
-    const serverId = await currentServer(playerId);
-    const result = await acceptQuestEngagement(playerId, questId.trim(), serverId);
+     * It does three jobs: an owner quest is only acceptable by somebody in
+     * that owner's server; a PLATFORM quest accepted inside a custom server
+     * accrues to that server (D2 gives a member both catalogues); and in
+     * `replace` mode a platform quest is not acceptable at all — the accept
+     * must agree with the board. All are decided by acceptQuestEngagement,
+     * from the quest row plus this one resolved pair. */
+    const scope = await currentContentScope(playerId);
+    const result = await acceptQuestEngagement(playerId, questId.trim(), scope.serverId, scope.mode);
     if (!result.ok) {
       if (result.reason === 'quest_not_found') {
         return NextResponse.json(

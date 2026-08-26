@@ -753,25 +753,54 @@ export async function findMissingPrerequisites(
  * A member of a custom server gets that server's quests IN ADDITION TO the
  * platform ones, which is decision D2 verbatim — the owner's catalogue is an
  * overlay, not a replacement.
+ *
+ * UNLESS the server's owner chose `replace` mode: then the merge collapses to
+ * "server rows only" and the platform partition is not served at all. `mode`
+ * defaults to `'extend'` for the same reason `serverId` defaults to null —
+ * every caller written before modes existed keeps today's behaviour without
+ * being edited — and it only narrows anything when a server was actually
+ * resolved: replace-with-no-server has nothing to replace WITH, so it serves
+ * the platform partition exactly as before. Both halves of the pair come from
+ * ONE resolution (`currentContentScope`); this function never re-derives.
  */
-export async function listActiveQuestsForWorld(world: string, serverId: string | null = null) {
+export async function listActiveQuestsForWorld(
+  world: string,
+  serverId: string | null = null,
+  mode: 'extend' | 'replace' = 'extend'
+) {
   await ensureQuestSchema();
   const normalizedWorld = String(world ?? '').trim().toLowerCase();
   const scoped = String(serverId ?? '').trim() || null;
-  const { rows } = await pgQuery<{
+  type ActiveQuestRow = {
     id: string; quest_number: number; world: string; quest_line: string;
     title: string; reward_credits: number; duration_minutes: number | null;
     pre_steps: string | null; steps: string | null; is_active: boolean;
     server_id: string | null;
-  }>(
-    `SELECT id, quest_number, world, quest_line, title, reward_credits,
-            duration_minutes, pre_steps, steps, is_active, server_id
-     FROM quests
-     WHERE is_active = TRUE AND LOWER(world) = $1
-       AND (server_id IS NULL OR server_id = COALESCE($2, ''))
-     ORDER BY quest_number ASC`,
-    [normalizedWorld, scoped]
-  );
+  };
+  /* Two whole statements rather than one with a clever predicate, the trade
+   * the purchase path already records: the scope clause is written out
+   * LITERALLY in each so `contentScoping.test.ts` can read it out of the
+   * source, and the `extend` statement is byte-identical to the one that
+   * shipped — `contentMode.test.ts` pins that. */
+  const { rows } = scoped && mode === 'replace'
+    ? await pgQuery<ActiveQuestRow>(
+        `SELECT id, quest_number, world, quest_line, title, reward_credits,
+                duration_minutes, pre_steps, steps, is_active, server_id
+         FROM quests
+         WHERE is_active = TRUE AND LOWER(world) = $1
+           AND server_id = COALESCE($2, '')
+         ORDER BY quest_number ASC`,
+        [normalizedWorld, scoped]
+      )
+    : await pgQuery<ActiveQuestRow>(
+        `SELECT id, quest_number, world, quest_line, title, reward_credits,
+                duration_minutes, pre_steps, steps, is_active, server_id
+         FROM quests
+         WHERE is_active = TRUE AND LOWER(world) = $1
+           AND (server_id IS NULL OR server_id = COALESCE($2, ''))
+         ORDER BY quest_number ASC`,
+        [normalizedWorld, scoped]
+      );
   return rows;
 }
 
@@ -835,7 +864,15 @@ export async function acceptQuestEngagement(
    *
    * Defaults to null so every existing caller keeps its behaviour exactly.
    */
-  serverId: string | null = null
+  serverId: string | null = null,
+  /**
+   * The server's content mode, from the SAME `currentContentScope` resolution
+   * that produced `serverId` — never re-derived here. In `replace` mode the
+   * platform catalogue is not served to this player, and the accept path must
+   * agree with the list: see the guard below. Defaults to `'extend'` so every
+   * existing caller keeps its behaviour exactly.
+   */
+  mode: 'extend' | 'replace' = 'extend'
 ): Promise<AcceptQuestResult> {
   await ensureQuestSchema();
   const { rows: existing } = await pgQuery<{ id: string }>(
@@ -853,7 +890,27 @@ export async function acceptQuestEngagement(
    * in that server it genuinely does not exist — and because a distinct refusal
    * would confirm the id, turning this endpoint into a way to enumerate other
    * people's content. */
-  if (quest.server_id && quest.server_id !== (String(serverId ?? '').trim() || null)) {
+  const scopedServer = String(serverId ?? '').trim() || null;
+  if (quest.server_id && quest.server_id !== scopedServer) {
+    return { ok: false, reason: 'quest_not_found' };
+  }
+
+  /* The mirror guard for `replace` mode: the platform partition is not served
+   * to this player, so a platform quest id must answer exactly as a foreign
+   * server's does — `quest_not_found`, the same non-confirming refusal. This
+   * lives HERE, beside the eligibility check, so the accept path and the list
+   * path (`listActiveQuestsForWorld` in replace mode) cannot disagree about
+   * what exists: nothing is acceptable that the board would not show.
+   *
+   * ENGAGEMENTS ALREADY IN FLIGHT ARE DELIBERATELY UNTOUCHED. This guard runs
+   * only for NEW accepts — the in_progress short-circuit above returns before
+   * it, and `completeQuestEngagement` never consults the mode at all. The
+   * engagement row is the contract: a player who accepted a platform quest
+   * while the server extended keeps the completion (and the reward its stamp
+   * already decides) after the owner flips to replace. Revoking work a player
+   * was invited to start is not what a content-mode switch means, and an
+   * owner who flips modes mid-quest should cost their members nothing. */
+  if (mode === 'replace' && scopedServer && !quest.server_id) {
     return { ok: false, reason: 'quest_not_found' };
   }
 

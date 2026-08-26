@@ -178,6 +178,52 @@ export function isActiveMember(state: MemberState | null): boolean {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Content mode                                                            */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * How a server's content merges with the platform's, chosen by its owner.
+ *
+ *   - `extend` (the DEFAULT, and what every server created before the column
+ *     existed is): platform content PLUS the owner's additions. Decision D2
+ *     verbatim — the shipped behaviour, unchanged.
+ *   - `replace`: members see ONLY owner-authored content. No platform quests,
+ *     no platform marketplace items, no platform lore — the merge rule
+ *     collapses to "server rows only". A server with 3 quests shows 3 quests.
+ *
+ * Constrained HERE, in code, rather than by a DB CHECK (repo style): the
+ * column is plain TEXT, `toServer` reads anything that is not `replace` as
+ * `extend` (the safe direction — an unrecognised value serves MORE of the
+ * default game, never somebody else's), and every write path narrows to this
+ * union before the UPDATE.
+ */
+export const CONTENT_MODES = Object.freeze(['extend', 'replace'] as const);
+
+export type ContentMode = (typeof CONTENT_MODES)[number];
+
+/**
+ * The pair every content read path scopes by: which server, and how that
+ * server merges with the platform.
+ *
+ * Resolved ONCE, by `currentContentScope`, where the server selection is
+ * resolved — so the quest list, the marketplace (list AND purchase) and the
+ * lore read all receive the same decision instead of re-deriving it. The two
+ * halves are not independent: `mode` is only ever `replace` when `serverId`
+ * is a server the player may actually use, so `{serverId: null}` always
+ * carries `extend` and means exactly today's platform partition.
+ */
+export interface ContentScope {
+  serverId: string | null;
+  mode: ContentMode;
+}
+
+/** Default mode: the platform partition, merged the way it always was. */
+export const PLATFORM_SCOPE: Readonly<ContentScope> = Object.freeze({
+  serverId: null,
+  mode: 'extend' as ContentMode,
+});
+
+/* ---------------------------------------------------------------------- */
 /* Shapes                                                                  */
 /* ---------------------------------------------------------------------- */
 
@@ -189,6 +235,8 @@ export interface CustomServer {
   description: string;
   /** `active` or `suspended`. A suspended server serves no content. */
   status: 'active' | 'suspended';
+  /** See `ContentMode`. `extend` unless the owner has explicitly chosen. */
+  contentMode: ContentMode;
   createdAt: string;
 }
 
@@ -258,10 +306,30 @@ async function runCustomServerSchema(db: Db): Promise<void> {
       slug            TEXT NOT NULL UNIQUE,
       description     TEXT NOT NULL DEFAULT '',
       status          TEXT NOT NULL DEFAULT 'active',
+      content_mode    TEXT NOT NULL DEFAULT 'extend',
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  /* The migration for every server that already exists: DEFAULT 'extend' IS
+   * the migration value, because `extend` is the shipped behaviour and a mode
+   * nobody chose must change nothing.
+   *
+   * ALTER as well as the CREATE above, because the table already exists in
+   * production — the same reasoning `server_entitlements.simulated` records
+   * below. And like that ALTER, deliberately NOT `.catch(() => {})`:
+   * `SERVER_COLS` selects this column, so a silently skipped migration would
+   * turn every `getServer` into a 500 instead of failing here, where the
+   * message says what went wrong. This module is the ONLY one that reads
+   * `custom_servers.content_mode` (the quest/marketplace/lore read paths take
+   * the resolved mode as an argument, never the column), so the
+   * `serverIdMigrations.test.ts` rule — the ensure lives with the read — is
+   * satisfied by this one ALTER; `contentMode.test.ts` sweeps the modules to
+   * keep it that way. */
+  await db.query(
+    `ALTER TABLE custom_servers
+       ADD COLUMN IF NOT EXISTS content_mode TEXT NOT NULL DEFAULT 'extend'`
+  );
   await db.query(
     `CREATE INDEX IF NOT EXISTS custom_servers_owner_idx ON custom_servers (owner_player_id)`
   );
@@ -470,6 +538,7 @@ interface ServerRow {
   slug: string;
   description: string | null;
   status: string;
+  content_mode: string | null;
   created_at: string;
 }
 
@@ -481,12 +550,17 @@ function toServer(row: ServerRow): CustomServer {
     slug: String(row.slug ?? ''),
     description: String(row.description ?? ''),
     status: row.status === 'suspended' ? 'suspended' : 'active',
+    /* Anything that is not the one value that NARROWS the catalogue reads as
+     * `extend` — the same shape `status` uses, and the same safe direction:
+     * a mangled value shows a member more of the default game, never less
+     * and never somebody else's. */
+    contentMode: row.content_mode === 'replace' ? 'replace' : 'extend',
     createdAt: String(row.created_at ?? ''),
   };
 }
 
 const SERVER_COLS =
-  'id, owner_player_id, name, slug, description, status, created_at';
+  'id, owner_player_id, name, slug, description, status, content_mode, created_at';
 
 /**
  * Create a server, if the owner has paid for one and has room for it.
@@ -569,7 +643,12 @@ export async function listAllServers(db: Db): Promise<CustomServer[]> {
 export async function updateServer(
   db: Db,
   serverId: string,
-  patch: { name?: string; description?: string; status?: 'active' | 'suspended' }
+  patch: {
+    name?: string;
+    description?: string;
+    status?: 'active' | 'suspended';
+    contentMode?: ContentMode;
+  }
 ): Promise<CustomServer | null> {
   const current = await getServer(db, serverId);
   if (!current) return null;
@@ -577,8 +656,8 @@ export async function updateServer(
   if (!name || name.length < 3) return current;
   const r = await db.query(
     `UPDATE custom_servers
-        SET name = $1, description = $2, status = $3, updated_at = NOW()
-      WHERE id = $4
+        SET name = $1, description = $2, status = $3, content_mode = $4, updated_at = NOW()
+      WHERE id = $5
       RETURNING ${SERVER_COLS}`,
     [
       name,
@@ -594,6 +673,15 @@ export async function updateServer(
       patch.status === undefined
         ? current.status
         : (patch.status === 'suspended' ? 'suspended' : 'active'),
+      /* Same discipline for the mode, learned once and copied: an omitted
+       * `contentMode` keeps the row's own, so PATCH {"name": "..."} cannot
+       * quietly hand a replace-mode community the whole platform catalogue
+       * back (or take the default game away from an extend-mode one). When it
+       * IS present it narrows to the two-value union here, in code — the only
+       * write path there is, so the column never holds a third value. */
+      patch.contentMode === undefined
+        ? current.contentMode
+        : (patch.contentMode === 'replace' ? 'replace' : 'extend'),
       serverId,
     ]
   );
@@ -795,21 +883,49 @@ export async function selectServer(
 }
 
 /**
- * The server this player is in, or null for default mode.
+ * The content scope this player plays in: which server, and how that server's
+ * content merges with the platform's. THE resolver — the scope decision is
+ * made here once, and the quest, marketplace and lore read paths all take the
+ * resulting pair rather than re-deriving it per module.
  *
- * Re-checks membership on every read. A stored selection is not an entitlement:
- * an owner can remove a member between one request and the next, and a player
- * whose membership ended must fall back to default mode rather than keep the
- * catalogue they were shown last.
+ * Re-checks membership on every read, exactly as `currentServerId` always
+ * has. A stored selection is not an entitlement: an owner can remove a member
+ * between one request and the next, and a player whose membership ended must
+ * fall back to default mode rather than keep the catalogue they were shown
+ * last. Every fallback path answers `PLATFORM_SCOPE`'s shape — `mode` is
+ * only ever `replace` alongside a server the player may actually use, so no
+ * read path has to ask what "replace with no server" means.
+ *
+ * The membership check is spelled out here (active server + approved member)
+ * rather than calling `canUseServer`, because that helper would re-fetch the
+ * server row this function already needs for its `content_mode`. Same rule,
+ * one read.
  */
-export async function currentServerId(db: Db, playerId: string): Promise<string | null> {
+export async function currentContentScope(db: Db, playerId: string): Promise<ContentScope> {
   const r = await db.query(
     `SELECT server_id FROM player_server_selection WHERE player_id = $1`,
     [playerId]
   );
   const stored = r.rows[0]?.server_id;
-  if (!stored) return null;
-  return (await canUseServer(db, String(stored), playerId)) ? String(stored) : null;
+  if (!stored) return { serverId: null, mode: 'extend' };
+  const server = await getServer(db, String(stored));
+  if (!server || server.status !== 'active') return { serverId: null, mode: 'extend' };
+  if (!isActiveMember(await memberState(db, server.id, playerId))) {
+    return { serverId: null, mode: 'extend' };
+  }
+  return { serverId: server.id, mode: server.contentMode };
+}
+
+/**
+ * The server this player is in, or null for default mode.
+ *
+ * The id half of `currentContentScope`, kept for the callers that only need
+ * WHERE the player is (chat, presence, the server-credit ledger) and not how
+ * content merges there. Delegates rather than duplicating, so there is one
+ * membership-re-checking resolution rule and not two that agree today.
+ */
+export async function currentServerId(db: Db, playerId: string): Promise<string | null> {
+  return (await currentContentScope(db, playerId)).serverId;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -866,6 +982,13 @@ export interface ServerDirectoryRow {
   name: string;
   slug: string;
   description: string;
+  /**
+   * Served to the directory so a replace-mode server can be tagged BEFORE a
+   * player joins it: its marketplace and quest board hold only what the owner
+   * authored, and a player who finds that out after entering reads it as an
+   * outage. A public fact about the server, like its name — not content.
+   */
+  contentMode: ContentMode;
   /** Approved members, the only state that can enter. */
   members: number;
   /** Approved members seen inside the presence window. */
@@ -908,7 +1031,7 @@ export async function listServersDirectory(
   playerId: string
 ): Promise<ServerDirectoryRow[]> {
   const r = await db.query(
-    `SELECT s.id, s.name, s.slug, s.description,
+    `SELECT s.id, s.name, s.slug, s.description, s.content_mode,
             (SELECT COUNT(*)::int FROM server_members m
               WHERE m.server_id = s.id AND m.state = 'approved') AS members,
             (SELECT COUNT(*)::int FROM server_presence p
@@ -935,6 +1058,7 @@ export async function listServersDirectory(
       name: String(row.name ?? ''),
       slug: String(row.slug ?? ''),
       description: String(row.description ?? ''),
+      contentMode: (row.content_mode === 'replace' ? 'replace' : 'extend') as ContentMode,
       members: Number(row.members ?? 0),
       online: Number(row.online ?? 0),
       callerState,

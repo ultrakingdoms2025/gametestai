@@ -3,8 +3,15 @@ import { auth } from './auth';
 import { getUserById } from './db';
 import { findOrCreatePlayer } from './playerDb';
 import { isAllowedAdminEmail } from './adminAllowlist';
-import { ensureCustomServerSchema, getServer, type CustomServer } from './customServers';
+import {
+  ensureCustomServerSchema,
+  getServer,
+  type ContentScope,
+  type CustomServer,
+} from './customServers';
 import { appendAudit } from './auditChain';
+
+export type { ContentMode, ContentScope } from './customServers';
 
 /**
  * The plumbing every custom-server route needs, in one place.
@@ -101,29 +108,48 @@ export async function openServerDb(): Promise<Client> {
 }
 
 /**
- * The server this player is in, opening and closing its own connection.
+ * The content scope this player plays in — `{serverId, mode}` — opening and
+ * closing its own connection.
  *
- * For the routes that predate this phase — the quest list, the marketplace —
- * which reach the database through per-call `query()` helpers and have no
- * connection to borrow. One extra round trip on those paths, in exchange for not
- * restructuring three shipped route handlers to thread a client through.
+ * For the routes that predate this phase — the quest list, the marketplace,
+ * the lore — which reach the database through per-call `query()` helpers and
+ * have no connection to borrow. One extra round trip on those paths, in
+ * exchange for not restructuring three shipped route handlers to thread a
+ * client through.
  *
- * Returns null on ANY failure, which is the safe direction: null is the platform
- * partition, so a database hiccup shows a player the default catalogue rather
- * than failing their request or, worse, showing them somebody else's.
+ * The scope decision is made ONCE, here, and each read path takes the pair:
+ * which server AND how it merges are one resolution, so the quest board, the
+ * catalogue, the purchase and the lore can never disagree about what mode the
+ * player is in.
+ *
+ * Answers the platform scope (`{serverId: null, mode: 'extend'}`) on ANY
+ * failure, which is the safe direction: a database hiccup shows a player the
+ * default catalogue rather than failing their request or, worse, showing them
+ * somebody else's — the same direction `currentServer` has always taken.
  */
-export async function currentServer(playerId: string): Promise<string | null> {
+export async function currentContentScope(playerId: string): Promise<ContentScope> {
   let db: Client | null = null;
   try {
     db = await openServerDb();
-    const { currentServerId } = await import('./customServers');
-    return await currentServerId(db, playerId);
+    const servers = await import('./customServers');
+    return await servers.currentContentScope(db, playerId);
   } catch (err) {
-    console.error('[servers] could not resolve the current server:', err);
-    return null;
+    console.error('[servers] could not resolve the content scope:', err);
+    return { serverId: null, mode: 'extend' };
   } finally {
     await db?.end().catch(() => {});
   }
+}
+
+/**
+ * The server this player is in, opening and closing its own connection.
+ *
+ * The id half of `currentContentScope`, kept for callers that need WHERE the
+ * player is and not how content merges there (the session read, credit
+ * provenance). Delegates so there is one resolution rule, not two.
+ */
+export async function currentServer(playerId: string): Promise<string | null> {
+  return (await currentContentScope(playerId)).serverId;
 }
 
 /**

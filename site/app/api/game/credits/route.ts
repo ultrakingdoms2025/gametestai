@@ -12,7 +12,7 @@ import {
   type ReportResult,
 } from '@/lib/creditLedger';
 import { ensureMarketplaceSchema, purchaseMarketplaceItem } from '@/lib/marketplaceDb';
-import { currentServer } from '@/lib/serverRoutes';
+import { currentContentScope, type ContentScope } from '@/lib/serverRoutes';
 
 export const dynamic = 'force-dynamic';
 
@@ -94,11 +94,13 @@ export async function POST(req: Request) {
     // started, or its first `balance_after` is a number with no provenance.
     await ensureOpeningBalance(client, playerId);
 
-    /* Resolved once for the whole batch, and lazily: `currentServer` re-checks
-     * membership against the database, and a batch of kills has no business
-     * paying for that. `null` is the platform partition, exactly as it is for
-     * the catalogue read. */
-    let scope: string | null | undefined;
+    /* Resolved once for the whole batch, and lazily: `currentContentScope`
+     * re-checks membership against the database, and a batch of kills has no
+     * business paying for that. The PAIR — server and mode — comes from the
+     * same single resolution the catalogue read uses, so what this route will
+     * sell can never disagree with what that route showed. A null serverId is
+     * the platform partition, exactly as before. */
+    let scope: ContentScope | undefined;
     const handlers: ReportHandlers = {
       buyCatalogueItem: async ({ itemRef, eventKey }) => {
         /* Ensured here rather than at the top of the route: it is memoised, but
@@ -106,11 +108,12 @@ export async function POST(req: Request) {
          * of kills must not pay for a table it never reads. Any player who has
          * opened the shop has already warmed it through /api/marketplace/items. */
         await ensureMarketplaceSchema();
-        if (scope === undefined) scope = await currentServer(playerId);
+        if (scope === undefined) scope = await currentContentScope(playerId);
         const r = await purchaseMarketplaceItem(client, playerId, {
           itemId: itemRef,
           eventKey,
-          serverId: scope,
+          serverId: scope.serverId,
+          contentMode: scope.mode,
         });
         /* `cost` is the price the SERVER read off the row. It is reported back as
          * the delta so the client's mirror converges on the real charge rather

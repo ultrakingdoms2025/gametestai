@@ -209,9 +209,15 @@ describe('the contract is wired end to end', () => {
     const route = codeOnly(source('..', 'app', 'api', 'game', 'credits', 'route.ts'));
     expect(route).toContain('buyCatalogueItem');
     expect(route).toContain('purchaseMarketplaceItem');
+    /* `currentContentScope`, since the content-mode work: the same
+     * membership-re-checking resolution `currentServer` was, now answering
+     * the pair — which server AND how its content merges — so the buy and the
+     * catalogue list can never disagree about the mode. The claim pinned here
+     * is unchanged: the scope comes from the session, never the request. */
     expect(route, 'the scope must come from the session, never the request body')
-      .toContain('currentServer(playerId)');
-    expect(route.includes('serverId: scope')).toBe(true);
+      .toContain('currentContentScope(playerId)');
+    expect(route.includes('serverId: scope.serverId')).toBe(true);
+    expect(route.includes('contentMode: scope.mode')).toBe(true);
     /* And the item id has to survive the route's own re-typing of the body,
      * which rebuilds the event field by field. */
     expect(/itemId/.test(route)).toBe(true);

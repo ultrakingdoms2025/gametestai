@@ -4,7 +4,7 @@ import { MARKETPLACE_ACTIONS, MARKETPLACE_CATEGORIES, MARKETPLACE_WORLDS } from 
 import { auth } from '@/lib/auth';
 import { getUserById } from '@/lib/db';
 import { findOrCreatePlayer } from '@/lib/playerDb';
-import { currentServer } from '@/lib/serverRoutes';
+import { currentContentScope, type ContentScope } from '@/lib/serverRoutes';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,13 +30,17 @@ export async function GET(request: NextRequest) {
   await ensureMarketplaceSchema();
   const params = request.nextUrl.searchParams;
 
-  let serverId: string | null = null;
+  /* The pair — which server AND how it merges — from ONE resolution. A
+   * signed-out caller keeps the platform scope, which is exactly today's
+   * catalogue; a replace-mode member gets the server's rows only, matching
+   * what the purchase path will agree to sell them. */
+  let scope: ContentScope = { serverId: null, mode: 'extend' };
   const session = await auth();
   if (session?.user?.id) {
     const user = await getUserById(session.user.id);
     if (user) {
       const playerId = await findOrCreatePlayer(session.user.id, user.email);
-      serverId = await currentServer(playerId);
+      scope = await currentContentScope(playerId);
     }
   }
 
@@ -45,11 +49,13 @@ export async function GET(request: NextRequest) {
     category: params.get('category') ?? undefined,
     world: params.get('world') ?? undefined,
     activeOnly: true,
-    serverId,
+    serverId: scope.serverId,
+    contentMode: scope.mode,
   });
   return NextResponse.json({
     items,
-    server_id: serverId,
+    server_id: scope.serverId,
+    content_mode: scope.mode,
     categories: MARKETPLACE_CATEGORIES,
     worlds: MARKETPLACE_WORLDS,
     actions: MARKETPLACE_ACTIONS,

@@ -49,6 +49,8 @@ type DirectoryRow = {
   name: string;
   slug: string;
   description: string;
+  /** `replace` means owner-authored content ONLY — tagged "curated" below. */
+  contentMode: 'extend' | 'replace';
   members: number;
   online: number;
   callerState: 'approved' | 'invited' | 'requested' | null;
@@ -244,6 +246,19 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
                     <span style={{ color: '#6f8ea3', fontSize: 13 }}>
                       {s.members} member{s.members === 1 ? '' : 's'} · {s.online} online now
                     </span>
+                    {/* One word of honest advertising: a replace-mode server
+                        serves ONLY its owner's content, and a player who finds
+                        that out after joining reads the missing platform
+                        marketplace as an outage. The title carries the long
+                        version for whoever hovers. */}
+                    {s.contentMode === 'replace' && (
+                      <span
+                        style={{ ...badge, borderColor: '#80662b', color: '#ffd9a0' }}
+                        title="Curated: this server replaces the default game with its owner's own quests, items and lore."
+                      >
+                        curated
+                      </span>
+                    )}
                     {s.callerState === 'approved' && <span style={badge}>Approved</span>}
                     {view.current === s.id && (
                       <span style={{ color: '#7fa4bd', fontSize: 12 }}>current</span>

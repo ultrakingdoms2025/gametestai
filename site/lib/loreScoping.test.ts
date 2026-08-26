@@ -104,9 +104,11 @@ describe('the lore read states its scope', () => {
   it('an omitted argument means the PLATFORM, never "no filter"', () => {
     /* The failure this guards is a signature where forgetting the argument
      * widens the read. Every caller written before custom servers existed —
-     * `getLore`, and through it the public marketing page — passes nothing. */
+     * `getLore`, and through it the public marketing page — passes nothing.
+     * The mode argument earns the same rule: omitted means `'extend'`, the
+     * shipped merge, never "whatever narrows". */
     const src = source('lib', 'lore.ts');
-    expect(src).toMatch(/getLoreEntries: LoreFetcher = async \(serverId = null\)/);
+    expect(src).toMatch(/getLoreEntries: LoreFetcher = async \(serverId = null, mode = 'extend'\)/);
     expect(src).toMatch(/serverId\?: string \| null/);
   });
 
@@ -127,7 +129,10 @@ describe('the lore route resolves its scope server-side', () => {
 
   it('reads the session and the stored selection, not the request', () => {
     expect(route).toContain('await auth()');
-    expect(route).toContain('currentServer(playerId)');
+    /* `currentContentScope`, since the content-mode work: the same
+     * membership-re-checking resolution as `currentServer`, now answering the
+     * PAIR — which server and how it merges — in one decision. */
+    expect(route).toContain('currentContentScope(playerId)');
     /* No query parameter, no body. A scope a caller can name is a scope a
      * caller can forge, and this route is fetched by a game client the player
      * controls. */
@@ -137,9 +142,11 @@ describe('the lore route resolves its scope server-side', () => {
   });
 
   it('passes that scope into the fetcher rather than dropping it', () => {
-    /* The whole defect was one call with no argument. */
+    /* The whole defect was one call with no argument. Both halves of the pair
+     * travel — dropping the mode would quietly serve a replace-mode member
+     * the platform union. */
     expect(route).not.toContain('getLoreEntries()');
-    expect(route).toContain('getLoreEntries(serverId)');
+    expect(route).toContain("getLoreEntries(scope?.serverId ?? null, scope?.mode ?? 'extend')");
   });
 
   it('a signed-out caller is the platform partition, exactly as before', () => {

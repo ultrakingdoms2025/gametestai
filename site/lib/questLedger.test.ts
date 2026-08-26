@@ -165,7 +165,8 @@ describe('the quest flip and the quest credit are one transaction', () => {
  * ...0001 creditLedger, ...0002 marketplacePurchase, ...0003 creditReport,
  * ...0004 progressLedger, ...0005 leaderboard, ...0006 customServers,
  * ...0007 serverContent, ...0008 serverCredits, ...0009 serverChat,
- * ...0010 premium, ...0011 THIS FILE, ...0012 marketplaceBuyContract. */
+ * ...0010 premium, ...0011 THIS FILE, ...0012 marketplaceBuyContract,
+ * ...0b0001-0bf002 contentMode. */
 const PLAYER = '00000000-0000-4000-8000-000000000011';
 const QUEST = 'quest-ledger-test-quest';
 const QUEST_NUMBER = 987_654;

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Client, PoolClient } from 'pg';
 import { ensureLeaderboardSchema } from './leaderboard';
-import { entitlementPermitsHosting, readEntitlement } from './premium';
+import { ensureServerSlotSchema, entitlementPermitsHosting, readEntitlement } from './premium';
 
 /**
  * Custom servers: per-owner content variants over the infrastructure that
@@ -233,8 +233,15 @@ export interface CustomServer {
   name: string;
   slug: string;
   description: string;
-  /** `active` or `suspended`. A suspended server serves no content. */
-  status: 'active' | 'suspended';
+  /**
+   * `active`, `suspended`, or `deleted`. A suspended server serves no content;
+   * a deleted one is a soft delete — the row is kept and marked (repo style),
+   * so the members' ledgers, the chat log and the audit trail keep their
+   * foreign-key anchor, but it is hidden from every directory, refused by
+   * `canUseServer`, resolved to the platform scope by `currentContentScope`,
+   * and excluded from the owner's quota so the slot frees immediately.
+   */
+  status: 'active' | 'suspended' | 'deleted';
   /** See `ContentMode`. `extend` unless the owner has explicitly chosen. */
   contentMode: ContentMode;
   createdAt: string;
@@ -481,6 +488,13 @@ async function runCustomServerSchema(db: Db): Promise<void> {
     `ALTER TABLE server_entitlements
        ADD COLUMN IF NOT EXISTS simulated BOOLEAN NOT NULL DEFAULT FALSE`
   );
+  /* Which purchase funded which server slot — the accumulation ledger behind
+   * `max_servers`. Defined in `premium.ts` beside its writer (`writeEntitlement`
+   * runs the same ensure itself, per the server_id lesson); called here so the
+   * table exists on every path that warms this schema, and AFTER the
+   * `server_entitlements` CREATE above, which its foreign key references. */
+  await ensureServerSlotSchema(db);
+
   /* Webhook idempotency. Stripe redelivers, and a redelivered
    * `customer.subscription.deleted` arriving after a fresh subscription would
    * otherwise revoke an entitlement that was just paid for. */
@@ -549,7 +563,10 @@ function toServer(row: ServerRow): CustomServer {
     name: String(row.name ?? ''),
     slug: String(row.slug ?? ''),
     description: String(row.description ?? ''),
-    status: row.status === 'suspended' ? 'suspended' : 'active',
+    status:
+      row.status === 'suspended' ? 'suspended'
+      : row.status === 'deleted' ? 'deleted'
+      : 'active',
     /* Anything that is not the one value that NARROWS the catalogue reads as
      * `extend` — the same shape `status` uses, and the same safe direction:
      * a mangled value shows a member more of the default game, never less
@@ -586,8 +603,13 @@ export async function createServer(
   const entitlement = await readEntitlement(db, ownerPlayerId);
   if (!entitlementPermitsHosting(entitlement)) return { ok: false, reason: 'no_entitlement' };
 
+  /* Quota = slots minus NON-DELETED servers. A deleted server's slot frees the
+   * moment it is deleted — create-after-delete must work without a new
+   * purchase, which is the whole point of the soft delete keeping the row out
+   * of this count rather than out of the table. */
   const owned = await db.query(
-    `SELECT COUNT(*)::int AS n FROM custom_servers WHERE owner_player_id = $1`,
+    `SELECT COUNT(*)::int AS n FROM custom_servers
+      WHERE owner_player_id = $1 AND status <> 'deleted'`,
     [ownerPlayerId]
   );
   if (Number(owned.rows[0]?.n ?? 0) >= entitlement.maxServers) {
@@ -627,17 +649,77 @@ export async function getServer(db: Db, serverId: string): Promise<CustomServer 
 }
 
 export async function listServersOwnedBy(db: Db, ownerPlayerId: string): Promise<CustomServer[]> {
+  /* Deleted rows are history, not inventory: they are excluded here so the
+   * owner's dashboard and the `used` count agree with the quota in
+   * `createServer`, which also excludes them. */
   const r = await db.query(
-    `SELECT ${SERVER_COLS} FROM custom_servers WHERE owner_player_id = $1 ORDER BY created_at`,
+    `SELECT ${SERVER_COLS} FROM custom_servers
+      WHERE owner_player_id = $1 AND status <> 'deleted'
+      ORDER BY created_at`,
     [ownerPlayerId]
   );
   return (r.rows as ServerRow[]).map(toServer);
 }
 
-/** Every server, for the platform admin. The only unscoped list in this file. */
+/**
+ * Every server, for the platform admin. The only unscoped list in this file —
+ * including deleted rows, deliberately: the soft delete keeps them precisely so
+ * an administrator can still see what existed and when it stopped.
+ */
 export async function listAllServers(db: Db): Promise<CustomServer[]> {
   const r = await db.query(`SELECT ${SERVER_COLS} FROM custom_servers ORDER BY created_at DESC`);
   return (r.rows as ServerRow[]).map(toServer);
+}
+
+/**
+ * Soft-delete a server: `status = 'deleted'`, owner-gated at the route.
+ *
+ * ── Soft, and what is deliberately KEPT ───────────────────────────────────
+ *
+ * The row is marked, not removed (repo style: keep rows, mark state — the same
+ * shape `server_members.removed` and the slot grants' `revoked_at` use), and
+ * the members' `server_credit_balances` / `server_credit_events` rows are
+ * retained on purpose. Three reasons:
+ *
+ *   1. They are the members' earning HISTORY, and the audit answer to "where
+ *      did my credits go" — a hard delete would erase other people's records
+ *      to serve the owner's click.
+ *   2. Every scoped table hangs off `custom_servers(id)` with ON DELETE
+ *      CASCADE; a hard delete is therefore an unrecoverable multi-table wipe
+ *      behind one verb, which is exactly what the PATCH route's comment about
+ *      "not a thing to remove on a click" warned against.
+ *   3. If a deletion ever has to be reversed by an administrator (one UPDATE),
+ *      the economy comes back intact.
+ *
+ * Nothing needs to filter those retained rows: every path to a server ledger
+ * goes through `canUseServer` or `currentContentScope`, and both refuse a
+ * server that is not `active`.
+ *
+ * ── What happens NOW ──────────────────────────────────────────────────────
+ *
+ * Selection rows pointing at the server are cleared here, actively — the same
+ * argument `applyMembershipAction` makes for `removed`: a filter at read time
+ * is a gate that can be forgotten. (`currentContentScope` would refuse the
+ * scope anyway; the clear makes the stored state say what is true.) The quota
+ * count and the owned list exclude the row from this moment, so the owner's
+ * slot frees immediately.
+ */
+export async function deleteServer(db: Db, serverId: string): Promise<CustomServer | null> {
+  const current = await getServer(db, serverId);
+  if (!current) return null;
+  if (current.status === 'deleted') return current;
+  const r = await db.query(
+    `UPDATE custom_servers SET status = 'deleted', updated_at = NOW()
+      WHERE id = $1
+      RETURNING ${SERVER_COLS}`,
+    [serverId]
+  );
+  await db.query(
+    `UPDATE player_server_selection SET server_id = NULL, updated_at = NOW()
+      WHERE server_id = $1`,
+    [serverId]
+  );
+  return r.rows[0] ? toServer(r.rows[0] as ServerRow) : null;
 }
 
 export async function updateServer(
@@ -823,6 +905,7 @@ export async function listServersForPlayer(
        FROM server_members m
        JOIN custom_servers s ON s.id = m.server_id
       WHERE m.player_id = $1 AND m.state <> 'removed'
+        AND s.status <> 'deleted'
       ORDER BY s.name`,
     [playerId]
   );
@@ -902,6 +985,15 @@ export async function selectServer(
  * one read.
  */
 export async function currentContentScope(db: Db, playerId: string): Promise<ContentScope> {
+  /* THE resolver runs its own ensure — the `server_id` production lesson, made
+   * specific: this function reads `player_server_selection` and
+   * `custom_servers.content_mode`, and the `content_mode` column was ADDED to
+   * a table production already had. A deploy whose first request after DDL-lag
+   * reaches this read would otherwise throw 42703 — and the route wrapper's
+   * safe-direction fallback then serves every symptom of "the player is not in
+   * their server" with no schema error anywhere a human looks first. Memoised,
+   * so the steady-state cost is one resolved await. */
+  await ensureCustomServerSchema(db);
   const r = await db.query(
     `SELECT server_id FROM player_server_selection WHERE player_id = $1`,
     [playerId]

@@ -224,21 +224,66 @@ suite('entitlement (integration)', () => {
     expect(await claimStripeEvent(db, 'evt_test_a', 'checkout.session.completed')).toBe(false);
   });
 
-  it('does not let a redelivered cancellation revoke a newer subscription', async () => {
-    /* The ordering hazard a one-off SKU never had. Stripe redelivers, and a
-     * `subscription.deleted` for LAST month can land after this month's
-     * checkout. */
+  it('a late cancellation takes only its own slot, never a newer subscription', async () => {
+    /* The ordering hazard a one-off SKU never had — REVISED when slots became
+     * quantity-accumulating. Stripe redelivers, and a `subscription.deleted`
+     * for LAST month can land after this month's checkout. Under accumulation
+     * each subscription funds its own slot, so the late cancellation releases
+     * exactly the old subscription's slot and the new subscription keeps its
+     * own — hosting continues, and the net allowance is identical whichever
+     * order the two events arrive in. (This test used to assert the
+     * cancellation was refused outright; the GUARANTEE it protected — a paid
+     * subscription cannot be revoked by a stale event — is unchanged and still
+     * asserted below.) */
     await writeEntitlement(db, fact({ subscriptionId: 'sub_old' }));
     await writeEntitlement(db, fact({ subscriptionId: 'sub_new' }));
-    expect((await readEntitlement(db, OWNER)).subscriptionId).toBe('sub_new');
+    const both = await readEntitlement(db, OWNER);
+    expect(both.subscriptionId).toBe('sub_new');
+    expect(both.maxServers).toBe(2 * SERVERS_PER_SUBSCRIPTION);
 
-    const stale = await writeEntitlement(db, fact({ subscriptionId: 'sub_old', status: 'canceled' }));
-    expect(stale.applied).toBe(false);
-    if (!stale.applied) expect(stale.reason).toBe('stale_subscription');
+    const late = await writeEntitlement(db, fact({ subscriptionId: 'sub_old', status: 'canceled' }));
+    expect(late.applied).toBe(true);
 
     const still = await readEntitlement(db, OWNER);
     expect(still.status).toBe('active');
+    expect(still.subscriptionId).toBe('sub_new');
+    expect(still.maxServers).toBe(SERVERS_PER_SUBSCRIPTION);
     expect(entitlementPermitsHosting(still)).toBe(true);
+  });
+
+  it('refuses a cancellation for a subscription that never funded a slot', async () => {
+    await writeEntitlement(db, fact({ subscriptionId: 'sub_new' }));
+    const stale = await writeEntitlement(
+      db,
+      fact({ subscriptionId: 'sub_ghost', status: 'canceled' })
+    );
+    expect(stale.applied).toBe(false);
+    if (!stale.applied) expect(stale.reason).toBe('stale_subscription');
+    const still = await readEntitlement(db, OWNER);
+    expect(still.status).toBe('active');
+    expect(still.maxServers).toBe(SERVERS_PER_SUBSCRIPTION);
+  });
+
+  it('accumulates one slot per purchase, and replays add nothing', async () => {
+    /* Pay-per-server: each distinct subscription is a purchase and adds a
+     * slot; a renewal event for a subscription already counted adds nothing.
+     * This is the same path the simulated grant uses, so the two cannot
+     * diverge when Stripe goes live. */
+    await writeEntitlement(db, fact({ subscriptionId: 'sub_slot_a' }));
+    expect((await readEntitlement(db, OWNER)).maxServers).toBe(1);
+    await writeEntitlement(db, fact({ subscriptionId: 'sub_slot_a' }));
+    expect((await readEntitlement(db, OWNER)).maxServers).toBe(1);
+    await writeEntitlement(db, fact({ subscriptionId: 'sub_slot_b' }));
+    expect((await readEntitlement(db, OWNER)).maxServers).toBe(2);
+    await writeEntitlement(db, fact({ subscriptionId: 'sub_slot_b', status: 'past_due' }));
+    expect((await readEntitlement(db, OWNER)).maxServers).toBe(2);
+
+    /* Two slots is two servers, and the quota still bites at the new edge. */
+    expect((await createServer(db, OWNER, { name: 'Premium Slot Alpha' })).ok).toBe(true);
+    expect((await createServer(db, OWNER, { name: 'Premium Slot Beta' })).ok).toBe(true);
+    const over = await createServer(db, OWNER, { name: 'Premium Slot Gamma' });
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.reason).toBe('quota');
   });
 
   it('does let the CURRENT subscription be cancelled', async () => {

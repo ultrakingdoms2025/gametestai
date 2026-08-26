@@ -34,7 +34,10 @@ type ServerRow = {
   name: string;
   slug: string;
   description: string;
-  status: 'active' | 'suspended';
+  /* `deleted` never reaches the owner's lists (they exclude it) but CAN appear
+   * in the platform admin's all-servers view, which deliberately keeps
+   * history visible. */
+  status: 'active' | 'suspended' | 'deleted';
   /** `extend`: platform content plus this server's. `replace`: this server's only. */
   contentMode: 'extend' | 'replace';
   ownerPlayerId: string;
@@ -192,9 +195,12 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
   const [inviteQuery, setInviteQuery] = useState('');
   const [inviteResults, setInviteResults] = useState<Array<{ playerId: string; handle: string }>>([]);
   const [searching, setSearching] = useState(false);
+  /* The typed confirmation for Delete: the server's own name, verbatim. A
+   * click-through dialog is muscle memory; retyping the name is a decision. */
+  const [deleteConfirm, setDeleteConfirm] = useState('');
   const detailServerId = detail?.server.id ?? null;
 
-  useEffect(() => { setInviteQuery(''); }, [selected]);
+  useEffect(() => { setInviteQuery(''); setDeleteConfirm(''); }, [selected]);
 
   useEffect(() => {
     const q = inviteQuery.trim();
@@ -294,6 +300,26 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
             disabled={busy}
           />
         )}
+        {/* At quota with hosting live: the SAME control, buying one more slot.
+            Pay-per-server means "New server" beyond the allowance is another
+            purchase — simulated today, so no card is taken (the banner above
+            says so) — and checkout lands back here with the slot added. */}
+        {hosting && !ent.canCreate && (
+          <>
+            <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+              Every server slot you have paid for is in use. Each additional
+              server is a separate purchase at the same monthly price.
+            </p>
+            <HostingSubscribeButton
+              intent={overview.sku.intent}
+              detail={overview.sku.detail}
+              caption="Add another server"
+              callbackUrl="/admin/servers"
+              style={btn}
+              disabled={busy}
+            />
+          </>
+        )}
       </section>
 
       {/* ---- create ------------------------------------------------------ */}
@@ -355,6 +381,26 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
 
       {detail && (
         <>
+          {/* ---- play it ------------------------------------------------- */}
+          {detail.server.status === 'active' && (
+            <section style={card}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* The owner's natural next step after creating: go be IN it.
+                    /play opens the launch modal, where this server shows
+                    "Approved + Enter" — the same door every member uses, so
+                    what the owner sees is what their players see. */}
+                <a href="/play" style={{ ...btn, textDecoration: 'none', display: 'inline-block' }}>
+                  Enter this server →
+                </a>
+                <span style={{ color: '#7fa4bd', fontSize: 13 }}>
+                  Opens the game&rsquo;s launch screen — pick {detail.server.name} there and
+                  everything in-game (quests, marketplace, lore, credits) is this
+                  server&rsquo;s own.
+                </span>
+              </div>
+            </section>
+          )}
+
           {/* ---- members ------------------------------------------------- */}
           <section style={card}>
             <h2 style={{ margin: 0, fontSize: 18 }}>Members of {detail.server.name}</h2>
@@ -679,6 +725,66 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
               {!detail.items.length && <li style={{ color: '#7fa4bd' }}>None yet.</li>}
             </ul>
           </section>
+
+          {detail.isOwner && (
+            <section style={{ ...card, borderColor: '#7a2b2b' }}>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Delete this server</h2>
+              <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+                Deleting hides {detail.server.name} from every directory and closes it to all
+                members immediately. Members&rsquo; server-credit history is kept for the
+                record, but nobody can enter or earn again. <b>Your server slot frees at
+                once</b> — you can create a new server without buying another slot.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (deleteConfirm.trim() !== detail.server.name) return;
+                  const doomed = detail.server.id;
+                  setDeleteConfirm('');
+                  /* NOT `run(...)`: that helper reloads the detail of the
+                   * still-`selected` server afterwards, and the server this
+                   * just deleted answers 404 — the owner would see "Not
+                   * found." as the reward for a successful delete. */
+                  void (async () => {
+                    setBusy(true);
+                    setError(null);
+                    try {
+                      await api(`/api/servers/${doomed}`, { method: 'DELETE' });
+                      setSelected(null);
+                      setDetail(null);
+                      await loadOverview();
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  })();
+                }}
+                style={{ display: 'grid', gap: 8, maxWidth: 420 }}
+              >
+                <label style={label} htmlFor="delete-confirm">
+                  TYPE THE SERVER&rsquo;S NAME TO CONFIRM
+                </label>
+                <input
+                  id="delete-confirm"
+                  style={input}
+                  autoComplete="off"
+                  placeholder={detail.server.name}
+                  value={deleteConfirm}
+                  onChange={(e) => setDeleteConfirm(e.target.value)}
+                />
+                <div>
+                  <button
+                    type="submit"
+                    style={{ ...btn, borderColor: '#7a2b2b', color: '#ffb4b4' }}
+                    disabled={busy || deleteConfirm.trim() !== detail.server.name}
+                  >
+                    Delete {detail.server.name}
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
 
           {overview.platformAdmin && (
             <section style={{ ...card, borderColor: '#5a4620' }}>

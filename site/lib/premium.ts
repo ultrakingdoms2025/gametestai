@@ -68,7 +68,15 @@ type Db = Client | PoolClient;
 /** What hosting one custom server is worth to the merchant, per month. */
 export const SERVER_HOSTING_CENTS = 500;
 
-/** How many servers one subscription entitles its owner to run. */
+/**
+ * How many server SLOTS one hosting purchase adds.
+ *
+ * Slots ACCUMULATE: the owner's instruction is pay-per-server, so each hosting
+ * purchase — simulated today, a real subscription later, through the identical
+ * `writeEntitlement` path — adds this many slots to the player's allowance
+ * rather than replacing it. `server_slot_grants` below is the record of which
+ * subscription funded which slot, and `max_servers` is materialised from it.
+ */
 export const SERVERS_PER_SUBSCRIPTION = 1;
 
 export const SERVER_HOSTING_SKU = 'server_hosting_monthly';
@@ -98,7 +106,11 @@ export function quoteServerHosting(): SubscriptionQuote {
     totalCents,
     interval: 'month',
     label: 'Custom server hosting',
-    detail: `${formatCents(totalCents)} per month — includes processing (${(FEE_BPS / 100).toFixed(1)}% + ${formatCents(FEE_FIXED_CENTS)})`,
+    /* "per server": each purchase buys ONE server slot, and buying again adds
+     * another. The copy says so because the button is now also how an owner at
+     * quota pays for an additional server, and a price line that read like an
+     * all-you-can-host subscription would be a lie on that screen. */
+    detail: `${formatCents(totalCents)} per month, per server — includes processing (${(FEE_BPS / 100).toFixed(1)}% + ${formatCents(FEE_FIXED_CENTS)})`,
   };
 }
 
@@ -220,6 +232,69 @@ export async function claimStripeEvent(
   return !!r.rows[0];
 }
 
+/* ---------------------------------------------------------------------- */
+/* Slot grants: which purchase funded which server slot                    */
+/* ---------------------------------------------------------------------- */
+
+let slotSchemaPromise: Promise<void> | null = null;
+
+/**
+ * The ledger of hosting purchases, one row per subscription that ever funded a
+ * slot. `max_servers` on `server_entitlements` is materialised from the SUM of
+ * unrevoked rows here, which is what makes the allowance ACCUMULATE: a second
+ * purchase is a second row, not an overwrite.
+ *
+ * Rows are kept and marked (`revoked_at`), repo style, so "which purchase paid
+ * for this slot and when did it stop" stays answerable — except through the
+ * `ON DELETE CASCADE`, which ties a grant's life to its entitlement row: the
+ * simulated-entitlement sweep deletes the row, and pretend grants must not
+ * survive it as orphaned history.
+ *
+ * Memoised like every other ensure here (a promise, not a boolean, so two cold
+ * lambdas wait rather than racing; a rejection clears the memo). Called from
+ * `runCustomServerSchema` — the path every route warms — AND from
+ * `writeEntitlement` itself, because a writer whose table might not exist yet
+ * must run its own ensure; that is the `server_id` production lesson verbatim.
+ */
+export function ensureServerSlotSchema(db: Db): Promise<void> {
+  if (!slotSchemaPromise) {
+    slotSchemaPromise = db
+      .query(
+        `CREATE TABLE IF NOT EXISTS server_slot_grants (
+           player_id       TEXT NOT NULL
+                             REFERENCES server_entitlements(player_id) ON DELETE CASCADE,
+           subscription_id TEXT NOT NULL,
+           slots           INTEGER NOT NULL DEFAULT 1,
+           granted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           revoked_at      TIMESTAMPTZ,
+           PRIMARY KEY (player_id, subscription_id)
+         )`
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        slotSchemaPromise = null;
+        throw err;
+      });
+  }
+  return slotSchemaPromise;
+}
+
+/** Test-only: forget the memo so a fresh database can be built again. */
+export function resetServerSlotSchemaMemo(): void {
+  slotSchemaPromise = null;
+}
+
+/** The slots currently funded: SUM of this player's unrevoked grants. */
+async function liveSlots(db: Db, playerId: string): Promise<number> {
+  const r = await db.query(
+    `SELECT COALESCE(SUM(slots), 0)::int AS n
+       FROM server_slot_grants
+      WHERE player_id = $1 AND revoked_at IS NULL`,
+    [playerId]
+  );
+  return Number(r.rows[0]?.n ?? 0);
+}
+
 export interface SubscriptionFact {
   playerId: string;
   subscriptionId: string;
@@ -242,16 +317,28 @@ export type EntitlementWrite =
 /**
  * Write what Stripe says about one subscription.
  *
- * ── The ordering guard, which is the whole reason this is not one UPSERT ──
+ * ── Slots accumulate; `server_slot_grants` is how ─────────────────────────
+ *
+ * Pay-per-server, at the owner's instruction: every DISTINCT subscription that
+ * grants adds `SERVERS_PER_SUBSCRIPTION` slot(s) as a row in
+ * `server_slot_grants`, and `max_servers` is materialised as the SUM of the
+ * unrevoked rows. The same subscription re-asserting itself — a renewal event,
+ * a replayed simulated confirm — is an idempotent upsert of its one row and
+ * adds nothing. The simulated path and the real webhook path both land here,
+ * so nothing diverges on the day Stripe goes live.
+ *
+ * ── The ordering guard, refined by accumulation ───────────────────────────
  *
  * Stripe redelivers. A `customer.subscription.deleted` for LAST month's
- * subscription can arrive after this month's `checkout.session.completed`, and a
- * naive upsert would then cancel an entitlement that has just been paid for.
- *
- * So a write that is not about the currently stored subscription is refused
- * UNLESS it would grant. Granting from an unknown subscription is safe — the
- * event was signed by Stripe and says somebody is paying — while revoking from
- * an unknown one is exactly the failure above.
+ * subscription can arrive after this month's `checkout.session.completed`, and
+ * a naive all-or-nothing write would then cancel an entitlement that has just
+ * been paid for. Under accumulation a cancellation releases exactly the slot
+ * ITS subscription funded — never anyone else's — so the late-arriving delete
+ * takes away last month's slot and leaves this month's standing, and the net
+ * allowance is the same whichever order the two events land in. A revocation
+ * for a subscription that never funded a slot here (and is not the stored one)
+ * is still refused as `stale_subscription`: nothing of this player's was ever
+ * attached to it, so there is nothing for it to take away.
  *
  * `max_servers` is set here and nowhere else. No route argument raises it, which
  * is what makes `createServer`'s quota check meaningful.
@@ -264,48 +351,181 @@ export async function writeEntitlement(
   const subscriptionId = String(fact?.subscriptionId ?? '').trim();
   if (!playerId || !subscriptionId) return { applied: false, reason: 'invalid' };
 
+  /* The writer runs its own ensure — the `server_id` production lesson: a
+   * table this function is about to write might not exist on a database that
+   * has only ever served reads, and "works warm, 500s cold" is the worst kind
+   * of intermittent. Memoised, so the steady-state cost is one resolved await. */
+  await ensureServerSlotSchema(db);
+
   const current = await readEntitlement(db, playerId);
-  const known = current.subscriptionId;
-  const revoking = fact.status !== 'active';
-  if (revoking && known && known !== subscriptionId) {
-    /* A cancellation for a subscription this player has already replaced. It is
-     * true, it is signed, and it is about the past. */
+  /* `past_due` still FUNDS its slot. Stripe retries a failed payment for days,
+   * and tearing a running server down on the first decline punishes an expired
+   * card rather than a non-payer — `entitlementPermitsHosting` says the same
+   * thing and the two must not disagree. */
+  const granting = fact.status === 'active' || fact.status === 'past_due';
+
+  if (granting) {
+    await db.query('BEGIN');
+    try {
+      await db.query(
+        `INSERT INTO server_entitlements
+           (player_id, stripe_customer_id, stripe_subscription_id, status, current_period_end,
+            max_servers, simulated, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, NOW())
+         ON CONFLICT (player_id) DO UPDATE SET
+           stripe_customer_id     = COALESCE(EXCLUDED.stripe_customer_id, server_entitlements.stripe_customer_id),
+           stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+           status                 = EXCLUDED.status,
+           current_period_end     = EXCLUDED.current_period_end,
+           /* Assigned, never OR'd. A real signed Stripe event about this player
+            * must be able to turn the flag OFF — otherwise the first customer who
+            * tried the product before payments went live is mislabelled as
+            * pretend forever, and the revocation sweep below would delete a
+            * subscription somebody is paying for. */
+           simulated              = EXCLUDED.simulated,
+           updated_at             = NOW()`,
+        [
+          playerId,
+          fact.customerId ?? null,
+          subscriptionId,
+          fact.status,
+          fact.currentPeriodEnd ?? null,
+          fact.simulated === true,
+        ]
+      );
+
+      /* Back-fill a legacy allowance. A production row written before
+       * `server_slot_grants` existed carries a funded `max_servers` with no
+       * grant rows behind it; without this, that player's first ADDITIONAL
+       * purchase would recompute their allowance from the grants alone and
+       * quietly eat the slot they already had. `ON CONFLICT DO NOTHING` makes
+       * it a no-op everywhere except that one migration case. */
+      if (
+        current.subscriptionId &&
+        current.subscriptionId !== subscriptionId &&
+        current.maxServers > 0
+      ) {
+        await db.query(
+          `INSERT INTO server_slot_grants (player_id, subscription_id, slots)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (player_id, subscription_id) DO NOTHING`,
+          [playerId, current.subscriptionId, current.maxServers]
+        );
+      }
+
+      /* Claim this purchase's slot — THE accumulation step. A subscription id
+       * never seen before is a new row (+SERVERS_PER_SUBSCRIPTION); one seen
+       * before only clears `revoked_at`, so a renewal event, a replayed
+       * simulated confirm link and a subscription Stripe resumes are all the
+       * same idempotent upsert and none of them mints a second slot. */
+      await db.query(
+        `INSERT INTO server_slot_grants (player_id, subscription_id, slots)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (player_id, subscription_id) DO UPDATE SET revoked_at = NULL`,
+        [playerId, subscriptionId, SERVERS_PER_SUBSCRIPTION]
+      );
+
+      await db.query(
+        `UPDATE server_entitlements SET max_servers = $2, updated_at = NOW()
+          WHERE player_id = $1`,
+        [playerId, await liveSlots(db, playerId)]
+      );
+      await db.query('COMMIT');
+    } catch (err) {
+      await db.query('ROLLBACK').catch(() => {});
+      throw err;
+    }
+    return { applied: true, entitlement: await readEntitlement(db, playerId) };
+  }
+
+  /* ---- revocation: release the slot this subscription was funding -------
+   *
+   * Under accumulation the old all-or-nothing ordering guard becomes finer
+   * grained: a cancellation releases exactly the slot ITS subscription funded,
+   * so a redelivered `subscription.deleted` for last month's subscription can
+   * no longer zero an allowance this month's purchase is paying for — the
+   * property the old `stale_subscription` refusal existed to protect — while a
+   * player who cancels one of three purchases correctly keeps two. The net
+   * allowance is the same whichever order Stripe delivers the events in.
+   *
+   * What is STILL refused as `stale_subscription`: a revocation for a
+   * subscription that never funded a slot here and is not the stored one.
+   * Nothing of this player's was ever attached to it, so there is nothing it
+   * may take away. */
+  const grantRow = await db.query(
+    `SELECT slots FROM server_slot_grants
+      WHERE player_id = $1 AND subscription_id = $2`,
+    [playerId, subscriptionId]
+  );
+  const isStored = current.subscriptionId === subscriptionId;
+  if (!grantRow.rows[0] && !isStored) {
     return { applied: false, reason: 'stale_subscription' };
   }
 
-  await db.query(
-    `INSERT INTO server_entitlements
-       (player_id, stripe_customer_id, stripe_subscription_id, status, current_period_end,
-        max_servers, simulated, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-     ON CONFLICT (player_id) DO UPDATE SET
-       stripe_customer_id     = COALESCE(EXCLUDED.stripe_customer_id, server_entitlements.stripe_customer_id),
-       stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-       status                 = EXCLUDED.status,
-       current_period_end     = EXCLUDED.current_period_end,
-       max_servers            = EXCLUDED.max_servers,
-       /* Assigned, never OR'd. A real signed Stripe event about this player
-        * must be able to turn the flag OFF — otherwise the first customer who
-        * tried the product before payments went live is mislabelled as
-        * pretend forever, and the revocation sweep below would delete a
-        * subscription somebody is paying for. */
-       simulated              = EXCLUDED.simulated,
-       updated_at             = NOW()`,
-    [
-      playerId,
-      fact.customerId ?? null,
-      subscriptionId,
-      fact.status,
-      fact.currentPeriodEnd ?? null,
-      /* `past_due` keeps its allowance. Stripe retries a failed payment for
-       * days, and tearing a running server down on the first decline punishes an
-       * expired card rather than a non-payer — `entitlementPermitsHosting` says
-       * the same thing and the two must not disagree. `canceled` and `inactive`
-       * go to zero. */
-      fact.status === 'active' || fact.status === 'past_due' ? SERVERS_PER_SUBSCRIPTION : 0,
-      fact.simulated === true,
-    ]
-  );
+  await db.query('BEGIN');
+  try {
+    /* Legacy back-fill, mirror of the granting side: a stored pre-migration
+     * subscription has no grant row, so give it one to release, or the release
+     * below is a no-op and the allowance survives its own cancellation. */
+    if (isStored && !grantRow.rows[0] && current.maxServers > 0) {
+      await db.query(
+        `INSERT INTO server_slot_grants (player_id, subscription_id, slots)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (player_id, subscription_id) DO NOTHING`,
+        [playerId, subscriptionId, current.maxServers]
+      );
+    }
+
+    /* Marked, not deleted — and idempotent: a replayed cancellation finds
+     * `revoked_at` already set and changes nothing. */
+    await db.query(
+      `UPDATE server_slot_grants SET revoked_at = NOW()
+        WHERE player_id = $1 AND subscription_id = $2 AND revoked_at IS NULL`,
+      [playerId, subscriptionId]
+    );
+    const remaining = await liveSlots(db, playerId);
+
+    if (!isStored) {
+      /* One of several purchases ended; the stored subscription is still the
+       * paying one, so its status and ids stay exactly as they are. */
+      await db.query(
+        `UPDATE server_entitlements SET max_servers = $2, updated_at = NOW()
+          WHERE player_id = $1`,
+        [playerId, remaining]
+      );
+    } else if (remaining > 0) {
+      /* The STORED subscription ended but other purchases are still live.
+       * Point the row at the newest surviving grant rather than recording
+       * `canceled` beside a funded allowance — `entitlementPermitsHosting`
+       * reads status AND slots, and the two must not contradict. */
+      const next = await db.query(
+        `SELECT subscription_id FROM server_slot_grants
+          WHERE player_id = $1 AND revoked_at IS NULL
+          ORDER BY granted_at DESC, subscription_id DESC
+          LIMIT 1`,
+        [playerId]
+      );
+      await db.query(
+        `UPDATE server_entitlements
+            SET stripe_subscription_id = $2, max_servers = $3, updated_at = NOW()
+          WHERE player_id = $1`,
+        [playerId, String(next.rows[0].subscription_id), remaining]
+      );
+    } else {
+      /* The last funded slot is gone: record what Stripe said, exactly as the
+       * pre-accumulation write always has. */
+      await db.query(
+        `UPDATE server_entitlements
+            SET status = $2, current_period_end = $3, max_servers = 0, updated_at = NOW()
+          WHERE player_id = $1`,
+        [playerId, fact.status, fact.currentPeriodEnd ?? null]
+      );
+    }
+    await db.query('COMMIT');
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => {});
+    throw err;
+  }
 
   return { applied: true, entitlement: await readEntitlement(db, playerId) };
 }
@@ -482,8 +702,32 @@ export async function listSimulatedEntitlements(db: Db): Promise<Entitlement[]> 
  * ids begin `sub_` / `cus_`, never `sim_`.
  */
 export async function revokeSimulatedEntitlements(db: Db): Promise<string[]> {
+  await ensureServerSlotSchema(db);
+  /* Sim-funded SLOTS first, because not every sim grant lives under a row the
+   * DELETE below will reach: a player who tried the product simulated and then
+   * subscribed for real keeps their (real) entitlement row, and the sim slot
+   * riding on it would otherwise survive the sweep. Same escaped-prefix match
+   * as the predicate, for the same reason. */
+  const released = await db.query(
+    `UPDATE server_slot_grants SET revoked_at = NOW()
+      WHERE subscription_id LIKE 'sim\\_%' AND revoked_at IS NULL
+      RETURNING player_id`
+  );
   const r = await db.query(
     `DELETE FROM server_entitlements WHERE ${SIMULATED_PREDICATE} RETURNING player_id`
   );
-  return (r.rows as { player_id: unknown }[]).map((row) => String(row.player_id));
+  const deleted = (r.rows as { player_id: unknown }[]).map((row) => String(row.player_id));
+  const gone = new Set(deleted);
+  /* Re-materialise the allowance for the survivors whose sim slot was just
+   * released. Deleted rows need nothing — the CASCADE took their grants too. */
+  for (const row of released.rows as { player_id: unknown }[]) {
+    const playerId = String(row.player_id);
+    if (gone.has(playerId)) continue;
+    await db.query(
+      `UPDATE server_entitlements SET max_servers = $2, updated_at = NOW()
+        WHERE player_id = $1`,
+      [playerId, await liveSlots(db, playerId)]
+    );
+  }
+  return deleted;
 }

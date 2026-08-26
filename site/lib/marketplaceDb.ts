@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { Client, type PoolClient } from 'pg';
 import { debitInTransaction, ensureCreditSchema } from './creditLedger';
 import {
+  serverBalance,
+  serverLedgerPriorEvent,
+  spendServerCreditsInTransaction,
+} from './serverCredits';
+import {
   buildMarketplaceSeedItems,
   MARKETPLACE_ACTIONS,
   MARKETPLACE_CATEGORIES,
@@ -686,12 +691,26 @@ export async function purchaseMarketplaceItem(
    * exactly as it always has. */
   const replaceOnly = request.contentMode === 'replace' && scope !== null;
 
+  /* ── WHICH LEDGER THE MONEY MOVES ON ────────────────────────────────────
+   *
+   * A resolved server means the SERVER ledger, full stop — including a
+   * platform item bought in extend mode. This flips the old "orthogonal
+   * economies" behaviour BY DESIGN, at the owner's explicit instruction:
+   * while a player is inside a custom server, the platform balance must never
+   * move; while outside, the server ledgers must never move
+   * (`economySeparation.test.ts` holds both directions). Pricing, the
+   * stock decrement, replay reporting and the sale record are the SAME code
+   * below for both ledgers — only these three seams differ, so the money side
+   * cannot drift from the catalogue side. */
+  const balanceNow = () =>
+    scope ? serverBalance(db, scope, playerId) : balanceOf(db, playerId);
+
   const refuse = async (
     reason: MarketplacePurchaseReason
   ): Promise<MarketplacePurchaseResult> => ({
     applied: false,
     reason,
-    balance: await balanceOf(db, playerId),
+    balance: await balanceNow(),
     cost: 0,
     stock: null,
     item: null,
@@ -710,19 +729,23 @@ export async function purchaseMarketplaceItem(
 
   await db.query('BEGIN');
   try {
-    // A replay answers with what happened the first time.
-    const prior = await db.query(
-      'SELECT delta FROM credit_events WHERE player_id = $1 AND event_key = $2',
-      [playerId, eventKey]
-    );
-    if (prior.rows[0]) {
-      const balance = await balanceOf(db, playerId);
+    /* A replay answers with what happened the first time — checked against the
+     * ledger the money actually moved on, so a scoped retry cannot be
+     * re-evaluated against the platform's (untouched) history or vice versa. */
+    const prior = scope
+      ? await serverLedgerPriorEvent(db, scope, playerId, eventKey)
+      : ((await db.query(
+          'SELECT delta FROM credit_events WHERE player_id = $1 AND event_key = $2',
+          [playerId, eventKey]
+        )).rows[0] as { delta: unknown } | undefined ?? null);
+    if (prior) {
+      const balance = await balanceNow();
       await db.query('ROLLBACK');
       return {
         applied: false,
         reason: 'duplicate',
         balance,
-        cost: Math.abs(Number(prior.rows[0].delta)),
+        cost: Math.abs(Number(prior.delta)),
         stock: null,
         item: null,
       };
@@ -802,7 +825,7 @@ export async function purchaseMarketplaceItem(
 
     if (!row.is_active) {
       await db.query('ROLLBACK');
-      return { applied: false, reason: 'inactive', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+      return { applied: false, reason: 'inactive', balance: await balanceNow(), cost: 0, stock, item };
     }
     // `credits` is a VIRTUAL item id: Inventory._addCredits turns it straight
     // into balance (Inventory.js:437). The client derives its grant id from
@@ -811,22 +834,27 @@ export async function purchaseMarketplaceItem(
     // the price, an unbounded one. Nothing legitimate sells credits for credits.
     if (item.source_key === 'credits') {
       await db.query('ROLLBACK');
-      return { applied: false, reason: 'invalid', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+      return { applied: false, reason: 'invalid', balance: await balanceNow(), cost: 0, stock, item };
     }
     if (!Number.isInteger(cost) || cost <= 0) {
       // A zero or negative price is a catalogue authoring error, not a gift: it
       // would hand out limited stock for nothing while skipping the balance
       // check entirely. No seed row is priced this way today.
       await db.query('ROLLBACK');
-      return { applied: false, reason: 'invalid', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+      return { applied: false, reason: 'invalid', balance: await balanceNow(), cost: 0, stock, item };
     }
     if (stock !== null && stock <= 0) {
       await db.query('ROLLBACK');
-      return { applied: false, reason: 'stock', balance: await balanceOf(db, playerId), cost: 0, stock, item };
+      return { applied: false, reason: 'stock', balance: await balanceNow(), cost: 0, stock, item };
     }
 
     const detail = `item:${item.source_key ?? item.id}`;
-    const debit = await debitInTransaction(db, playerId, { cost, detail, eventKey });
+    /* The one seam where the two ledgers part company: same lock-check-insert
+     * discipline on both sides (`spendServerCreditsInTransaction` is the
+     * server-ledger mirror of `debitInTransaction`, by design). */
+    const debit = scope
+      ? await spendServerCreditsInTransaction(db, scope, playerId, { cost, detail, eventKey })
+      : await debitInTransaction(db, playerId, { cost, detail, eventKey });
     if (!debit.applied) {
       await db.query('ROLLBACK');
       const reason: MarketplacePurchaseReason =

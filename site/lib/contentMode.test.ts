@@ -722,9 +722,29 @@ suite('content mode, end to end (integration)', () => {
     await expect(getLoreEntries(scope.serverId, scope.mode)).resolves.toEqual([]);
   });
 
-  it('the purchase agrees with the list, in both modes, on the same platform ledger', async () => {
+  it('the purchase agrees with the list, in both modes, and debits the SERVER ledger while scoped', async () => {
+    /* REWRITTEN DELIBERATELY when the economy invariant flipped, at the site
+     * owner's explicit instruction: while a player is INSIDE a custom server,
+     * every purchase — a platform item in extend mode included — debits the
+     * SERVER ledger, and the platform balance must not move at all. This test
+     * used to pin the opposite ("on the same platform ledger"); the agreement
+     * between list and purchase is unchanged, and the money side now proves
+     * the new rule. `serverEconomyInvariant` in economySeparation.test.ts
+     * holds the invariant in both directions with ablation-grade row checks. */
     await ensureOpeningBalance(db, MEMBER);
     const start = await platformBalance(MEMBER);
+    const platformEvents = async () => Number(
+      (await db.query('SELECT COUNT(*)::int AS n FROM credit_events WHERE player_id = $1', [MEMBER])).rows[0].n
+    );
+    const eventsBefore = await platformEvents();
+
+    /* The member's SERVER wallet, funded through the server ledger's own earn
+     * path — the only faucet a scoped economy has. */
+    const { earnServerCredits } = await import('./serverCredits');
+    await earnServerCredits(db, serverId, MEMBER, {
+      kind: 'grant', amount: 1000, eventKey: 'cmode-buy-fund', detail: 'test fund',
+    });
+    expect(await serverBalanceOf(MEMBER)).toBe(1000);
 
     /* Extend: both partitions are for sale, exactly as shipped. */
     let scope = await currentContentScope(db, MEMBER);
@@ -765,12 +785,16 @@ suite('content mode, end to end (integration)', () => {
     });
     expect(stillSold.applied).toBe(true);
     expect(stillSold.cost).toBe(40);
+    /* The purchase result reports the SERVER balance, which the client
+     * displays without knowing whose it is. */
+    expect(stillSold.balance).toBe(1000 - 100 - 40 - 40);
 
-    /* The economy is orthogonal to the mode: every applied buy above debited
-     * the PLATFORM ledger — refusals debited nothing — and the server ledger
-     * never heard about any of it. */
-    expect(await platformBalance(MEMBER)).toBe(start - 100 - 40 - 40);
-    expect(await serverBalanceOf(MEMBER)).toBe(0);
+    /* THE FLIPPED INVARIANT: every applied buy above debited the SERVER
+     * ledger; the platform balance did not move and the platform ledger wrote
+     * NO rows — refusals debited nothing anywhere. */
+    expect(await serverBalanceOf(MEMBER)).toBe(1000 - 100 - 40 - 40);
+    expect(await platformBalance(MEMBER)).toBe(start);
+    expect(await platformEvents()).toBe(eventsBefore);
   });
 
   it('a mode flip honors the engagement in flight, and refuses only NEW platform accepts', async () => {

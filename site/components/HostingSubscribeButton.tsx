@@ -29,15 +29,24 @@ import { useState, type CSSProperties } from 'react';
 export default function HostingSubscribeButton(props: {
   /** The SKU to buy — `SERVER_HOSTING_SKU`, supplied by the server. */
   intent: string;
-  /** The price line, e.g. "$5.20 per month — includes processing". */
+  /** The price line, e.g. "$5.20 per month, per server — includes processing". */
   detail: string;
+  /**
+   * The verb on the button. Defaults to "Subscribe"; the servers dashboard
+   * passes "Add another server" when the same checkout is buying an ADDITIONAL
+   * slot — same control, same intent, same flow, different sentence, because
+   * the price is per server and the button must say what this click buys.
+   */
+  caption?: string;
   /** Where to come back to after signing in, if the visitor is not signed in. */
   callbackUrl?: string;
   className?: string;
   style?: CSSProperties;
   disabled?: boolean;
 }) {
-  const { intent, detail, callbackUrl = '/store', className, style, disabled } = props;
+  const {
+    intent, detail, caption = 'Subscribe', callbackUrl = '/store', className, style, disabled,
+  } = props;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,7 +84,7 @@ export default function HostingSubscribeButton(props: {
         disabled={busy || disabled}
         onClick={() => void subscribe()}
       >
-        {busy ? 'Starting…' : `Subscribe — ${detail}`}
+        {busy ? 'Starting…' : `${caption} — ${detail}`}
       </button>
       {error ? (
         <p role="alert" style={{ color: '#ffb4b4', fontSize: '0.86rem', margin: '10px 0 0' }}>

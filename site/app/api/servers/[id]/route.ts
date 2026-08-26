@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auditServerAction, openServerDb, requireOwnedServer, resolveActor } from '@/lib/serverRoutes';
-import { listMembers, updateServer } from '@/lib/customServers';
+import { deleteServer, listMembers, updateServer } from '@/lib/customServers';
 import { listServerLore, listServerMarketplaceItems, listServerQuests } from '@/lib/serverContent';
 
 export const dynamic = 'force-dynamic';
@@ -98,6 +98,51 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   } catch (err) {
     console.error('[servers] update failed:', err);
     return NextResponse.json({ error: 'Could not update the server.' }, { status: 500 });
+  } finally {
+    await db.end().catch(() => {});
+  }
+}
+
+/**
+ * DELETE → soft-delete the server. The OWNER's verb, deliberately not the
+ * platform admin's: suspension is the platform's containment tool and stays
+ * PATCH; deletion is the owner ending their own community. Soft
+ * (`status = 'deleted'`) — `deleteServer` documents what is kept and why —
+ * and the freed slot is usable immediately: the quota in `createServer`
+ * counts non-deleted servers only.
+ *
+ * The typed-confirmation lives in the UI, where a human is; the route's own
+ * guard is ownership. A second DELETE finds a 404, because
+ * `requireOwnedServer` treats a deleted server as not found — which is also
+ * what makes replaying this request harmless.
+ */
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const actor = await resolveActor();
+  if (!actor) return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  const { id } = await params;
+
+  const db = await openServerDb();
+  try {
+    const access = await requireOwnedServer(db, actor, id);
+    if (!access.ok) return NextResponse.json({ error: 'Not found.' }, { status: access.status });
+    if (!access.isOwner) {
+      /* A platform admin passes `requireOwnedServer` for any server, so this
+       * refusal confirms nothing to anyone who could not already list it. */
+      return NextResponse.json(
+        { error: 'Only the owner can delete a server. Suspension is the platform tool.' },
+        { status: 403 }
+      );
+    }
+
+    const server = await deleteServer(db, id);
+    await auditServerAction(db, actor, 'server.delete', `server:${id}`, {
+      name: access.server.name,
+      slug: access.server.slug,
+    });
+    return NextResponse.json({ server });
+  } catch (err) {
+    console.error('[servers] delete failed:', err);
+    return NextResponse.json({ error: 'Could not delete the server.' }, { status: 500 });
   } finally {
     await db.end().catch(() => {});
   }

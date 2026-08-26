@@ -83,6 +83,11 @@ export async function requireOwnedServer(
 ): Promise<ServerAccess> {
   const server = await getServer(db, serverId);
   if (!server) return { ok: false, status: 404 };
+  /* A deleted server answers 404 like one that never existed: the soft delete
+   * keeps the ROW (members' ledgers, audit trail), not the admin surface. This
+   * is also what makes DELETE idempotent-ish at the route: the second attempt
+   * finds nothing to administer. */
+  if (server.status === 'deleted') return { ok: false, status: 404 };
   const isOwner = server.ownerPlayerId === actor.playerId;
   if (!isOwner && !actor.platformAdmin) return { ok: false, status: 404 };
   return { ok: true, server, isOwner };
@@ -122,10 +127,24 @@ export async function openServerDb(): Promise<Client> {
  * catalogue, the purchase and the lore can never disagree about what mode the
  * player is in.
  *
- * Answers the platform scope (`{serverId: null, mode: 'extend'}`) on ANY
- * failure, which is the safe direction: a database hiccup shows a player the
- * default catalogue rather than failing their request or, worse, showing them
- * somebody else's — the same direction `currentServer` has always taken.
+ * ── "No scope" and "the resolver THREW" are different answers ─────────────
+ *
+ * Both end in the platform scope, because that is the safe direction: a
+ * database hiccup shows a player the default catalogue rather than failing
+ * their request or, worse, showing them somebody else's — the same direction
+ * `currentServer` has always taken. But they must not LOOK the same
+ * afterwards. A player with no session, no selection, or a lapsed membership
+ * is legitimately unscoped and nothing is logged; a resolver that THREW — a
+ * missing column, a database outage — is a fault, and it is logged loudly with
+ * the player attached before the fallback is served.
+ *
+ * That log line is the whole fix for a live failure: the owner created a
+ * server, entered it, and the HUD, quests, lore, marketplace and credits were
+ * all global — every one of those routes had swallowed the same schema error
+ * into this fallback, and production showed the symptoms with not one line
+ * saying why. A fallback that hides its own cause costs a walkthrough;
+ * `scopeResolverFailure.test.ts` pins that it can never again fall back in
+ * silence.
  */
 export async function currentContentScope(playerId: string): Promise<ContentScope> {
   let db: Client | null = null;
@@ -134,7 +153,13 @@ export async function currentContentScope(playerId: string): Promise<ContentScop
     const servers = await import('./customServers');
     return await servers.currentContentScope(db, playerId);
   } catch (err) {
-    console.error('[servers] could not resolve the content scope:', err);
+    console.error(
+      `[servers] CONTENT-SCOPE RESOLVER FAILED for player ${playerId} — ` +
+        'serving the platform scope as a fallback. Every scoped surface (session, ' +
+        'quests, lore, marketplace, credits) will look global to this player ' +
+        'until this error is fixed:',
+      err
+    );
     return { serverId: null, mode: 'extend' };
   } finally {
     await db?.end().catch(() => {});

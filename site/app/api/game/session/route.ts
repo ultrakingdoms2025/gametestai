@@ -59,7 +59,16 @@ export async function GET() {
     player_id: profile.playerId,
     handle: profile.handle ?? session.user.name ?? user.email.split('@')[0],
     full_name: profile.fullName,
-    credits: profile.creditBalance,
+    /* THE credits the HUD shows. Scoped to a server, that is the SERVER
+     * balance — the owner's instruction: inside a custom server, the server's
+     * economy IS the economy, and /api/game/credits applies every delta to the
+     * same ledger this number came from, so the client's mirror and the
+     * server's answer converge on one ledger. The client treats the field
+     * opaquely; the server decides whose number it is. Unscoped, it is the
+     * platform balance it always was. `platform_credits` and `server_credits`
+     * carry both raw facts for any reader that needs to tell them apart. */
+    credits: serverId ? serverCredits ?? 0 : profile.creditBalance,
+    platform_credits: profile.creditBalance,
     has_access: profile.hasAccess,
     days_remaining: profile.daysRemaining,
     game_state: gameState,

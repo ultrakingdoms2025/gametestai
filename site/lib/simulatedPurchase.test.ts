@@ -353,6 +353,32 @@ suite('a simulated purchase (integration)', () => {
     expect(rows.rows[0].n).toBe(1);
   });
 
+  it('buying hosting again adds a second slot, and replays add nothing', async () => {
+    /* Pay-per-server, simulated: every checkout mints a fresh order id, every
+     * order derives a distinct subscription id, and each distinct subscription
+     * accumulates one slot through the SAME `writeEntitlement` the webhook
+     * uses. Replaying either confirm link resurrects its own grant and adds
+     * nothing — the property "settles nothing twice" pins for one order, held
+     * here across two. */
+    const orderB = 'sim_00000000-0000-4000-8000-0000000013bb';
+    await grantSimulatedHosting(db, { playerId: BUYER, orderId: order });
+    expect((await readEntitlement(db, BUYER)).maxServers).toBe(SERVERS_PER_SUBSCRIPTION);
+
+    await grantSimulatedHosting(db, { playerId: BUYER, orderId: orderB });
+    expect((await readEntitlement(db, BUYER)).maxServers).toBe(2 * SERVERS_PER_SUBSCRIPTION);
+
+    await grantSimulatedHosting(db, { playerId: BUYER, orderId: order });
+    await grantSimulatedHosting(db, { playerId: BUYER, orderId: orderB });
+    expect((await readEntitlement(db, BUYER)).maxServers).toBe(2 * SERVERS_PER_SUBSCRIPTION);
+
+    /* Two slots is two servers — the quota reads the accumulated allowance. */
+    expect((await createServer(db, BUYER, { name: 'Simulated Slot One' })).ok).toBe(true);
+    expect((await createServer(db, BUYER, { name: 'Simulated Slot Two' })).ok).toBe(true);
+    const over = await createServer(db, BUYER, { name: 'Simulated Slot Three' });
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.reason).toBe('quota');
+  });
+
   it('is refused the moment STRIPE_SECRET_KEY exists, without a flag to remember', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_pretend_key_for_this_assertion';
     try {

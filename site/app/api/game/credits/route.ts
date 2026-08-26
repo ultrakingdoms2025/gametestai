@@ -13,6 +13,9 @@ import {
 } from '@/lib/creditLedger';
 import { ensureMarketplaceSchema, purchaseMarketplaceItem } from '@/lib/marketplaceDb';
 import { currentContentScope, type ContentScope } from '@/lib/serverRoutes';
+import { ensureCustomServerSchema } from '@/lib/customServers';
+import { serverBalance } from '@/lib/serverCredits';
+import { applyReportedServerEvent } from '@/lib/serverCreditReport';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +56,16 @@ function makeClient() {
  * catalogue read uses, so a player cannot buy an item out of a server they are
  * not in by pasting its id.
  *
+ * ── Which ledger the batch moves ──────────────────────────────────────────
+ *
+ * The SAME scope now also decides the ledger. Scoped to a server, every earn
+ * lands in `server_credit_*` via `applyReportedServerEvent` (same vocabulary,
+ * same pricing, server-side ceilings), every spend debits the server balance,
+ * and the response's `balance` is the server balance — the client treats it
+ * opaquely and displays it without knowing. Unscoped, everything is exactly
+ * the platform path it always was. The invariant, both directions, is pinned
+ * by `economySeparation.test.ts`.
+ *
  * Every event is answered individually. A refused one is not a failed request —
  * the client should drop it, not retry it — so the response is 200 with per-event
  * outcomes, and the authoritative balance either way.
@@ -86,21 +99,34 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'User not found.' }, { status: 404 });
   const playerId = await findOrCreatePlayer(session.user.id, user.email);
 
+  /* Resolved once for the whole batch, EAGERLY now: the scope no longer only
+   * decides which catalogue a purchase shops in — it decides WHICH LEDGER every
+   * event in the batch moves. While the player is inside a custom server their
+   * earns and spends are that server's (the owner's instruction: on a server,
+   * the platform balance never moves; off it, the server ledgers never move),
+   * so the ledger has to be known before the first event is applied. One
+   * membership re-check per batch, same as the quest board pays per read. A
+   * null serverId is the platform partition, exactly as before — and if the
+   * resolver THREW, `currentContentScope` has already logged it loudly and
+   * answered the platform scope, so a fault degrades to the old behaviour
+   * rather than crossing the two economies. */
+  const scope: ContentScope = await currentContentScope(playerId);
+
   const client = makeClient();
   await client.connect();
   try {
-    await ensureCreditSchema(client);
-    // Before anything is applied: the ledger has to know where the balance
-    // started, or its first `balance_after` is a number with no provenance.
-    await ensureOpeningBalance(client, playerId);
+    if (scope.serverId) {
+      /* The server-ledger tables, not the platform's: a scoped batch touches
+       * `server_credit_*` only. No opening balance either — a server ledger
+       * starts at zero by construction (`serverCredits.ts` says why). */
+      await ensureCustomServerSchema(client);
+    } else {
+      await ensureCreditSchema(client);
+      // Before anything is applied: the ledger has to know where the balance
+      // started, or its first `balance_after` is a number with no provenance.
+      await ensureOpeningBalance(client, playerId);
+    }
 
-    /* Resolved once for the whole batch, and lazily: `currentContentScope`
-     * re-checks membership against the database, and a batch of kills has no
-     * business paying for that. The PAIR — server and mode — comes from the
-     * same single resolution the catalogue read uses, so what this route will
-     * sell can never disagree with what that route showed. A null serverId is
-     * the platform partition, exactly as before. */
-    let scope: ContentScope | undefined;
     const handlers: ReportHandlers = {
       buyCatalogueItem: async ({ itemRef, eventKey }) => {
         /* Ensured here rather than at the top of the route: it is memoised, but
@@ -108,7 +134,6 @@ export async function POST(req: Request) {
          * of kills must not pay for a table it never reads. Any player who has
          * opened the shop has already warmed it through /api/marketplace/items. */
         await ensureMarketplaceSchema();
-        if (scope === undefined) scope = await currentContentScope(playerId);
         const r = await purchaseMarketplaceItem(client, playerId, {
           itemId: itemRef,
           eventKey,
@@ -117,7 +142,8 @@ export async function POST(req: Request) {
         });
         /* `cost` is the price the SERVER read off the row. It is reported back as
          * the delta so the client's mirror converges on the real charge rather
-         * than on the number it sent. */
+         * than on the number it sent. `purchaseMarketplaceItem` debits the
+         * ledger the scope names, so this handler needs no branch of its own. */
         return {
           applied: r.applied,
           delta: r.applied ? -r.cost : 0,
@@ -131,25 +157,29 @@ export async function POST(req: Request) {
     for (const item of raw) {
       const event = item as ReportedEvent;
       const itemId = (event as { itemId?: unknown })?.itemId;
+      const shaped = {
+        key: String((event as { key?: unknown })?.key ?? ''),
+        reason: String((event as { reason?: unknown })?.reason ?? ''),
+        delta: Number((event as { delta?: unknown })?.delta),
+        ...(typeof itemId === 'string' ? { itemId } : {}),
+      };
       results.push(
-        await applyReportedEvent(
-          client,
-          playerId,
-          {
-            key: String((event as { key?: unknown })?.key ?? ''),
-            reason: String((event as { reason?: unknown })?.reason ?? ''),
-            delta: Number((event as { delta?: unknown })?.delta),
-            ...(typeof itemId === 'string' ? { itemId } : {}),
-          },
-          handlers
-        )
+        scope.serverId
+          ? /* The scoped mirror: same reason→kind vocabulary, same pricing
+             * table, same per-event bounds — the money lands on the server
+             * ledger. The client displays whatever `balance` says and never
+             * knows which ledger it was. */
+            await applyReportedServerEvent(client, scope.serverId, playerId, shaped, handlers)
+          : await applyReportedEvent(client, playerId, shaped, handlers)
       );
     }
 
     const balance = results.length
       ? results[results.length - 1].balance
-      : (await client.query('SELECT credit_balance FROM players WHERE id = $1', [playerId]))
-          .rows[0]?.credit_balance ?? 0;
+      : scope.serverId
+        ? await serverBalance(client, scope.serverId, playerId)
+        : (await client.query('SELECT credit_balance FROM players WHERE id = $1', [playerId]))
+            .rows[0]?.credit_balance ?? 0;
 
     return NextResponse.json({ balance: Number(balance), results });
   } catch (err) {

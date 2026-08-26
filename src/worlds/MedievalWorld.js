@@ -63,6 +63,7 @@ import {
 } from './medieval/TerrainTiles.js';
 import { GrassResidency } from './medieval/GrassResidency.js';
 import { loadBeastAssets } from './medieval/BeastAssets.js';
+import { loadFrameAssets, framePart, FRAME_WELDABLE } from './medieval/FrameAssets.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -1381,6 +1382,18 @@ export class MedievalWorld extends World {
      * needs no `catch` and can never fail a boot. */
     const beastAssets = loadBeastAssets();
 
+    /* The authored carpentry, started here and awaited just before the first
+     * consumer. Started rather than awaited, because terrain is the longest
+     * phase in the build and a 10 KB fetch has no business sitting in front
+     * of it; awaited before `_buildVillage`, because that is where the braces
+     * are placed and a part that arrives one phase late is a village of
+     * straight straps with no error anywhere. `loadFrameAssets` never
+     * rejects: a 404 resolves to an empty map and every placement below falls
+     * back to the straight strap the village drew before this pass - which is
+     * exactly what `node --test` builds unless a test installs the committed
+     * bytes, and what a player on a bad connection gets. */
+    const frameAssets = loadFrameAssets();
+
     await step(0.02, 'Mixing pigments', this._buildTextures);
     await step(0.18, 'Tempering materials', this._buildMaterials);
     await step(0.26, 'Raising the vale', this._buildTerrain);
@@ -1388,6 +1401,7 @@ export class MedievalWorld extends World {
     await step(0.47, 'Letting the river run', this._buildWater);
     await step(0.52, 'Laying cobbles', this._buildRoads);
     await step(0.58, 'Building Aldermoor Keep', this._buildCastle);
+    await frameAssets;
     await step(0.7, 'Thatching the village', this._buildVillage);
     await step(0.78, 'Spanning the Aldern', this._buildRiverside);
     await step(0.82, 'Setting out the market', this._buildMarket);
@@ -4794,17 +4808,76 @@ export class MedievalWorld extends World {
         const x = cx - hx + (i / nx) * hx * 2;
         const z = cz - hz + (j / nz) * hz * 2;
         vid[j * (nx + 1) + i] = pos.length / 3;
-        pos.push(x, this._height(x, z) + 0.075 - smoothstep(-1.4, 0.9, e) * 0.22, z);
+        /* Round 6: same steep-dive rule as the dwelling aprons, for the same
+         * photographed defect - a 0.22 m glide across a 2.3 m fray band kept
+         * resurfacing through the turf and stippling the street framing's
+         * foreground with shadowed cobble discs. Proud until the fray
+         * actually starts, then under by half a metre within a stone or two. */
+        pos.push(x, this._height(x, z) + 0.075 - smoothstep(0.0, 0.85, e) * 0.55, z);
         uv.push(x * 0.55, z * 0.55);
+      }
+    }
+    /* ── Round 6: keep ONE slab, not a slab and its satellites ──────────
+     *
+     * The two-octave fray above does exactly what its comment promises - and
+     * one thing it never mentioned: where the noise dips twice within a
+     * couple of cells, it strands DETACHED ISLANDS of paving out in the
+     * meadow, a metre wide, up to three metres past the slab's rim. The
+     * composed village-street framing photographs the market field's south
+     * fray band at four metres, and its whole foreground was stippled with
+     * them: hard near-black ellipses of shadowed cobble floating in grass.
+     * Three systems were accused before a pixel-projection probe put every
+     * disc inside this field's own fray band - the contact cards were
+     * ablated in a real browser run (5,494 triangles removed, discs still
+     * standing), and the puddles and the field stones were each recoloured
+     * or gated with no effect, which is what finally forced the projection.
+     *
+     * So the candidate cells now pass a flood fill seeded from the slab's
+     * centre, and only the main connected component is emitted. Notches and
+     * bites at the rim - the "loses whole stones" the fray exists for - are
+     * absences and survive untouched; a stone the slab cannot reach is the
+     * artifact, and it is dropped. */
+    const cellKeep = new Uint8Array(nx * nz);
+    const cellOk = (i, j) =>
+      vid[j * (nx + 1) + i] >= 0 && vid[(j + 1) * (nx + 1) + i] >= 0 &&
+      vid[(j + 1) * (nx + 1) + i + 1] >= 0 && vid[j * (nx + 1) + i + 1] >= 0;
+    {
+      // Seed: the candidate cell nearest the field's centre.
+      let seed = -1;
+      let best = Infinity;
+      for (let j = 0; j < nz; j++) {
+        for (let i = 0; i < nx; i++) {
+          if (!cellOk(i, j)) continue;
+          const d2 = (i - nx / 2) * (i - nx / 2) + (j - nz / 2) * (j - nz / 2);
+          if (d2 < best) { best = d2; seed = j * nx + i; }
+        }
+      }
+      if (seed >= 0) {
+        const stack = [seed];
+        cellKeep[seed] = 1;
+        while (stack.length) {
+          const c0 = stack.pop();
+          const ci = c0 % nx;
+          const cj = (c0 / nx) | 0;
+          for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const ni = ci + di;
+            const nj = cj + dj;
+            if (ni < 0 || ni >= nx || nj < 0 || nj >= nz) continue;
+            const nc = nj * nx + ni;
+            if (cellKeep[nc] || !cellOk(ni, nj)) continue;
+            cellKeep[nc] = 1;
+            stack.push(nc);
+          }
+        }
       }
     }
     for (let j = 0; j < nz; j++) {
       for (let i = 0; i < nx; i++) {
+        if (!cellKeep[j * nx + i]) continue;
         const a = vid[j * (nx + 1) + i];
         const b = vid[(j + 1) * (nx + 1) + i];
         const c = vid[(j + 1) * (nx + 1) + i + 1];
         const d = vid[j * (nx + 1) + i + 1];
-        if (a < 0 || b < 0 || c < 0 || d < 0) continue;
         idx.push(a, b, c, a, c, d);
       }
     }
@@ -4898,7 +4971,19 @@ export class MedievalWorld extends World {
         const edge = Math.max(Math.abs(a.getX(i) * 2 - 1), Math.abs(a.getY(i) * 2 - 1));
         // Sits marginally proud of the streets and the market square so the
         // three cobble surfaces never z-fight where they overlap.
-        pos.setY(i, this._height(x, z) + 0.1 - smoothstep(0.30, 1.0, edge) * 0.235);
+        /* Round 6: a STEEP dive at the rim, not a glide. The old ramp
+         * (0.30..1.0 over ~2.2 m, 0.235 m deep) descended at ~0.1 m/m, and
+         * the meadow's own relief beats that between the sheet's ~1.25 m
+         * conforming samples - so the "buried" rim broke back through the
+         * turf in patches, and the ground skirt then multiplied every patch
+         * toward black. Photographed from the composed street vantage that
+         * was a foreground stippled with hard dark cobble discs, and it took
+         * a pixel projection to convict this line: the contact cards were
+         * ablated in a real browser (discs stood), and the puddles and field
+         * stones were each fixed with no effect. The surface now stays proud
+         * to 0.55 and dives 0.6 m by 0.95 - steeper than any turf bump over
+         * a metre - so the apron ends where it visibly frays, once. */
+        pos.setY(i, this._height(x, z) + 0.1 - smoothstep(0.55, 0.95, edge) * 0.6);
         a.setXY(i, x * 0.55, z * 0.55);
         // Distance out from the wall face, negative under the building.
         const d = rectDist(lx, lz, p.bx ?? 0, p.bz ?? 0);
@@ -4999,11 +5084,19 @@ export class MedievalWorld extends World {
     while (placed < N && guard++ < N * 12) {
       let x;
       let z;
-      if (rnd() < 0.45) {
-        // Market fringe.
+      if (rnd() < 0.34) {
+        /* Market fringe - tight against the paving's frayed edge, where a
+         * stone that worked loose would actually lie. Round 6: this ring ran
+         * 4.6-7.8 m out, which put a third of the whole budget in open
+         * trodden ground metres from any paving, and (with the tint below)
+         * the composed street framing's foreground read as a band of hard
+         * black polka dots. Six systems were suspected and five were
+         * fixed or ablated before an instance scan named this one; the
+         * paved fringe itself dissolves at 3.0-5.2 m, so that is where the
+         * stones now sit. */
         const a = rnd() * TAU;
-        const ex = MARKET.hx + 4.6 + rnd() * 3.2;
-        const ez = MARKET.hz + 4.2 + rnd() * 3.2;
+        const ex = MARKET.hx + 3.0 + rnd() * 2.2;
+        const ez = MARKET.hz + 2.8 + rnd() * 2.2;
         x = MARKET.x + Math.cos(a) * ex;
         z = MARKET.z + Math.sin(a) * ez;
       } else {
@@ -5045,12 +5138,22 @@ export class MedievalWorld extends World {
       const y = this._height(x, z);
       if (y < WATER_Y + 0.4) continue;
       const sc = 0.55 + rnd() * 1.05;
-      _obj.position.set(x, y - 0.035 * sc, z);
+      /* Half-sunk, and lit like the pavement it fell out of. The old numbers
+       * - a 3.5 cm sink and an HSL lightness of 0.26-0.46 multiplying the
+       * cobble albedo - made every stone a proud near-black dome: HALF the
+       * value of the street tint (0xb4ab99) and darker than the apron's
+       * dirtiest corner, on open ground where the eye has nothing else to
+       * read. A stone that "worked out of the setting" is the same granite
+       * as the setting; a stone "the grass has grown over" is mostly under
+       * the turf. 0.46-0.66 sits it just under the street's own multiplier,
+       * and the deeper sink takes the silhouette off the skyline of the
+       * ground plane. */
+      _obj.position.set(x, y - 0.055 * sc, z);
       _obj.rotation.set((rnd() - 0.5) * 0.5, rnd() * TAU, (rnd() - 0.5) * 0.5);
-      _obj.scale.set(sc, sc * (0.7 + rnd() * 0.6), sc);
+      _obj.scale.set(sc, sc * (0.55 + rnd() * 0.45), sc);
       _obj.updateMatrix();
       setts.setMatrixAt(placed, _obj.matrix);
-      _col.setHSL(0.09, 0.03 + rnd() * 0.06, 0.26 + rnd() * 0.2);
+      _col.setHSL(0.09, 0.03 + rnd() * 0.06, 0.46 + rnd() * 0.2);
       setts.setColorAt(placed, _col);
       placed++;
     }
@@ -5537,6 +5640,125 @@ export class MedievalWorld extends World {
             col.getZ(i) * lerp(k * 1.05, k * 0.96, t));
         }
         col.needsUpdate = true;
+      }
+    }
+
+    /* ---- Talus and scrub at the curtain's foot ----------------------
+     *
+     * The castle-gate and castle-approach framings both photograph the
+     * outside of the curtain from the meadow, and in both the wall met the
+     * grass on a single hard line: 110 m of masonry sitting on a lawn, with
+     * nothing at the junction - no fallen stone, no bramble, nothing a
+     * century of frost and neglect would actually leave there. A building
+     * is founded by what collects at its base; the village houses learned
+     * that with ground skirts and entry steps, and the castle never did.
+     *
+     * So each outer face gets a seeded run of talus: boulder heaps sunk to
+     * a third, the odd squared ashlar block lying where it fell off the
+     * batter, and bramble clumps between them. All of it goes into the
+     * castle's own batch: boulders and blocks under 'rubble' and 'ashlar',
+     * which the batch already flushes (zero new draw calls), and scrub
+     * under 'leaf', which it did not - ONE new renderable for the whole
+     * run, reported in the pass's budget, against a world of ~655. Zero
+     * new materials, zero new programs either way.
+     *
+     * Placed AFTER the vertical-weathering ramp on purpose, and the first
+     * cut is why: ramped down to 0.62 like the wall's splash zone, 0.4 m
+     * boulders at 40 m were invisible - the mid shots showed a line of
+     * dark smudges. Fallen limestone is BRIGHTER than the shadowed wall
+     * base behind it, and that value break against the plinth is the whole
+     * read; the AO bake still seats every piece.
+     *
+     * NO COLLIDERS. Art may not move a route: every reach and approach
+     * measurement in the medieval suite is taken against the colliders,
+     * and a knee-high visual boulder is something a boot steps over. The
+     * gate zone (|z - gateZ| < 10 on the east face) and the roads are
+     * excluded; the hero-eye clear radii are honoured, but the castle-gate
+     * sight CORRIDOR deliberately is not - the wall base is the subject of
+     * that framing, not an obstruction in front of it. */
+    {
+      const trnd = mulberry32(0x7a1e5);
+      /* One [x, z] per committed placement. The geometry itself merges into
+       * shared buckets and cannot be counted afterwards; this list is the
+       * per-placement record `medieval-frame-assets.test.mjs` replays the
+       * ground rules against - same role `_authoredBy` plays for the braces. */
+      this._talusSpots = [];
+      const faces = [
+        // [x1, z1, x2, z2, outward normal x, z]
+        [wallW + 8, wallN, wallE - 8, wallN, 0, -1],
+        [wallW + 8, wallS, wallE - 8, wallS, 0, 1],
+        [wallW, wallN + 8, wallW, wallS - 8, -1, 0],
+        [wallE, wallN + 8, wallE, wallS - 8, 1, 0],
+      ];
+      const eyeClear = (x, z) => {
+        for (const [ex, ez, er] of this._heroEyes) {
+          const dx = x - ex;
+          const dz = z - ez;
+          if (dx * dx + dz * dz < (er + 1.2) * (er + 1.2)) return true;
+        }
+        return false;
+      };
+      for (const [x1, z1, x2, z2, ox, oz] of faces) {
+        const len = Math.hypot(x2 - x1, z2 - z1);
+        const ux = (x2 - x1) / len;
+        const uz = (z2 - z1) / len;
+        let t = trnd() * 3;
+        while (t < len) {
+          const bx = x1 + ux * t + ox * (TH / 2 + 0.7 + trnd() * 1.9);
+          const bz = z1 + uz * t + oz * (TH / 2 + 0.7 + trnd() * 1.9);
+          t += 2.6 + trnd() * 3.2;
+          if (ox > 0 && Math.abs(bz - gateZ) < 10) continue;    // gatehouse
+          if (this._roadDist(bx, bz) < 4) continue;
+          if (eyeClear(bx, bz)) continue;
+          this._talusSpots.push(bx, bz);
+          const by = this._height(bx, bz);
+          const roll = trnd();
+          if (roll < 0.46) {
+            // A boulder heap, each stone sunk to a third, overlapping into
+            // one mass rather than scattered into separate pebbles.
+            const n = 2 + ((trnd() * 3) | 0);
+            for (let k = 0; k < n; k++) {
+              const r = 0.38 + trnd() * 0.6;
+              const px = bx + (trnd() - 0.5) * 1.2;
+              const pz = bz + (trnd() - 0.5) * 1.2;
+              const g = new THREE.IcosahedronGeometry(r, 1);
+              g.scale(1 + trnd() * 0.5, 0.6 + trnd() * 0.3, 1 + trnd() * 0.5);
+              MedievalWorld._uvScale(g, 1.2);
+              _obj.position.set(px, this._height(px, pz) + r * 0.36, pz);
+              _obj.rotation.set(trnd() * 0.4, trnd() * TAU, trnd() * 0.4);
+              _obj.scale.set(1, 1, 1);
+              _obj.updateMatrix();
+              B.add('rubble', g, _obj, shadeHex(0xb5ac9c, 0.85 + trnd() * 0.3));
+              this._contacts.push(px, this._height(px, pz), pz, r * 1.5);
+            }
+          } else if (roll < 0.7) {
+            // A squared block off the batter, lying at the angle it landed.
+            const bw = 0.6 + trnd() * 0.55;
+            _obj.position.set(bx, by + bw * 0.28, bz);
+            _obj.rotation.set((trnd() - 0.5) * 0.5, trnd() * TAU, (trnd() - 0.5) * 0.5);
+            _obj.scale.set(1, 1, 1);
+            _obj.updateMatrix();
+            B.add('ashlar', boxGeo(bw * 1.5, bw * 0.8, bw, 0.6), _obj,
+              shadeHex(0xbfb6a4, 0.85 + trnd() * 0.2));
+            this._contacts.push(bx, by, bz, bw * 1.1);
+          } else {
+            // Bramble: overlapping dark masses at mixed yaws, tight enough
+            // to merge into one clump instead of reading as stacked crates.
+            const n = 3 + ((trnd() * 2) | 0);
+            for (let k = 0; k < n; k++) {
+              const s = 0.8 + trnd() * 1.0;
+              const px = bx + (trnd() - 0.5) * 1.1;
+              const pz = bz + (trnd() - 0.5) * 1.1;
+              _obj.position.set(px, this._height(px, pz) + s * 0.28, pz);
+              _obj.rotation.set((trnd() - 0.5) * 0.3, trnd() * TAU, (trnd() - 0.5) * 0.3);
+              _obj.scale.set(1, 1, 1);
+              _obj.updateMatrix();
+              B.add('leaf', boxGeo(s * 1.4, s * 0.7, s * 1.4, 5.0), _obj,
+                shadeHex(0x687a48, 0.78 + trnd() * 0.4));
+            }
+            this._contacts.push(bx, by, bz, 1.3);
+          }
+        }
       }
     }
 
@@ -6135,6 +6357,50 @@ export class MedievalWorld extends World {
    * @param {{x:number,z:number,ry:number,w:number,d:number,storeys:number,
    *          roof:'thatch'|'slate',jetty:boolean,seed:number,lit?:boolean}} o
    */
+  /**
+   * Place one authored carpentry part into a batch, or say it is not there.
+   *
+   * ── Every line of this is a cost rule ────────────────────────────────────
+   *
+   * `framePart` returns null when the `.glb` did not load, which is the case
+   * in every headless test that does not install it and the case for a player
+   * whose download failed. The caller draws the straight strap it always
+   * drew, so a missing asset is a plainer village rather than a hole in one.
+   *
+   * The bind is re-checked HERE as well as in the loader, against the live
+   * material set this call is actually merging into. The loader can only
+   * check what the manifest claims; this checks the call site, and the two
+   * together are why a part can never open a bucket `GeoBatch.build` would
+   * turn into another mesh.
+   *
+   * `.clone()` is not defensive tidiness: `GeoBatch.add` normalises the
+   * attribute set, applies the matrix IN PLACE and the merge disposes its
+   * inputs. The master is cached for the session and placed ~700 times, so
+   * handing it over once would leave every brace after the first building
+   * from freed buffers.
+   *
+   * @param {GeoBatch} B
+   * @param {string} key 'brace' | 'console'
+   * @param {THREE.Matrix4} matrix world placement
+   * @param {number} [tint] vertex tint, exactly as `GeoBatch.add` takes one
+   * @returns {boolean} false when nothing was placed
+   */
+  _authoredFrame(B, key, matrix, tint = 0xffffff) {
+    const part = framePart(key);
+    if (!part) return false;
+    if (!FRAME_WELDABLE.includes(part.slot) || !this._mats[part.slot]) return false;
+    B.add(part.slot, part.geometry.clone(), matrix, tint);
+    /* Counted, because a placement rule that stops firing is otherwise
+     * silent: a part that loads and is never used passes every cost assertion
+     * - zero meshes, zero materials - and is a manifest entry pretending to
+     * be art. `medieval-frame-assets.test.mjs` holds each key against a floor
+     * rather than an exact number, because the counts follow `PLOTS` and the
+     * jetty rule and neither belongs to that file. */
+    this._authoredCount = (this._authoredCount ?? 0) + 1;
+    (this._authoredBy ??= {})[key] = (this._authoredBy[key] ?? 0) + 1;
+    return true;
+  }
+
   _house(B, o) {
     const rnd = mulberry32(o.seed);
     const w = o.w;
@@ -6270,6 +6536,23 @@ export class MedievalWorld extends World {
         for (let i = -3; i <= 3; i++) {
           put('beam', boxGeo(0.2, 0.2, jut + 0.3, 1.1), (i * w) / 7.5, top - 0.14, hd + jut / 2, 0, 0, 0, bt());
           put('beam', boxGeo(0.2, 0.2, jut + 0.3, 1.1), (i * w) / 7.5, top - 0.14, -hd - jut / 2, 0, 0, 0, bt());
+          /* A carved console under each joist end. The overhang used to be
+           * seven bare box ends per face - an upper storey visibly GLUED onto
+           * the one below it, because nothing carried the load story down the
+           * wall. The console is authored (`frame.glb`): a cyma curve is the
+           * second shape a box cannot make, and at the 2.6-3 m these sit at
+           * it is squarely in a street-level player's eyeline. Authored-only,
+           * no fallback: before this pass there was nothing under a joist,
+           * and a missing asset degrades to exactly that. */
+          for (const sgn of [-1, 1]) {
+            const ctint = bt();
+            _obj.position.set((i * w) / 7.5, top - 0.24, sgn * hd);
+            _obj.rotation.set(0, sgn > 0 ? -Math.PI / 2 : Math.PI / 2, 0);
+            _obj.scale.set(jut + 0.06, 0.55, 1);
+            _obj.updateMatrix();
+            tmp.multiplyMatrices(M, _obj.matrix);
+            this._authoredFrame(B, 'console', tmp, ctint);
+          }
         }
       }
       storeyRects.push({ y0: top, h: uh, w: w2, d: d2 });
@@ -6299,14 +6582,31 @@ export class MedievalWorld extends World {
           put('beam', boxGeo(0.19, r.h - 0.3, 0.15, 1.0), nx + Math.cos(yaw) * t,
             r.y0 + r.h / 2, nz - Math.sin(yaw) * t, 0, yaw, 0, bt());
         }
-        // Corner braces - the detail that makes framing read as real carpentry.
+        /* Corner braces - the detail that makes framing read as real
+         * carpentry. Round 6: the strap is now the AUTHORED arch-brace from
+         * `frame.glb` - the same 0.19 m blade at the same tuned position and
+         * rake, with the bow a sawn oak crook actually has, which is the one
+         * shape `boxGeo` cannot make. `scale.set(sgn, bl, sgn)` is doing two
+         * jobs: `bl` is the length exactly as the box took it, and the
+         * negated x/z pair for `sgn = -1` is `Ry(PI)` written as a scale -
+         * determinant positive, no winding flip - so the two braces of a pair
+         * bow as MIRROR images toward their own corners rather than one
+         * bowing with the grain and one against it. Falls back to the exact
+         * straight strap when the asset is absent. */
         for (const sgn of [-1, 1]) {
           const bl = Math.min(r.h * 0.95, along * 0.45);
-          put('beam', boxGeo(0.19, bl, 0.15, 1.0),
-            nx + Math.cos(yaw) * sgn * (along / 2 - bl * 0.32),
-            r.y0 + r.h * 0.35,
-            nz - Math.sin(yaw) * sgn * (along / 2 - bl * 0.32),
-            0, yaw, sgn * 0.62, bt());
+          const blx = nx + Math.cos(yaw) * sgn * (along / 2 - bl * 0.32);
+          const blz = nz - Math.sin(yaw) * sgn * (along / 2 - bl * 0.32);
+          const btint = bt();
+          _obj.position.set(blx, r.y0 + r.h * 0.35, blz);
+          _obj.rotation.set(0, yaw, sgn * 0.62);
+          _obj.scale.set(sgn, bl, sgn);
+          _obj.updateMatrix();
+          tmp.multiplyMatrices(M, _obj.matrix);
+          if (!this._authoredFrame(B, 'brace', tmp, btint)) {
+            put('beam', boxGeo(0.19, bl, 0.15, 1.0), blx, r.y0 + r.h * 0.35, blz,
+              0, yaw, sgn * 0.62, btint);
+          }
         }
       }
     }
@@ -6437,12 +6737,63 @@ export class MedievalWorld extends World {
           }
         }
       }
-      // One window on a gable end for asymmetry.
-      if (ri === winRows.length - 1) {
-        const sgn = rnd() < 0.5 ? -1 : 1;
-        put('beam', boxGeo(0.2, 1.05, 1.15, 1.2), sgn * side, wy, 0, 0, 0, 0, bt());
-        put('glass', planeGeo(0.86, 0.78, 1.2), sgn * side + sgn * 0.12, wy, 0,
-          0, sgn * Math.PI / 2, 0, glow);
+      /* ---- Side-face windows -------------------------------------- *
+       *
+       * The composed village-square framing photographs the SIDE of every
+       * house on its axis, and until round 6 a side face was a blank
+       * timbered panel: the window loop above only ever dressed the two
+       * ±d faces, plus one bare unframed pane on one random gable. Two of
+       * the three biggest facades in that frame had not a single opening
+       * - the same "arithmetic reads perfectly, facade never got a pixel"
+       * shape as the citadel's window recesses.
+       *
+       * So each side face now carries the full window assembly the front
+       * faces get - recessed pane, reveals, mullion, shutters - rotated
+       * onto the ±x plane. Offsets along the face come from the house's
+       * own seed ARITHMETICALLY rather than from `rnd()`: every draw
+       * added mid-stream would reshuffle each tint drawn after it, and
+       * placement must not depend on how many windows this loop grows. */
+      // Clamped so the thrown-open shutter (0.92 + half a leaf past the
+      // frame) can never overhang the building's own corner.
+      const uzMax = Math.max(0, hd - 1.35);
+      const uz0 = Math.max(-uzMax, Math.min(uzMax, (((o.seed >> 3) % 7) - 3) * 0.09 * d));
+      const sideCols = d > 7.5 && ri === 0 ? [-d * 0.26, d * 0.26] : [uz0];
+      for (const sgn of [-1, 1]) {
+        const sx = sgn * side;
+        const wyaw = sgn * Math.PI / 2;
+        for (const uz of sideCols) {
+          put('beam', boxGeo(0.2, 1.15, 1.25, 1.2), sx, wy, uz, 0, 0, 0, bt());
+          put('glass', planeGeo(0.92, 0.8, 1.2), sx - sgn * 0.08, wy, uz, 0, wyaw, 0, glow);
+          for (const rs of [-1, 1]) {
+            put('beam', boxGeo(0.22, 1.15, 0.17, 1.4), sx + sgn * 0.05, wy, uz - rs * 0.54,
+              0, 0, 0, shadeHex(beamTint, 0.7));
+            put('beam', boxGeo(0.22, 0.16, 1.25, 1.4), sx + sgn * 0.05, wy + rs * 0.5, uz,
+              0, 0, 0, shadeHex(beamTint, rs > 0 ? 0.62 : 0.78));
+          }
+          put('beam', boxGeo(0.09, 0.86, 0.075, 2.0), sx + sgn * 0.01, wy, uz,
+            0, 0, 0, shadeHex(beamTint, 0.66));
+          put('beam', boxGeo(0.09, 0.065, 0.96, 2.0), sx + sgn * 0.01, wy - 0.06, uz,
+            0, 0, 0, shadeHex(beamTint, 0.66));
+          if (o.lit && ri === 0) {
+            _v1.set(sx + sgn * 0.22, wy, uz).applyMatrix4(M);
+            this._addGlow(_v1.x, _v1.y, _v1.z, 2.5, 0x54301a,
+              o.ry + sgn * Math.PI / 2);
+          }
+          /* Shutters on the GROUND row only, laid nearly flat to the wall.
+           * The first cut hung a 0.62 x 1.0 leaf 0.2 m proud at 0.42 rad on
+           * every row, and the mid shots showed what that is at 20 m: two
+           * black slabs floating beside every opening, tripling its dark
+           * area - on a shaded face the "window" read as a cupboard. Smaller
+           * leaves, tucked against the render, catch the wall's own light
+           * and read as joinery; the upper rows do without, which is also
+           * what a cottage that can only reach its ground shutters does. */
+          if (ri === 0) {
+            for (const ss of [-1, 1]) {
+              put('plank', boxGeo(0.07, 0.9, 0.52, 1.3), sx + sgn * 0.12, wy, uz + ss * 0.86,
+                0, wyaw + ss * -0.2, 0, shutTint);
+            }
+          }
+        }
       }
     }
 
@@ -10453,8 +10804,14 @@ export class MedievalWorld extends World {
           }
           local(M, 'beam', boxGeo(0.08, 0.08, 0.72, 1.4), sg * 0.92, 0.5, 0, 0, 0, 0, 0x6f5539);
         }
+        /* Shaded to 0.62: a full-chroma herald bolt lying flat in the open
+         * reads as enamelled plastic at dusk - it was the single most
+         * saturated surface in the composed street framing, brighter than
+         * every lit window. Cloth on a trestle overnight is dyed wool with a
+         * day of dust on it; the awnings overhead keep the full colour and
+         * the market does not lose its chroma, just its glare. */
         local(M, 'banner', boxGeo(2.3, 0.34, 0.94, 1.0), 0, 0.68, 0, 0, 0, 0,
-          HERALD[(rnd() * HERALD.length) | 0]);
+          shadeHex(HERALD[(rnd() * HERALD.length) | 0], 0.62));
         for (let i = 0; i < 9; i++) {
           const g = new THREE.IcosahedronGeometry(0.11 + rnd() * 0.05, 0);
           MedievalWorld._uvScale(g, 2.2);
@@ -10476,6 +10833,33 @@ export class MedievalWorld extends World {
      * one draw call, placed in the rut lines of the streets that the composed
      * framings run down.
      */
+    /* ── Round 6: what the composed street framing actually showed ──────
+     *
+     * Photographed from the village-street vantage, these were not glints.
+     * They were eight to ten HARD BLACK DISCS stamped across the foreground
+     * - `.probe/art-medieval-env/before/village-street.png` - because three
+     * numbers compounded:
+     *
+     *   1. base colour 0x2a2b26 at opacity 0.86 is a 96%-absorbing diffuse.
+     *      The near-mirror sky glint this prop was built for only fires when
+     *      the reflection vector actually meets the bright band of the probe;
+     *      from every other bearing the disc is its diffuse term, i.e. a
+     *      black hole punched in the turf. A real puddle at dusk reads
+     *      LIGHTER than the ground around it - grazing-angle Fresnel hands
+     *      the whole sheet to the sky - so the base is now a sky-grey and
+     *      the opacity lets the mud show through where the water thins.
+     *   2. rotation `i * 1.7` is a random spin, and scale 0.8-1.3 : 0.62-1.12
+     *      is nearly round. A rut puddle is water standing in a WHEEL LINE:
+     *      it is 2-3x longer than wide and it runs along the road, which is
+     *      why each instance now takes its yaw from the nearest road segment
+     *      and is stretched down it.
+     *   3. a 14-gon at two metres reads as a stamped polygon - the straight
+     *      rim chords were visible in the shot - so the rim now carries a
+     *      seeded radial jitter and twice the segments.
+     *
+     * Instances that stand more than seven metres from any road are dropped
+     * entirely: water collects where wheels compact the ground, and the two
+     * discs that used to float in open meadow were the loudest of the lot. */
     const PUDDLES = [
       [52.6, 44.2, 1.5], [49.4, 40.6, 1.1], [44.8, 43.2, 1.9], [39.2, 43.0, 1.3],
       [33.4, 37.6, 1.7], [27.8, 31.4, 1.2], [22.6, 25.0, 1.6], [19.0, 15.2, 1.4],
@@ -10483,16 +10867,65 @@ export class MedievalWorld extends World {
       [-16.2, -30.4, 2.3], [-13.0, -44.6, 1.8], [-24.6, 0.4, 2.0],
       [-31.2, 20.2, 1.6], [-37.4, 40.6, 2.2], [-42.0, 57.0, 1.7],
     ];
-    const pg = new THREE.CircleGeometry(0.5, 14);
+    /** Nearest road segment's direction at (x, z), or null past `maxD`. */
+    const roadDir = (px, pz, maxD) => {
+      const segs = this._roadSegs || [];
+      let best = maxD * maxD;
+      let dir = null;
+      for (let i = 0; i < segs.length; i += 5) {
+        const ax = segs[i];
+        const az = segs[i + 1];
+        const ex = segs[i + 2] - ax;
+        const ez = segs[i + 3] - az;
+        const len = ex * ex + ez * ez;
+        let t = len > 1e-6 ? ((px - ax) * ex + (pz - az) * ez) / len : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const cx = ax + ex * t;
+        const cz2 = az + ez * t;
+        const dd = (px - cx) * (px - cx) + (pz - cz2) * (pz - cz2);
+        if (dd < best && len > 1e-6) {
+          best = dd;
+          dir = MedievalWorld._yaw(ex / Math.sqrt(len), ez / Math.sqrt(len));
+        }
+      }
+      return dir;
+    };
+    const pg = new THREE.CircleGeometry(0.5, 28);
     pg.rotateX(-Math.PI / 2);
+    {
+      // Seeded rim fray, baked once: every instance shares it at a different
+      // yaw and stretch, which is enough to stop two reading as stamps.
+      const rr = mulberry32(0x9dd1e5);
+      const p = pg.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const px2 = p.getX(i);
+        const pz2 = p.getZ(i);
+        const rad = Math.hypot(px2, pz2);
+        if (rad < 0.25) continue;
+        const k = 1 + (rr() - 0.5) * 0.44;
+        p.setX(i, px2 * k);
+        p.setZ(i, pz2 * k);
+      }
+      p.needsUpdate = true;
+    }
     this._owned.push(pg);
     const pmat = new THREE.MeshStandardMaterial({
-      color: 0x2a2b26,
-      roughness: 0.06,
+      /* Round 6, and the number is a compromise the mid shots arbitrated.
+       * At 0x2a2b26 / 0.86 a puddle whose glint does not fire is a black
+       * stamp - the mirror term only sees the DARK half of the sky from a
+       * bearing facing away from the sunset, and the diffuse is then all
+       * there is. At 0x8b95a0 / 0.42 (tried first) the glint drowned in a
+       * milky base and the prop lost the hard specular event it exists for.
+       * Wet mud at 0x3f4448 under 0.7 opacity keeps the disc darker than
+       * the ground without punching a hole in it, and roughness 0.08 keeps
+       * the mirror band alive while widening it enough to catch sky a few
+       * degrees off the exact reflection. */
+      color: 0x3f4448,
+      roughness: 0.08,
       metalness: 0.0,
-      envMapIntensity: 1.6,
+      envMapIntensity: 1.7,
       transparent: true,
-      opacity: 0.86,
+      opacity: 0.7,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -5,
@@ -10505,13 +10938,20 @@ export class MedievalWorld extends World {
     pm.castShadow = false;
     pm.receiveShadow = false;
     pm.renderOrder = 2;
-    PUDDLES.forEach(([px, pz, pr], i) => {
+    let placedPuddles = 0;
+    PUDDLES.forEach(([px, pz, pr]) => {
+      const yaw = roadDir(px, pz, 7);
+      if (yaw === null) return;
       _obj.position.set(px, this._height(px, pz) + 0.055, pz);
-      _obj.rotation.set(0, i * 1.7, 0);
-      _obj.scale.set(pr * (0.8 + rnd() * 0.5), 1, pr * (0.62 + rnd() * 0.5));
+      _obj.rotation.set(0, yaw, 0);
+      // Long down the wheel line, narrow across it. `_yaw` aligns local +X
+      // with the segment - the same frame the fence rails and road ribbons
+      // use - so X is the long axis.
+      _obj.scale.set(pr * (1.15 + rnd() * 0.6), 1, pr * (0.44 + rnd() * 0.18));
       _obj.updateMatrix();
-      pm.setMatrixAt(i, _obj.matrix);
+      pm.setMatrixAt(placedPuddles++, _obj.matrix);
     });
+    pm.count = placedPuddles;
     pm.instanceMatrix.needsUpdate = true;
     pm.computeBoundingSphere();
     this.group.add(pm);
@@ -12042,6 +12482,18 @@ export class MedievalWorld extends World {
         if (variant === 1 && slope < 0.3) continue;
         if (variant === 1 && this._inHeroClear(x, z, 3)) continue;
         if (this._roadDist(x, z) < 2.2) continue;
+        /* Round 6, diagnosed off the composed street framing: its whole
+         * foreground was stippled with hard black ellipses, and three systems
+         * were accused before ablation and a position probe convicted THIS
+         * one - the field stones. A variant-0 stone is sunk 30% and squashed
+         * to 0.72, so on beaten ground it is a flush dark patch rather than
+         * an object, and its contact disc then multiplied a ring 2.6x the
+         * stone toward black around it. Two rules fix what a screenshot
+         * actually showed: villagers clear the stones off their own trodden
+         * ground (a settlement's beaten earth is the one place a fieldstone
+         * would not survive a season), and a knee-high stone earns a
+         * knee-sized contact, not a cartwheel of shadow. */
+        if (variant === 0 && this._settled(x, z) > 0.3) continue;
         if (rectDist(x - CASTLE.x, z - CASTLE.z, CASTLE.hx - 2, CASTLE.hz - 2) < 0) continue;
         const sc = variant === 0 ? 0.28 + rnd() * 0.55 : 1.4 + rnd() * 2.6;
         _obj.position.set(x, y - sc * 0.3, z);
@@ -12052,7 +12504,7 @@ export class MedievalWorld extends World {
         _col.setHSL(0.09, 0.05 + rnd() * 0.08, 0.42 + rnd() * 0.24);
         mesh.setColorAt(rp, _col);
         if (variant === 1) this._box(x, y + sc * 0.3, z, sc * 0.7, sc * 0.6, sc * 0.7);
-        this._contacts.push(x, y, z, sc * 1.15);
+        this._contacts.push(x, y, z, variant === 0 ? sc * 0.6 : sc * 1.15);
         rp++;
       }
       mesh.count = rp;

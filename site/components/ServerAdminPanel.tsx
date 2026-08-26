@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import HostingSubscribeButton from './HostingSubscribeButton';
 
 /**
  * Owner CRUD over an owner's own server (7c), and the platform admin's view of
@@ -51,8 +52,10 @@ type Overview = {
   entitlement: {
     status: string; maxServers: number; used: number;
     canCreate: boolean; currentPeriodEnd: string | null;
+    /** Nobody paid for this one. See `premium.ts`, "Simulated purchase". */
+    simulated: boolean;
   };
-  sku: { totalCents: number; detail: string; label: string };
+  sku: { totalCents: number; detail: string; label: string; intent: string };
 };
 
 type Detail = {
@@ -88,7 +91,14 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function ServerAdminPanel() {
+/**
+ * @param justSubscribed the customer arrived here straight from a completed
+ * hosting purchase (`/admin/servers?subscribed=1`, which is both the live
+ * `success_url` and where the simulated confirm redirects). It is the trigger
+ * for the "what now?" callout — the answer to "how would they after purchase
+ * access backend to set up".
+ */
+export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: boolean } = {}) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -137,6 +147,7 @@ export function ServerAdminPanel() {
   }
 
   const ent = overview.entitlement;
+  const hosting = ent.status === 'active' || ent.status === 'past_due';
 
   return (
     <div style={{ display: 'grid', gap: 20 }}>
@@ -144,32 +155,52 @@ export function ServerAdminPanel() {
         <div role="alert" style={{ ...card, borderColor: '#7a2b2b', color: '#ffb4b4' }}>{error}</div>
       )}
 
+      {/* ---- what now? ---------------------------------------------------
+          The answer to "how would they after purchase access backend to set
+          up". Shown only on arrival from a purchase, and only once the
+          entitlement is actually readable, so it never promises a dashboard
+          the customer cannot use yet. */}
+      {justSubscribed && hosting && (
+        <section role="status" style={{ ...card, borderColor: '#2b805f' }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Your hosting is live — two steps left</h2>
+          <ol style={{ margin: 0, paddingLeft: 20, color: '#cfe6f5', display: 'grid', gap: 6 }}>
+            <li><b>Name your server</b> in &ldquo;New server&rdquo; just below. That creates it.</li>
+            <li><b>Invite your players</b> by handle from the &ldquo;Members&rdquo; panel once it exists.</li>
+          </ol>
+          <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+            After that, &ldquo;Quests&rdquo;, &ldquo;Lore&rdquo; and &ldquo;Marketplace items&rdquo;
+            on this page are your server&rsquo;s own content — none of it touches the default
+            game or the shared leaderboards.
+          </p>
+        </section>
+      )}
+
       {/* ---- subscription ------------------------------------------------ */}
       <section style={card}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Hosting subscription</h2>
         <p style={{ margin: 0, color: '#9bb0c2' }}>
-          {ent.status === 'active' || ent.status === 'past_due'
+          {hosting
             ? `Active — ${ent.used} of ${ent.maxServers} server${ent.maxServers === 1 ? '' : 's'} in use.`
             : 'No hosting subscription. A custom server needs one before it can be created.'}
           {ent.status === 'past_due' && ' Payment is overdue; hosting continues while Stripe retries.'}
         </p>
-        {!ent.canCreate && ent.status !== 'active' && ent.status !== 'past_due' && (
-          <div>
-            <button
-              type="button"
-              style={btn}
-              disabled={busy}
-              onClick={() => run(async () => {
-                const out = await api<{ url: string }>('/api/checkout', {
-                  method: 'POST',
-                  body: JSON.stringify({ intent: 'server_hosting_monthly' }),
-                });
-                window.location.href = out.url;
-              })}
-            >
-              Subscribe — {overview.sku.detail}
-            </button>
-          </div>
+        {/* Never let the screen imply a payment was taken when none was. */}
+        {ent.simulated && (
+          <p style={{ margin: 0, color: '#ffdca6', fontSize: 13 }}>
+            <b>Simulated subscription.</b> No card was charged and nothing reached Stripe —
+            this exists so the product can be set up and used before payments are switched
+            on. It works exactly like a paid one, and it will be cleared when real billing
+            goes live.
+          </p>
+        )}
+        {!ent.canCreate && !hosting && (
+          <HostingSubscribeButton
+            intent={overview.sku.intent}
+            detail={overview.sku.detail}
+            callbackUrl="/admin/servers"
+            style={btn}
+            disabled={busy}
+          />
         )}
       </section>
 

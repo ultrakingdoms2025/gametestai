@@ -6,6 +6,8 @@ import { clampCredits } from '@/lib/pricing';
 import { getStripe, siteOrigin, stripeConfigured } from '@/lib/stripe';
 import { auth } from '@/lib/auth';
 import { findOrCreatePlayer, getPlayerStatus, recordSitePurchase } from '@/lib/playerDb';
+import { SERVER_HOSTING_SKU, grantSimulatedHosting } from '@/lib/premium';
+import { auditServerAction, openServerDb } from '@/lib/serverRoutes';
 
 /**
  * Payment came back. Grant what was bought.
@@ -22,6 +24,12 @@ import { findOrCreatePlayer, getPlayerStatus, recordSitePurchase } from '@/lib/p
  * configured, `simulated=1` is refused outright.** Adding the secret key closes
  * the door in the same action that opens the real one, rather than leaving a
  * bypass alive behind a flag someone has to remember to flip.
+ *
+ * Custom-server hosting now comes through the same door, on the same switch —
+ * see `simulatedHostingGrant` below and the "Simulated purchase" section of
+ * `premium.ts`. It grants a real entitlement to somebody who paid nothing,
+ * which is a bigger thing to hand out than credits, so every row it writes is
+ * marked as pretend and can be swept in one query.
  *
  * ## Live mode trusts the session, not the caller
  *
@@ -99,6 +107,24 @@ export async function GET(req: Request) {
      * carries one, so replaying it settles nothing twice — the same property
      * the live path has, exercised by the same test. */
     const orderId = url.searchParams.get('order') || `sim_${randomUUID()}`;
+
+    /* ---- the subscription SKU ---------------------------------------- *
+     *
+     * Handled before the one-off grant and returning early, because nothing
+     * below it applies: hosting is not game access and buys no credits, so
+     * `grant()` has nothing to do, and `recordSitePurchase` deliberately gets
+     * no row — a purchase-ledger line for money that never moved is exactly
+     * the revenue figure the simulated marking exists to protect.
+     *
+     * What it writes instead is an entitlement, marked as pretend on the way
+     * in. `grantSimulatedHosting` checks `stripeConfigured()` a second time,
+     * after the guard at the top of this branch has already refused. The
+     * duplication is on purpose: the library is what writes the row, so a
+     * caller added later inherits the guard instead of remembering it. */
+    if (intent === SERVER_HOSTING_SKU) {
+      return simulatedHostingGrant({ orderId, origin, userId, userEmail });
+    }
+
     await grant({
       paid: intent !== 'credits' ? true : undefined,
       orderId,
@@ -138,5 +164,70 @@ export async function GET(req: Request) {
   } catch (e) {
     console.error('[confirm] Could not verify the Stripe session:', e);
     return NextResponse.redirect(new URL('/?error=verify-failed', origin), 303);
+  }
+}
+
+/**
+ * Settle a simulated hosting purchase, and land the customer where the next
+ * step is obvious.
+ *
+ * ── Where it lands, and why not the home page ─────────────────────────────
+ *
+ * `/admin/servers?subscribed=1` — the SAME url the live `success_url` already
+ * uses, so simulated and real end in one place and the "what now?" panel there
+ * has one trigger to read. The one-off SKUs land on `/play?welcome=1` for the
+ * same reason: the thing you just bought is one click from where you arrive.
+ * Dropping a new subscriber on `/` and leaving them to guess at `/admin/servers`
+ * is what the owner was complaining about.
+ *
+ * ── Signed out ────────────────────────────────────────────────────────────
+ *
+ * `/api/checkout` already refuses this SKU with a 401 before minting a URL, so
+ * a session-less request here is a hand-typed link. It is sent to sign in and
+ * back to the store rather than silently granting nothing, because an
+ * entitlement has to belong to a player and there is no player.
+ */
+async function simulatedHostingGrant(opts: {
+  orderId: string;
+  origin: string;
+  userId?: string;
+  userEmail?: string | null;
+}) {
+  const { orderId, origin, userId, userEmail } = opts;
+  if (!userId || !userEmail) {
+    return NextResponse.redirect(
+      new URL('/login?callbackUrl=%2Fstore', origin),
+      303
+    );
+  }
+
+  let db: Awaited<ReturnType<typeof openServerDb>> | null = null;
+  try {
+    db = await openServerDb();
+    const playerId = await findOrCreatePlayer(userId, userEmail);
+    const out = await grantSimulatedHosting(db, { playerId, orderId });
+    if (!out.granted) {
+      console.error(`[confirm] simulated hosting grant refused: ${out.reason}`);
+      return NextResponse.redirect(
+        new URL(`/admin/servers?error=${out.reason}`, origin),
+        303
+      );
+    }
+    /* Audited like any other administrative act. This is the trail that says
+     * WHO was handed a subscription nobody paid for, which is the question
+     * asked on the day the pretend rows are swept. Never fails the request. */
+    await auditServerAction(
+      db,
+      { playerId, email: userEmail, platformAdmin: false },
+      'entitlement.simulated_grant',
+      `player:${playerId}`,
+      { orderId, subscriptionId: out.entitlement.subscriptionId, sku: SERVER_HOSTING_SKU }
+    );
+    return NextResponse.redirect(new URL('/admin/servers?subscribed=1', origin), 303);
+  } catch (err) {
+    console.error('[confirm] Could not grant simulated hosting:', err);
+    return NextResponse.redirect(new URL('/admin/servers?error=grant-failed', origin), 303);
+  } finally {
+    await db?.end().catch(() => {});
   }
 }

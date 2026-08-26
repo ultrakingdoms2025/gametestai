@@ -21,9 +21,19 @@ export const dynamic = 'force-dynamic';
  * the right place for it: a page render is not a security boundary, and a panel
  * that shows an empty list to somebody who owns nothing costs nothing.
  */
-export default async function ServersAdminPage() {
+export default async function ServersAdminPage(props: {
+  searchParams: Promise<{ [k: string]: string | string[] | undefined }>;
+}) {
   const session = await auth();
   if (!session?.user?.id) redirect('/login?callbackUrl=%2Fadmin%2Fservers');
+
+  /* `?subscribed=1` is what both purchase paths land on — Stripe's
+   * `success_url` and the simulated confirm redirect — so the panel has one
+   * trigger to read for "you have just bought this, here is what to do next".
+   * Awaited because in Next 16 `searchParams` is a Promise; read on the server
+   * so this route does not bail out to the client for one query parameter. */
+  const sp = await props.searchParams;
+  const justSubscribed = sp.subscribed === '1';
 
   return (
     <main className="wrap" style={{ padding: '36px 20px 56px' }}>
@@ -40,7 +50,7 @@ export default async function ServersAdminPage() {
         </p>
       </div>
 
-      <ServerAdminPanel />
+      <ServerAdminPanel justSubscribed={justSubscribed} />
 
       <p style={{ marginTop: 24 }}>
         <Link href="/account">Back to your account</Link>

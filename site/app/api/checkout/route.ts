@@ -51,13 +51,10 @@ export async function POST(req: Request) {
    *
    * Handled before the one-off branch and returning early, because almost
    * nothing below applies to it: there is no `hasAccess` substitution (hosting
-   * is not access), no credit quantity, and no simulated path.
+   * is not access) and no credit quantity.
    *
-   * Simulated checkout is refused for a subscription on purpose. The whole point
-   * of 7b is a REAL webhook that writes entitlement, and a simulated flow would
-   * have to fake the entitlement write — which is the one thing worth
-   * exercising. `sk_test_` keys make the real path free, so there is nothing to
-   * gain from a pretend one.
+   * It DOES have a simulated path now, on the same switch as every other SKU.
+   * See `startServerHostingCheckout` for who decided that and what it costs.
    */
   if (requested === SERVER_HOSTING_SKU) {
     return startServerHostingCheckout(req);
@@ -194,23 +191,39 @@ async function startServerHostingCheckout(req: Request) {
   if (!user) return NextResponse.json({ error: 'User not found.' }, { status: 404 });
   const playerId = await findOrCreatePlayer(session.user.id, user.email);
 
-  const stripe = getStripe();
-  if (!stripe) {
-    /* No simulated fallback, unlike the one-off SKUs. Simulating this would mean
-     * faking the entitlement write, which is the one thing 7b exists to
-     * exercise — and `sk_test_` keys make the real path free, so there is
-     * nothing to gain from a pretend one. */
-    return NextResponse.json(
-      {
-        error:
-          'Server hosting needs Stripe configured. Set STRIPE_SECRET_KEY — a sk_test_ key is enough.',
-      },
-      { status: 503 }
-    );
-  }
-
   const quote = quoteServerHosting();
   const origin = siteOrigin(req);
+
+  const stripe = getStripe();
+  if (!stripe) {
+    /* ---- simulated ---------------------------------------------------- *
+     *
+     * This branch used to be a 503 refusing to pretend, on the argument that a
+     * simulated subscription would fake the entitlement write — the one thing
+     * 7b exists to exercise — and that a `sk_test_` key makes the real path
+     * free anyway.
+     *
+     * The site owner overruled that on 25 August 2026: *"For now someone
+     * purchasing we can just skip the actual payment as with other options
+     * until I finish stripe integration."* The 503's argument was about test
+     * coverage; the cost it ignored was that the product could not be bought or
+     * set up by anyone at all, which is worse than an untested webhook.
+     *
+     * What it costs is written out in full in `premium.ts` under "Simulated
+     * purchase", along with how every pretend row is marked and revoked. In
+     * one line: this exercises none of Stripe, and it hands out a working
+     * entitlement to anyone who reaches this endpoint.
+     *
+     * The shape below is the one-off SKUs', unchanged — an order id minted HERE
+     * and carried on the URL, so replaying the confirm link settles nothing
+     * twice — and it dies on the same switch: `/api/confirm` refuses
+     * `simulated=1` outright once `stripeConfigured()` is true. */
+    const url = new URL('/api/confirm', origin);
+    url.searchParams.set('simulated', '1');
+    url.searchParams.set('intent', SERVER_HOSTING_SKU);
+    url.searchParams.set('order', `sim_${randomUUID()}`);
+    return NextResponse.json({ url: url.toString(), simulated: true });
+  }
 
   try {
     const checkout = await stripe.checkout.sessions.create({

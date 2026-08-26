@@ -127,7 +127,10 @@ describe('mapping Stripe status onto entitlement', () => {
   });
 
   it('gives past_due a grace period, and cancellation none', () => {
-    const base = { playerId: 'p', subscriptionId: 's', customerId: null, currentPeriodEnd: null };
+    const base = {
+      playerId: 'p', subscriptionId: 's', customerId: null,
+      currentPeriodEnd: null, simulated: false,
+    };
     expect(entitlementPermitsHosting({ ...base, status: 'active', maxServers: 1 })).toBe(true);
     /* Stripe retries a failed payment for days. Tearing down a running server on
      * the first decline punishes an expired card, not a non-payer. */

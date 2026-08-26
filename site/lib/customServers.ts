@@ -394,9 +394,25 @@ async function runCustomServerSchema(db: Db): Promise<void> {
       status                 TEXT NOT NULL DEFAULT 'inactive',
       current_period_end     TIMESTAMPTZ,
       max_servers            INTEGER NOT NULL DEFAULT 1,
+      simulated              BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  /* A hosting purchase made while Stripe is unconfigured writes a real,
+   * working entitlement that nobody paid for. This column is how every one of
+   * them is found and revoked the day real payments start — see the "Simulated
+   * purchase" section of `premium.ts` for why it is a column AND an id prefix
+   * rather than either alone.
+   *
+   * ALTER rather than only the CREATE above, because the table already exists
+   * in production. Not `.catch(() => {})` like the optional back-fills further
+   * up: `readEntitlement` selects this column, so a silently skipped migration
+   * would turn every entitlement read into a 500 instead of failing here where
+   * the message says what went wrong. */
+  await db.query(
+    `ALTER TABLE server_entitlements
+       ADD COLUMN IF NOT EXISTS simulated BOOLEAN NOT NULL DEFAULT FALSE`
+  );
   /* Webhook idempotency. Stripe redelivers, and a redelivered
    * `customer.subscription.deleted` arriving after a fresh subscription would
    * otherwise revoke an entitlement that was just paid for. */

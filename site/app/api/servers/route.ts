@@ -7,7 +7,12 @@ import {
   listServersForPlayer,
   listJoinableServers,
 } from '@/lib/customServers';
-import { entitlementPermitsHosting, quoteServerHosting, readEntitlement } from '@/lib/premium';
+import {
+  SERVER_HOSTING_SKU,
+  entitlementPermitsHosting,
+  quoteServerHosting,
+  readEntitlement,
+} from '@/lib/premium';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,8 +44,14 @@ export async function GET() {
         used: owned.length,
         canCreate: entitlementPermitsHosting(entitlement) && owned.length < entitlement.maxServers,
         currentPeriodEnd: entitlement.currentPeriodEnd,
+        /* Exposed so the dashboard can say so out loud. An entitlement nobody
+         * paid for works exactly like a paid one, which is precisely why the
+         * screen showing it must not imply a payment was taken. */
+        simulated: entitlement.simulated,
       },
-      sku: quoteServerHosting(),
+      /* `intent` rides along so the client button does not hard-code the SKU
+       * string — see `HostingSubscribeButton` for why it cannot import it. */
+      sku: { ...quoteServerHosting(), intent: SERVER_HOSTING_SKU },
     });
   } catch (err) {
     console.error('[servers] list failed:', err);

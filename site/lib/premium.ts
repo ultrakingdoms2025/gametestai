@@ -1,5 +1,6 @@
 import type { Client, PoolClient } from 'pg';
 import { FEE_BPS, FEE_FIXED_CENTS, formatCents, grossUp } from './pricing';
+import { stripeConfigured } from './stripe';
 
 /**
  * The premium server-hosting SKU (7b), and the webhook that writes entitlement.
@@ -115,6 +116,12 @@ export interface Entitlement {
   subscriptionId: string | null;
   customerId: string | null;
   currentPeriodEnd: string | null;
+  /**
+   * Nobody paid for this one. See the "Simulated purchase" section below —
+   * it is what tells an admin view, a revenue figure or a revocation sweep
+   * that this row is a rehearsal rather than a customer.
+   */
+  simulated: boolean;
 }
 
 /**
@@ -141,20 +148,12 @@ export function mapStripeStatus(raw: string | null | undefined): EntitlementStat
   }
 }
 
-export async function readEntitlement(db: Db, playerId: string): Promise<Entitlement> {
-  const r = await db.query(
-    `SELECT player_id, status, max_servers, stripe_subscription_id, stripe_customer_id,
-            current_period_end
-       FROM server_entitlements WHERE player_id = $1`,
-    [playerId]
-  );
-  const row = r.rows[0];
-  if (!row) {
-    return {
-      playerId, status: 'inactive', maxServers: 0,
-      subscriptionId: null, customerId: null, currentPeriodEnd: null,
-    };
-  }
+/** The columns `toEntitlement` expects, in one place so every read agrees. */
+const ENTITLEMENT_COLS =
+  `player_id, status, max_servers, stripe_subscription_id, stripe_customer_id,
+   current_period_end, simulated`;
+
+function toEntitlement(row: Record<string, unknown>): Entitlement {
   /* The column already holds one of THIS module's four statuses — Stripe's
    * vocabulary is mapped on the way in, once, by `mapStripeStatus`. Read back
    * through a guard anyway: a row written by hand, or by a future version with a
@@ -162,16 +161,39 @@ export async function readEntitlement(db: Db, playerId: string): Promise<Entitle
    * `entitlementPermitsHosting` accidentally accepts. */
   const stored = String(row.status ?? '');
   const KNOWN: readonly EntitlementStatus[] = ['active', 'past_due', 'canceled', 'inactive'];
+  const subscriptionId =
+    row.stripe_subscription_id == null ? null : String(row.stripe_subscription_id);
+  const customerId = row.stripe_customer_id == null ? null : String(row.stripe_customer_id);
   return {
     playerId: String(row.player_id),
     status: (KNOWN as readonly string[]).includes(stored)
       ? (stored as EntitlementStatus)
       : 'inactive',
     maxServers: Number(row.max_servers ?? 0),
-    subscriptionId: row.stripe_subscription_id == null ? null : String(row.stripe_subscription_id),
-    customerId: row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
+    subscriptionId,
+    customerId,
     currentPeriodEnd: row.current_period_end == null ? null : String(row.current_period_end),
+    /* Either mark is enough. The column is the queryable one, the id prefix is
+     * the one that survives a restore from a dump taken before the column
+     * existed — and a row carrying a `sim_` subscription id is pretend whatever
+     * a boolean somewhere says, because no such subscription exists at Stripe. */
+    simulated: row.simulated === true || isSimulatedId(subscriptionId) || isSimulatedId(customerId),
   };
+}
+
+export async function readEntitlement(db: Db, playerId: string): Promise<Entitlement> {
+  const r = await db.query(
+    `SELECT ${ENTITLEMENT_COLS} FROM server_entitlements WHERE player_id = $1`,
+    [playerId]
+  );
+  const row = r.rows[0];
+  if (!row) {
+    return {
+      playerId, status: 'inactive', maxServers: 0,
+      subscriptionId: null, customerId: null, currentPeriodEnd: null, simulated: false,
+    };
+  }
+  return toEntitlement(row as Record<string, unknown>);
 }
 
 /**
@@ -205,6 +227,12 @@ export interface SubscriptionFact {
   status: EntitlementStatus;
   /** ISO timestamp, or null when Stripe did not give one. */
   currentPeriodEnd: string | null;
+  /**
+   * Nobody paid. Only `grantSimulatedHosting` ever sets this — the webhook
+   * omits it, which is what makes a real subscription CLEAR the flag on a
+   * player who had a pretend one.
+   */
+  simulated?: boolean;
 }
 
 export type EntitlementWrite =
@@ -248,14 +276,20 @@ export async function writeEntitlement(
   await db.query(
     `INSERT INTO server_entitlements
        (player_id, stripe_customer_id, stripe_subscription_id, status, current_period_end,
-        max_servers, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        max_servers, simulated, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
      ON CONFLICT (player_id) DO UPDATE SET
        stripe_customer_id     = COALESCE(EXCLUDED.stripe_customer_id, server_entitlements.stripe_customer_id),
        stripe_subscription_id = EXCLUDED.stripe_subscription_id,
        status                 = EXCLUDED.status,
        current_period_end     = EXCLUDED.current_period_end,
        max_servers            = EXCLUDED.max_servers,
+       /* Assigned, never OR'd. A real signed Stripe event about this player
+        * must be able to turn the flag OFF — otherwise the first customer who
+        * tried the product before payments went live is mislabelled as
+        * pretend forever, and the revocation sweep below would delete a
+        * subscription somebody is paying for. */
+       simulated              = EXCLUDED.simulated,
        updated_at             = NOW()`,
     [
       playerId,
@@ -269,6 +303,7 @@ export async function writeEntitlement(
        * the same thing and the two must not disagree. `canceled` and `inactive`
        * go to zero. */
       fact.status === 'active' || fact.status === 'past_due' ? SERVERS_PER_SUBSCRIPTION : 0,
+      fact.simulated === true,
     ]
   );
 
@@ -285,4 +320,170 @@ export async function writeEntitlement(
  */
 export function entitlementPermitsHosting(e: Entitlement): boolean {
   return (e.status === 'active' || e.status === 'past_due') && e.maxServers > 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Simulated purchase                                                      */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * A hosting subscription nobody paid for.
+ *
+ * ── Who decided this, and what it replaced ────────────────────────────────
+ *
+ * `startServerHostingCheckout` used to answer 503 without a Stripe key, with a
+ * comment refusing to pretend: simulating a subscription would mean faking the
+ * entitlement write, which is the one thing worth exercising, and a `sk_test_`
+ * key makes the real path free.
+ *
+ * The site owner overruled that on 25 August 2026, in these words: *"I dont see
+ * option on webpage to purchase the custom server membership, or how they would
+ * after purchase access backend to set up. For now someone purchasing we can
+ * just skip the actual payment as with other options until I finish stripe
+ * integration."* The argument the 503 made was about test coverage; the cost it
+ * ignored was that the product could not be bought, or even set up, by anybody —
+ * which is a worse thing to ship than an untested webhook.
+ *
+ * ── What it costs, so nobody rediscovers this in production ───────────────
+ *
+ *   - Nothing here exercises Stripe. Subscription-mode session creation, the
+ *     signed webhook, `client_reference_id` attribution, redelivery and the
+ *     ordering guard are still only reachable with a key. This is a shortcut
+ *     around that path, not a rehearsal of it.
+ *   - The entitlement it writes is REAL in every way that matters downstream:
+ *     `entitlementPermitsHosting` accepts it and `createServer` builds on it. A
+ *     stranger who finds the checkout endpoint can host a server for free.
+ *
+ * Two things contain that. The bypass is dead the moment `stripeConfigured()`
+ * is true — checked here, in the library that does the writing, as well as in
+ * the route, so there is no flag anyone has to remember to turn off. And every
+ * row it writes is marked, twice.
+ *
+ * ── Marked twice, deliberately ────────────────────────────────────────────
+ *
+ *   1. `server_entitlements.simulated`, a real column. Exact, indexable, and
+ *      the thing `listSimulatedEntitlements` and `revokeSimulatedEntitlements`
+ *      key on. A column beats a `LIKE` for a sweep that must not miss a row.
+ *   2. A `sim_` prefix on BOTH the subscription id and the customer id. This is
+ *      the mark that shows up unbidden: it appears in any admin view that
+ *      renders an id, and any attempt to reconcile it against Stripe fails
+ *      loudly with "no such subscription" rather than quietly counting it as
+ *      revenue. It also survives a restore from a dump taken before the column
+ *      existed, which a boolean does not.
+ *
+ * Neither alone was enough. The column is invisible to a query that does not
+ * know to ask for it, and defaults FALSE — so an admin view written next year
+ * would show a pretend subscriber as a customer. The prefix is visible
+ * everywhere but is only a convention. `toEntitlement` therefore treats EITHER
+ * mark as decisive.
+ *
+ * No `recordSitePurchase` row is written for a simulated hosting purchase, and
+ * that is the same argument: a $5.20 line in the purchase ledger for money that
+ * never moved is exactly the revenue figure this section exists to protect.
+ *
+ * ── Revoking them, the day real payments start ────────────────────────────
+ *
+ * `revokeSimulatedEntitlements(db)` deletes every marked row and returns the
+ * player ids it removed. Deletion rather than `status = 'canceled'`, because a
+ * cancelled row is still a row in a churn figure and these were never customers.
+ * Servers already created survive the sweep — they simply stop being creatable
+ * or extendable until their owner subscribes for real, which is the honest end
+ * state, and the audit trail of who was granted what is in the audit chain.
+ */
+
+/** What marks an id as belonging to a purchase that never happened. */
+export const SIMULATED_PREFIX = 'sim_';
+
+/** How long a simulated subscription claims to run before it would renew. */
+export const SIMULATED_PERIOD_DAYS = 30;
+
+export function isSimulatedId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith(SIMULATED_PREFIX);
+}
+
+/**
+ * The subscription id for a simulated order.
+ *
+ * Derived from the order id minted at checkout rather than freshly random, for
+ * the reason `/api/confirm` gives about the one-off SKUs: replaying a confirm
+ * URL must settle nothing twice. The same order produces the same subscription
+ * id, so a replay is an upsert of identical values.
+ */
+export function simulatedSubscriptionId(orderId: string): string {
+  return `${SIMULATED_PREFIX}sub_${String(orderId).replace(/^sim_/, '')}`;
+}
+
+/** The customer id for a simulated order — stable per player, and obvious. */
+export function simulatedCustomerId(playerId: string): string {
+  return `${SIMULATED_PREFIX}cus_${playerId}`;
+}
+
+/**
+ * Both marks, as one SQL predicate, so the sweep and the listing cannot drift.
+ *
+ * `\_` because `_` is a LIKE wildcard, and `sim_` unescaped would also match a
+ * hypothetical `simX...`.
+ */
+const SIMULATED_PREDICATE = `
+  simulated = TRUE
+  OR stripe_subscription_id LIKE 'sim\\_%'
+  OR stripe_customer_id LIKE 'sim\\_%'`;
+
+export type SimulatedGrant =
+  | { granted: true; entitlement: Entitlement }
+  | { granted: false; reason: 'stripe_configured' | 'invalid' };
+
+/**
+ * Grant hosting to someone who did not pay, while there is no way to pay.
+ *
+ * Refuses outright once `STRIPE_SECRET_KEY` exists. That check is here rather
+ * than only in the route because this function is the thing that writes the
+ * row: a second caller added later inherits the guard instead of having to
+ * remember it.
+ */
+export async function grantSimulatedHosting(
+  db: Db,
+  input: { playerId: string; orderId: string; periodDays?: number }
+): Promise<SimulatedGrant> {
+  if (stripeConfigured()) return { granted: false, reason: 'stripe_configured' };
+
+  const playerId = String(input?.playerId ?? '').trim();
+  const orderId = String(input?.orderId ?? '').trim();
+  if (!playerId || !orderId) return { granted: false, reason: 'invalid' };
+
+  const days = input.periodDays ?? SIMULATED_PERIOD_DAYS;
+  const written = await writeEntitlement(db, {
+    playerId,
+    subscriptionId: simulatedSubscriptionId(orderId),
+    customerId: simulatedCustomerId(playerId),
+    status: 'active',
+    currentPeriodEnd: new Date(Date.now() + days * 86_400_000).toISOString(),
+    simulated: true,
+  });
+  if (!written.applied) return { granted: false, reason: 'invalid' };
+  return { granted: true, entitlement: written.entitlement };
+}
+
+/** Every entitlement nobody paid for. The list to work from before going live. */
+export async function listSimulatedEntitlements(db: Db): Promise<Entitlement[]> {
+  const r = await db.query(
+    `SELECT ${ENTITLEMENT_COLS} FROM server_entitlements
+      WHERE ${SIMULATED_PREDICATE}
+      ORDER BY updated_at DESC`
+  );
+  return (r.rows as Record<string, unknown>[]).map(toEntitlement);
+}
+
+/**
+ * Delete every simulated entitlement. Returns the player ids it removed.
+ *
+ * Safe to run with real customers in the table: the predicate cannot match a
+ * row Stripe wrote, because a live write assigns `simulated = FALSE` and Stripe
+ * ids begin `sub_` / `cus_`, never `sim_`.
+ */
+export async function revokeSimulatedEntitlements(db: Db): Promise<string[]> {
+  const r = await db.query(
+    `DELETE FROM server_entitlements WHERE ${SIMULATED_PREDICATE} RETURNING player_id`
+  );
+  return (r.rows as { player_id: unknown }[]).map((row) => String(row.player_id));
 }

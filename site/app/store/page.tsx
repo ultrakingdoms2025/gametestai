@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import CreditPicker from '@/components/CreditPicker';
+import HostingSubscribeButton from '@/components/HostingSubscribeButton';
 import { getCurrentAccessState } from '@/lib/access';
+import { SERVER_HOSTING_SKU, quoteServerHosting } from '@/lib/premium';
 import { stripeConfigured } from '@/lib/stripe';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +11,9 @@ export const metadata = { title: 'Buy credits — AETHER NEXUS' };
 
 export default async function Store() {
   const { hasAccess } = await getCurrentAccessState();
+  /* Quoted on the server, from the same module the checkout route quotes from,
+   * so the price on the button is the price that is charged. */
+  const hosting = quoteServerHosting();
 
   return (
     <main>
@@ -56,32 +61,47 @@ export default async function Store() {
               link to it, on this page or any other, so the only way to buy it
               was to already know the URL.
 
-              This section describes the product and sends the reader to that
-              dashboard. It does NOT start a checkout: the hosting SKU is a
-              subscription with no simulated fallback, and a "Subscribe" button
-              here would either duplicate the panel's own or land a customer on
-              a 503 from a page that never explained what they were buying. The
-              subscribe control stays where the entitlement it grants is
-              visible. */}
+              This section used to describe the product and only link to that
+              dashboard, on the reasoning that hosting had no simulated checkout
+              and a Subscribe button here would land the customer on a 503. That
+              reasoning died with the 503 (see `premium.ts`, "Simulated
+              purchase"): the SKU is now buyable on the same switch as credits,
+              so the store sells it like the store sells everything else.
+
+              The button is the SAME component the dashboard uses, not a second
+              one — see `HostingSubscribeButton` for why that matters. */}
           <section className="panel" style={{ marginTop: 34 }}>
             <h3>Host a custom server</h3>
             <p>
               Your own lore, quests and marketplace items, played by the people you
               invite. Everything earned inside one stays inside it: server credits are a
               separate balance that cannot reach your main one, and the shared
-              leaderboards rank platform content only. Hosting is billed monthly, and
-              you can set it up — or cancel it — from your servers dashboard.
+              leaderboards rank platform content only. Billed monthly, cancellable from
+              your servers dashboard.
+            </p>
+            <p className="note" style={{ margin: '0 0 18px' }}>
+              After you subscribe you land on your servers dashboard, which is where you
+              name the server and invite the players you want in it.
             </p>
             {stripeConfigured() ? null : (
-              <p style={{ color: '#ffdca6', fontSize: '0.86rem', margin: '0 0 22px' }}>
-                Subscriptions are unavailable in this environment: unlike credits, hosting
-                has no simulated checkout, so the dashboard will tell you Stripe is not
-                configured rather than pretend to take a payment.
+              <p style={{ color: '#ffdca6', fontSize: '0.86rem', margin: '0 0 18px' }}>
+                <b>Test mode.</b> No card is taken and nothing reaches Stripe. You get a
+                working subscription so the server can be set up and played, clearly
+                marked as simulated in your dashboard and in our records, and it will be
+                cleared when real billing goes live.
               </p>
             )}
-            <Link href="/admin/servers" className="btn btn-ghost">
-              Your servers
-            </Link>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <HostingSubscribeButton
+                intent={SERVER_HOSTING_SKU}
+                detail={hosting.detail}
+                callbackUrl="/store"
+                className="btn btn-amber"
+              />
+              <Link href="/admin/servers" className="btn btn-ghost">
+                Your servers
+              </Link>
+            </div>
           </section>
         </div>
       </section>

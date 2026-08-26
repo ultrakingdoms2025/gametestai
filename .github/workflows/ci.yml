@@ -157,27 +157,35 @@ jobs:
       # background chain still BUILDS every world in every run, so a regression
       # in a world not listed here still shows up in `warm.programs` and in the
       # chain's own counters.
-      # CALIBRATING, deliberately: `continue-on-error` until this job's FIRST
-      # green run on this runner. The maiden run died on a fuse `--settle`
-      # never reached - the chain wait had its own hardcoded ten-minute
-      # timeout - after fifteen silent minutes, telling nobody how far the
-      # chain got. The fuse is now a knob (`--chain-timeout`), a timeout now
-      # prints which worlds built, and 35 minutes is a GUESS pending the
-      # measurement, because nobody has timed the 18-world chain on
-      # swiftshader. Until one green run proves the fuse and pastes the
-      # printed baseline into `BASELINES`, a red here is calibration data,
-      # not a regression - and a gate that reds on its own clock gets
-      # deleted, which is worse. FLIP THIS TO ENFORCING in the same commit
-      # that records the baseline.
-      - name: Frame-gap gate (calibrating)
+      # COLD, because the chain was MEASURED and it does not fit. The maiden
+      # run died on the chain wait's hardcoded fuse after fifteen silent
+      # minutes; the fuse became a knob and a timeout now prints its
+      # progress, and the very next measurement used that to answer the real
+      # question: under swiftshader the 18-world background chain built
+      # 3 of 17 non-volatile worlds in 40 MINUTES (station, medieval,
+      # sports - 267 programs). ~13 min/world means the full chain is hours.
+      # No fuse fixes that; the shape was wrong for this runner.
+      #
+      # So CI gates COLD: boot warm, keybind, weapon, mount, movement and
+      # interaction in the entry world - everything the criterion names that
+      # needs no chain - plus page errors and the warm/program counters.
+      # World-entry regressions are NOT covered here, deliberately and
+      # loudly (`--cold --gate` refuses entry events rather than mis-judging
+      # them); the full chain-warmed entry gate remains a local or
+      # workflow_dispatch run on real hardware, where it takes minutes.
+      #
+      # CALIBRATING (`continue-on-error`) until this job's FIRST green run
+      # on this runner pastes the printed baseline into `BASELINES`. Flip to
+      # enforcing in the same commit that records it.
+      - name: Frame-gap gate (cold, calibrating)
         continue-on-error: true
         env:
           FRAME_GAPS_GL: swiftshader
         run: >
-          node scripts/frame-gaps.mjs --serve prod --gate
-          --worlds dock,citadel,race,medieval,maze,sports
+          node scripts/frame-gaps.mjs --serve prod --gate --cold
+          --entry station --worlds station
+          --events keybind,weapon,mount,interaction,movement
           --settle 960000
-          --chain-timeout 2100000
           --out .probe/ci-frame-gaps
 
       # The run's own JSON, whatever the verdict. A failure that cannot be read

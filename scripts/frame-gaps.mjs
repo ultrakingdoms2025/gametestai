@@ -2472,7 +2472,24 @@ function gateRun(run, args) {
   const notes = [];
 
   /* ---- A. invariants ------------------------------------------------- */
-  if (run.chainSignal !== 'worlds:all-ready') {
+  if (args.awaitReady === false) {
+    /* A COLD RUN IS A MODE, NOT A VIOLATION. Measured 2026-08-26: under
+     * swiftshader the 18-world background chain built 3 of 17 non-volatile
+     * worlds in 40 minutes (~13 min/world - the full chain is HOURS), so a
+     * gate that awaits it can never go green on a GPU-less CI runner, and a
+     * gate that can never go green gets deleted. `--cold --gate` therefore
+     * gates only what needs no chain - boot warm, keybind/weapon/mount,
+     * movement, interaction, page errors, counters - and REFUSES to gate
+     * entry events, whose builtBefore invariant is meaningless without the
+     * chain. Chain-dependent gating stays a local / workflow_dispatch run. */
+    notes.push('COLD RUN: the background chain was not awaited; entry events are '
+      + 'excluded from gating and world-entry regressions are NOT covered by this run');
+    const entries = Object.keys(run.events ?? {}).filter((n) => n.startsWith('entry:'));
+    if (entries.length) {
+      failures.push(`a cold gate cannot judge entry events, but was given: ${entries.join(', ')}`
+        + ' - drop entry/repeat from --events, or drop --cold');
+    }
+  } else if (run.chainSignal !== 'worlds:all-ready') {
     failures.push(`the background chain was awaited on "${run.chainSignal}" rather than the`
       + ' worlds:all-ready event, so nothing below is known to have been measured after it');
   }

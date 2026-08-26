@@ -8093,6 +8093,7 @@ void main() {
       <div class="boot-tagline">Seven worlds, one gateway ring, and the space beyond.</div>
       <div class="boot-bar"><div class="boot-bar-fill"></div></div>
       <div class="boot-status">Initialising</div>
+      <div class="boot-build">build ff2a7a9</div>
       <div class="boot-start" hidden>
         <div class="boot-start-title">${n} TO ENTER</div>
         <div class="boot-save" hidden>

@@ -13,6 +13,8 @@ import {
   storeTierId,
   applyTier,
   applyBootTier,
+  classifyGpu,
+  readDeviceHints,
 } from '../../src/gfx/QualityTier.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -153,6 +155,85 @@ test('a desktop gets what it always got', () => {
   // Nothing known at all is a desktop: it is the case a browser that reports
   // nothing AND has a fine pointer is in.
   assert.equal(detectTierId({}), 'high');
+});
+
+/* ------------------------------------------------------- the GPU string -- */
+
+/* Real strings, as Chrome reports them through WEBGL_debug_renderer_info. A
+ * desktop on an integrated GPU has a keyboard, a mouse, eight cores and
+ * sixteen gigabytes - every other hint says "workstation" - and `high` on it
+ * is 4x MSAA, a 2048 shadow map and GTAO at a handful of frames a second
+ * before the runtime guards have had their four samples. The string is the
+ * only fact that tells the two desktops apart. */
+const DESKTOP = { deviceMemory: 16, hardwareConcurrency: 12 };
+
+test('an integrated GPU desktop lands on medium', () => {
+  for (const gpu of [
+    'ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (Intel, Intel(R) HD Graphics 4000 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (AMD, AMD Radeon(TM) Vega 8 Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (AMD, AMD Radeon 780M Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'Mesa Intel(R) UHD Graphics 620 (KBL GT2)',
+  ]) {
+    assert.equal(classifyGpu(gpu), 'integrated', gpu);
+    assert.equal(detectTierId({ ...DESKTOP, gpu }), 'medium', gpu);
+  }
+});
+
+test('a software rasteriser lands on low, whatever else it claims', () => {
+  for (const gpu of [
+    'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)',
+    'llvmpipe (LLVM 15.0.7, 256 bits)',
+    'ANGLE (Microsoft, Microsoft Basic Render Driver Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  ]) {
+    assert.equal(classifyGpu(gpu), 'software', gpu);
+    assert.equal(detectTierId({ ...DESKTOP, gpu }), 'low', gpu);
+  }
+});
+
+test('a discrete GPU keeps high - and so do the parts that merely share a vendor word', () => {
+  for (const gpu of [
+    'ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 (0x00002C02) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (AMD, AMD Radeon RX 7900 XTX (0x0000744C) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (AMD, AMD Radeon RX 580 Series Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    /* Intel Arc is a real card that says "Intel" and "Graphics". */
+    'ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics (0x000056A0) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    'ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)',
+  ]) {
+    assert.equal(classifyGpu(gpu), null, gpu);
+    assert.equal(detectTierId({ ...DESKTOP, gpu }), 'high', gpu);
+  }
+  // No string at all is no opinion.
+  assert.equal(classifyGpu(undefined), null);
+  assert.equal(detectTierId({ ...DESKTOP }), 'high');
+});
+
+test('the GPU only ever pushes DOWN: a phone on a discrete-looking string is still medium', () => {
+  assert.equal(detectTierId({ coarsePointer: true, gpu: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 5080 ...)' }), 'medium');
+  assert.equal(detectTierId({ coarsePointer: true, gpu: 'Apple GPU' }), 'medium');
+});
+
+test('a ?quality= pin beats storage and detection, and a nonsense pin is ignored', () => {
+  withStore({ 'aether:quality': 'low' }, () => {
+    assert.equal(resolveTierId({ coarsePointer: true }, 'high'), 'high');
+    assert.equal(resolveTierId({ coarsePointer: true }, 'medium'), 'medium');
+    // Unrecognised: the stored choice still wins, as it always did.
+    assert.equal(resolveTierId({ coarsePointer: true }, 'ultra'), 'low');
+    assert.equal(resolveTierId({ coarsePointer: true }, null), 'low');
+  });
+  withStore({}, () => {
+    assert.equal(resolveTier({ coarsePointer: true }, 'high').id, 'high');
+  });
+});
+
+test('readDeviceHints carries the GPU string, and is silent where there is no WebGL', () => {
+  // Node: no document, no canvas. The field exists and is undefined.
+  const hints = readDeviceHints();
+  assert.ok('gpu' in hints, 'readDeviceHints no longer reports the GPU at all');
+  assert.equal(hints.gpu, undefined);
 });
 
 /* ------------------------------------------------------ persistence -- */

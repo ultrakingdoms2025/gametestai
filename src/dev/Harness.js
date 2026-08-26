@@ -1136,6 +1136,16 @@ class Harness {
       await this.game.worldManager.build(worldId);
     }
     await this.game.worldManager.activate(worldId);
+    /* Arrive the way a player does. A gateway crossing runs
+     * `Portals._warmDestination` after the swap - links issued in parallel
+     * and polled - so the destination's program set is not linked inside the
+     * first frame. Skipping it here measured a single 28.8 s frame carrying
+     * +37 programs on a `goto('medieval')` into a world nothing had prepared,
+     * which is a freeze no player takes through a gateway. Worlds are no
+     * longer all prepared at boot, so this path meets that case routinely. */
+    try {
+      await this.game.portals?._warmDestination?.();
+    } catch { /* optional: the cost reverts to the first frame, as before */ }
     for (let i = 0; i < 4; i++) await frame();
     return worldId;
   }

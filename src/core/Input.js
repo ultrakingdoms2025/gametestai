@@ -172,11 +172,16 @@ export class Input {
      * session cannot reach it and desktop standby behaviour is unchanged. */
     this._touchEngaged = false;
     /* Latched at construction where the API is simply missing (iOS Safari, and
-     * the reason the original failure was silent), and again on the first
-     * `pointerType: 'touch'` pointerdown - because Android Chrome DOES
-     * implement pointer lock, so detection-by-absence alone would leave every
-     * Android player on the desktop path with no on-screen controls at all. */
-    this._touchMode = !Input.pointerLockSupported();
+     * the reason the original failure was silent) OR where the primary pointer
+     * is a finger, and again on the first `pointerType: 'touch'` pointerdown -
+     * because Android Chrome DOES implement pointer lock, so detection-by-
+     * absence alone would leave every Android player on the desktop path with
+     * no on-screen controls at all. The media query closes the gap between
+     * page load and that first tap: the boot legend, the pause card's status
+     * line and the title card's verb all read `touchMode` before any pointer
+     * has landed. A mouse plugged into a tablet still flips it back on its
+     * first `pointerdown`. */
+    this._touchMode = !Input.pointerLockSupported() || Input.coarsePointer();
     /** Analog stick, folded into the axes by `_syncAxes` alongside the keys. */
     this._touchForward = 0;
     this._touchRight = 0;
@@ -205,6 +210,23 @@ export class Input {
    */
   static pointerLockSupported() {
     return typeof document !== 'undefined' && typeof document.exitPointerLock === 'function';
+  }
+
+  /**
+   * Is the PRIMARY pointer a finger?
+   *
+   * The same query `hud.css` keys its 44 px floor on. A touch-screen laptop
+   * answers no - its primary pointer is the trackpad - which is right: it has a
+   * keyboard, and the on-screen controls would only be in the way.
+   *
+   * @returns {boolean}
+   */
+  static coarsePointer() {
+    try {
+      return typeof matchMedia === 'function' && !!matchMedia('(pointer: coarse)').matches;
+    } catch {
+      return false;
+    }
   }
 
   /**

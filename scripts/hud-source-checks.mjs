@@ -184,9 +184,9 @@ export async function hudSourceChecks() {
    * a screenshot and in every rectangle `hud-viewport-probe.mjs` measures.
    * That is exactly why it is checked here instead: a browser cannot see it.
    *
-   * `src/ui/OrientationGate.js` is the honest version - a real
-   * `screen.orientation.lock` where the API exists, and a rotate prompt
-   * everywhere else. Narrow to the four elements the hack is ever applied to,
+   * The game is portrait-first on a phone: it lays out for whichever way the
+   * device is held and never asks the player to turn it, so there is nothing
+   * this hack could stand in for. Narrow to the four elements it is ever applied to,
    * because a rotated icon or a spinning ring is not this defect: the crosshair
    * arms, the boot beacon and the mount wheel all legitimately rotate. */
   const FRAME_SUBJECT = /^(html|body|#ui-root|#viewport)(?![\w-])/;
@@ -199,7 +199,7 @@ export async function hudSourceChecks() {
       if (!subjects.some((s) => FRAME_SUBJECT.test(s))) continue;
       fails.push(`${file}: \`${rule[1].trim()}\` carries a rotate transform. Rotating the `
         + 'whole frame turns the pixels and leaves touch coordinates, scroll and the '
-        + 'virtual keyboard where they were — see src/ui/OrientationGate.js');
+        + 'virtual keyboard where they were — lay out for the orientation instead');
     }
   }
 

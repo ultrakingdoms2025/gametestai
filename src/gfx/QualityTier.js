@@ -107,7 +107,7 @@ export const TIERS = {
  * Split out from `detectTierId` so the heuristic can be driven with values
  * rather than with a faked global.
  *
- * @returns {{deviceMemory?:number, hardwareConcurrency?:number, coarsePointer?:boolean}}
+ * @returns {{deviceMemory?:number, hardwareConcurrency?:number, coarsePointer?:boolean, gpu?:string}}
  */
 export function readDeviceHints() {
   const nav = typeof navigator !== 'undefined' ? navigator : null;
@@ -125,7 +125,77 @@ export function readDeviceHints() {
     hardwareConcurrency:
       typeof nav?.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : undefined,
     coarsePointer,
+    gpu: readGpuString(),
   };
+}
+
+/**
+ * What the driver calls the GPU, read off a throwaway context.
+ *
+ * A throwaway rather than the engine's own renderer because this runs BEFORE
+ * `new Engine(...)` - the tier has to be known before the composer's render
+ * target and the shadow map are sized. The context is released the moment the
+ * string is read. Undefined wherever there is no document, no WebGL, or a
+ * browser that hides the string; every caller treats undefined as "no
+ * opinion".
+ *
+ * @returns {string|undefined}
+ */
+export function readGpuString() {
+  if (_gpuString !== null) return _gpuString.value;
+  _gpuString = { value: undefined };
+  try {
+    if (typeof document === 'undefined') return undefined;
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    if (!gl) return undefined;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const s = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    _gpuString.value = typeof s === 'string' && s ? s : undefined;
+    return _gpuString.value;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read once per page. `resolveTier` is called at PostFX's module scope, at
+ * boot and from the hub's Graphics row, and a throwaway WebGL context per call
+ * is a cost with no second answer to buy.
+ * @type {{value: string|undefined}|null}
+ */
+let _gpuString = null;
+
+/**
+ * The one fact the tier needs from a renderer string: is this a GPU that can
+ * take the desktop settings, or one that provably cannot?
+ *
+ * Conservative in the same single direction as `detectTierId`: only ever a
+ * reason to go DOWN. A discrete card that is misread lands on `high`, which is
+ * what it always got; the two classes below are the ones where `high` -
+ * 4x MSAA, a 2048 shadow map, GTAO - is a slideshow before the runtime guards
+ * (the resolution scaler, PostFX's budget) have had their four samples.
+ *
+ *   software    SwiftShader, llvmpipe, WARP - a CPU pretending. `low`.
+ *   integrated  Intel HD/UHD/Iris/Xe, AMD APU "Radeon(TM) Graphics" and the
+ *               `xxxM` mobile parts, and the phone families. `medium`.
+ *
+ * Intel Arc, every GeForce, every Radeon RX and every Apple M-series are left
+ * alone - Arc and the M-series are real GPUs that happen to share a vendor
+ * word with the integrated parts, which is why the patterns name the
+ * integrated FAMILIES rather than the vendor.
+ *
+ * @param {string|undefined} gpu
+ * @returns {'software'|'integrated'|null}
+ */
+export function classifyGpu(gpu) {
+  if (typeof gpu !== 'string' || !gpu) return null;
+  if (/swiftshader|llvmpipe|softpipe|microsoft basic render|\bwarp\b/i.test(gpu)) return 'software';
+  if (/intel\b[^,]*\b(hd|uhd|iris|xe)\b/i.test(gpu)) return 'integrated';
+  if (/radeon\(tm\)\s+(vega|graphics|r[2-7]\b)|radeon\s+\d{3}m\b|radeon rx vega \d+ graphics/i.test(gpu)) return 'integrated';
+  if (/\b(mali|adreno|powervr|videocore)\b/i.test(gpu)) return 'integrated';
+  return null;
 }
 
 /**
@@ -137,17 +207,23 @@ export function readDeviceHints() {
  * coarse-pointer test is enough on its own to keep GTAO off, and the numeric
  * tests only ever push further down.
  *
- * @param {{deviceMemory?:number, hardwareConcurrency?:number, coarsePointer?:boolean}} hints
+ * @param {{deviceMemory?:number, hardwareConcurrency?:number, coarsePointer?:boolean, gpu?:string}} hints
  * @returns {'low'|'medium'|'high'}
  */
 export function detectTierId(hints = {}) {
-  const { deviceMemory, hardwareConcurrency, coarsePointer } = hints;
+  const { deviceMemory, hardwareConcurrency, coarsePointer, gpu } = hints;
+  const gpuClass = classifyGpu(gpu);
+  if (gpuClass === 'software') return 'low';
   if (typeof deviceMemory === 'number' && deviceMemory <= 4) return 'low';
   if (typeof hardwareConcurrency === 'number' && hardwareConcurrency <= 4) return 'low';
   /* Safari reports no `deviceMemory` at all and a current iPhone reports six
    * cores, so a purely numeric heuristic hands an iPhone a workstation's
    * settings. A coarse pointer is the fact that is always available. */
   if (coarsePointer) return 'medium';
+  /* A desktop on an integrated GPU has a keyboard, a mouse, eight cores and
+   * sixteen gigabytes, and every numeric test above says "workstation". The
+   * GPU string is the only fact that says otherwise. See `classifyGpu`. */
+  if (gpuClass === 'integrated') return 'medium';
   return 'high';
 }
 
@@ -180,18 +256,23 @@ export function storeTierId(id) {
 
 /**
  * @param {object} [hints] defaults to `readDeviceHints()`
+ * @param {string|null} [pin] a tier id to use regardless of storage and
+ *   detection - the `?quality=` URL override. Anything unrecognised is
+ *   ignored rather than obeyed, like a stale stored choice.
  * @returns {string} the tier id in force
  */
-export function resolveTierId(hints) {
+export function resolveTierId(hints, pin = null) {
+  if (TIER_IDS.includes(pin)) return pin;
   return storedTierId() ?? detectTierId(hints ?? readDeviceHints());
 }
 
 /**
  * @param {object} [hints]
+ * @param {string|null} [pin] see `resolveTierId`
  * @returns {QualityTier}
  */
-export function resolveTier(hints) {
-  return TIERS[resolveTierId(hints)] ?? TIERS.high;
+export function resolveTier(hints, pin = null) {
+  return TIERS[resolveTierId(hints, pin)] ?? TIERS.high;
 }
 
 /**

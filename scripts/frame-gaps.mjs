@@ -2682,7 +2682,18 @@ async function main() {
 
   let stop = async () => {};
   let pageUrl;
-  const qs = `?dev=1&autostart=1&world=${encodeURIComponent(args.entryWorld)}`;
+  /* `quality=high` pins the renderer tier the baselines were recorded at:
+   * tier detection now reads the GPU string, and a CI runner on SwiftShader
+   * would otherwise be measured at `low` - no MSAA, no GTAO, a different
+   * program set - against a `warmPrograms` baseline taken at `high`.
+   *
+   * `prefetch=all` restores the eager background chain, and ONLY when this
+   * run waits for it: `worlds:all-ready` is the chain's own signal and world
+   * entry is measured after it. `--cold` gets the game's real default - lazy,
+   * by-proximity preparation (systems/WorldPrefetch.js) - because "what a
+   * player who does not wait actually gets" is now that. */
+  const qs = `?dev=1&autostart=1&quality=high&world=${encodeURIComponent(args.entryWorld)}`
+    + (args.awaitReady ? '&prefetch=all' : '');
 
   if (args.serve === 'dev') {
     console.warn('!! --serve dev: these numbers DO NOT satisfy the production criterion.');

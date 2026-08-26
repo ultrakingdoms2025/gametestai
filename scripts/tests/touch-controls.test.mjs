@@ -262,3 +262,52 @@ test('TouchControls drives the game through TouchActions and Input, nothing else
   // overlay on every desktop session.
   assert.ok(src.includes("'input:touchmode'"), 'TouchControls never learns the session is touch');
 });
+
+/* ------------------------------------------------------- discoverability -- */
+
+/* The owner's report: "the navigation controls are hard to bring up". The
+ * stick floated to wherever the thumb landed and was invisible until then, so
+ * a phone showed eight buttons and no way to walk. It now RESTS somewhere a
+ * player can see, labelled, and a one-line coach says which thumb does what.
+ * Neither is visible in a Node test, so both are pinned at the source. */
+
+test('the stick has a visible resting place and goes home on release', async () => {
+  const css = (await readFile(path.join(root, 'src/ui/touch.css'), 'utf8')).replace(/\r\n/g, '\n');
+  const rest = css.slice(css.indexOf('.touch-stick {'), css.indexOf('}', css.indexOf('.touch-stick {')));
+  const opacity = rest.match(/opacity:\s*([\d.]+)/);
+  assert.ok(opacity && Number(opacity[1]) > 0,
+    'the resting stick is invisible again - a phone shows buttons and no way to move');
+  assert.match(rest, /\bleft:\s*calc\(/, 'the resting stick has no home position');
+  assert.match(rest, /\btop:\s*calc\(100%/, 'the resting stick is not anchored off the bottom of the layer');
+  assert.match(css, /\.touch-stick-label/, 'the resting stick is no longer labelled');
+
+  const src = strip(await readFile(path.join(root, 'src/ui/TouchControls.js'), 'utf8'));
+  assert.match(src, /this\.stick\.style\.left = ''/,
+    '_hideStick no longer clears the inline position, so the ring stays where the last thumb left it instead of going home');
+  assert.match(src, /'touch-stick-label', 'MOVE'/, 'the ring lost its MOVE label');
+});
+
+test('a touch session is told which thumb does what, once', async () => {
+  const src = strip(await readFile(path.join(root, 'src/ui/TouchControls.js'), 'utf8'));
+  assert.match(src, /'touch-coach'/, 'TouchControls no longer builds the coach line');
+  assert.match(src, /_setCoach\(true\)/, 'the coach line is never shown');
+  assert.match(src, /_setCoach\(false\)/, 'the coach line is never taken down');
+  assert.match(src, /this\._coached = true/, 'the coach line comes back on every re-engagement');
+  const css = (await readFile(path.join(root, 'src/ui/touch.css'), 'utf8')).replace(/\r\n/g, '\n');
+  assert.match(css, /\.touch-coach\.show\s*\{[^}]*opacity:\s*1/, 'the coach line has no shown state');
+  assert.match(css, /\.touch-coach\s*\{[^}]*pointer-events:\s*none/, 'the coach line takes taps meant for the game');
+});
+
+test('a coarse primary pointer is a touch session from the first frame', async () => {
+  /* Before this, Android latched touch mode on the first touch pointerdown -
+   * which is the tap that enters the world - so everything on the title card
+   * and the pause card was written for a mouse right up to that tap. */
+  const src = strip(await readFile(path.join(root, 'src/core/Input.js'), 'utf8'));
+  assert.match(src, /this\._touchMode = !Input\.pointerLockSupported\(\) \|\| Input\.coarsePointer\(\)/,
+    'Input no longer latches touch mode off the coarse-pointer media query at construction');
+  const hud = strip(await readFile(path.join(root, 'src/ui/HUD.js'), 'utf8'));
+  assert.match(hud, /PAUSE_SUB_TOUCH/, 'the pause card still tells a phone to press Escape');
+  assert.match(hud, /p\.addEventListener\('pointerdown'/, 'the pause card resumes on mousedown, which a tap only produces as a compatibility event');
+  const main = strip(await readFile(path.join(root, 'src/main.js'), 'utf8'));
+  assert.match(main, /const VERB = input\.touchMode \? 'TAP' : 'CLICK'/, 'the title card says CLICK to a phone');
+});

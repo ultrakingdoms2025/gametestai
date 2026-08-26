@@ -79,22 +79,82 @@
   pointer-events: auto;
 }
 
-/* ── The floating stick ─────────────────────────────────────────────────── */
+/* ── The floating stick, and where it rests ─────────────────────────────── */
 
+/* At rest the ring sits at a fixed home above the Sprint/Menu column, dimmed
+ * and labelled, so a player can see there is a stick before they have touched
+ * one. `left`/`top` here are the HOME; the JS writes inline pixel values over
+ * them while a thumb is down and clears them on release. The negative margin
+ * makes both positions mean the ring's CENTRE, which is what a thumb lands on.
+ *
+ * BESIDE the corner column (More / Menu / Sprint), not above it. The first
+ * placement sat the ring above the column at 13rem and the probe's screenshot
+ * showed it across the MORE button and under the interaction prompt; at
+ * 9.25rem in, the ring's left edge clears the 3.4rem buttons and its right
+ * edge stops short of the primary cluster on a 390 px screen. `100%` is the
+ * layer's own height, and the layer is `inset: 0` on a fixed box, i.e. the
+ * dynamic viewport - the same reason the tray is sized in `dvh`. */
 .touch-stick {
   position: absolute;
+  left: calc(9.25rem + var(--sa-l, 0px));
+  top: calc(100% - 8.5rem - var(--sa-b, 0px));
   width: 8rem;
   height: 8rem;
   margin: -4rem 0 0 -4rem;
   border-radius: 50%;
   border: 1px solid rgba(47, 224, 255, 0.35);
   background: radial-gradient(circle, rgba(11, 18, 32, 0.35), rgba(11, 18, 32, 0.12));
-  opacity: 0;
+  opacity: 0.55;
   transition: opacity 120ms ease;
   pointer-events: none;
 }
 
 .touch-stick.on {
+  opacity: 1;
+}
+
+.touch-stick-label {
+  position: absolute;
+  left: 50%;
+  bottom: 0.65rem;
+  transform: translateX(-50%);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: rgba(207, 233, 245, 0.85);
+}
+
+.touch-stick.on .touch-stick-label {
+  display: none;
+}
+
+/* ── The coach line ─────────────────────────────────────────────────────── */
+
+/* Top-centre, under the readout rows, above the prompt slot at 27% height. It
+ * is a caption, not a control: no pointer events, and it never survives the
+ * first drive. */
+.touch-coach {
+  position: absolute;
+  left: 50%;
+  top: calc(5.25rem + var(--sa-t, 0px));
+  transform: translateX(-50%);
+  max-width: calc(100% - 2rem);
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 224, 255, 0.35);
+  background: rgba(6, 11, 20, 0.82);
+  color: #cfe9f5;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 240ms ease;
+  pointer-events: none;
+}
+
+.touch-coach.show {
   opacity: 1;
 }
 
@@ -242,5 +302,15 @@
 
   .touch-tray {
     max-height: 62dvh;
+  }
+
+  /* The corner buttons are shorter here and the screen has no height to
+   * spare, so the resting ring comes down with them. */
+  .touch-stick {
+    top: calc(100% - 7.5rem - var(--sa-b, 0px));
+  }
+
+  .touch-coach {
+    top: calc(3.5rem + var(--sa-t, 0px));
   }
 }

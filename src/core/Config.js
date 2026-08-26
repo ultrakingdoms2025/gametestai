@@ -277,5 +277,17 @@ export function applyUrlOverrides() {
     freeze: params.get('freeze') === '1',
     // ?dev=1 installs window.HARNESS for the automated visual review tooling.
     dev: params.get('dev') === '1',
+    /* How the worlds the player is not standing in get generated.
+     *   (absent)  near - a world is prepared as its gateway comes into reach
+     *             (see systems/WorldPrefetch.js). What a player gets.
+     *   all       the eager boot chain: every world, in order, right after
+     *             entry, ending in `worlds:all-ready`. What the instruments
+     *             need - frame-gaps.mjs measures entry after that event.
+     *   off       nothing is prepared ahead; every gateway builds on entry. */
+    prefetch: params.get('prefetch') || null,
+    /* Pin the renderer quality tier for this load: low|medium|high. For the
+     * instruments, whose baselines were recorded at one tier and must not move
+     * when the runner's GPU string changes what detection would pick. */
+    quality: params.get('quality') || null,
   };
 }

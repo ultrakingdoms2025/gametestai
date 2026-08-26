@@ -31,7 +31,7 @@
  *
  * Same contract as MazeMap/CharacterMenu: `ui:modal { id: 'records' }` into
  * the HUD's overlay Set — emitted BEFORE the pointer lock is released, so the
- * standby overlay never wins the race (the OrientationGate ordering note) —
+ * standby overlay never wins the race (see the ordering note in `open()`) —
  * a `records-open` body class to keep `.pause` off the sheet, and a delayed
  * `input.reengage()` on close only when the lock was ours to give back.
  */
@@ -122,7 +122,7 @@ export class RecordsPanel {
   open() {
     if (this._open) return;
     this._open = true;
-    /* ORDER IS LOAD-BEARING — the OrientationGate note. `ui:modal` first, so
+    /* ORDER IS LOAD-BEARING. `ui:modal` first, so
      * this panel is already in `HUD._overlays` when the lock release below
      * lands `input:lockchange` and main.js asks for the standby overlay:
      * `showPauseOverlay` refuses while the Set is non-empty. */

@@ -48,8 +48,7 @@ const read = async (p) => (await readFile(path.join(root, p), 'utf8')).replace(/
  *     on the frame. That is the one entry here a browser makes MORE invisible
  *     rather than less: the pixels turn, the input frame does not, and the
  *     result measures and photographs perfectly while being unplayable with a
- *     thumb. `src/ui/OrientationGate.js` is the honest version, and
- *     `scripts/tests/orientation-gate.test.mjs` is the rest of its contract.
+ *     thumb. The game is portrait-first on a phone and never asks it to turn.
  *
  * And it runs here, under `npm test`, because that is what CI runs on every
  * push. The probe needs a browser and a dev server and is invoked by hand or

@@ -87,6 +87,7 @@ import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
 import { RecordsPanel } from './ui/RecordsPanel.js';
 import { forceDrawable } from './gfx/RehearsalDraw.js';
+import { WorldPrefetch } from './systems/WorldPrefetch.js';
 import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
 
 /**
@@ -109,7 +110,7 @@ const overrides = applyUrlOverrides();
  * constructor and by the light rig below. Applied after `new Engine(...)` this
  * would set a far plane on a camera that had already been built with the old
  * one. @see gfx/QualityTier.js */
-let qualityTier = resolveTier();
+let qualityTier = resolveTier(undefined, overrides.quality);
 applyBootTier(qualityTier, CONFIG);
 
 const canvas = document.getElementById('viewport');
@@ -325,6 +326,18 @@ const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManag
  * `input:touchmode` says the session is being driven by a finger, so a desktop
  * player never has it and a tablet that is picked up mid-session does. */
 const touchControls = new TouchControls({ root: uiRoot, bus, input });
+/* The lazy replacement for the boot's eighteen-world background chain: a
+ * world is generated and warmed as the player comes within reach of a gateway
+ * that leads to it, one at a time, nearest first. `prepareWorld` below is the
+ * per-world step it runs - the same one the eager chain runs under
+ * `?prefetch=all`. See systems/WorldPrefetch.js for the measurement that
+ * retired the chain. */
+const worldPrefetch = new WorldPrefetch({
+  portals, player,
+  prepare: (id) => prepareWorld(id),
+  isVolatile: (id) => worldManager.isVolatile(id),
+});
+if (overrides.prefetch === 'off' || overrides.prefetch === 'all') worldPrefetch.enabled = false;
 /* The maze's M map. It owns its own keydown listener rather than going through
  * `input.pressed`, like the other panels, and shares the `map` action with the
  * mount wheel above - `mapActionOwner` decides which of them M means in the
@@ -1090,6 +1103,7 @@ if (overrides.dev) {
      * world that was built, and only playing into the world produces it. */
     mapOverlay,
     waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
+    worldPrefetch,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
   interiors, mazeMap, minigames, minigameUI,
@@ -1273,8 +1287,11 @@ async function boot() {
       `(${Math.round(performance.now() - tMenu)}ms of that behind the menu)`
     );
 
-    // Remaining worlds build during idle time after the first frame is up.
-    scheduleBackgroundBuilds(startWorld);
+    /* The other seventeen worlds are NOT built here any more. They are
+     * prepared as the player approaches their gateways (`worldPrefetch`, on
+     * the frame loop), or on entry. `?prefetch=all` restores the eager chain
+     * for the instruments that measure world entry after `worlds:all-ready`. */
+    if (overrides.prefetch === 'all') scheduleBackgroundBuilds(startWorld);
   } catch (err) {
     console.error('[boot] failed:', err);
     loader.showError(err);
@@ -1606,11 +1623,25 @@ async function prewarm() {
     console.warn('[prewarm] light rig update failed; the warm may be mis-keyed:', err);
   }
 
+  const linksFrom = engine.renderer.info.programs?.length ?? 0;
   try {
     warmCompile(engine.scene, engine.camera);
   } catch (err) {
     console.warn('[prewarm] compile failed, falling back to lazy compile:', err);
   }
+  /* And the viewmodels, whose programs the loop below would otherwise link
+   * on the frame that first draws each of them - measured at 4.8 s for the
+   * bow and 3.4 s for the sword on a cold cache. `compile` traverses what it
+   * is handed regardless of visibility, so the links can be issued here,
+   * together, and resolved off the main thread with everything else. */
+  try {
+    for (const inst of loadout.instances ?? []) {
+      if (inst?.root) warmCompile(inst.root, engine.camera, engine.scene);
+    }
+  } catch (err) {
+    console.warn('[prewarm] viewmodel compile failed:', err);
+  }
+  await settleLinks(linksFrom, 'boot');
 
   // Two frames, not the twenty-odd the old configuration walk needed: one
   // light count means one program set, so there is nothing left to vary.
@@ -1680,6 +1711,69 @@ async function prewarm() {
   console.info(
     `[prewarm] shader warmup took ${Math.round(performance.now() - t0)}ms, ` +
     `${engine.renderer.info.programs.length} programs`
+  );
+}
+
+/**
+ * The longest the boot will wait for the driver to finish linking before it
+ * draws anyway. Generous: nothing is frozen during the wait, and a draw that
+ * lands on an unfinished link simply blocks the way it always did.
+ */
+const LINK_SETTLE_CAP_MS = 60000;
+
+/**
+ * Wait - without blocking - for the driver to finish the links `compile()`
+ * just issued, then say how long it took.
+ *
+ * ── Why this is the desktop's cold-boot lever ─────────────────────────────
+ *
+ * `renderer.compile()` issues `linkProgram` and never reads the result; three
+ * reads the link on a program's first USE, which is a draw. The two warm frames
+ * that follow the boot compile are those first uses, so on a cold shader cache
+ * they used to block the main thread for the whole link - 50-65 s of it on
+ * ANGLE/D3D11, where every program is an HLSL compile - with the title card
+ * frozen mid-animation and Chrome offering to kill the page.
+ *
+ * ANGLE exposes `KHR_parallel_shader_compile` and links on a worker pool, so
+ * the links were ALREADY running in parallel; what blocked was asking for the
+ * answer. `WebGLProgram.isReady()` polls `COMPLETION_STATUS_KHR` instead, and
+ * answers now. Polling it a frame at a time keeps the card animating, keeps a
+ * click on it queued rather than swallowed, and costs no wall clock: the draws
+ * afterwards find every link done. Same poll `Portals._previewLinksResolved`
+ * uses for the gateway warm, for the same reason.
+ *
+ * Without the extension `isReady()` answers true at once and this returns on
+ * the first pass - the draws then block exactly as before. Never worse.
+ *
+ * @param {number} fromIndex programs before this index are not this warm's
+ * @param {string} label for the log line
+ * @param {number} [capMs]
+ */
+async function settleLinks(fromIndex, label, capMs = LINK_SETTLE_CAP_MS) {
+  const programs = engine.renderer.info.programs;
+  if (!programs) return;
+  const t0 = performance.now();
+  let pending = 0;
+  let frames = 0;
+  for (;;) {
+    pending = 0;
+    try {
+      for (let i = fromIndex; i < programs.length; i++) {
+        const p = programs[i];
+        if (p?.isReady && p.isReady() === false) pending++;
+      }
+    } catch (err) {
+      // A driver that throws on the poll gets the old behaviour: draw and wait.
+      console.warn('[prewarm] link readiness probe failed; drawing anyway:', err);
+      pending = 0;
+    }
+    if (pending === 0 || performance.now() - t0 > capMs) break;
+    frames++;
+    await nextFrame();
+  }
+  console.info(
+    `[prewarm] ${label} links settled in ${Math.round(performance.now() - t0)}ms ` +
+    `over ${frames} frames (${programs.length - fromIndex} issued, ${pending} still pending)`
   );
 }
 
@@ -2187,41 +2281,60 @@ function scheduleBackgroundBuilds(startWorld) {
       return;
     }
     const id = rest[i++];
-    worldManager
-      .build(id)
-      /* Claim this destination's gateways the instant its build resolves, and
-       * before anything slow runs against it.
-       *
-       * `update()` sets `p.ready` from `wm.isBuilt(target)` every frame, and its
-       * priming pass draws a preview on the very first frame a gateway is ready.
-       * That draw is the multi-second freeze `warmPreviews` exists to prevent -
-       * it links the destination's whole preview program set inside one
-       * gameplay frame. Nothing used to stand between the two because
-       * `warmWorld` was a single blocking `compile()` in the same task as the
-       * build's resolution, so `warmPortalPreviews` had already set the flag
-       * before any frame could run. Slicing `warmWorld` opened that window, and
-       * the window is not small: measured, the priming pass landed in it and
-       * cost a single frame of 8,212 ms and 14,741 ms across two cold boots,
-       * +35 programs and +512 first-draw geometry uploads.
-       *
-       * So the claim is made here, where it cannot depend on how long anything
-       * downstream takes, and released in a `finally` no matter what happens. */
-      .then(() => portals.holdPreviews?.(id))
-      .then(() => warmWorld(id))
-      .then(() => warmPortalPreviews(id))
-      .then(() => {
-        bus.emit('world:ready', { id });
-        idle(step);
-      })
-      .catch((err) => {
-        console.error(`[boot] background build of "${id}" failed:`, err);
-        idle(step);
-      })
-      // A gateway must never be left permanently showing STABILISING because
-      // something upstream threw.
-      .finally(() => portals.releasePreviews?.(id));
+    worldPrefetch.request(id).then(() => idle(step));
   };
   idle(step);
+}
+
+/**
+ * Everything one world needs before a player can walk up to its gateway: the
+ * build, the sliced program warm and the sliced preview warm, with the
+ * gateways claimed for the duration. The eager chain (`scheduleBackgroundBuilds`)
+ * and the lazy poller (`worldPrefetch`) both run exactly this, through
+ * `WorldPrefetch.request`, which is what stops the two ever preparing the same
+ * world twice.
+ *
+ * A world that is already built - because the player entered it before its
+ * preparation started - skips the build and still gets both warms: its
+ * gateway preview programs were never linked, and the first un-warmed preview
+ * draw is the 8-14 s freeze. That case could not arise under the eager chain
+ * and is the reason `WorldPrefetch.update` holds unprepared gateways.
+ *
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+function prepareWorld(id) {
+  return worldManager
+    .build(id)
+    /* Claim this destination's gateways the instant its build resolves, and
+     * before anything slow runs against it.
+     *
+     * `update()` sets `p.ready` from `wm.isBuilt(target)` every frame, and its
+     * priming pass draws a preview on the very first frame a gateway is ready.
+     * That draw is the multi-second freeze `warmPreviews` exists to prevent -
+     * it links the destination's whole preview program set inside one
+     * gameplay frame. Nothing used to stand between the two because
+     * `warmWorld` was a single blocking `compile()` in the same task as the
+     * build's resolution, so `warmPortalPreviews` had already set the flag
+     * before any frame could run. Slicing `warmWorld` opened that window, and
+     * the window is not small: measured, the priming pass landed in it and
+     * cost a single frame of 8,212 ms and 14,741 ms across two cold boots,
+     * +35 programs and +512 first-draw geometry uploads.
+     *
+     * So the claim is made here, where it cannot depend on how long anything
+     * downstream takes, and released in a `finally` no matter what happens. */
+    .then(() => portals.holdPreviews?.(id))
+    .then(() => warmWorld(id))
+    .then(() => warmPortalPreviews(id))
+    .then(() => {
+      bus.emit('world:ready', { id });
+    })
+    .catch((err) => {
+      console.error(`[boot] background build of "${id}" failed:`, err);
+    })
+    // A gateway must never be left permanently showing STABILISING because
+    // something upstream threw.
+    .finally(() => portals.releasePreviews?.(id));
 }
 
 /**
@@ -2533,6 +2646,11 @@ engine.onFrameUpdate((dt, elapsed) => {
     minigames.update(dt);
     questSystem.update(dt);
   }
+  /* Outside the `uiPaused` gate on purpose: a player who opens the hub next
+   * to a gateway is the best possible moment to prepare its world - nothing
+   * they can see is simulating. The work itself runs on idle callbacks either
+   * way; this only decides what goes next. */
+  worldPrefetch.update();
   questBoard.update(dt);
   bugReport.update(dt);
   // After the camera rig has placed the camera: the listener frame is read
@@ -2831,6 +2949,11 @@ engine.onFrameUpdate(() => {
 /* ------------------------------------------------------------------ */
 
 function createLoadingScreen(root, hooks = {}) {
+  /* "TAP" on a phone, "CLICK" everywhere else. `touchMode` is latched at
+   * construction off the coarse-pointer media query, so it is already right
+   * here, before any pointer has landed - and a phone told to CLICK reads as
+   * a page that does not know what it is running on. */
+  const VERB = input.touchMode ? 'TAP' : 'CLICK';
   const el = document.createElement('div');
   el.className = 'boot-screen';
   el.innerHTML = `
@@ -2840,7 +2963,7 @@ function createLoadingScreen(root, hooks = {}) {
       <div class="boot-bar"><div class="boot-bar-fill"></div></div>
       <div class="boot-status">Initialising</div>
       <div class="boot-start" hidden>
-        <div class="boot-start-title">CLICK TO ENTER</div>
+        <div class="boot-start-title">${VERB} TO ENTER</div>
         <div class="boot-save" hidden>
           <span class="boot-save-note"></span>
           <button type="button" class="boot-fresh">Start a new game instead</button>
@@ -2936,7 +3059,7 @@ function createLoadingScreen(root, hooks = {}) {
     /** Shaders are done: unlock entry, and honour a click that already landed. */
     warmComplete() {
       warm = true;
-      title.textContent = resume ? 'CLICK TO CONTINUE' : 'CLICK TO ENTER';
+      title.textContent = resume ? `${VERB} TO CONTINUE` : `${VERB} TO ENTER`;
       /* `setWarming` overwrote the status line with "Preparing shaders" and
        * nothing ever put it back, so the card sat reading that it was still
        * compiling for the whole time it was ready to play. */
@@ -2951,7 +3074,7 @@ function createLoadingScreen(root, hooks = {}) {
       const found = hooks.savedAt?.() ?? null;
       if (found) {
         resume = true;
-        title.textContent = 'CLICK TO CONTINUE';
+        title.textContent = `${VERB} TO CONTINUE`;
         saveRow.hidden = false;
         saveNote.textContent = `Saved game found - ${found}`;
         freshBtn.addEventListener('click', (e) => {
@@ -2960,7 +3083,7 @@ function createLoadingScreen(root, hooks = {}) {
           e.stopPropagation();
           resume = false;
           hooks.discard?.();
-          title.textContent = 'CLICK TO ENTER';
+          title.textContent = `${VERB} TO ENTER`;
           saveRow.hidden = true;
         });
       }

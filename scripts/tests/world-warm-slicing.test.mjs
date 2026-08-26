@@ -279,12 +279,14 @@ test('a destination\'s gateways are claimed before anything warms them', async (
   assert.match(portals, /\breleasePreviews\s*\(\s*target\s*\)\s*\{[\s\S]{0,240}_warmPending = false/,
     'PortalSystem has no releasePreviews(target)');
 
+  /* `prepareWorld` is the per-world step both the eager chain and the lazy
+   * poller (systems/WorldPrefetch.js) run; the claim lives there. */
   const src = await readCode('src/main.js');
-  const chain = topLevelFn(src, 'function scheduleBackgroundBuilds(startWorld)');
+  const chain = topLevelFn(src, 'function prepareWorld(id)');
   const hold = chain.indexOf('holdPreviews');
   const warm = chain.indexOf('warmWorld(id)');
-  assert.ok(hold > 0, 'the background chain never claims the destination\'s gateways');
-  assert.ok(warm > 0, 'the background chain no longer calls warmWorld');
+  assert.ok(hold > 0, 'the per-world preparation never claims the destination\'s gateways');
+  assert.ok(warm > 0, 'the per-world preparation no longer calls warmWorld');
   assert.ok(
     hold < warm,
     'the gateways are claimed after warmWorld starts. warmWorld is sliced, so '

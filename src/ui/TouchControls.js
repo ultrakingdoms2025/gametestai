@@ -29,12 +29,28 @@ import { TOUCH_ACTIONS, sendTouchAction } from './TouchActions.js';
  * the controls are on screen exactly when the world is running. They cannot
  * drift apart.
  *
- * ── The stick floats ─────────────────────────────────────────────────────
+ * ── The stick floats, but it has a home ──────────────────────────────────
  *
  * It appears where the thumb lands rather than at a fixed spot. A fixed stick
  * on a phone means looking down to find it, and on a tablet it is either
  * unreachable or in the way; a floating one is wherever the hand already was.
  * The visible ring is the origin, not the control.
+ *
+ * What a purely floating stick costs is DISCOVERY. Until a thumb touched the
+ * left of the screen there was nothing on it that said "move" - six buttons on
+ * the right, two on the left, and an empty deck - and the owner's report was
+ * exactly that: "the navigation controls are hard to bring up". So the ring
+ * now rests at a fixed home above the Sprint/Menu column, labelled MOVE, and
+ * jumps under the thumb the moment the left side is touched. Same control,
+ * same gesture, same code path; the only change is that it can be seen before
+ * it is used. `_hideStick` sends it home rather than hiding it.
+ *
+ * ── The coach line ───────────────────────────────────────────────────────
+ *
+ * The first time the layer comes on screen in a session, one line above the
+ * action says which thumb does what. It goes on the first drive, or on its own
+ * after `COACH_MS`, and never comes back that session: a hint that survives
+ * the thing it is hinting at is noise.
  */
 
 /** Stick throw in CSS pixels: the distance that means "full deflection". */
@@ -48,6 +64,9 @@ const STICK_RADIUS = 56;
  * a look nudge on every single tap.
  */
 const LOOK_SLOP = 2;
+
+/** How long the coach line stays if the player never touches the stick. */
+const COACH_MS = 9000;
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -73,6 +92,9 @@ export class TouchControls {
     /** id -> button element, so a toggle can show its own state. */
     this._buttons = new Map();
     this._offs = [];
+    /** True once the coach line has been shown this session. */
+    this._coached = false;
+    this._coachTimer = 0;
 
     this.el = this._build();
     root.appendChild(this.el);
@@ -96,7 +118,13 @@ export class TouchControls {
     this.stick = el('div', 'touch-stick');
     this.stickKnob = el('div', 'touch-stick-knob');
     this.stick.appendChild(this.stickKnob);
+    /* Read at rest, hidden while the ring is under a thumb. */
+    this.stick.appendChild(el('span', 'touch-stick-label', 'MOVE'));
     wrap.appendChild(this.stick);
+
+    /* One line, once per session. See the class docblock. */
+    this.coach = el('div', 'touch-coach', 'Left thumb: drag to move  ·  Right thumb: drag to look');
+    wrap.appendChild(this.coach);
 
     const primary = el('div', 'touch-primary');
     const left = el('div', 'touch-left');
@@ -229,7 +257,10 @@ export class TouchControls {
         ly: e.clientY,
         moved: false,
       });
-      if (drives) this._showStick(e.clientX, e.clientY);
+      if (drives) {
+        this._showStick(e.clientX, e.clientY);
+        this._setCoach(false);
+      }
     });
 
     on(this.look, 'pointermove', (e) => {
@@ -284,12 +315,30 @@ export class TouchControls {
     this._moveKnob(0, 0);
   }
 
+  /**
+   * Show or clear the coach line. Idempotent; the timer is cleared either way
+   * so a line dismissed by a drive is not re-hidden nine seconds later on top
+   * of whatever the layer is doing then.
+   * @param {boolean} on
+   */
+  _setCoach(on) {
+    if (this._coachTimer) {
+      clearTimeout(this._coachTimer);
+      this._coachTimer = 0;
+    }
+    this.coach.classList.toggle('show', !!on);
+    if (on) this._coachTimer = setTimeout(() => this._setCoach(false), COACH_MS);
+  }
+
   _moveKnob(dx, dy) {
     this.stickKnob.style.transform = `translate(-50%, -50%) translate(${dx}px, ${dy}px)`;
   }
 
+  /** Not hidden: sent home. The inline position is what floats it; clearing it hands the ring back to the stylesheet's resting place. */
   _hideStick() {
     this.stick.classList.remove('on');
+    this.stick.style.left = '';
+    this.stick.style.top = '';
     this._moveKnob(0, 0);
   }
 
@@ -311,7 +360,14 @@ export class TouchControls {
   _sync() {
     const show = this.shown;
     this.el.classList.toggle('on', show);
-    if (show) return;
+    if (show) {
+      if (!this._coached) {
+        this._coached = true;
+        this._setCoach(true);
+      }
+      return;
+    }
+    this._setCoach(false);
     /* Going away is a release, not a pause. A latched sprint or a held airbrake
      * that survived into the pause hub would still be down when the player came
      * back, with no button on screen that could let it go. */
@@ -332,6 +388,7 @@ export class TouchControls {
   dispose() {
     for (const off of this._offs) off();
     this._offs.length = 0;
+    if (this._coachTimer) clearTimeout(this._coachTimer);
     this.el.remove();
   }
 }

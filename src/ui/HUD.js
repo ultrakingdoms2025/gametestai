@@ -5,7 +5,6 @@ import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
 import { PauseMenu } from './PauseMenu.js';
-import { OrientationGate } from './OrientationGate.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -39,6 +38,8 @@ const LOCK_RETRY_S = 0.4;
 const LOCK_CONFIRM_S = 0.25;
 /** Resting text of the pause card's status line. `_setPauseBusy` overwrites it. */
 const PAUSE_SUB = 'Esc resume · ↑↓ Enter · click';
+/** The same line for a session with no Escape key and no cursor. */
+const PAUSE_SUB_TOUCH = 'Tap outside the menu to resume';
 const KF_LIFE = 6.5;
 const TOAST_LIFE = 3.6;
 const RELOAD_ARC_C = 2 * Math.PI * 18;
@@ -486,25 +487,6 @@ export class HUD {
 
     this._buildWipe();
     this._buildPause();
-
-    /**
-     * The rotate-to-landscape prompt.
-     *
-     * Built here rather than in `main.js` for the reason every panel in this
-     * file is: the HUD is what already holds `_overlays`, `showPauseOverlay`
-     * and the re-engagement path, and the gate needs all three. It is also
-     * what the layout harness constructs, so the gate is graded by
-     * `hud-viewport-probe.mjs` without the harness having to know it exists.
-     *
-     * It is a sibling of `.hud`, on `#ui-root`, like `.pause` and `.wstrip`:
-     * `.hud` fades as a unit and is dimmed by `overlaid`, and this card must
-     * be readable in both of those states.
-     */
-    this.orientationGate = new OrientationGate({
-      root: this.root,
-      bus: this.bus,
-      input: this.input,
-    });
 
     // The selector sits outside `.hud` so its slots stay clickable above the
     // pause overlay — pointer lock swallows clicks, so the only moment a slot
@@ -1610,7 +1592,9 @@ export class HUD {
   _buildPause() {
     const p = el('div', 'pause');
     const inner = el('div', 'pause-in');
-    this.pauseSub = el('div', 'pause-s', PAUSE_SUB);
+    // The session's own line from the first frame: on a phone `touchMode` is
+    // already true here, and no `input:touchmode` event will ever say so.
+    this.pauseSub = el('div', 'pause-s', this._pauseSubText());
 
     inner.appendChild(el('div', 'pause-t', 'PAUSED'));
 
@@ -1654,7 +1638,11 @@ export class HUD {
     inner.appendChild(this.pauseSub);
     p.appendChild(inner);
 
-    p.addEventListener('mousedown', (e) => {
+    /* `pointerdown`, not `mousedown`: a tap produces a mousedown only as a
+     * compatibility event after the finger lifts, and only if nothing above it
+     * cancelled the touch. The pointer event is the tap itself, on every kind
+     * of pointer, and it is what makes "tap outside the menu" true. */
+    p.addEventListener('pointerdown', (e) => {
       // Only the card background resumes; the buttons stop their own.
       if (e.target !== p && e.target !== inner) return;
       e.preventDefault();
@@ -1755,6 +1743,15 @@ export class HUD {
 
   _wire() {
     this._on('game:started', () => this._goLive());
+
+    /* The card's status line follows the session. A tablet that grows a mouse
+     * mid-session is told about Escape; a phone is never told about a key it
+     * does not have. */
+    this._on('input:touchmode', () => {
+      if (this.pauseSub && !this.pauseSub.classList.contains('busy')) {
+        this.pauseSub.textContent = this._pauseSubText();
+      }
+    });
 
     // A refused lock. See `_requestLock` — this is the only notification the
     // silent-refusal case gives, and without it the overlay eats clicks.
@@ -2352,6 +2349,29 @@ export class HUD {
     const list = this.root.querySelector('.boot-controls');
     if (!list) return;
     this._bootPatched = true;
+    /* A phone reads a different card. WASD, Esc and F1 are not things a thumb
+     * can press, and a legend of thirty keys over a title card is the first
+     * thing a phone player sees - so it says what the thumbs do instead.
+     * `touchMode` is latched at construction off the coarse-pointer media
+     * query, so it is already right on the first HUD frame, before any pointer
+     * has landed. */
+    if (this.input?.touchMode) {
+      list.innerHTML = [
+        ['Left thumb', 'Drag to move'],
+        ['Right thumb', 'Drag to look'],
+        ['◉', 'Fire'],
+        ['⊕', 'Aim'],
+        ['▲', 'Jump / Swim'],
+        ['▼', 'Crouch / Dive'],
+        ['E', 'Talk / Pick up / Portal'],
+        ['»', 'Sprint'],
+        ['≡', 'Pause menu'],
+        ['⋯', 'Every other control'],
+      ]
+        .map(([k, v]) => `<span><b>${k}</b> ${v}</span>`)
+        .join('');
+      return;
+    }
     /* Kept current with what the game actually has.
      *
      * This list is the only controls reference a player sees before they are
@@ -2790,8 +2810,13 @@ export class HUD {
   /** Swap the overlay's prompt while a retry is in flight. */
   _setPauseBusy(busy) {
     if (!this.pauseSub) return;
-    this.pauseSub.textContent = busy ? 'resuming…' : PAUSE_SUB;
+    this.pauseSub.textContent = busy ? 'resuming…' : this._pauseSubText();
     this.pauseSub.classList.toggle('busy', !!busy);
+  }
+
+  /** The status line for the kind of session this is. */
+  _pauseSubText() {
+    return this.input?.touchMode ? PAUSE_SUB_TOUCH : PAUSE_SUB;
   }
 
   _updateInput(dt) {
@@ -3754,7 +3779,6 @@ export class HUD {
     if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
     if (this._onLockEsc) window.removeEventListener('keydown', this._onLockEsc, true);
     this.pauseMenu.dispose();
-    this.orientationGate?.dispose();
     this.el.remove();
     this.wipe.remove();
     this.pause.remove();

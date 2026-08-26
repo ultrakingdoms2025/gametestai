@@ -543,7 +543,9 @@ const SCENES = {
   /** Engaged on a phone: the same HUD with the touch layer over it. */
   touch() {
     touch.el.classList.add('on');
-    touch.el.querySelector('.touch-stick')?.classList.add('on');
+    /* The ring at REST, where the layer puts it before any thumb lands, and
+     * the coach line up: the state a phone player meets first. */
+    touch.el.querySelector('.touch-coach')?.classList.add('show');
   },
   /** The Esc hub. */
   pause() {
@@ -706,39 +708,6 @@ window.__harness = {
     shipMenu, keybinds, mazeMap, mountWheel, bugReport, recordsPanel,
   },
 
-  /**
-   * The rotate-to-landscape gate, live, and built by the REAL `HUD` - the
-   * probe never constructs it and never learns its selectors from here.
-   *
-   * It raises itself: a coarse-pointer viewport under 720 px wide held
-   * upright gets the card, at every scene, without anything in this file
-   * asking for it. That is why there is no `rotate` scene - a scene would be
-   * run at all six viewports and would be a lie at four of them.
-   */
-  orientationGate: hud.orientationGate,
-
-  /**
-   * Press CONTINUE IN PORTRAIT, the way a player does.
-   *
-   * `.click()` on the real button rather than a call to `dismiss()`: the
-   * control is the thing under test, and a helper that goes round it would
-   * still pass with the button wired to nothing.
-   *
-   * ASYNC, and the two awaits are load-bearing. Closing the gate emits
-   * `ui:modal { open: false }`, which empties `HUD._overlays`, which queues
-   * `_deferHubCheck` as a MICROTASK. Returning before that has run would let
-   * the check land in the middle of the next `scene()` call and hide the very
-   * panel it had just raised - the same microtask hand-off `clearScene`'s note
-   * describes, which cost this harness a pause scene with no hub in it.
-   *
-   * @returns {Promise<boolean>} true once the card is really down.
-   */
-  async dismissRotateGate() {
-    hud.orientationGate?.dismissBtn?.click();
-    await Promise.resolve();
-    await Promise.resolve();
-    return !hud.orientationGate?.showing;
-  },
   /**
    * THE CASE LIST, and it lives here rather than in the probe.
    *

@@ -449,6 +449,14 @@ hud.setPauseMenuItems([
 function dressPlayScene() {
   hud._goLive();
 
+  /* The custom-server chip, through the REAL bus event main.js emits - not by
+   * un-hiding the element - so the play and touch scenes measure the chip the
+   * way a custom-server session renders it. The name is the widest realistic
+   * one, for the same reason the pause hub gets its longest labels: a short
+   * stand-in would understate the box. General play is the chip's built state
+   * and is what every scene measured before this line existed. */
+  bus.emit('session:server', { server: { id: 'srv-layout', name: 'Ironvale Frontier RP' } });
+
   /* Charter board, from the REAL `Charters.progress()` - the same payload the
    * `charter-hud` unit gate uses, for the same reason. */
   const charters = new Charters({ bus, worldManager: stubs.worldManager });

@@ -1200,6 +1200,22 @@ async function hydrateAccountSession() {
   if (typeof account.handle === 'string' && account.handle.trim()) {
     bus.emit('player:identity', { handle: account.handle.trim() });
   }
+
+  /* Which server this session belongs to, for the HUD's server chip.
+   *
+   * `server` is new on `/api/game/session` and every degraded shape means
+   * general play, SILENTLY - the same contract as the `/api/lore` fetch: an
+   * older deploy simply lacks the field, null is the endpoint saying "general
+   * play" out loud, and a 401 / network error / timeout already resolved
+   * `account` itself to null above and never reaches this line. The only case
+   * that emits is a named server, so the HUD's built state (no chip) IS the
+   * general-play rendering and no failure needs a second code path. */
+  const server = account.server;
+  if (server && typeof server.name === 'string' && server.name.trim()) {
+    bus.emit('session:server', {
+      server: { id: typeof server.id === 'string' ? server.id : '', name: server.name.trim() },
+    });
+  }
 }
 
 async function boot() {

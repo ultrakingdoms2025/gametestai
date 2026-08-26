@@ -370,6 +370,10 @@ export class HUD {
     this._creditFloats = [];
     this._playerHandle = 'Player';
     this._playerHandleText = '';
+    /** Custom server this session belongs to (`{id, name}`), null in general
+     *  play. Fed only by `session:server`; never fetched from here. */
+    this._server = null;
+    this._serverText = '';
 
     /* -- v2: mounts ---------------------------------------------------- */
     this._mountId = null;
@@ -627,6 +631,7 @@ export class HUD {
     const col = el('div', 'vitals');
     hud.appendChild(col);
     this.vitals = col;
+    this._buildServer(col);
     this._buildCredits(col);
     this._buildHealth(col);
     this._buildStamina(col);
@@ -1347,6 +1352,70 @@ export class HUD {
   }
 
   /**
+   * Custom-server chip, first in the vitals column.
+   *
+   * The one thing it answers is "whose world am I in?". General play is the
+   * default and gains NO furniture: the chip is in the DOM but `hidden` until
+   * a `session:server` event names a server, so a signed-out player, an older
+   * deploy without the field, and a failed fetch all render the HUD exactly as
+   * it shipped. It sits ABOVE the credits ledger because it qualifies
+   * everything under it - the handle, the balance and the objectives all
+   * belong to the server it names.
+   *
+   * Magenta on purpose: this column otherwise speaks cyan and amber only, so
+   * a colour used nowhere else in the stack is what makes custom-server play
+   * unmistakable at a glance rather than a caption to hunt for.
+   */
+  _buildServer(col) {
+    const chip = el('div', 'server-chip');
+    chip.hidden = true;
+    chip.appendChild(el('i', 'server-dot'));
+    this.serverName = el('span', 'server-name', '');
+    chip.appendChild(this.serverName);
+    col.appendChild(chip);
+    this.serverChip = chip;
+  }
+
+  /**
+   * Show or clear the server chip and its pause-card mirror.
+   *
+   * `server` is the `/api/game/session` shape - `{id, name}` or null - and
+   * anything that is not a non-empty string name means general play and hides
+   * both chips. Fail-silent is the contract for every network path that feeds
+   * this: there is no error state to render, only the default.
+   */
+  _setServer(server) {
+    const raw = typeof server?.name === 'string' ? server.name.trim() : '';
+    if (!raw) {
+      this._server = null;
+      this.serverChip.hidden = true;
+      if (this.pauseServer) this.pauseServer.hidden = true;
+      return;
+    }
+    /* CSS ellipsis is the visual truncation; this cap is for the DOM itself,
+     * so a hostile kilobyte of a name cannot be parked in the layout. */
+    const name = raw.length > 64 ? `${raw.slice(0, 63)}…` : raw;
+    this._server = { id: typeof server.id === 'string' ? server.id : '', name };
+    if (name !== this._serverText) {
+      this._serverText = name;
+      this.serverName.textContent = name;
+      if (this.pauseServerName) this.pauseServerName.textContent = name;
+    }
+    this.serverChip.hidden = false;
+    if (this.pauseServer) this.pauseServer.hidden = false;
+  }
+
+  /**
+   * The one `session:server` subscription, factored out of `_wire` so a
+   * headless rig can register the REAL wiring over a bus and a shim DOM
+   * instead of re-implementing the payload plucking and quietly agreeing
+   * with itself - the same reason `_onPauseKey` is a prototype method.
+   */
+  _wireSession() {
+    this._on('session:server', (p) => this._setServer(p?.server ?? null));
+  }
+
+  /**
    * Credits ledger, top-left. Earning has to feel like something, so the value
    * counts up rather than snapping and each award throws a `+5` off the panel.
    */
@@ -1544,6 +1613,16 @@ export class HUD {
     this.pauseSub = el('div', 'pause-s', PAUSE_SUB);
 
     inner.appendChild(el('div', 'pause-t', 'PAUSED'));
+
+    /* The custom-server line, between the title and the hub. Hidden in
+     * general play - see `_buildServer`. Both chips are written by the one
+     * `_setServer`, so the card can never disagree with the HUD. */
+    this.pauseServer = el('div', 'pause-server');
+    this.pauseServer.hidden = true;
+    this.pauseServer.appendChild(el('i', 'server-dot'));
+    this.pauseServerName = el('span', 'pause-server-name', '');
+    this.pauseServer.appendChild(this.pauseServerName);
+    inner.appendChild(this.pauseServer);
 
     /* The hub itself. Items arrive from main.js, which is the only file that
      * knows every panel; this class owns the card, the keyboard and the return
@@ -2179,6 +2258,11 @@ export class HUD {
         }
       }
     });
+    /* Which server this session belongs to. main.js emits at most once per
+     * boot, and only when `/api/game/session` names one - an absent field, a
+     * 401, a network error and a slow response all mean general play, which
+     * is the built state of the chip. See `_wireSession`. */
+    this._wireSession();
 
     /* --- mounts -------------------------------------------------------- */
     this._on('mount:summoned', ({ id }) => {

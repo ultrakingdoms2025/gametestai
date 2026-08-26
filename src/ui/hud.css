@@ -3988,6 +3988,83 @@ body {
 }
 
 /* ==========================================================================
+   CUSTOM-SERVER CHIP  (first in the vitals column; mirrored on the pause card)
+
+   General play is the default and gains nothing: both chips carry `hidden`
+   until `session:server` names a server, so this whole section costs an
+   ordinary session zero pixels. Magenta because the vitals column otherwise
+   speaks cyan and amber only - custom-server play has to be unmistakable,
+   not hunted for. No backdrop-filter on either chip on purpose: a distinct
+   blur pair is a separate compiled raster program on the boot path (see the
+   `--glass-fx` note in the tokens), and a chip this small reads fine over a
+   plain gradient.
+   ========================================================================== */
+.server-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  /* Shrink-wrap to the name rather than spanning the column: a chip as wide
+     as the credits panel would read as another ledger, not a flag. */
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 4px 12px 5px 10px;
+  background: linear-gradient(155deg, rgba(63, 26, 84, 0.62), rgba(20, 9, 30, 0.66));
+  border: 1px solid rgba(212, 107, 255, 0.38);
+  clip-path: var(--clip-br);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+/* `display: flex` above outranks the `hidden` attribute's UA default, so the
+   opt-out is explicit - same pattern as `.cht-rank[hidden]`. */
+.server-chip[hidden],
+.pause-server[hidden] {
+  display: none;
+}
+
+.server-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mag);
+  box-shadow: 0 0 8px rgba(212, 107, 255, 0.75);
+}
+
+.server-name,
+.pause-server-name {
+  min-width: 0;
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #eed9ff;
+  text-shadow: 0 0 10px rgba(212, 107, 255, 0.35);
+  /* A hostile-length name ends in an ellipsis inside the chip's own box; the
+     JS caps the DOM string, this caps what is drawn. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The pause-card mirror: same voice, centred under the PAUSED title.
+   `inline-flex` so the card's `text-align: center` places it. */
+.pause-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 3px 14px 4px;
+  border: 1px solid rgba(212, 107, 255, 0.38);
+  background: rgba(63, 26, 84, 0.4);
+}
+
+.pause-server-name {
+  font-size: 11px;
+}
+
+/* ==========================================================================
    MOUNT INDICATOR  (centre, above the weapon strip)
    ========================================================================== */
 .mount {
@@ -5453,6 +5530,18 @@ body.sm-open .wstrip {
  * layout and is not allowed to change. */
 @media (max-width: 1024px) and (max-height: 820px) {
   .collect {
+    display: none;
+  }
+
+  /* The server chip re-creates this exact squeeze from the other end: its
+     ~29 px put the column 15.6 px into the strip's first slot at 1024 x 768
+     with the home-bar inset - measured by the viewport probe, same shape as
+     the 9.6 px above. When (and ONLY when) a custom server adds its chip,
+     the quest step gives its row back: it is reference, one Esc away on the
+     quest board, while the chip is the one thing on screen that says whose
+     world this is and cannot be reconstructed from anywhere else. General
+     play keeps the tracker - the chip is [hidden] and this never matches. */
+  .server-chip:not([hidden]) ~ .questtrack {
     display: none;
   }
 }

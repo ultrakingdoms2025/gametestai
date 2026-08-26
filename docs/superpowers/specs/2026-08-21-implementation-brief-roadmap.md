@@ -25,10 +25,32 @@ frame, at 4.6 ms per character per crossing. `mergeParts` had computed the right
 along, with a comment naming the job; the culler never read it because `SkinnedMesh` shadows
 `geometry.boundingSphere`.
 
-**Eleven of seventeen worlds enter at 16.8-17.1 ms.** Of the six that do not, four are now a
-first cast being built with no shader link at all - dock 316-367 ms, citadel 450-467, race
-450-483, medieval 683-750. Maze (1.9-6.4 s) is `static volatile`, so the background warm
-filters it out and nothing ever warms it; it costs that once per session rather than per entry.
+**Eleven of seventeen worlds enter at 16.8-17.1 ms.** (Seventeen, not sixteen: eighteen worlds
+are registered - eight named plus ten planets - and the session boots into one of them.)
+
+**RE-MEASURED 2026-08-25, and the ranges below were understated on the bad side in every case.**
+Production bundle, `frame-gaps.mjs --serve prod --events entry`, worst rAF gap, starved rows
+excluded. The old figures are struck through because they were quoted from single runs:
+
+| world | this file said | measured (genuine block) |
+|---|---|---|
+| dock | 316-367 ms | **367-417 ms** |
+| citadel | 450-467 ms | **450-550 ms** |
+| race | 450-483 ms | **450-517 ms** |
+| medieval | 683-750 ms | **1,100-4,067 ms** |
+| maze | 1.9-6.4 s | **750-1,000 ms before the fix below; 167-2,567 ms after** |
+| sports | 6.0 s | **6,583-7,250 ms before the fix below; 950-1,067 ms after** |
+
+Two of those six moved this day, and both by a mechanism this file had wrong.
+
+**Maze is no longer excluded from the background chain.** `MazeWorld.volatile` is a game-design
+decision and is untouched; the PERFORMANCE consequence of it - that `scheduleBackgroundBuilds`
+filtered volatile worlds out, so the maze was the only world whose programs linked in front of
+the player - was never itself decided. `MazeWorld.dispose()` keeps its materials on purpose, so
+a background build buys warm PROGRAMS and warm module-scope caches even though the maze itself
+is re-rolled on entry. Shader links on entry 6 -> 3, crossing wall clock 5.5 s -> 2.9-4.1 s. It
+does **not** fix the worst single frame, which is the first draw of the freshly rolled districts
+and their wanderers and is new by construction. See `scheduleBackgroundBuilds` in `src/main.js`.
 
 **A CORRECTION, because this file carried the wrong number.** An earlier ledger recorded race
 at **31,284 ms** as "a volatile world rebuilt" and I repeated it as the worst number in the
@@ -46,12 +68,29 @@ folded rim colour, strength, falloff and forward into `customProgramCacheKey`, u
 defending it - and all six are uniforms, cloned per material before `onBeforeCompile` runs, so
 the distinct key bought nothing and cost a link per palette per crossing. dock 7 -> 0,
 medieval 7 -> 1, warm programs 151 -> 143, and sports 52 -> 45 for free.
-**World entry passes in 15 of 16 worlds at 16.8 ms. Sports is the exception, deliberately.**
-Its `FogExp2` costs 6.0 seconds and 40 of 52 programs on FIRST entry - and swapping it to the
-linear fog every other world uses is **not sufficient**: 466.6 ms is still 1.9x budget on twelve
-programs that are not fog-keyed. The decision was to keep the world looking as designed rather
-than spend its aerial perspective for a partial win; it costs nothing on re-entry. The twelve
-are the thing to attack, and the reasoning is recorded at `SportsWorld.sceneFog`.
+**AND SIX OF SPORTS' SEVEN SECONDS WERE A BUG IN THE WARM, NOT THE PRICE OF ITS FOG.**
+This paragraph used to read *"World entry passes in 15 of 16 worlds at 16.8 ms"*, which is
+arithmetically impossible - eighteen worlds are registered and seventeen are entered - and it
+contradicted the "eleven of seventeen" above, which is the correct one. Six worlds are over
+budget, not one.
+
+`main.js`'s `arrivalKeyOf` keyed the persistent warm - the avatar, the viewmodels, the mounts,
+the gateways, the NPCs - on `fog.type`. **three 0.185.1 gives neither `Fog` nor `FogExp2` a
+`type` at all**, so every world produced the identical key `undefined|306|1024`, the first world
+through the chain stamped it, and every world after it skipped the warm. Sports is the only
+world with a `FogExp2`, `fogExp2` is in three's program cache key, and sports is never first -
+so it linked the exponential build of the player's entire kit in front of the player, every
+session. Fixed: entry **6,583-7,250 ms -> 950-1,067 ms**, programs linked on entry **44-45 ->
+22-23**, with the background chain absorbing 43 more (130 -> 173).
+
+Keeping the fog was still the right call and is still recorded at `SportsWorld.sceneFog`, but
+the price there was recorded 6x too high. Ablated - `_fog` swapped for the linear fog every
+other world uses - sports enters at **433.4 ms on 6 programs**, not the 466.6 ms on twelve this
+file claimed, and that residual frame is not a shader frame at all: the crossing inside it is
+372.9 ms, of which `activationCost.arrival` is 346.8. So the fog is worth about **630 ms**, not
+six seconds, and what is left underneath it is the same per-world arrival cost that puts dock,
+citadel, race and medieval over budget. Twenty-three programs still link on sports' arrival and
+are **not** diagnosed.
 The criterion's own wording is wrong in three places; see the Phase 1 section.
 The four decisions in section 8 were taken 2026-08-22 and are folded into the phases below.
 
@@ -266,6 +305,26 @@ The real causes are production-only, which is why local was always smoother.
 **Acceptance:** in **production**, no frame gap over 250 ms on first mount launch,
 first weapon change per world, world entry, first keybind use, or repeated
 entry/exit. Measured, not felt.
+
+6. **DONE — the two axes the brief names and nothing measured.** 4.1.2 and the acceptance
+   criterion both say **interactions** and **movement**; `frame-gaps.mjs` supported
+   `keybind,weapon,mount,entry,repeat` and the only evidence either axis ever had was the
+   24 Aug playthrough survey, taken with a bare rAF sampler that had no heartbeat and none
+   of the occlusion flags - it put sports entry at 40.5 ms where the maintained instrument
+   says 6,583-7,250 on the same bundle. Both are now real events, both in the default set.
+   `movement` holds W and then Shift+W for eight seconds under a yaw sweep injected through
+   `Input.applyLook` (the touch path — `mousemove` is gated on a pointer lock no headless
+   session holds) and **reports the metres covered**, so a phase that measured a player who
+   never moved says so instead of reporting a clean 16.8 ms. `interaction` opens each panel
+   once from a real key event and reports whether the keyboard came back.
+7. **DONE — a performance job in CI, which did not exist.** `.github/workflows/ci.yml` ran
+   tests, contracts, build and the HUD probe; nothing ran a frame. It **does not assert
+   milliseconds** — an occluded headless window fabricates multi-second gaps, the runner has
+   no GPU, and six worlds are over budget today, so a clock gate would fail on its first push
+   and be switched off by its second. It asserts INVARIANTS (did the chain finish, did the
+   warm run, was every world built before entry, did the player actually move, did an
+   interaction eat the keyboard) and COUNTERS (`dProg` per event, `warm.programs`) against a
+   per-platform baseline recorded in the script. Runs on pull requests and main only.
 
 **Trap:** `HARNESS.ready()` must drive the real loop — an automated browser holds no pointer
 lock, so NPC and world LOD never run and every figure reads as the LOD-disabled worst case

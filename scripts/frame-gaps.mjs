@@ -69,9 +69,15 @@ function parseArgs(argv) {
     serve: 'prod', worlds: null, out: null, floor: 24, budget: 250,
     width: 1600, height: 900, repeat: 1, keep: false, help: false,
     entryWorld: 'station', settleMs: 240000, skipBuild: false,
-    profile: null, events: 'keybind,weapon,mount,entry,repeat',
+    /* THE WHOLE CRITERION, NOT THE HALF THAT WAS EASY TO DRIVE.
+     *
+     * This read `keybind,weapon,mount,entry,repeat` while brief 4.1.2 and its
+     * acceptance criterion both also name INTERACTIONS and MOVEMENT. A default
+     * that silently covers five of seven axes is the failure shape this repo
+     * keeps paying for - a gate reporting a pass for ground it never walked. */
+    profile: null, events: 'keybind,weapon,mount,interaction,movement,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
-    gl: false, listeners: false, frames: false,
+    gl: false, listeners: false, frames: false, gate: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -95,6 +101,14 @@ function parseArgs(argv) {
     else if (a === '--gl') out.gl = true;
     else if (a === '--listeners') out.listeners = true;
     else if (a === '--frames') out.frames = true;
+    else if (a === '--gate') out.gate = true;
+    /* The boot-warm deadline. A default tuned on a machine with a GPU is not a
+     * universal constant: the same warm on a shared CI runner with a software
+     * rasteriser is several times slower, and a warm that TIMES OUT makes every
+     * figure after it a cold one - which the gate correctly fails on and which
+     * would then read as a performance regression rather than as too short a
+     * fuse. So the fuse is a knob. */
+    else if (a === '--settle') out.settleMs = Number(next());
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -109,7 +123,17 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
                      ONLY prod numbers satisfy the criterion.
   --worlds a,b,c     worlds to enter (default: every registered world)
   --entry <id>       world the session boots into (default: station)
-  --events <list>    subset of keybind,weapon,mount,entry,repeat
+  --events <list>    subset of keybind,weapon,mount,interaction,movement,entry,repeat
+                     (all seven by default). movement WALKS the player for ~9 s
+                     per world and reports the metres covered; interaction opens
+                     each panel once, last, and reports whether the keyboard
+                     came back.
+  --gate             compare the run's COUNTERS against the recorded baselines
+                     in BASELINES below and exit non-zero on a regression. The
+                     clock is printed and never asserted - see the note there.
+  --settle <ms>      boot-warm deadline (default 240000). Raise it on a slow or
+                     GPU-less machine; a warm that times out makes every figure
+                     after it a cold one.
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
@@ -201,6 +225,30 @@ class CDP {
         for (const fn of this.listeners) fn(msg);
       }
     });
+    /* A DEAD BROWSER MUST FAIL THIS RUN, NOT HANG IT.
+     *
+     * `send` parks a promise in `pending` and nothing but a matching reply ever
+     * settled it. So when the renderer died - and it does die: a full pass over
+     * eighteen worlds WITH movement in each of them exhausted this machine once
+     * - the socket closed, every awaited `evalIn` stayed pending forever, and
+     * the run sat burning CPU with no browser attached and no output. Measured:
+     * twenty minutes of that before it was killed by hand.
+     *
+     * That is the worst failure mode a gate can have. A CI job would hit its
+     * own timeout with nothing written, which reads as flaky infrastructure and
+     * gets the job disabled rather than the crash investigated. Rejecting here
+     * turns it into one loud error at the point of use, with the count of calls
+     * that were in flight when the browser went. */
+    const die = (why) => {
+      const inflight = this.pending.size;
+      this.dead = why;
+      for (const { reject } of this.pending.values()) {
+        reject(new Error(`the browser went away (${why}); ${inflight} CDP call(s) in flight`));
+      }
+      this.pending.clear();
+    };
+    this.ws.addEventListener('close', () => die('socket closed'), { once: true });
+    this.ws.addEventListener('error', () => die('socket error'), { once: true });
   }
 
   static async connect(url) {
@@ -215,10 +263,17 @@ class CDP {
   on(fn) { this.listeners.add(fn); }
 
   send(method, params = {}, sessionId) {
+    // Same reasoning as `die` above: a call issued after the socket is already
+    // gone must not park a promise nobody will ever settle.
+    if (this.dead) return Promise.reject(new Error(`the browser went away (${this.dead})`));
     const id = ++this.id;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
-    this.ws.send(JSON.stringify(payload));
+    try {
+      this.ws.send(JSON.stringify(payload));
+    } catch (err) {
+      return Promise.reject(new Error(`CDP send failed: ${err && err.message}`));
+    }
     return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
   }
 
@@ -640,6 +695,110 @@ const FRAME_SHIM = `(() => {
   return 'installed';
 })()`;
 
+/**
+ * THE ONLY HONEST "IS THE BACKGROUND CHAIN FINISHED?" SIGNAL.
+ *
+ * `scheduleBackgroundBuilds` emits `worlds:all-ready` when its queue empties -
+ * after the last world's build, its sliced program warm and its gateway preview
+ * warm have all resolved. No predicate over `isBuilt` can reproduce that: a
+ * world can be built and still be mid-warm, and a world still QUEUED is neither
+ * built nor building during the idle gap between two chain steps.
+ *
+ * Armed at document start and polled for the bus, because `window.GAME` is
+ * published by a module that has not been parsed yet when this runs. It records
+ * `armed` separately from `ready` so the caller can tell "the chain has not
+ * finished" apart from "nobody is listening", which are the same `false` and
+ * mean opposite things.
+ */
+const CHAIN_LATCH = `(() => {
+  const S = window.__FG_CHAIN = { armed: false, ready: false, at: null };
+  let tries = 0;
+  const arm = () => {
+    const bus = window.GAME && window.GAME.bus;
+    if (!bus || typeof bus.on !== 'function') {
+      // ~5 minutes at 50 ms. A boot slower than that has already failed.
+      if (tries++ < 6000) setTimeout(arm, 50);
+      return;
+    }
+    S.armed = true;
+    bus.on('worlds:all-ready', () => {
+      S.ready = true;
+      S.at = Math.round(performance.now());
+    });
+  };
+  arm();
+})()`;
+
+/**
+ * `Input.js`'s own `TOUCH_LOOK_GAIN`, copied.
+ *
+ * `applyLook(dx, dy)` takes CSS PIXELS and multiplies by
+ * `CONFIG.player.mouseSensitivity * TOUCH_LOOK_GAIN` to reach the radians
+ * `Player.update` subtracts from its yaw. The sensitivity is on `CONFIG` and
+ * readable from the page; the gain is a module-private constant and is not. If
+ * it drifts the sweep is the wrong size and says so - every movement phase
+ * records the yaw it ACHIEVED beside the yaw it asked for.
+ */
+const TOUCH_LOOK_GAIN = 2.6;
+
+/**
+ * A look delta, through the input path the game actually ships for it.
+ *
+ * NOT `mousemove`. That handler returns at `if (!this._locked ...)` and an
+ * automated browser holds no pointer lock, so a dispatched mouse move is
+ * swallowed whole - which is one of the ways the 24 Aug playthrough survey came
+ * back with numbers 150-680x below the maintained instrument's. `applyLook` is
+ * the touch-device entry point: explicitly ungated on the lock, feeding the
+ * same `state.lookX` accumulator `consumeLook()` drains, with the same bus
+ * event. A finger and this call are indistinguishable downstream.
+ *
+ * @param {number} rad radians of yaw
+ */
+const LOOK = (rad) => `(() => {
+  const I = window.GAME.input;
+  const perPx = window.GAME.CONFIG.player.mouseSensitivity * ${TOUCH_LOOK_GAIN};
+  I.applyLook(${rad} / perPx, 0);
+  return 1;
+})()`;
+
+/**
+ * Where the player is, and what is on screen.
+ *
+ * A movement phase that measures a player who never moved is the failure this
+ * repository names as worse than no gate at all: it would report a clean 16 ms
+ * worst frame for a world it never traversed a metre of. So every movement
+ * phase is bracketed with this, and the report carries the DISTANCE - a phase
+ * with `moved: 0` is visible as the non-measurement it is rather than as a pass.
+ */
+const WHERE = `(() => {
+  /* Never throws. An exception here would take the whole run down from inside a
+   * CDP eval, and a gate that CRASHES is worse than one that reports: the
+   * failure would read as infrastructure and get rerun rather than read. A
+   * position of nulls fails the movement invariant loudly instead, which is the
+   * same verdict arrived at honestly. */
+  try {
+    const G = window.GAME, p = G.player, w = G.worldManager.active;
+    return JSON.stringify({
+      world: w ? w.id : null,
+      x: p.position.x, y: p.position.y, z: p.position.z,
+      yaw: p.yaw, grounded: !!p.grounded,
+      /* WHY a movement phase covered no ground. Without these the gate can say
+       * "moved 0 m" and nothing else, which is a defect report with no lead in
+       * it - and this instrument produced exactly that for four worlds in a
+       * row before they were added. Each one is a different fix: a gameplay
+       * block is an overlay nobody closed, "mounted" is a player being carried
+       * rather than walking, "textCaptured" is a panel eating the keys, and
+       * "dead" is a player who cannot move by the rules. */
+      blocks: (G.__dev && G.__dev.gameplayBlocks && G.__dev.gameplayBlocks()) || [],
+      mounted: !!(G.mounts && G.mounts.mounted),
+      textCaptured: !!(G.input && G.input.textCaptured),
+      dead: !!p.dead,
+    });
+  } catch (err) {
+    return JSON.stringify({ world: null, x: null, y: null, z: null, yaw: null, error: String(err && err.message || err) });
+  }
+})()`;
+
 const RECORDER = `(() => {
   if (window.__FG) return;
   const F = window.__FG = {
@@ -682,7 +841,26 @@ const RECORDER = `(() => {
    * and the frame is stuck behind the GPU or the presenter - or it stops with
    * the frames, and the thread is the problem. "beats" on a gap is how many
    * times the timer fired inside it; "blockedMs" is the longest single stretch
-   * the TIMER lost, which is real synchronous JavaScript and nothing else. */
+   * the TIMER lost, which is real synchronous JavaScript and nothing else.
+   *
+   * ── A GAP WITH beats:0 USED TO REPORT blocked:0 ─────────────────────────
+   *
+   * worstBeat is only ever written by the timer's own callback, so it can
+   * only measure a stretch that ENDED in a beat. A gap the thread was blocked
+   * through from end to end fires the timer zero times, leaves worstBeat at
+   * its initial 0, and was reported as "blocked 0" - which is the reading a
+   * STARVED gap gives and means the exact opposite. Measured on this bundle:
+   * "entry:maze 750.1 ms, blocked 0, beats 0, +6 programs, +23 textures", a
+   * frame that plainly did six shader links and twenty-three texture uploads.
+   *
+   * The unmeasured stretch is the one from the last beat to the frame landing,
+   * and the "beat" variable holds exactly when that beat was - so the blocked
+   * time is
+   * the worse of the longest CLOSED stretch and the still-open one. This also
+   * fixes the general tail case, where a gap blocks for its last 300 ms and no
+   * beat lands to close the stretch out. A genuinely starved gap is unaffected:
+   * its heartbeat is still ticking when the frame arrives, so the open stretch
+   * is one beat interval wide. */
   let beat = performance.now();
   let beats = 0;
   let worstBeat = 0;
@@ -716,7 +894,10 @@ const RECORDER = `(() => {
     const now = F.info();
     const owner = lastPhase;
     lastPhase = F.phase;
-    const gapBeats = beats; const gapBlocked = worstBeat;
+    const gapBeats = beats;
+    // See the note on the heartbeat: the open stretch counts too, or a gap the
+    // thread never surfaced from reports as the one thing it is not.
+    const gapBlocked = Math.max(worstBeat, t - beat);
     beats = 0; worstBeat = 0;
     const p = F.phases[owner] ??= { frames: 0, ms: 0, worst: 0, over: 0, p0: now.p, g0: now.g, x0: now.x };
     p.frames++; p.ms += dt;
@@ -768,17 +949,43 @@ const RECORDER = `(() => {
 /* Key events                                                        */
 /* ---------------------------------------------------------------- */
 
+/**
+ * `code` -> [virtual key, `KeyboardEvent.key`].
+ *
+ * BOTH HALVES MATTER, and a missing row is silent. An unknown code used to fall
+ * through to `[0, '']`, which still sets `event.code` - so a handler reading
+ * `e.code` worked and one reading `e.key` did not. `ChatBox` closes on
+ * `e.key === 'Escape'`, so an Escape dispatched from a missing row would open
+ * the chat box and never close it, capture the keyboard, and every phase after
+ * that would measure a game nobody could type at. The movement and interaction
+ * events need eight codes this table did not have.
+ */
 const VK = {
   Digit1: [49, '1'], Digit2: [50, '2'], Digit3: [51, '3'], Digit4: [52, '4'],
   KeyM: [77, 'm'], KeyE: [69, 'e'], KeyR: [82, 'r'], KeyF: [70, 'f'],
   KeyV: [86, 'v'], KeyW: [87, 'w'], KeyC: [67, 'c'], Space: [32, ' '],
+  KeyA: [65, 'a'], KeyS: [83, 's'], KeyD: [68, 'd'],
+  KeyI: [73, 'i'], KeyJ: [74, 'j'], KeyT: [84, 't'], KeyB: [66, 'b'],
+  ShiftLeft: [16, 'Shift'], Escape: [27, 'Escape'], Enter: [13, 'Enter'],
+  ArrowUp: [38, 'ArrowUp'], ArrowDown: [40, 'ArrowDown'],
 };
 
 function keyEvents(code) {
-  const [vk, key] = VK[code] ?? [0, ''];
+  const entry = VK[code];
+  if (!entry) {
+    /* Loud, not silent. A dispatched key with no virtual key and no `key` is a
+     * measurement of nothing, and this script exists because measurements of
+     * nothing get quoted as results. */
+    throw new Error(`frame-gaps: no VK row for "${code}" - add one, do not dispatch a blank key`);
+  }
+  const [vk, key] = entry;
   const common = { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, code, key };
+  /* `text` is what a key TYPES. Setting it for Escape or Shift makes Chrome
+   * deliver a character event for a key that produces no character, which the
+   * chat box would then receive as literal input. */
+  const text = key.length === 1 ? key : undefined;
   return [
-    { type: 'keyDown', ...common, text: key },
+    { type: text ? 'keyDown' : 'rawKeyDown', ...common, ...(text ? { text } : {}) },
     { type: 'keyUp', ...common },
   ];
 }
@@ -876,6 +1083,7 @@ async function runOnce(args, pageUrl, runIndex) {
       source: `(() => { const set = () => { if (window.__FG) window.__FG.floor = ${args.floor};`
         + ` else setTimeout(set, 0); }; set(); })()`,
     });
+    await call('Page.addScriptToEvaluateOnNewDocument', { source: CHAIN_LATCH });
     await call('Page.navigate', { url: pageUrl });
 
     const evalIn = async (expr, awaitPromise = true) => {
@@ -896,6 +1104,38 @@ async function runOnce(args, pageUrl, runIndex) {
       for (const ev of keyEvents(code)) {
         await call('Input.dispatchKeyEvent', ev);
         await sleep(gapMs);
+      }
+    };
+
+    /**
+     * KEYS HELD DOWN, WHICH IS THE ONLY WAY ANYONE MOVES.
+     *
+     * `press` is a tap: down, 90 ms, up. Every movement binding in the game is
+     * a HELD state - `Input._syncAxes` reads `_keys.has('KeyW')` on each event
+     * and the axes stay set until the keyup - so a tap produces about a tenth
+     * of a second of walking and measures nothing a player would recognise.
+     *
+     * The whole set goes down together (W and ShiftLeft are one gesture, not
+     * two), the hold is broken into slices so the yaw sweep can be injected
+     * between them, and the keyups run in a `finally`: a throw with W still
+     * down would leave the player walking through every phase after it.
+     *
+     * @param {string[]} codes
+     * @param {number} ms
+     * @param {{ yawPerSec?: number, sliceMs?: number }} [opts] yaw in radians/s
+     */
+    const hold = async (codes, ms, opts = {}) => {
+      const yawPerSec = opts.yawPerSec ?? 0;
+      const sliceMs = opts.sliceMs ?? 250;
+      for (const code of codes) await call('Input.dispatchKeyEvent', keyEvents(code)[0]);
+      try {
+        for (let done = 0; done < ms; done += sliceMs) {
+          const dt = Math.min(sliceMs, ms - done);
+          await sleep(dt);
+          if (yawPerSec) await evalIn(LOOK(yawPerSec * (dt / 1000)));
+        }
+      } finally {
+        for (const code of codes) await call('Input.dispatchKeyEvent', keyEvents(code)[1]);
       }
     };
 
@@ -955,10 +1195,40 @@ async function runOnce(args, pageUrl, runIndex) {
       await mark('background-chain');
       if (args.profile === 'background') await profileOn();
       const t0 = Date.now();
+      /* WAIT FOR THE CHAIN TO SAY IT IS DONE, NOT FOR A PREDICATE THAT GUESSES.
+       *
+       * This used to be `ids.every(id => isVolatile(id) || isBuilt(id))`, which
+       * was true the moment the last DURABLE world finished. That was correct
+       * only for as long as `scheduleBackgroundBuilds` skipped volatile worlds.
+       * It now builds the maze last, and the predicate goes true in the idle
+       * gap before that build starts - so the harness would stop waiting, open
+       * the first `entry:` phase, and charge the maze's background generation
+       * to whichever world happened to be crossed into at the time. That is the
+       * exact shape of defect this repository keeps paying for: an instrument
+       * measuring something other than what its label says.
+       *
+       * `worlds:all-ready` is emitted by the chain itself, after the LAST
+       * world's build, warm and preview warm have all resolved, and it is
+       * emitted in both configurations - so this is strictly more accurate than
+       * the predicate was, not merely compatible with the change. `CHAIN_LATCH`
+       * arms it at document start, long before the bus exists.
+       *
+       * The predicate survives as a fallback for the one case the latch cannot
+       * cover - the arming script never ran - and the run records which of the
+       * two ended the wait, so a report can never silently be the weaker one. */
+      const latchArmed = await evalIn('window.__FG_CHAIN.armed === true')
+        .catch(() => false);
+      out.chainSignal = latchArmed ? 'worlds:all-ready' : 'built-predicate (LATCH MISSING)';
+      if (!latchArmed) {
+        console.warn('[frame-gaps] worlds:all-ready latch not armed; falling back to the '
+          + 'built-predicate, which cannot see a volatile world still building.');
+      }
       await waitFor(() => evalIn(
-        'window.GAME.worldManager.ids.every((id) => window.GAME.worldManager.isVolatile(id)'
-        + ' || window.GAME.worldManager.isBuilt(id))',
-      ), { timeout: 600000, every: 1000, what: 'every world to be built' });
+        latchArmed
+          ? 'window.__FG_CHAIN.ready === true'
+          : 'window.GAME.worldManager.ids.every((id) => window.GAME.worldManager.isVolatile(id)'
+            + ' || window.GAME.worldManager.isBuilt(id))',
+      ), { timeout: 600000, every: 1000, what: 'the background world chain to finish' });
       await sleep(args.settleAfterReady);
       if (args.profile === 'background') await profileOff('background-chain');
       out.events.backgroundChain = await closePhase('background-chain');
@@ -1024,6 +1294,75 @@ async function runOnce(args, pageUrl, runIndex) {
       out.events['mount:dismount'] = await closePhase('mount:dismount');
     }
 
+    /* --- MOVEMENT ------------------------------------------------------
+     *
+     * Brief 4.1.2 and its acceptance criterion both name MOVEMENT, and until
+     * this block existed nothing in this script moved the player a single
+     * metre. The only evidence the axis ever had was a 24 Aug playthrough
+     * survey taken with a bare rAF sampler - no heartbeat, so it could not tell
+     * a block from an occluded window, and none of the four Chrome flags above,
+     * so it was measuring occluded windows constantly. It reported sports entry
+     * at 40.5 ms where this instrument reports 6,583-7,250. Nothing it said
+     * about movement is worth anything either.
+     *
+     * What a traversal costs that a standing frame does not: terrain and world
+     * LOD swaps, district streaming, culling as the frustum sweeps onto
+     * geometry that was behind the player, physics against colliders the
+     * broadphase had not touched, and the NPC manager waking characters by
+     * distance. None of that is exercised by pressing a key and standing still.
+     *
+     * Eight seconds, walk then sprint, under a constant yaw sweep so the
+     * frustum keeps meeting new geometry rather than settling; then two jumps.
+     * One direction of sweep only, and under 2*PI in total, so `yawTurned` is
+     * unambiguous rather than a wrapped difference.
+     *
+     * @param {string} label the phase name
+     */
+    const measureMovement = async (label) => {
+      /* CLEAR THE BOARD FIRST. Movement runs after the per-world mount event,
+       * which opens the mount wheel and summons; any overlay still up owns the
+       * keyboard and W does nothing. One Escape costs 350 ms and is the
+       * difference between measuring a traversal and measuring a menu. */
+      await press('Escape');
+      await sleep(350);
+      const from = JSON.parse(await evalIn(WHERE));
+      await mark(label);
+      await hold(['KeyW'], 4000, { yawPerSec: 0.5 });
+      await hold(['KeyW', 'ShiftLeft'], 4000, { yawPerSec: 0.5 });
+      await press('Space'); await sleep(500);
+      await press('Space'); await sleep(900);
+      const phase = await closePhase(label);
+      const to = JSON.parse(await evalIn(WHERE));
+      if (!phase) return null;
+      return {
+        ...phase,
+        from, to,
+        /* THE NUMBER THAT SAYS THIS PHASE MEASURED ANYTHING.
+         * A player wedged against a wall, dead, frozen by a stuck overlay or
+         * standing in a world whose input never reached them produces a
+         * beautiful 16.8 ms worst frame over eight seconds. `moved` is how the
+         * reader tells that apart from a genuinely smooth traversal, and the
+         * table prints it. */
+        moved: from.x == null || to.x == null
+          ? -1  // the probe could not read a position; the gate fails on this
+          : Math.round(Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) * 10) / 10,
+        yawAsked: 4,
+        yawTurned: from.yaw == null || to.yaw == null
+          ? null : Math.round(Math.abs(to.yaw - from.yaw) * 100) / 100,
+        /* Gateways need `KeyE` to cross (`Portals.js`), so walking into one is
+         * not supposed to move the player between worlds. If it ever does, the
+         * phase measured a crossing under a movement label. */
+        worldChanged: from.world !== to.world,
+        /* Lifted out of `to` so a reader of the events object does not have to
+         * know `to` exists to find out why `moved` is zero. */
+        blocks: to.blocks, mounted: to.mounted, textCaptured: to.textCaptured, dead: to.dead,
+      };
+    };
+
+    if (wants.has('movement')) {
+      out.events[`movement:${args.entryWorld}`] = await measureMovement(`movement:${args.entryWorld}`);
+    }
+
     /* --- world entry -------------------------------------------------- */
     if (wants.has('entry')) {
       for (const id of worlds) {
@@ -1040,7 +1379,14 @@ async function runOnce(args, pageUrl, runIndex) {
         const KEY = '(() => { const s = window.GAME.engine.scene, e = s.environment;'
           + ' return JSON.stringify({ envMap: !!e, envUuid: e ? e.uuid : null,'
           + ' envHeight: e && e.image ? e.image.height : null, envMapping: e ? e.mapping : null,'
-          + ' fog: !!s.fog, fogType: s.fog ? s.fog.type : null,'
+          /* `fogType` read `s.fog.type`, and three's Fog and FogExp2 define no
+           * `type` at all - only `isFog` / `isFogExp2` and an empty `name`. So
+           * it was `undefined`, `JSON.stringify` dropped the key, and every
+           * report this script has ever written recorded which KIND of fog a
+           * crossing arrived under by omitting it. `fogExp2` is in three's
+           * program cache key and is the single most expensive entry in it on
+           * this bundle, so this is exactly the field a reader needs. */
+          + ' fog: !!s.fog, fogType: s.fog ? (s.fog.isFogExp2 ? "FogExp2" : "Fog") : null,'
           + ' programs: window.GAME.engine.renderer.info.programs.length }); })()';
         const KEYS = 'JSON.stringify(window.GAME.engine.renderer.info.programs.map((p) => p.cacheKey))';
         const pre = JSON.parse(await evalIn(KEY));
@@ -1141,6 +1487,16 @@ async function runOnce(args, pageUrl, runIndex) {
           await press('KeyF'); await sleep(600);
           out.events[`mount:${id}`] = await closePhase(`mount:${id}`);
         }
+        /* Movement is per WORLD or it is nothing. Every cost a traversal has
+         * that a standing frame does not - terrain LOD, district streaming,
+         * culling onto unseen geometry, colliders the broadphase has not met -
+         * belongs to the world being walked through, and eight seconds of
+         * walking around the station says nothing about the maze. Last in the
+         * per-world block so a mount left summoned cannot carry the player
+         * through it at mount speed. */
+        if (wants.has('movement')) {
+          out.events[`movement:${id}`] = await measureMovement(`movement:${id}`);
+        }
       }
     }
 
@@ -1238,6 +1594,73 @@ async function runOnce(args, pageUrl, runIndex) {
           out.events[label].cost = [JSON.parse(costTo), JSON.parse(costBack)];
         }
       }
+    }
+
+    /* --- INTERACTIONS ---------------------------------------------------
+     *
+     * The other axis brief 4.1.2 names and this script never had. An
+     * interaction is not a keybind: `keybind:KeyV` measures the input path,
+     * where this measures what the input path OPENS. Two of these panels are
+     * their own lazily-imported chunks - `InventoryUI` and `MarketplaceUI` are
+     * separate files in `dist/assets` - so a first open is a network fetch, a
+     * module parse, a DOM build and a stylesheet, none of which the boot warm
+     * touches and none of which any other event here has ever crossed.
+     *
+     * LAST, deliberately. A panel that fails to close owns the keyboard
+     * (`Input._textCaptured` gates every key handler in the game), and if that
+     * happened before the entry loop every world crossing after it would be
+     * measured through a stuck overlay. Running it after everything else means
+     * the worst case costs this block and nothing else, and `stuck` below says
+     * so out loud instead of leaving it to be inferred.
+     *
+     * FIRST USE IS THE POINT, so the order matters: anything already opened by
+     * an earlier event is not a first use here. `mount` presses KeyM, which is
+     * the mount wheel - so `interaction:wheel` is a first use only when
+     * `--events` leaves `mount` out, and its row reads `+0 programs` when it is
+     * not. That is visible in the table rather than hidden by it. */
+    if (wants.has('interaction')) {
+      /* Each row: the key that opens the surface, and the key that closes it.
+       * Every one of these is a REAL window-level `keydown` handler in the
+       * shipping game - `main.js:2674` for KeyI, `QuestBoard.js:66` for KeyJ,
+       * `ChatBox.js` for KeyT, the map/wheel owner for KeyM - so all of it is
+       * driven by dispatched OS-shaped key events and nothing here reaches
+       * into a panel's own API. */
+      const surfaces = [
+        { id: 'inventory', open: 'KeyI', close: 'KeyI', settle: 1200 },
+        { id: 'quests', open: 'KeyJ', close: 'Escape', settle: 1200 },
+        { id: 'wheel', open: 'KeyM', close: 'Escape', settle: 900 },
+        /* KeyE is the world's own interact. Standing where the harness leaves
+         * the player there may be nothing in range, and that is still worth
+         * measuring: the first press is what builds the prompt slots and wakes
+         * the interaction scan, and the criterion says "first keybind use" for
+         * exactly this reason. */
+        { id: 'interact', open: 'KeyE', close: null, settle: 900 },
+        /* Chat last of the last: it is the one surface that captures TEXT, so
+         * it is the one whose failure to close is unrecoverable for everything
+         * after it. Nothing after it needs the keyboard. */
+        { id: 'chat', open: 'KeyT', close: 'Escape', settle: 1200 },
+      ];
+      for (const s of surfaces) {
+        const label = `interaction:${s.id}`;
+        await mark(label);
+        await press(s.open);
+        await sleep(s.settle);
+        if (s.close) { await press(s.close); await sleep(600); }
+        const phase = await closePhase(label);
+        if (phase) {
+          /* Did the keyboard come back? `textCaptured` is what every key
+           * handler in the game checks first, so a true here means every
+           * measurement after this point is measuring a game nobody can type
+           * at. Recorded per surface rather than once at the end so the reader
+           * knows WHICH one kept it. */
+          phase.stuck = await evalIn('!!(window.GAME.input && window.GAME.input.textCaptured)');
+          out.events[label] = phase;
+        }
+      }
+      /* One last look, whatever the rows said. A `--events interaction` run
+       * that ends with the keyboard captured has told the truth about its own
+       * numbers and nothing about anyone else's. */
+      out.keyboardCaptured = await evalIn('!!(window.GAME.input && window.GAME.input.textCaptured)');
     }
 
     /* --- THE SUBSYSTEM AUTOPSY -----------------------------------------
@@ -1650,6 +2073,21 @@ function summarise(run, budget) {
       blocked: g ? g.blockedMs : null,
       starved: g ? isStarved(g, budget) : false,
       pass: (p.worst ?? 0) <= budget,
+      /* WHAT THE PHASE ACTUALLY DID, carried into the table beside its verdict.
+       * A movement phase that covered no ground and an interaction phase that
+       * ate the keyboard both produce beautiful numbers, and a reader skimming
+       * a `pass` column has no way to tell. `moved` and `stuck` are printed on
+       * the same line as the verdict so the answer cannot be quoted without
+       * them. */
+      moved: typeof p.moved === 'number' ? p.moved : null,
+      /* A traversal on a MOUNT is a different measurement from one on foot -
+       * different speed, different collider, different animation set - and
+       * `mount:<world>` runs immediately before this and does not always manage
+       * to dismount. Measured: `movement:race` covered 99 m mounted where every
+       * world on foot covered 10-28. Reported rather than corrected: the row is
+       * still a real traversal of a real world. */
+      mounted: p.mounted === true,
+      stuck: p.stuck === true,
     });
   }
   return rows;
@@ -1664,7 +2102,14 @@ function printTable(rows, budget) {
       `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.blocked ?? '-').padStart(8)} ${String(r.over).padStart(5)} `
       + `${String(r.dPrograms).padStart(6)} ${String(r.dGeometries).padStart(6)} ${String(r.dTextures).padStart(5)}  `
       + (r.pass ? 'pass' : `FAIL (>${budget})`)
-      + (r.starved ? '  STARVED - no rAF, main thread idle; not this phase\'s work' : ''),
+      + (r.starved ? '  STARVED - no rAF, main thread idle; not this phase\'s work' : '')
+      + (r.moved != null
+        ? `  moved ${r.moved} m${r.moved < 1
+          ? ' - THE PLAYER DID NOT MOVE AT ALL; the input never reached them and this row measured nothing'
+          : r.moved < 3 ? ' - barely moved; a hemmed-in spawn, read this row as a standing frame' : ''}`
+        : '')
+      + (r.mounted ? '  MOUNTED - this is a mount being ridden, not a player walking' : '')
+      + (r.stuck ? '  KEYBOARD STILL CAPTURED - every row after this one is suspect' : ''),
     );
   }
 }
@@ -1873,6 +2318,193 @@ function printFrames(run, opts = {}) {
 /* Main                                                              */
 /* ---------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------- */
+/* THE GATE                                                          */
+/* ---------------------------------------------------------------- */
+
+/**
+ * WHY THIS GATE DOES NOT ASSERT THE CLOCK.
+ *
+ * The hardest-won rule in this repository is that a gate measuring something
+ * the game does not do is worse than no gate, because it gets believed and then
+ * it gets disabled. A CI gate on frame-gap MILLISECONDS would be exactly that:
+ *
+ *  - An occluded headless window stops delivering animation frames and nothing
+ *    else, and is recorded as one enormous frame gap with an idle main thread.
+ *    The four Chrome flags above suppress it on this platform; the flags are a
+ *    mitigation, not a proof, and `isStarved` exists precisely because it still
+ *    happens. Two of the twelve rows in the two baseline runs taken for this
+ *    change came back STARVED - race at 2,750 ms and dock at 617 ms - on a
+ *    machine with the flags in force. A millisecond gate would have failed on
+ *    both, twice, in a workstream that changed neither.
+ *  - A shared CI runner is a noisier machine than this one by a wide margin,
+ *    and it has no GPU: the SwiftShader software rasteriser's absolute times
+ *    have no relationship to a player's.
+ *  - Six worlds are over budget TODAY. A clock gate would fail on every push
+ *    from the first one, which is a gate that has already been switched off.
+ *
+ * So the gate asserts the two things that ARE trustworthy across machines:
+ *
+ *  A. INVARIANTS - did this run measure the game at all, and is the property
+ *     each fix bought still in place. No baseline needed, no platform
+ *     dependence, and this half gates from the first push. `builtBefore` is the
+ *     direct guard on the maze change: put a volatile filter back into
+ *     `scheduleBackgroundBuilds` and `entry:maze` reports `builtBefore: false`
+ *     and this fails, without anyone having to trust a millisecond.
+ *  B. COUNTERS - `dProg` per event and `warm.programs`, against a baseline
+ *     recorded for the same platform. Programs are created by three.js from a
+ *     cache key, not by the driver, so the count is a property of the SCENE and
+ *     travels between machines far better than any time does. The margin is
+ *     there for the handful that legitimately move by one.
+ *
+ * The clock is printed in full either way. It is evidence; it is not a verdict.
+ *
+ * Add a platform by running `--gate` on it once and pasting the block it
+ * prints. Until that block exists the counter half PASSES with a notice and the
+ * invariant half still gates - a gate that fails on numbers it has never seen
+ * would flake on its first run, which is the same disease by another route.
+ */
+const BASELINES = {
+  /* Recorded 2026-08-25 on Windows 11 / ANGLE-D3D11, production bundle,
+   * `--events entry`, worst of the runs taken for that day's change set - the
+   * maze background build and the `arrivalKeyOf` fog-key fix both in place.
+   *
+   * `entry:sports` is 23 and not 45 BECAUSE of that second fix, and it is the
+   * one row here worth watching: 23 is not a good number, it is the number
+   * that is left after the persistent set stopped being warmed under the wrong
+   * fog. Lowering it is the open work; a run that reports 45 again means
+   * `arrivalKeyOf` has stopped telling FogExp2 apart from Fog. */
+  'win32-angle': {
+    recorded: '2026-08-25',
+    warmPrograms: 143,
+    dProg: {
+      'entry:dock': 0,
+      'entry:citadel': 0,
+      'entry:race': 0,
+      'entry:medieval': 2,
+      'entry:maze': 3,
+      'entry:sports': 23,
+    },
+  },
+};
+
+/** How far a counter may drift before it is a regression rather than noise. */
+const GATE_MARGIN = { dProg: 2, warmPrograms: 4 };
+
+/**
+ * Metres a movement phase must cover before it is allowed to mean anything.
+ *
+ * ONE METRE, AND THE NUMBER IS ARGUED RATHER THAN PICKED. What this invariant
+ * guards is not "was the traversal a good one" - it is "did the input reach the
+ * player at all", which is the failure that produces a flawless 16.8 ms worst
+ * frame over eight seconds of nothing. It was set at 3 first, and the very
+ * first full run failed on `movement:station` at 2.7 m: no gameplay block, not
+ * mounted, no captured keyboard, not dead, from (-31, 0, 5) to (-29, 0, 5). The
+ * keys arrived and physics moved the player; the station's spawn is simply
+ * hemmed in, and 229 degrees of yaw sweep did not find a way out of it.
+ *
+ * A gate that fails every run on a world's level design is a gate that gets
+ * switched off, and it would have been switched off for the wrong reason: the
+ * instrument was working. So the threshold sits where the two cases genuinely
+ * separate - zero means the input never landed, non-zero means it did - and the
+ * printed table still flags anything under 3 m as the thin traversal it is.
+ */
+const GATE_MIN_MOVE = 1;
+
+/**
+ * Which recorded baseline applies here. The renderer matters as much as the OS:
+ * a SwiftShader run and an ANGLE run differ in capability reporting, and
+ * capabilities are in the program cache key.
+ */
+function platformKey() {
+  const gl = process.env.FRAME_GAPS_GL === 'swiftshader' ? 'swiftshader' : 'angle';
+  return `${process.platform}-${gl}`;
+}
+
+/**
+ * @param {object} run one `runOnce` result
+ * @param {object} args
+ * @returns {{ failures: string[], notes: string[], block: object }}
+ */
+function gateRun(run, args) {
+  const failures = [];
+  const notes = [];
+
+  /* ---- A. invariants ------------------------------------------------- */
+  if (run.chainSignal !== 'worlds:all-ready') {
+    failures.push(`the background chain was awaited on "${run.chainSignal}" rather than the`
+      + ' worlds:all-ready event, so nothing below is known to have been measured after it');
+  }
+  if (!run.warm || !(run.warm.programs > 0)) {
+    failures.push(`boot warm linked ${run.warm?.programs ?? 'no'} programs - the warm did not run`);
+  }
+  if (run.warm?.timedOut) failures.push('the boot warm TIMED OUT; every figure below is a cold one');
+  if (run.pageErrors?.length) {
+    failures.push(`${run.pageErrors.length} uncaught page error(s), first: ${run.pageErrors[0]}`);
+  }
+  for (const [name, ev] of Object.entries(run.events)) {
+    if (!ev) continue;
+    if (name.startsWith('entry:') && ev.builtBefore === false) {
+      failures.push(`${name} was NOT built when the player entered it - the background chain`
+        + ' either skipped this world or had not reached it, and its entry cost is a build');
+    }
+    if (name.startsWith('movement:')) {
+      if (!(ev.moved >= GATE_MIN_MOVE)) {
+        failures.push(`${name} moved ${ev.moved} m - the player did not traverse anything,`
+          + ' so this phase measured a standing frame under a movement label');
+      }
+      if (ev.worldChanged) failures.push(`${name} changed world mid-traversal; it measured a crossing`);
+    }
+    if (name.startsWith('interaction:') && ev.stuck) {
+      failures.push(`${name} left the keyboard captured; every event after it is suspect`);
+    }
+  }
+
+  /* ---- B. counters, against this platform's baseline ------------------ */
+  const key = platformKey();
+  const base = BASELINES[key];
+  const dProg = {};
+  for (const [name, ev] of Object.entries(run.events)) {
+    if (ev && name.startsWith('entry:')) dProg[name] = ev.dPrograms ?? 0;
+  }
+  const block = { [key]: { recorded: new Date().toISOString().slice(0, 10), warmPrograms: run.warm?.programs ?? null, dProg } };
+
+  if (!base) {
+    notes.push(`no baseline recorded for "${key}"; the counter half of the gate did not run.`);
+    notes.push(`paste this into BASELINES in ${path.relative(root, fileURLToPath(import.meta.url))}:`);
+    notes.push(JSON.stringify(block, null, 2));
+  } else {
+    const warm = run.warm?.programs ?? 0;
+    if (warm > base.warmPrograms + GATE_MARGIN.warmPrograms) {
+      failures.push(`boot warm linked ${warm} programs against a baseline of ${base.warmPrograms}`
+        + ` (+${GATE_MARGIN.warmPrograms} allowed)`);
+    }
+    for (const [name, got] of Object.entries(dProg)) {
+      const want = base.dProg[name];
+      if (want == null) { notes.push(`${name}: no dProg baseline for "${key}"; not asserted.`); continue; }
+      if (got > want + GATE_MARGIN.dProg) {
+        failures.push(`${name} linked ${got} programs on entry against a baseline of ${want}`
+          + ` (+${GATE_MARGIN.dProg} allowed) - a world that was warm is arriving cold`);
+      }
+    }
+    for (const name of Object.keys(base.dProg)) {
+      if (!(name in dProg)) notes.push(`${name} is in the baseline and was not measured by this run.`);
+    }
+  }
+
+  /* ---- C. the clock, reported and never asserted ---------------------- */
+  const rows = summarise(run, args.budget);
+  const over = rows.filter((r) => !r.pass);
+  const starved = over.filter((r) => r.starved);
+  notes.push(`clock (not asserted): ${over.length} row(s) over ${args.budget} ms,`
+    + ` of which ${starved.length} STARVED${starved.length ? ` (${starved.map((r) => r.event).join(', ')})` : ''}.`);
+  if (run.rafStalls) {
+    notes.push(`the page's own watchdog counted ${run.rafStalls} stretch(es) of 10 s with no`
+      + ' animation frame; this run was measured through an occluded window.');
+  }
+  return { failures, notes, block };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { console.log(HELP); return 0; }
@@ -1917,6 +2549,8 @@ async function main() {
 
   console.log(`serve=${args.serve}  url=${pageUrl}`);
   const runs = [];
+  /** @type {Array<{run:number, failures:string[], notes:string[]}>} */
+  const gated = [];
   try {
     await waitFor(async () => (await fetch(pageUrl)).ok, { what: `the server at ${pageUrl}` });
     for (let i = 1; i <= args.repeat; i++) {
@@ -1934,15 +2568,34 @@ async function main() {
       printListeners(run);
       printCacheKeys(run);
       if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
+      if (args.gate) gated.push({ run: i, ...gateRun(run, args) });
       runs.push({ run: i, rows, warm: run.warm });
     }
   } finally {
     await stop();
   }
 
-  const summary = { serve: args.serve, budget: args.budget, at: new Date().toISOString(), runs };
+  const summary = {
+    serve: args.serve, budget: args.budget, at: new Date().toISOString(), runs,
+    ...(args.gate ? { gate: gated, platform: platformKey() } : {}),
+  };
   await writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
   console.log(`\nwrote ${path.join(outDir, 'summary.json')}`);
+
+  if (!args.gate) return 0;
+  /* One verdict over every run. A repeat that passes once and fails once has
+   * found something, and reporting the last run's answer would hide it. */
+  console.log(`\n=== GATE (${platformKey()}) ===`);
+  let failed = 0;
+  for (const g of gated) {
+    for (const n of g.notes) console.log(`  note  run ${g.run}: ${n}`);
+    for (const f of g.failures) { failed++; console.log(`  FAIL  run ${g.run}: ${f}`); }
+  }
+  if (failed) {
+    console.log(`\n${failed} gate failure(s). The clock was NOT asserted - see the note on BASELINES.`);
+    return 1;
+  }
+  console.log('\ngate passed. Counters and invariants only; the clock above is evidence, not a verdict.');
   return 0;
 }
 

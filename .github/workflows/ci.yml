@@ -20,6 +20,9 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # So the perf job — which is skipped on a plain branch push, see its `if` —
+  # can still be run on demand against a work-in-progress branch.
+  workflow_dispatch:
 
 # A newer push to the same branch supersedes an in-flight run.
 concurrency:
@@ -54,10 +57,17 @@ jobs:
       - name: Production build
         run: npx vite build
 
-      # Thirty layouts: six viewport sizes x five interface states, measured in
-      # real Chrome against a Vite dev server on a fresh port. It is separate
-      # from `npm test` because it needs a browser and a server; `npm test`
-      # still carries the source half of the same contract.
+      # Eighty-eight layouts: six viewport sizes x fifteen interface states,
+      # measured in real Chrome against a Vite dev server on a fresh port. It is
+      # separate from `npm test` because it needs a browser and a server;
+      # `npm test` still carries the source half of the same contract.
+      #
+      # It was five states until 2026-08-25, and the ten panels outside those
+      # five were measured at no viewport at all - which is how the quest board
+      # shipped with `280px 1fr` and `overflow: hidden` and no media query. The
+      # first run at fifteen states reported 1495 failures against CSS that had
+      # not changed. Each panel scene throws if its panel did not open, so a
+      # scene cannot pass by measuring a blank viewport.
       #
       # No `playwright install`: the runner image ships google-chrome, the
       # probe finds it on PATH, and the whole thing talks CDP over Node 22's
@@ -66,6 +76,106 @@ jobs:
       # measures nothing is the failure shape this project keeps paying for.
       - name: HUD layout
         run: npm run test:layout
+
+  # ── THE PERFORMANCE GATE ───────────────────────────────────────────────
+  #
+  # Until this job existed nothing in CI measured a frame. Every number backing
+  # the Phase 1 acceptance criterion came from a hand-run of `frame-gaps.mjs` on
+  # one developer's machine, so a regression in world entry, mount launch or
+  # world traversal shipped in silence and was found, if at all, by playing.
+  #
+  # IT DOES NOT ASSERT MILLISECONDS, AND THAT IS THE DESIGN. The long note on
+  # `BASELINES` in `scripts/frame-gaps.mjs` carries the full argument; the short
+  # version is that this repository's most expensive recurring mistake is a gate
+  # that measures something the game does not do. A clock gate here would be
+  # exactly that:
+  #
+  #   * A headless window that Windows or the compositor decides is occluded
+  #     stops delivering animation frames and nothing else, and is recorded as
+  #     one enormous frame gap over an IDLE main thread. Two of the twelve rows
+  #     in the baseline runs taken for this job came back STARVED on a machine
+  #     with all four suppression flags in force.
+  #   * This runner has no GPU. SwiftShader's absolute times are unrelated to a
+  #     player's, so a threshold picked here would be arbitrary.
+  #   * Six worlds are over the 250 ms budget TODAY. A clock gate would fail on
+  #     the first push and be commented out by the second.
+  #
+  # What it does assert survives all three: INVARIANTS (was the game actually
+  # measured — did the background world chain finish, did the boot warm run,
+  # was every world built before the player entered it, did the player actually
+  # MOVE during the movement phases, did an interaction leave the keyboard
+  # captured) and COUNTERS (shader programs linked per event, and by the boot
+  # warm). Program counts come from three.js's own cache key, not from the
+  # driver, so they travel between machines in a way that times do not.
+  #
+  # On a platform with no recorded baseline — which linux-swiftshader is until
+  # someone pastes in the block this prints — the counter half passes with a
+  # notice and the invariant half still gates. A gate that failed on numbers it
+  # had never seen would flake on its first run, which is the same disease.
+  #
+  # NOT ON EVERY PUSH. It builds the bundle, boots the game, waits out the
+  # background world chain and then enters and walks each gated world, which is
+  # tens of minutes of runner time. Pull requests and main are where a
+  # regression matters; a work-in-progress branch push is not worth it.
+  perf:
+    name: Perf — frame-gap counters and invariants
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Same browser discovery as the HUD probe: the runner image ships
+      # google-chrome and `browserCandidates()` finds it. If it ever does not,
+      # the script FAILS with "NO BROWSER FOUND - this harness measured
+      # nothing" rather than skipping, which is the only acceptable behaviour
+      # for a gate.
+      #
+      # `--settle` is four times the local default because the boot warm on a
+      # software rasteriser is several times slower than on a GPU, and a warm
+      # that times out makes every figure after it cold — which the gate would
+      # then report as a regression instead of as too short a fuse.
+      #
+      # `--worlds` IS A SCOPE, AND IT IS NOT THE ONE ANYONE WANTS. The default
+      # is every registered world; run that way with movement on, locally, and
+      # the renderer DIED partway through - eighteen worlds built, then eight
+      # seconds of held movement in each of them, streaming districts resident
+      # and waking NPCs as it went. The harness now fails loudly when that
+      # happens instead of hanging (see `die` in the CDP client), but a gate
+      # that can take the browser down is a gate that gets disabled.
+      #
+      # So it gates the six worlds the Phase 1 criterion is actually failing on
+      # plus the station it boots into. Widening this to the full set is real
+      # remaining work and it is blocked on that crash, not on this file - the
+      # background chain still BUILDS every world in every run, so a regression
+      # in a world not listed here still shows up in `warm.programs` and in the
+      # chain's own counters.
+      - name: Frame-gap gate
+        env:
+          FRAME_GAPS_GL: swiftshader
+        run: >
+          node scripts/frame-gaps.mjs --serve prod --gate
+          --worlds dock,citadel,race,medieval,maze,sports
+          --settle 960000
+          --out .probe/ci-frame-gaps
+
+      # The run's own JSON, whatever the verdict. A failure that cannot be read
+      # afterwards gets rerun until it goes green, which is how a gate becomes
+      # a coin toss.
+      - name: Upload the measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-gaps
+          path: .probe/ci-frame-gaps
+          if-no-files-found: warn
 
   site:
     name: Site — types and tests

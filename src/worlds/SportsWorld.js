@@ -2252,29 +2252,63 @@ export class SportsWorld extends World {
    * warms the program set the ARRIVAL asks for instead of one keyed to a
    * linear fog that only the preview window ever uses.
    *
-   * ── KEEPING IT IS A DECISION, NOT AN OVERSIGHT ───────────────────────────
+   * ── KEEPING IT IS A DECISION, AND ITS PRICE WAS RECORDED 6x TOO HIGH ─────
    *
-   * This fog is the single most expensive thing in the game's first minute,
-   * and it was measured rather than estimated. Sports' FIRST entry, on the
-   * production bundle, two runs of the same command with only the fog changed:
+   * The decision stands. The number it was taken against does not, and a
+   * decision recorded against a wrong number is not one anybody can re-check.
    *
-   *   its own FogExp2, as it ships   6,467.0 ms   52 programs   6,043 ms in draws
-   *   the linear fog others use        466.6 ms   12 programs      59.9 ms
+   * What this comment used to say: 6,467.0 ms and 52 programs with this fog,
+   * 466.6 ms and 12 programs with the linear one, therefore the fog is worth
+   * six seconds and is kept anyway because swapping it is not sufficient.
    *
-   * Worth SIX SECONDS and 40 of 52 programs - and it was still kept, because
-   * swapping it IS NOT SUFFICIENT. 466.6 ms is 1.9x the 250 ms budget on twelve
-   * programs that are not fog-keyed at all, so the world's aerial perspective
-   * would be spent and the criterion still missed. Trading a world's look for a
-   * partial win is a worse deal than paying six seconds once per session.
+   * RE-MEASURED 2026-08-25, production bundle, `frame-gaps.mjs --serve prod
+   * --events entry`. All three rows are the worst rAF gap on sports' FIRST
+   * entry, and all three are GENUINE main-thread block - `blocked` equals the
+   * gap to within 25 ms in every run and `rafStalls` is 0, so none of this is
+   * the occluded-window artefact that put a 31 s figure into a ledger once:
+   *
+   *   FogExp2, as it shipped         6,583 - 7,250 ms   44-45 programs  (4 runs)
+   *   linear fog (ablation)                  433.4 ms    6 programs     (1 run)
+   *   FogExp2, with arrivalKeyOf fixed     1,066.7 ms   23 programs     (1 run)
+   *
+   * THE THIRD ROW IS THE POINT. Six of those seconds were never the price of
+   * this fog - they were a bug in the thing that was supposed to pre-pay for
+   * it. `main.js`'s `arrivalKeyOf` keyed the persistent warm on `fog.type`,
+   * and three 0.185.1 gives neither `Fog` nor `FogExp2` a `type` at all: both
+   * read `undefined`, every world in the game collapsed onto one arrival key,
+   * and the avatar, viewmodels, mounts, gateways and NPCs were warmed once,
+   * under whichever fog came first - which is never this one. Sports then
+   * linked the exponential build of all of them in front of the player. With
+   * the key fixed the background chain carries 43 more programs (130 -> 173)
+   * and this entry carries 22 fewer.
+   *
+   * So the trade is not "six seconds for an aerial perspective". It is about
+   * 630 ms - 1,066.7 against the 433.4 the linear fog would cost - and at that
+   * price the decision is not close. It is also still true, and for the same
+   * reason as before, that swapping the fog IS NOT SUFFICIENT: 433.4 ms is
+   * 1.7x the 250 ms budget, so the world's look would be spent and the
+   * criterion still missed.
+   *
+   * TWO CORRECTIONS TO THE OLD ADVICE, because it points at the wrong thing:
+   *
+   * 1. The residue after removing the fog is SIX programs, not twelve. The
+   *    other six went with `addRim`'s bogus `customProgramCacheKey`, which is
+   *    the same fix that took the total from 52 to 45.
+   * 2. That residual 433.4 ms frame is not a shader frame at all. The crossing
+   *    inside it totals 372.9 ms, of which `activationCost.arrival` is 346.8 -
+   *    so what is left once the fog is gone is the ordinary per-world
+   *    activation cost that also puts dock (367-617 ms), citadel (450-550),
+   *    race (450-517) and medieval (1,100-1,183) over budget. It is a
+   *    cross-cutting problem in arrival, not a sports one, and it is not
+   *    reachable from this file.
+   *
+   * Twenty-three programs still link on this world's arrival frame and are NOT
+   * yet diagnosed. They are the next lever here, and `--cache-keys` is how to
+   * name them; do not assume they are fog-keyed, because the fog-keyed ones
+   * are the twenty-two that just left.
    *
    * It costs nothing on RE-ENTRY - repeated entry/exit passes at 100-117 ms
-   * against 250 - and the other fifteen worlds already enter at 16.8 ms.
-   *
-   * If you come here to make this world load faster, the twelve non-fog-keyed
-   * programs are the thing to attack. Four of them are the GTAO prepass and six
-   * the shadow pass, which are the renderer's OWN override materials that
-   * compile() never sees by construction; the rest are effect pools built on
-   * demand. Changing the fog is the lever that looks obvious and is not enough.
+   * against 250.
    */
   get sceneFog() {
     return this._fog;

@@ -1421,7 +1421,30 @@ function arrivalKeyOf(world) {
   const fog = world?.sceneFog ?? (env.fogFar > 0 ? _warmFog : null);
   const map = env.envMap === undefined ? engine.scene.environment : env.envMap;
   return [
-    fog ? fog.type : 'none',
+    /* `fog.type` DOES NOT EXIST, on either fog class.
+     *
+     * three 0.185.1 gives `Fog` an `isFog` flag and `FogExp2` an `isFogExp2`
+     * flag, and neither carries a `type`. So this line read `undefined` for
+     * every world in the game and the key it built was
+     * `undefined|306|1024` for a linear fog and `undefined|306|1024` for an
+     * exponential one - identical strings for the one axis this key exists to
+     * separate.
+     *
+     * The damage is precisely the cost `persistentWarmRoots` above is written
+     * about. `_persistentWarmed` is a Set of these keys, so the first world
+     * through the background chain warmed the avatar, the viewmodels, the
+     * mounts, the gateways and the NPCs under ITS fog and stamped the key;
+     * every world after it found the key present and skipped. Sports is the
+     * only world in the game with a `FogExp2`, `fogExp2` is in three's program
+     * cache key, and sports is never the first world through the chain - so
+     * the persistent set was warmed under a linear fog, sports asked for the
+     * exponential build of the same programs on its arrival frame, and every
+     * one of them was linked in front of the player.
+     *
+     * Ordering hid it rather than luck: with every one of the eighteen worlds
+     * producing the same key, exactly one warm ever ran, and it was always the
+     * wrong one for exactly one world. */
+    fog ? (fog.isFogExp2 ? 'exp2' : 'linear') : 'none',
     map ? map.mapping : 'none',
     map?.image ? map.image.height : 'none',
   ].join('|');
@@ -1955,8 +1978,14 @@ async function recoverFromContextLoss() {
  */
 function rewarmOtherWorlds() {
   const activeId = worldManager.active?.id ?? null;
+  /* No volatile filter, deliberately, and `isBuilt` is the whole guard it
+   * needs. A context loss takes the maze's programs with everyone else's, and
+   * since `scheduleBackgroundBuilds` now builds it, `isBuilt('maze')` is true
+   * and re-warming it restores exactly the property that change bought. A maze
+   * that was never built still fails `isBuilt` and is skipped here, so this
+   * cannot generate one behind the player's back. */
   const rest = worldManager.ids.filter(
-    (id) => id !== activeId && worldManager.isBuilt?.(id) && !worldManager.isVolatile(id),
+    (id) => id !== activeId && worldManager.isBuilt?.(id),
   );
   let i = 0;
   const step = () => {
@@ -2042,10 +2071,79 @@ const idle = (fn) => idleTask(fn, 1500);
  */
 const idleSoon = (fn) => idleTask(fn, 24);
 
+/**
+ * WHY A VOLATILE WORLD IS IN THIS CHAIN AT ALL.
+ *
+ * This filter used to read `!worldManager.isVolatile(id)`, and the maze is the
+ * only volatile world in the game. `MazeWorld.volatile` is a GAME-DESIGN
+ * decision - the maze that cannot be learned is the entire point - and it is
+ * not up for revision. The PERFORMANCE consequence of that decision was never
+ * itself decided: excluding it here made the maze the one world whose shader
+ * programs and textures link in front of the player.
+ *
+ * The reason including it works is `MazeWorld.dispose()`, which is explicit
+ * about it: *"Materials survive on purpose - see _ensureMaterials."* The
+ * material set and the KTX2 asset set are both cached at MODULE scope, so a
+ * re-roll clears the group, the colliders and the instance buffers and leaves
+ * every material - and therefore every program three linked for it - exactly
+ * where they were. So a background build here is not buying a reusable MAZE.
+ * The maze it builds is thrown away on the very next `build()`, as the design
+ * requires. What it buys is warm PROGRAMS and full module-scope caches.
+ *
+ * NOT warm textures, and the measurement below is why that is stated rather
+ * than assumed: the heavy frame still carries +13-27 texture uploads after this
+ * change, the same order as the +23 before it. The maze's textures hang off
+ * materials that survive, so they should not need re-uploading - that they do
+ * is unexplained, and is a thread worth pulling rather than a claim to make.
+ *
+ * MEASURED, production bundle, `frame-gaps.mjs --serve prod --events entry
+ * --worlds dock,citadel,race,medieval,maze,sports`, two runs each side, the
+ * maze fifth of six in every one of them. `entry:maze`:
+ *
+ *                       phase ms   frames   over 24 ms   worst gap   dProg
+ *   before  run 1          5,534      227    2,201 (40%)   1,000.0       6
+ *   before  run 2          5,584      238    2,150 (39%)     750.1       6
+ *   after   run 1          4,134      157    1,583 (38%)   1,316.7       3
+ *   after   run 2          2,884      157      333 (12%)     166.7       3
+ *
+ * WHAT THIS DID AND DID NOT BUY, because the difference matters more than the
+ * headline:
+ *
+ *   IT BUYS, every run: half the shader links on entry (6 -> 3), and 1.4-2.7 s
+ *   off how long the whole crossing takes - the phase is `goto` plus a fixed
+ *   2.5 s, so `phase ms` is the crossing's own wall clock. That second win is
+ *   the module-scope caches: `loadMazeAssets` and `buildMazeMaterials` are
+ *   filled by the background build, so the re-roll at entry skips the KTX2
+ *   fetch and the material construction outright.
+ *
+ *   IT DOES NOT BUY the worst single frame, and the first-entry ledger's
+ *   estimate of "963-4,151 ms off the entry" is not what happened. The worst
+ *   frame lands ~2.5 s after the crossing, carries +2-3 programs, +31-49
+ *   geometries and +13-27 textures, and is the first draw of the newly rolled
+ *   districts and the wanderers spawned into them. Every byte of that is new
+ *   by construction - `volatile` guarantees it - so no background build can
+ *   pre-pay it, and it ranges 167-2,567 ms on both sides of this change.
+ *
+ * The crossing frame ITSELF is now a clean 150-183 ms carrying `dProg 0`, in
+ * four runs out of four. `activationCost.total` is 12-24 ms either way and was
+ * never the cost.
+ *
+ * THE PRICE. A maze nobody enters is built and kept: its geometry, its ~175,600
+ * hedge instances and its collider set sit in memory for the session for a
+ * build that is thrown away by the first `build()` after it. That is a real
+ * cost and it is the reason this is worth re-measuring rather than assuming.
+ *
+ * VOLATILE WORLDS GO LAST, and that ordering is load-bearing rather than
+ * tidy: every other world's build is KEPT, so a player who walks into one
+ * early gets a permanent win, while the maze's build is discarded on entry and
+ * only its warm survives. Paying for the durable ones first is therefore
+ * strictly the better order for anyone who does not wait for the whole chain.
+ * `sort` is stable, so the durable half keeps its registration order.
+ */
 function scheduleBackgroundBuilds(startWorld) {
-  const rest = worldManager.ids.filter(
-    (id) => id !== startWorld && !worldManager.isVolatile(id),
-  );
+  const rest = worldManager.ids
+    .filter((id) => id !== startWorld)
+    .sort((a, b) => Number(worldManager.isVolatile(a)) - Number(worldManager.isVolatile(b)));
   let i = 0;
   const step = () => {
     if (i >= rest.length) {

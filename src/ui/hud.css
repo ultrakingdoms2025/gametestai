@@ -213,8 +213,17 @@ body {
   inset: 0;
   pointer-events: auto;
   cursor: pointer;
-  display: grid;
-  place-items: center;
+  /* A flex column, not `display: grid; place-items: center`. The grid centred
+     the card and CLIPPED whatever did not fit - on a phone in landscape (390 px
+     tall against an 810 px card) the logo was off the top and the button off
+     the bottom, which is what "half the loading screen is off the screen"
+     meant. A flex item can be capped at the container's height and scroll
+     inside; a centred grid item cannot without `safe` alignment, which the
+     phones this is for do not all have. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   z-index: 100;
   overflow: hidden;
   background:
@@ -302,6 +311,20 @@ body {
   position: relative;
   z-index: 2;
   width: min(760px, 88vw);
+  /* Never taller than the screen. `100%` is the flex container's definite
+     height - `.boot-screen` is `inset: 0` - so on a viewport shorter than
+     the card the card shrinks to fit and its contents scroll inside it. Not
+     `dvh`: the screen is already sized to the dynamic viewport, and a
+     percentage cannot disagree with it. `min-height: 0` is what lets a flex
+     item shrink below its content at all. `pan-y`, because `html, body` are
+     `touch-action: none` (so a look-drag never scrolls the page) and that
+     would otherwise take the scroll away from the one place it is wanted. */
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  touch-action: pan-y;
+  scrollbar-width: thin;
   padding: 46px 52px 40px;
   text-align: center;
   background: linear-gradient(160deg, rgba(10, 20, 34, 0.72), rgba(4, 8, 15, 0.82));
@@ -574,6 +597,101 @@ body {
   padding: 2px 7px;
   min-width: 26px;
   text-align: center;
+}
+
+/* --- the card on a phone -------------------------------------------------
+   Measured in Chrome with a phone viewport emulated: at 390 x 844 the card
+   was 810 px tall (logo, tagline, bar, button, save row, a ten-chip legend)
+   and fit with 17 px to spare; at 390 x 664 - the same phone with its URL
+   bar up - and at 844 x 390 it did not. Two axes, two rules: narrow tightens
+   the type and the chips, short drops the tagline and the legend outright
+   (the coach line teaches the thumbs in-game anyway) and shrinks the logo. */
+@media (max-width: 560px) {
+  .boot-inner {
+    width: min(760px, 94vw);
+    padding: 26px 18px 22px;
+  }
+
+  .boot-logo {
+    font-size: clamp(34px, 11vw, 46px);
+  }
+
+  .boot-tagline {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-indent: 0.22em;
+    margin: 12px 0 18px;
+    padding-bottom: 14px;
+  }
+
+  .boot-start {
+    margin-top: 18px;
+  }
+
+  .boot-start-title {
+    font-size: 14px;
+    letter-spacing: 0.28em;
+    text-indent: 0.28em;
+    padding: 11px 20px;
+  }
+
+  .boot-save {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    margin-top: 12px;
+  }
+
+  .boot-controls {
+    margin-top: 16px;
+    gap: 5px 6px;
+  }
+
+  .boot-controls span {
+    font-size: 11px;
+    padding: 4px 8px 4px 5px;
+    gap: 5px;
+  }
+
+  .boot-controls b {
+    font-size: 10px;
+    padding: 2px 5px;
+    min-width: 20px;
+  }
+}
+
+@media (max-height: 560px) {
+  .boot-inner {
+    padding: 16px 28px 14px;
+  }
+
+  .boot-logo {
+    font-size: clamp(26px, 5vw, 40px);
+    /* NEXUS sits on the bar without this: the tagline that used to hold
+       them apart is gone here. */
+    margin: 0 0 14px;
+  }
+
+  .boot-tagline,
+  .boot-controls {
+    display: none;
+  }
+
+  .boot-status {
+    margin-top: 8px;
+  }
+
+  .boot-start {
+    margin-top: 12px;
+  }
+
+  .boot-start-title {
+    font-size: 14px;
+    padding: 9px 22px;
+  }
+
+  .boot-save {
+    margin-top: 8px;
+  }
 }
 
 /* ==========================================================================
@@ -5385,8 +5503,9 @@ body.sm-open .wstrip {
     --hud-gap: 0.875rem;
     --hud-gap-lg: 1rem;
     --map: min(8.5rem, var(--hud-col-r));
-    /* The panel is narrower here, so its rows wrap and it stands taller. */
-    --ammo-h: 12rem;
+    /* The panel is compact here - see THE PHONE HUD below - so the column
+       under it (feed, toasts) comes up with it. */
+    --ammo-h: 7.25rem;
     /* Icon and key only - see `.wslot-meta` below. */
     --wslot-w: 3.5rem;
     --wslot-gap: 0.375rem;
@@ -5456,7 +5575,7 @@ body.sm-open .wstrip {
     --hud-gap: 0.75rem;
     --hud-gap-lg: 0.875rem;
     --map: min(7.5rem, var(--hud-col-r));
-    --ammo-h: 8.5rem;
+    --ammo-h: 7.25rem;
   }
 
   /* The pack total. `.ammo-res` already prints the reserve two lines above it,
@@ -5521,6 +5640,119 @@ body.sm-open .wstrip {
      for them and over a game that is 390 px tall. The hit marker and the
      damage numbers carry the same news where the player is already looking. */
   .killfeed {
+    display: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   6. THE PHONE HUD — narrow OR short
+
+   Both phone orientations, in one block: a 390 x 844 phone is narrow and a
+   844 x 390 phone is short, and the compaction is the same in both because
+   the problem is the same - a readout designed for a 1280 px monitor sitting
+   over a screen a thumb has to work on. Measured in Chrome with the game
+   running at 844 x 390 before this block reached the landscape case: the
+   full-size vitals column (PLAYER CREDITS with a handle line, a 38 px health
+   number with INTEGRITY / 100 and a NOMINAL 100% row, stamina) ran straight
+   into the resting stick and the More / Menu / Sprint column, and the 175 px
+   ammo panel sat over the primary thumb cluster.
+   -------------------------------------------------------------------------- */
+@media (max-width: 560px), (max-height: 560px) {
+  /* THE PHONE HUD: what a thumb-sized screen can carry.
+   *
+   * Measured in Chrome at 390 x 664 with the game running: the vitals column
+   * was 446 px tall (credits with a handle line, a 38 px health number with
+   * "INTEGRITY / 100" and a NOMINAL 100% status row, stamina, the GETTING
+   * STARTED board and the quest tracker), the ammo panel 186 x 175 with a
+   * 44 px count, pips and a bag row, and up to five toasts stacked under it
+   * running off the bottom into the thumb cluster. The owner's words: "too
+   * much info". What stays is what is read mid-fight - credits, health,
+   * stamina, the count, the map, the prompt, the newest two toasts. The
+   * charter board, the quest step and the kill feed are all in the Esc hub
+   * or on the quest board, one tap away on the tray. */
+  .charter,
+  .questtrack,
+  .killfeed {
+    display: none;
+  }
+
+  .vitals {
+    gap: 6px;
+  }
+
+  .credits {
+    padding: 6px 10px 7px 9px;
+    gap: 8px;
+  }
+
+  .credits-handle {
+    display: none;
+  }
+
+  .credits-ico {
+    width: 20px;
+    height: 20px;
+  }
+
+  .credits-val {
+    font-size: 18px;
+  }
+
+  .health {
+    padding: 8px 11px 9px;
+  }
+
+  .health-top {
+    margin-bottom: 6px;
+  }
+
+  .health-num {
+    font-size: 26px;
+  }
+
+  .health-meta,
+  .health-status {
+    display: none;
+  }
+
+  .health-bar {
+    height: 9px;
+  }
+
+  .stamina {
+    padding: 6px 11px 8px;
+  }
+
+  .ammo {
+    padding: 8px 11px 9px;
+  }
+
+  .ammo-cur {
+    font-size: 28px;
+  }
+
+  .ammo-res {
+    font-size: 14px;
+  }
+
+  .ammo-arc {
+    width: 30px;
+    height: 30px;
+  }
+
+  .ammo-pips,
+  .ammo-bag {
+    display: none;
+  }
+
+  .toast {
+    font-size: 12px;
+    padding: 5px 10px 5px 8px;
+  }
+
+  /* The newest two. `notify` keeps five; the other three are still in the
+     DOM for the desktop and simply not drawn here. */
+  .toast:nth-last-child(n + 3) {
     display: none;
   }
 }

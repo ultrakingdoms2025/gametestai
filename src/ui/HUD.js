@@ -2356,15 +2356,15 @@ export class HUD {
      * query, so it is already right on the first HUD frame, before any pointer
      * has landed. */
     if (this.input?.touchMode) {
+      /* Eight chips, not ten: crouch and sprint are labelled on their own
+       * buttons, and on a 390 px screen every chip is most of a line. */
       list.innerHTML = [
         ['Left thumb', 'Drag to move'],
         ['Right thumb', 'Drag to look'],
         ['◉', 'Fire'],
         ['⊕', 'Aim'],
-        ['▲', 'Jump / Swim'],
-        ['▼', 'Crouch / Dive'],
+        ['▲', 'Jump'],
         ['E', 'Talk / Pick up / Portal'],
-        ['»', 'Sprint'],
         ['≡', 'Pause menu'],
         ['⋯', 'Every other control'],
       ]

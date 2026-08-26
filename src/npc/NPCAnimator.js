@@ -58,6 +58,53 @@ const wrapPi = (a) => {
 };
 
 /**
+ * RAISING THE CARBINE, and the singularity the raise is routed around.
+ *
+ * The raised aim pose and the sprint-amplitude arm swing are very nearly
+ * ANTIPODAL at the elbow: measured on the shipped code with a per-frame
+ * quaternion probe, the two forearm endpoints of the crossfade slerp sit 177
+ * to 180 degrees apart (about 128 of direction, the rest twist - the IK
+ * layer's basisQuat resolves twist from the bend plane, the FK layer from
+ * authored eulers). A slerp between two rotations 180 degrees apart is
+ * genuinely ambiguous - which great circle it takes is the sign of a dot
+ * product - and because the FK endpoint oscillates with the gait, that sign
+ * FLIPS mid-blend: the forearm jumped 122-173 degrees in one frame at a blend
+ * weight of ~0.37-0.56, on raising AND lowering. The player steps around the
+ * whole crossfade (sprint keeps aimWeight at 1 and drops the muzzle target -
+ * see PlayerAvatar's STOW_AHEAD), but an NPC's weight genuinely has to travel
+ * 0 to 1, so here the crossfade itself is made safe.
+ *
+ * The route: below this weight the aim layer arms itself against an anchor
+ * pose that IS the FK swing re-expressed by the solver - hand target on the
+ * FK wrist, bend pole on the FK elbow, twist reference from the FK basis -
+ * which reproduces it EXACTLY, so arming moves nothing whatever the gait is
+ * doing. Above it the layer holds FULL authority and the hand targets sweep
+ * from the live FK hands up onto the weapon on an arc around the shoulder -
+ * a target-space path, which is continuous, and the honest animation: the
+ * hands leave the run swing and carry the weapon up, still riding what
+ * remains of the swing on the way. The slerp endpoints are far apart only
+ * when the blend parameter is 1, where slerp is a copy and a great-circle
+ * swap costs nothing. Hemisphere correction alone cannot fix
+ * this (THREE's slerp already takes the short arc - the endpoints are REALLY
+ * antipodal), and measurement, not fashion, ruled out the low-ready waypoint:
+ * the hand-target construction pins the hands at chest height whatever the
+ * aim direction, so a "lowered" target never comes near the running swing and
+ * the 172-degree flip survived it (seed 1234, lowering, weight 0.44).
+ *
+ * The raise fraction has its own clock (AIM_RAISE_RATE) rather than being a
+ * pure function of the weight: on lowering, `approach` decays the weight
+ * multiplicatively - 1 to 0.35 in nine frames - and a sweep slaved to that
+ * covered its ~270 degrees of combined travel at 80-90 degrees a frame.
+ * Measured, and no shaping function can fix it: any raise-of-weight curve
+ * that still reaches 0 rides the same nine frames. Writing `aimWeight`
+ * DIRECTLY (PlayerAvatar's respawn park - "parked, not ramped") snaps the
+ * raise with it, so a body spawned aiming is already holding the weapon up.
+ */
+const AIM_RAISE_START = 0.35;
+/** How fast the hand targets sweep between the swing and the hold, 1/s. */
+const AIM_RAISE_RATE = 2.0;
+
+/**
  * Build the rotation that takes a bone from its rest orientation to one whose
  * primary axis points along `dir` with `ref` resolving the twist.
  */
@@ -79,6 +126,33 @@ function basisQuat(dir, ref, restDir, restRef, out) {
 
   _m1.multiply(_m2);
   return out.setFromRotationMatrix(_m1);
+}
+
+// `_twistRef` owns these three; nothing else in the aim solve may touch them.
+const _twA = new THREE.Vector3();
+const _twB = new THREE.Vector3();
+const _twC = new THREE.Vector3();
+
+/**
+ * Constant-angular-rate blend between two unit vectors, in place in `a`.
+ * The aim layer sweeps each wrist through ~120 degrees around the shoulder; a
+ * plain nlerp more than doubles the angular rate at the middle of an arc that
+ * wide (the interpolant cuts the chord and gets renormalised), and that
+ * amplification alone was a third of the sweep's worst frame. Falls back to
+ * the chord when the pair is too straight or too antipodal to define a plane.
+ */
+function slerpDir(a, b, t) {
+  const d = clamp(a.dot(b), -1, 1);
+  const ang = Math.acos(d);
+  const sa = Math.sin(ang);
+  if (sa > 1e-4 && ang < Math.PI - 0.05) {
+    a.multiplyScalar(Math.sin((1 - t) * ang) / sa).addScaledVector(b, Math.sin(t * ang) / sa);
+    return a;
+  }
+  a.multiplyScalar(1 - t).addScaledVector(b, t);
+  if (a.lengthSq() < 1e-6) a.copy(b);
+  else a.normalize();
+  return a;
 }
 
 /**
@@ -235,6 +309,21 @@ export class NPCAnimator {
     this.restFoot = dir('footR', new THREE.Vector3());
     this.restUpperArm = { R: dir('upperArmR', new THREE.Vector3()), L: dir('upperArmL', new THREE.Vector3()) };
     this.restForeArm = { R: dir('foreArmR', new THREE.Vector3()), L: dir('foreArmL', new THREE.Vector3()) };
+    /* The rest-frame vector that plays basisQuat's `ref` role for a bone: feed
+     * basisQuat `q * twistRef(restDir)` as the ref alongside direction
+     * `q * restDir` and it returns exactly `q` - rotation distributes over the
+     * cross products, so the whole basis reproduces. This is how the aim layer
+     * hands the solver the FK pose's own twist convention (@see AIM_RAISE_START).
+     * Mirrors basisQuat's rest-side construction, fallbacks included. */
+    const twistRef = (restDir) => {
+      const a1 = new THREE.Vector3().crossVectors(_fwd, restDir);
+      if (a1.lengthSq() < 1e-10) a1.crossVectors(_up, restDir);
+      if (a1.lengthSq() < 1e-10) a1.set(1, 0, 0);
+      a1.normalize();
+      return new THREE.Vector3().crossVectors(restDir, a1).normalize();
+    };
+    this.twistRefUpperArm = { R: twistRef(this.restUpperArm.R), L: twistRef(this.restUpperArm.L) };
+    this.twistRefForeArm = { R: twistRef(this.restForeArm.R), L: twistRef(this.restForeArm.L) };
 
     /* ── Landmarks come off the BONE TABLE, not off the archetype ──────────
      *
@@ -272,7 +361,8 @@ export class NPCAnimator {
 
     this.lookTarget = null;
     this.aimTarget = null;
-    this.aimWeight = 0;
+    this._aimWeight = 0;
+    this._aimRaise = 0;
     this._aimWant = 0;
     this.headYaw = 0;
     this.headPitch = 0;
@@ -346,6 +436,9 @@ export class NPCAnimator {
     this._pole = new THREE.Vector3();
     this._bendRef = new THREE.Vector3();
     this._eyeLocal = new THREE.Vector3();
+    // Per-bone unwrapped twist azimuth for the aim raise; null = re-anchor.
+    // @see _twistRef
+    this._twistPhi = { uR: null, uL: null, fR: null, fL: null };
   }
 
   /* ---------------------------------------------------------------- */
@@ -371,6 +464,24 @@ export class NPCAnimator {
 
   setAiming(on) {
     this._aimWant = on ? 1 : 0;
+  }
+
+  /**
+   * Blend authority of the aim layer, 0..1. Reads exactly as it always has.
+   * WRITING it is the parking gesture (PlayerAvatar's respawn snap - "parked,
+   * not ramped"): a write to either end also parks the raise fraction there,
+   * so a body spawned at weight 1 is already holding the weapon up rather
+   * than spending half a second sweeping into the hold. Mid-band writes leave
+   * the raise to its own clock. @see AIM_RAISE_RATE
+   */
+  get aimWeight() {
+    return this._aimWeight;
+  }
+
+  set aimWeight(v) {
+    this._aimWeight = v;
+    if (v >= 0.999) this._aimRaise = 1;
+    else if (v <= 0.001) this._aimRaise = 0;
   }
 
   /**
@@ -540,6 +651,13 @@ export class NPCAnimator {
     this.runBlend = approach(this.runBlend, smoothstep(2.2, 3.6, s), 8, dt);
     this.moveBlend = approach(this.moveBlend, smoothstep(0.1, 0.85, s), 12, dt);
     this.aimWeight = approach(this.aimWeight, this._aimWant, 7, dt);
+    // The raise sweep runs on its own clock; the weight only tells it where
+    // to go. Rate-limited, not approached: a linear sweep has no fast head to
+    // outrun the arms and no long tail to hang the weapon halfway. @see
+    // AIM_RAISE_RATE for why it cannot simply be a function of the weight.
+    const raiseWant = smoothstep(AIM_RAISE_START, 1, this._aimWeight);
+    const cap = AIM_RAISE_RATE * dt;
+    this._aimRaise += clamp(raiseWant - this._aimRaise, -cap, cap);
     this.postureWeight = approach(this.postureWeight, this.posturePose ? 1 : 0, 3.2, dt);
     // Sitting down and standing up are both fast; the ramp exists so neither is
     // a single-frame pop, not to animate a deliberate movement.
@@ -786,9 +904,65 @@ export class NPCAnimator {
   /* --- upper-body aim --------------------------------------------- */
 
   /**
+   * The twist reference the aim solve hands basisQuat for one bone during a
+   * raise: the FK pose's own reference, swung about the bone direction toward
+   * the bend-plane reference by `raise`.
+   *
+   * Interpolated as an AZIMUTH about `dir`, not as a free 3D vector. Both
+   * references lean well out of the plane perpendicular to the bone (the
+   * bend ref sits within 25 degrees of the bone axis itself on the ape rig),
+   * and the great-circle path between two such vectors passes close to the
+   * axis - where its projection, the only part basisQuat reads, whips through
+   * half a turn in a couple of frames. Measured before this existed: 50.9
+   * degrees of forearm in one frame on the ape's left arm, mid-raise.
+   *
+   * The azimuth is unwrapped against the previous frame (`_twistPhi`)
+   * because the two conventions sit near 180 degrees apart on some rigs,
+   * where "the short way round" is ambiguous and gait noise flipped it
+   * mid-sweep. The anchor is dropped (null) whenever the sweep is parked, so
+   * a fresh raise starts from the honest shortest path; a stale branch can
+   * only survive across the raise<->hold boundary, where `raise` is within a
+   * hair of 1 and every branch lands on the same vector.
+   */
+  _twistRef(key, fkRef, bendRef, dir, raise) {
+    _twA.copy(fkRef).addScaledVector(dir, -fkRef.dot(dir));
+    _twB.copy(bendRef).addScaledVector(dir, -bendRef.dot(dir));
+    const la = _twA.lengthSq();
+    const lb = _twB.lengthSq();
+    if (la < 1e-8) {
+      this._twistPhi[key] = null;
+      return lb < 1e-8 ? bendRef : _twB.multiplyScalar(1 / Math.sqrt(lb));
+    }
+    _twA.multiplyScalar(1 / Math.sqrt(la));
+    if (lb < 1e-8) {
+      this._twistPhi[key] = null;
+      return _twA;
+    }
+    _twB.multiplyScalar(1 / Math.sqrt(lb));
+    // Signed azimuth from the FK reference to the bend reference, about dir.
+    _twC.crossVectors(_twA, _twB);
+    let phi = Math.atan2(_twC.dot(dir), clamp(_twA.dot(_twB), -1, 1));
+    const prev = this._twistPhi[key];
+    if (raise > 0 && prev !== null) {
+      while (phi - prev > Math.PI) phi -= Math.PI * 2;
+      while (phi - prev < -Math.PI) phi += Math.PI * 2;
+    }
+    this._twistPhi[key] = raise > 0 ? phi : null;
+    const th = phi * raise;
+    _twC.crossVectors(dir, _twA);
+    return _twA.multiplyScalar(Math.cos(th)).addScaledVector(_twC, Math.sin(th));
+  }
+
+  /**
    * Point the weapon at the target with both arms while the legs keep running
    * their own cycle. Solved as two-bone IK on hand targets derived from the aim
    * direction, then blended against the FK swing pose.
+   *
+   * The crossfade is ROUTED, not straight - see AIM_RAISE_START. `blend` is
+   * how much authority the IK layer has (saturates at AIM_RAISE_START);
+   * `raise` is how far up the weapon is (0 = hands still on the FK swing,
+   * 1 = the aim hold). At aimWeight 1 both are 1 and the pose is exactly the
+   * pre-routing aim pose, so a parked weight (the player) is untouched.
    */
   _poseAimArms() {
     const chest = this._fkPos[this._idx('spine03')];
@@ -800,6 +974,13 @@ export class NPCAnimator {
     const right = this._aimRight.crossVectors(aimDir, _up);
     if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
     right.normalize();
+
+    const raise = this._aimRaise;
+    // Full authority the moment the hands leave the swing: a mid-strength
+    // slerp against a mid-raise pose is exactly the ambiguous configuration
+    // this routing exists to avoid. While the raise is parked at 0 the anchor
+    // IS the FK pose, so the ramp below moves nothing and only arms the layer.
+    const blend = raise > 0 ? 1 : smoothstep(0, AIM_RAISE_START, this.aimWeight);
 
     for (const s of ['R', 'L']) {
       const sgn = s === 'R' ? 1 : -1;
@@ -817,25 +998,73 @@ export class NPCAnimator {
       target.y = chest.y + 0.16 + aimDir.y * reach;
 
       const pole = this._pole.set(sgn * 0.55, -0.85, 0.25).normalize();
+      if (raise < 1) {
+        // On the way up (or down) the target rides the LIVE FK hand, and the
+        // bend plane rides the LIVE FK elbow - both read before this arm's
+        // chain is overwritten, so they are this frame's swing. With both
+        // anchored, the solve at raise 0 reproduces the swing pose's own
+        // joint, and the only endpoint gap left for the blend to cross is the
+        // twist convention, carried by the refs below. The wrist sweeps on an
+        // ARC around the shoulder rather than a chord between the two points:
+        // the chord passes close to the elbow and the forearm direction whips
+        // through the close pass - 37 degrees in a frame on the long-armed
+        // ape rig, measured - where the arc keeps a steady angular rate. It
+        // is also the honest path: hands come up around the shoulder, they do
+        // not cut through the torso.
+        _v1.subVectors(target, shoulder);
+        _v2.subVectors(this._fkPos[this._idx(`hand${s}`)], shoulder);
+        const lHold = _v1.length() || 1e-6;
+        const lSwing = _v2.length() || 1e-6;
+        _v1.multiplyScalar(1 / lHold);
+        _v2.multiplyScalar(1 / lSwing);
+        slerpDir(_v2, _v1, raise);
+        target.copy(shoulder).addScaledVector(_v2, lerp(lSwing, lHold, raise));
+        _v3.subVectors(this._fkPos[fi], shoulder); // FK elbow, in rig space
+        if (_v3.lengthSq() > 1e-8) pole.lerp(_v3.normalize(), 1 - raise);
+        if (pole.lengthSq() > 1e-8) pole.normalize();
+        else pole.set(sgn * 0.55, -0.85, 0.25).normalize();
+      }
       const joint = this._tmpPos;
       this._bendRef.copy(solveTwoBone(shoulder, target, this.upperArmLen, this.foreArmLen, pole, joint));
 
+      /* The twist convention rides the raise the same way the targets do.
+       * basisQuat resolves a bone's roll from its `ref` argument; the bend
+       * plane's ref and the FK pose's own ref sit up to ~175 degrees apart
+       * around the forearm, and that gap was the larger half of the antipodal
+       * pair. Handing the solver the FK pose's ref at raise 0 makes the solve
+       * reproduce the FK pose EXACTLY - swing (target and pole above) and
+       * twist (here) - so the blend below has nothing to jump across, and
+       * `_twistRef` swings one ref onto the other continuously. `_fkQuat`
+       * still holds this frame's pure FK for both bones: the loop only
+       * overwrites them after this point. */
       _v3.subVectors(joint, shoulder).normalize();
-      basisQuat(_v3, this._bendRef, this.restUpperArm[s], _fwd, _q1);
+      let ref = this._bendRef;
+      if (raise < 1) {
+        _v1.copy(this.twistRefUpperArm[s]).applyQuaternion(this._fkQuat[ui]);
+        ref = this._twistRef(s === 'R' ? 'uR' : 'uL', _v1, this._bendRef, _v3, raise);
+      }
+      basisQuat(_v3, ref, this.restUpperArm[s], _fwd, _q1);
       _v3.subVectors(target, joint).normalize();
-      basisQuat(_v3, this._bendRef, this.restForeArm[s], _fwd, _q2);
+      ref = this._bendRef;
+      if (raise < 1) {
+        _v1.copy(this.twistRefForeArm[s]).applyQuaternion(this._fkQuat[fi]);
+        ref = this._twistRef(s === 'R' ? 'fR' : 'fL', _v1, this._bendRef, _v3, raise);
+      }
+      basisQuat(_v3, ref, this.restForeArm[s], _fwd, _q2);
 
       const upper = this.bones[ui];
       const fore = this.bones[fi];
       const parentQ = this._fkQuat[this._parent[ui]];
       _q3.copy(parentQ).invert().multiply(_q1);
-      upper.quaternion.slerp(_q3, this.aimWeight);
+      upper.quaternion.slerp(_q3, blend);
       this._fkQuat[ui].copy(parentQ).multiply(upper.quaternion);
       _q3.copy(this._fkQuat[ui]).invert().multiply(_q2);
-      fore.quaternion.slerp(_q3, this.aimWeight);
+      fore.quaternion.slerp(_q3, blend);
       this._fkQuat[fi].copy(this._fkQuat[ui]).multiply(fore.quaternion);
     }
-    // Wrists straighten onto the weapon.
+    // Wrists straighten onto the weapon. These ride the raw weight, exactly
+    // as they always did: their two endpoints are only 6-9 degrees apart, so
+    // the weight's own continuous ramp was never part of the singularity.
     _e1.set(0.1, 0, -0.18);
     _q3.setFromEuler(_e1);
     this.bones[this._idx('handR')].quaternion.slerp(_q3, this.aimWeight * 0.85);

@@ -144,7 +144,7 @@ const LEAN_BANK_MAX = 0.12;
 const LEAN_LAND = 0.13;
 
 /**
- * STOWING THE CARBINE FOR A SPRINT, and the singularity it steps around.
+ * STOWING THE CARBINE FOR A SPRINT, and the singularity it stepped around.
  *
  * A sprint used to take the weapon away from the aim solver, which crossfaded
  * the whole arm from a raised carbine to a running swing. Those two poses are
@@ -152,22 +152,26 @@ const LEAN_LAND = 0.13;
  * - and a slerp between two rotations 180 degrees apart is genuinely ambiguous.
  * Which of the two great circles it takes is decided by the sign of a dot
  * product, so as the blend weight moved that sign flipped and the forearm
- * jumped through the whole arc in one frame. Measured on both the old code and
- * the new: 122 to 153 degrees, at a blend weight of about 0.37, in BOTH
- * directions. It lives in `NPCAnimator._poseAimArms`, which is shared with
- * every NPC in the game.
+ * jumped through the whole arc in one frame. Measured: 122 to 173 degrees, at
+ * a blend weight of about 0.37-0.56, in BOTH directions.
  *
- * It is stepped around rather than fought, and the way around it is also the
- * better animation: a sprinting player does not let go of their weapon, they
- * drop the muzzle. Keeping the aim layer at full weight and moving its TARGET
- * down to a point on the ground ahead sweeps the whole arm down as one piece -
- * no crossfade, no antipodal pair, and the gun visibly goes with it because the
- * prop is parented to the hand.
+ * The crossfade itself has since been made safe for the NPCs, whose weight
+ * genuinely has to travel 0 to 1: `NPCAnimator._poseAimArms` now ROUTES the
+ * blend (see AIM_RAISE_START there - the layer arms itself against an anchor
+ * that IS the FK swing, then sweeps the hand targets onto the weapon on their
+ * own clock), pinned by npc-aim-singularity.test.mjs. At weight 1 the routed
+ * solve is bit-identical to the old one, so nothing here changed behaviour -
+ * the stow below and the respawn park included.
+ *
+ * The stow stays, because it is not a workaround, it is the better animation:
+ * a sprinting player does not let go of their weapon, they drop the muzzle.
+ * Keeping the aim layer at full weight and moving its TARGET down to a point
+ * on the ground ahead sweeps the whole arm down as one piece - no crossfade,
+ * and the gun visibly goes with it because the prop is parented to the hand.
  *
  * Free-fall and the character preview still release the weapon outright: there
  * the arms are wanted free (the air pose counter-balances with them, and the
- * preview wants a neutral stance), and both were measured to blend cleanly
- * because neither is at sprint amplitude.
+ * preview wants a neutral stance), and both now ride the routed crossfade.
  */
 /** Metres ahead of the feet the stowed muzzle points. */
 const STOW_AHEAD = 2.0;
@@ -1131,9 +1135,11 @@ export class PlayerAvatar {
     a.setAiming(!!aimAt && !release);
     /* A body that has just been teleported, respawned or spawned should
      * ALREADY be holding its weapon, not spend half a second swinging up into
-     * the hold - and that ramp crosses the antipodal band described above, so
-     * the transient was also a 52-degree forearm flip at every respawn. Parked,
-     * not ramped. @see STOW_AHEAD */
+     * the hold. (Before NPCAnimator's routed crossfade, this ramp also crossed
+     * the antipodal band described above - a 52-degree forearm flip at every
+     * respawn.) Parked, not ramped - and a direct aimWeight write parks the
+     * raise fraction with it; NPCAnimator's setter guarantees that.
+     * @see STOW_AHEAD */
     if (this._aimSnap) {
       this._aimSnap = false;
       a.aimWeight = aimAt && !release ? 1 : 0;

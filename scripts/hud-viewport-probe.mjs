@@ -47,7 +47,14 @@
  *      steal the edges: it moves everything anchored to one past everything
  *      anchored to a percentage. See the harness note on why those tokens are
  *      the only fakeable part.
- *   6. Everything in `hud-source-checks.mjs` - the four facts that are not
+ *   6. THE ROTATE GATE, at every viewport, in both directions. A coarse
+ *      portrait phone must get `OrientationGate`'s card - up, covering every
+ *      edge, swallowing taps, with a reachable way out - and every other
+ *      viewport must never see it. See `assertGate`, and see the note at the
+ *      call site for why the panel assertions were NOT deleted from
+ *      `phone-portrait`: the card has a CONTINUE IN PORTRAIT button, the
+ *      probe presses it, and the layout behind it is graded as it always was.
+ *   7. Everything in `hud-source-checks.mjs` - the facts that are not
  *      visible in a rectangle at all. Those also run under `npm test`.
  *
  * Screenshots for every case land in `.probe/hud-viewport/`, and a machine
@@ -81,14 +88,29 @@ const argv = new Set(process.argv.slice(2));
  * over, which is the one that runs out of HEIGHT rather than width; 768x1024
  * and 1024x768 are an iPad; 1280x800 is the smallest desktop the shipped
  * layout was ever designed for and is therefore the regression arm.
+ *
+ * ── `rotateGate`: what the game DOES here, stated by hand ────────────────
+ *
+ * A coarse-pointer viewport under 720 px wide held upright now gets
+ * `OrientationGate`'s rotate card over everything (see `src/ui/Orientation
+ * Gate.js` for why 720, and for what can and cannot actually be forced). This
+ * flag says whether that card is expected, and it is WRITTEN DOWN rather than
+ * computed by importing the gate's own `shouldPromptRotate`. Importing it
+ * would make this gate agree with the implementation by construction: change
+ * the rule, and both sides move together and nothing fails. Six literals is
+ * what makes a rule change loud.
+ *
+ * Note which one is `false`: an iPad in PORTRAIT is 768 px wide, keeps every
+ * two-column panel layout, and is graded here exactly as it always was. It is
+ * not asked to rotate a screen that already works.
  */
 const VIEWPORTS = [
-  { id: 'phone-portrait', w: 390, h: 844, dpr: 3, coarse: true },
-  { id: 'phone-landscape', w: 844, h: 390, dpr: 3, coarse: true },
-  { id: 'tablet-portrait', w: 768, h: 1024, dpr: 2, coarse: true },
-  { id: 'tablet-landscape', w: 1024, h: 768, dpr: 2, coarse: true },
-  { id: 'desktop', w: 1280, h: 800, dpr: 1, coarse: false },
-  { id: 'desktop-wide', w: 1920, h: 1080, dpr: 1, coarse: false },
+  { id: 'phone-portrait', w: 390, h: 844, dpr: 3, coarse: true, rotateGate: true },
+  { id: 'phone-landscape', w: 844, h: 390, dpr: 3, coarse: true, rotateGate: false },
+  { id: 'tablet-portrait', w: 768, h: 1024, dpr: 2, coarse: true, rotateGate: false },
+  { id: 'tablet-landscape', w: 1024, h: 768, dpr: 2, coarse: true, rotateGate: false },
+  { id: 'desktop', w: 1280, h: 800, dpr: 1, coarse: false, rotateGate: false },
+  { id: 'desktop-wide', w: 1920, h: 1080, dpr: 1, coarse: false, rotateGate: false },
 ];
 
 /**
@@ -258,6 +280,12 @@ const MEASURE = `(() => {
     '.helpchip', '.mount', '.chat', '.debug', '.toasts', '.prompt', '.stuck',
     '.cammode', '.pause-in', '.help-card', '.pm-root', '.touch-primary',
     '.touch-left', '.touch-tray',
+    /* The rotate card, not the scrim it sits on. \`.rotate\` is full-bleed by
+     * design - the same reason \`.pause\` is absent from this list and
+     * \`.pause-in\` is on it: a scrim that reaches the edge of the screen is
+     * doing its job, and grading it would report every overlay in the
+     * interface as clipped and as sitting under the notch. */
+    '.rotate-in',
   ];
 
   /* Exactly the selector \`hud.css\` uses to opt elements back into pointer
@@ -307,6 +335,15 @@ const MEASURE = `(() => {
     const own = el.getBoundingClientRect();
     return {
       name,
+      /* Is this box part of the rotate card?
+       *
+       * While that card is up it covers the whole screen at z-index 110, so
+       * everything behind it is neither visible nor pressable - and grading
+       * the HUD through it would be measuring a layout the player is not
+       * looking at, which is the exact shape of gate this repository keeps
+       * paying for. The probe grades the card's own subtree in that state and
+       * the panels in the state where the card has been dismissed. */
+      inGate: !!el.closest('.rotate'),
       left: +r.left.toFixed(2), top: +r.top.toFixed(2),
       right: +r.right.toFixed(2), bottom: +r.bottom.toFixed(2),
       width: +r.width.toFixed(2), height: +r.height.toFixed(2),
@@ -408,10 +445,66 @@ const MEASURE = `(() => {
     return b;
   });
 
+  /* ---- the rotate-to-landscape gate -----------------------------------
+   *
+   * Reported as a rectangle plus two facts, and NOT as "the module says it is
+   * showing". \`OrientationGate.showing\` is a boolean the gate sets itself; a
+   * gate that set it and forgot to add the class would read as working here
+   * and be invisible on the phone. What is measured is the same thing the
+   * player gets: is the element painted, and does it reach every edge.
+   *
+   * \`dismiss\` is the control that must be reachable in every case where the
+   * card is up - it is the one that is always built (the \`Turn the screen for
+   * me\` button only exists where \`screen.orientation.lock\` does, which is not
+   * iOS). Its box goes through the same \`clippedRect\` walk as everything else,
+   * so a card that has scrolled it off itself reports null here. */
+  const gateEl = document.querySelector('.rotate');
+  const gateRect = gateEl ? clippedRect(gateEl) : null;
+  const dismissEl = document.querySelector('.rotate-dismiss');
+  const gate = {
+    present: !!gateEl,
+    shown: !!gateRect,
+    rect: gateRect ? {
+      left: +gateRect.left.toFixed(2), top: +gateRect.top.toFixed(2),
+      right: +gateRect.right.toFixed(2), bottom: +gateRect.bottom.toFixed(2),
+    } : null,
+    /* Whether a tap anywhere on it is swallowed rather than reaching the game
+     * underneath. A see-through modal is not a modal. */
+    blocking: gateEl ? getComputedStyle(gateEl).pointerEvents !== 'none' : false,
+    /**
+     * WHAT A FINGER ACTUALLY HITS, at five points on the screen.
+     *
+     * \`elementFromPoint\` resolves the real stacking order and skips anything
+     * with \`pointer-events: none\`, so this is the only measurement here that
+     * answers "is the card ON TOP" rather than "is the card the right size".
+     * A rectangle cannot tell them apart: a card at z-index 50 under a panel
+     * at 88 measures as covering the whole viewport and takes not one tap.
+     *
+     * Five points, not one: a scrim that is correct in the middle and inset by
+     * a rounded corner or a notch at the edges leaves live game in the corners,
+     * which is where a thumb rests.
+     */
+    hits: [[0.5, 0.5], [0.04, 0.04], [0.96, 0.04], [0.04, 0.96], [0.96, 0.96]]
+      .map(([fx, fy]) => {
+        const hit = document.elementFromPoint(Math.round(vw * fx), Math.round(vh * fy));
+        return {
+          at: \`\${Math.round(fx * 100)}%,\${Math.round(fy * 100)}%\`,
+          inGate: !!hit?.closest?.('.rotate'),
+          got: hit ? ((hit.className || '').toString().trim().split(/\\s+/)[0]
+            || hit.tagName.toLowerCase()) : 'nothing',
+        };
+      }),
+    dismiss: dismissEl && clippedRect(dismissEl) ? box(dismissEl, '.rotate-dismiss') : null,
+    /* Present only where the browser has the API that can really turn the
+     * screen. Reported, never required: on iOS Safari there is no such API and
+     * the card is instruction-only by design. */
+    lock: document.querySelector('.rotate-lock') ? true : false,
+  };
+
   return {
     vw, vh,
     coarse: matchMedia('(pointer: coarse)').matches,
-    named, interactive, lost,
+    named, interactive, lost, gate,
     scroll: { w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight },
   };
 })()`;
@@ -537,6 +630,125 @@ function assertCase(m, vp, scene) {
 }
 
 /* ====================================================================== */
+/* The rotate-to-landscape gate                                           */
+/* ====================================================================== */
+
+/**
+ * Everything measured while the rotate card is up, and nothing behind it.
+ *
+ * ── Why the portrait cases are not simply deleted ────────────────────────
+ *
+ * A phone in portrait now shows a card instead of the HUD, so asserting where
+ * `.vitals` lands there would be grading a screen the player never sees -
+ * this repository's most expensive habit. But the card has a CONTINUE IN
+ * PORTRAIT button (WCAG 2.2 SC 1.3.4; see `OrientationGate.js`), and a player
+ * who presses it is looking at exactly the layout the old cases measured. So
+ * both states are real and both are graded: this one while the card is up,
+ * and the ordinary `assertCase` run once the probe has pressed that button
+ * the way a player does.
+ *
+ * What is asserted here is what a modal has to be, and each of the four has a
+ * failure it exists for:
+ *
+ *   - IT IS UP. A gate that decides "coarse and narrow" wrongly shows nothing
+ *     and the phone gets the unusable layout back with no sign anything broke.
+ *   - IT REACHES EVERY EDGE. A scrim inset by a notch leaves a live strip of
+ *     game down each side of it.
+ *   - IT SWALLOWS TAPS. `pointer-events: none` on the layer would leave the
+ *     boot card's CLICK TO ENTER pressable straight through it.
+ *   - THE WAY OUT IS REACHABLE. The one control that is always built has to
+ *     be on screen and thumb-sized, or the card is a dead end.
+ */
+function assertGate(m, vp, scene) {
+  const fails = [];
+  const g = m.gate ?? {};
+
+  if (!g.present) {
+    fails.push('there is no .rotate element in the interface at all — '
+      + 'OrientationGate did not build');
+  } else if (!g.shown) {
+    fails.push('the rotate card is not on screen at a coarse portrait viewport '
+      + `${m.vw}x${m.vh} — this phone gets a landscape layout it cannot read`);
+  } else {
+    const r = g.rect;
+    const out = [];
+    if (r.left > EPS) out.push(`${r.left.toFixed(1)}px of game showing down the left`);
+    if (r.top > EPS) out.push(`${r.top.toFixed(1)}px showing across the top`);
+    if (r.right < m.vw - EPS) out.push(`${(m.vw - r.right).toFixed(1)}px showing down the right`);
+    if (r.bottom < m.vh - EPS) out.push(`${(m.vh - r.bottom).toFixed(1)}px showing across the bottom`);
+    if (out.length) fails.push(`the rotate card does not cover the screen: ${out.join(', ')}`);
+
+    if (!g.blocking) {
+      fails.push('the rotate card does not take pointer events — every tap goes '
+        + 'through it to the game (or the boot card) underneath');
+    }
+
+    for (const h of g.hits ?? []) {
+      if (h.inGate) continue;
+      fails.push(`a tap at ${h.at} of the screen lands on .${h.got}, not on the rotate `
+        + 'card — the card is the wrong size or the wrong way up the stack');
+    }
+
+    if (!g.dismiss) {
+      fails.push('CONTINUE IN PORTRAIT is not on screen — the card is a dead end, '
+        + 'and WCAG 2.2 SC 1.3.4 says it may not be');
+    } else {
+      const d = g.dismiss;
+      if (d.left < -EPS || d.right > m.vw + EPS || d.top < -EPS || d.bottom > m.vh + EPS) {
+        fails.push(`CONTINUE IN PORTRAIT is off the screen at ${d.left},${d.top} `
+          + `${d.width}x${d.height} of ${m.vw}x${m.vh}`);
+      }
+      if (d.ownW < 44 - EPS || d.ownH < 44 - EPS) {
+        fails.push(`CONTINUE IN PORTRAIT is ${d.ownW}x${d.ownH}px, under the 44px touch minimum`);
+      }
+    }
+  }
+
+  return fails.map((f) => `[${vp.id}/${scene}] ${f}`);
+}
+
+/**
+ * The same measurement with everything behind the card taken out of it.
+ *
+ * Handed to `assertCase`, so the card's own subtree gets clipping, overlap,
+ * stranding and the 44 px floor for free rather than through a second, weaker
+ * copy of those four checks written specially for it.
+ */
+function gateOnly(m) {
+  return {
+    ...m,
+    named: m.named.filter((b) => b.inGate),
+    interactive: m.interactive.filter((b) => b.inGate),
+  };
+}
+
+/**
+ * Nothing inside the border a notch describes.
+ *
+ * Extracted so the rotate card is held to the same rule as every panel rather
+ * than to a second, weaker copy of it written specially for the new thing.
+ * See the long note at the call site for why this is an inset RECTANGLE and
+ * not "did it move by 44 px".
+ *
+ * @param {object} m a MEASURE result taken with the insets forced
+ * @param {{t:number,r:number,b:number,l:number}} inset
+ */
+function assertSafeArea(m, inset, vp, scene) {
+  const fails = [];
+  for (const b of [...m.named, ...m.interactive]) {
+    const out = [];
+    if (b.left < inset.l - EPS) out.push(`${(inset.l - b.left).toFixed(1)}px into the left`);
+    if (b.top < inset.t - EPS) out.push(`${(inset.t - b.top).toFixed(1)}px into the top`);
+    if (b.right > m.vw - inset.r + EPS) out.push(`${(b.right - m.vw + inset.r).toFixed(1)}px into the right`);
+    if (b.bottom > m.vh - inset.b + EPS) out.push(`${(b.bottom - m.vh + inset.b).toFixed(1)}px into the bottom`);
+    if (out.length) {
+      fails.push(`[${vp.id}/${scene}] ${b.name} sits under the safe area: ${out.join(', ')}`);
+    }
+  }
+  return fails;
+}
+
+/* ====================================================================== */
 /* Source-level checks that a headless browser cannot make                */
 /* ====================================================================== */
 
@@ -602,6 +814,8 @@ async function main() {
   let client;
   /* Filled from `window.__harness.scenes` once the page is up. */
   let sceneCount = 0;
+  /* How many of those cases also measured the rotate card before dismissing it. */
+  let gateCases = 0;
 
   try {
     await waitFor(async () => (await fetch(harnessUrl)).ok,
@@ -701,6 +915,63 @@ async function main() {
         }, { what: `the harness at ${vp.id}/${scene}`, timeout: 60000 })
           .catch((e) => { throw withLog(e); });
 
+        /* ---- THE ROTATE GATE, BEFORE THE SCENE IS ENTERED --------------
+         *
+         * On a coarse portrait phone the first thing on screen is now
+         * `OrientationGate`'s card, over everything including the boot
+         * screen. It is measured HERE, on a document that has just loaded,
+         * because that is when a player meets it - and because it is the same
+         * card in all fifteen scenes, taking it before the scene is entered
+         * means the panels are never opened underneath it.
+         *
+         * Then it is DISMISSED, through its own button, and the run carries
+         * on into the ordinary assertions. Both halves are states the game
+         * really has: the card, and the layout a player gets after pressing
+         * CONTINUE IN PORTRAIT. Deleting the second half would drop the only
+         * measurement the narrow-width layouts in `quest-board.css`,
+         * `inventory.css` and `race.css` have. */
+        const gateFails = [];
+        if (vp.rotateGate) {
+          const up = (await call('Runtime.evaluate', { expression: MEASURE, returnByValue: true }))
+            .result.value;
+          gateFails.push(...assertGate(up, vp, `${scene}/rotate`));
+          gateFails.push(...assertCase(gateOnly(up), vp, `${scene}/rotate`));
+
+          /* And the card under a real notch, same as every panel. */
+          const inset = SAFE_AREA.portrait;
+          await call('Runtime.evaluate', {
+            expression: `window.__harness.setSafeArea(${JSON.stringify(inset)})`,
+            returnByValue: true,
+          });
+          await sleep(60);
+          const notched = (await call('Runtime.evaluate', { expression: MEASURE, returnByValue: true }))
+            .result.value;
+          gateFails.push(...assertGate(notched, vp, `${scene}/rotate+safe-area`));
+          gateFails.push(...assertSafeArea(gateOnly(notched), inset, vp, `${scene}/rotate+safe-area`));
+          gateFails.push(...assertCase(gateOnly(notched), vp, `${scene}/rotate+safe-area`));
+          await call('Runtime.evaluate', {
+            expression: 'window.__harness.setSafeArea(null)', returnByValue: true,
+          });
+
+          const shot = await call('Page.captureScreenshot', { format: 'png' });
+          await writeFile(path.join(outDir, `${vp.id}-${scene}-rotate.png`),
+            Buffer.from(shot.data, 'base64'));
+
+          /* A DISMISS THAT DID NOT HAPPEN IS NOT A CLEAN CASE. If the button
+           * stops closing the card, every assertion below this line would be
+           * made against a screen with the card still on it - fifteen cases
+           * measuring one modal and reporting them as fifteen panels. */
+          const gone = await call('Runtime.evaluate', {
+            expression: 'window.__harness.dismissRotateGate()',
+            awaitPromise: true, returnByValue: true,
+          });
+          if (gone.result?.value !== true) {
+            throw withLog(new Error(`${vp.id}/${scene}: CONTINUE IN PORTRAIT did not `
+              + 'close the rotate card — every panel measurement below it would be '
+              + 'taken through a modal'));
+          }
+        }
+
         /* A SCENE THAT DID NOT HAPPEN IS NOT A CLEAN SCENE.
          *
          * Every panel scene in the harness asserts that the panel it names is
@@ -730,7 +1001,20 @@ async function main() {
           throw new Error(`measurement threw at ${vp.id}/${scene}: ${res.exceptionDetails.text}`);
         }
         const m = res.result.value;
-        const caseFails = assertCase(m, vp, scene);
+        const caseFails = [...gateFails, ...assertCase(m, vp, scene)];
+
+        /* AND THE CARD MUST NOT BE HERE.
+         *
+         * The other half of the rule, and the half that catches the mistake
+         * that would be worst: a gate that decided "narrow" on width alone
+         * would put a rotate prompt over a 1280 px desktop, and every
+         * assertion in this file would still pass because a covered layout is
+         * a laid-out layout. Stated for all six viewports, so the ones that
+         * must never see it say so. */
+        if (!vp.rotateGate && m.gate?.shown) {
+          caseFails.push(`[${vp.id}/${scene}] the rotate card is up at ${m.vw}x${m.vh} `
+            + `(coarse: ${m.coarse}) — this viewport must never be asked to rotate`);
+        }
 
         /* ---- safe area ------------------------------------------------
          *
@@ -752,16 +1036,7 @@ async function main() {
           await sleep(60);
           const after = (await call('Runtime.evaluate', { expression: MEASURE, returnByValue: true }))
             .result.value;
-          for (const b of [...after.named, ...after.interactive]) {
-            const out = [];
-            if (b.left < inset.l - EPS) out.push(`${(inset.l - b.left).toFixed(1)}px into the left`);
-            if (b.top < inset.t - EPS) out.push(`${(inset.t - b.top).toFixed(1)}px into the top`);
-            if (b.right > after.vw - inset.r + EPS) out.push(`${(b.right - after.vw + inset.r).toFixed(1)}px into the right`);
-            if (b.bottom > after.vh - inset.b + EPS) out.push(`${(b.bottom - after.vh + inset.b).toFixed(1)}px into the bottom`);
-            if (out.length) {
-              caseFails.push(`[${vp.id}/${scene}] ${b.name} sits under the safe area: ${out.join(', ')}`);
-            }
-          }
+          caseFails.push(...assertSafeArea(after, inset, vp, scene));
           /* And every other assertion again, on the inset layout.
            *
            * A notch does not only steal the edges - it moves everything that
@@ -780,8 +1055,14 @@ async function main() {
         const shot = await call('Page.captureScreenshot', { format: 'png' });
         await writeFile(path.join(outDir, `${vp.id}-${scene}.png`), Buffer.from(shot.data, 'base64'));
 
+        if (vp.rotateGate) gateCases++;
         report.cases.push({
           viewport: vp.id, scene, vw: m.vw, vh: m.vh, coarse: m.coarse,
+          /* `expected` is the literal from VIEWPORTS; `seen` is what the page
+           * actually painted once the card had been dismissed. The pair is in
+           * the report so a reader can tell "the gate was never up" from "the
+           * gate was up and was measured" without re-running anything. */
+          rotateGate: { expected: !!vp.rotateGate, seenAfterDismiss: !!m.gate?.shown },
           named: m.named, interactive: m.interactive, failures: caseFails,
         });
         failures.push(...caseFails);
@@ -789,6 +1070,94 @@ async function main() {
       }
     }
     process.stdout.write('\n');
+
+    /* ================================================================== *
+     * THE ROTATION ROUND TRIP                                            *
+     * ================================================================== *
+     *
+     * Every case above loads a FRESH DOCUMENT at a fixed size, which is the
+     * right way to grade a layout and is completely blind to the one thing a
+     * player actually does with this feature: turn the phone over while the
+     * page is open.
+     *
+     * Three facts, none of which any of the 88 cases can show:
+     *
+     *   1. The card goes when the phone is turned. If `OrientationGate` only
+     *      decided at construction, every case above would still be green and
+     *      the card would sit there for ever over a landscape game.
+     *   2. The game underneath comes back. A card that hides itself but leaves
+     *      `HUD._overlays` holding `rotate` would leave the interface in its
+     *      `overlaid` state - weapon strip gone, hub refusing to open - and
+     *      nothing here or in `npm test` would say so.
+     *   3. It re-arms. Turned back upright, the card must come up again; a
+     *      one-shot gate reads as working right up until the second rotation.
+     *
+     * One document throughout, resized in place, exactly as a phone does it.
+     */
+    {
+      const rotFails = [];
+      const measure = async () => (await call('Runtime.evaluate', {
+        expression: MEASURE, returnByValue: true,
+      })).result.value;
+      const setSize = async (w, h) => {
+        await call('Emulation.setDeviceMetricsOverride', {
+          width: w, height: h, deviceScaleFactor: 1, mobile: true,
+          screenWidth: w, screenHeight: h,
+        });
+        /* Two frames. The resize listener runs, then the class-driven
+         * transition on `.rotate` settles; measured mid-transition the card's
+         * opacity is somewhere on a bezier and `visible()` is a coin toss. */
+        await sleep(160);
+      };
+
+      await call('Emulation.setEmulatedMedia', {
+        features: [{ name: 'pointer', value: 'coarse' }, { name: 'any-pointer', value: 'coarse' },
+          { name: 'hover', value: 'none' }, { name: 'any-hover', value: 'none' }],
+      });
+      await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+      await setSize(390, 844);
+      pageLog = [];
+      await call('Page.navigate', { url: harnessUrl });
+      await waitFor(async () => {
+        const r = await call('Runtime.evaluate', {
+          expression: "document.documentElement.dataset.harness === 'ready'",
+          returnByValue: true,
+        });
+        return r.result?.value === true;
+      }, { what: 'the harness for the rotation round trip', timeout: 60000 })
+        .catch((e) => { throw withLog(e); });
+
+      const upright = await measure();
+      rotFails.push(...assertGate(upright, { id: 'rotation' }, 'upright'));
+
+      await setSize(844, 390);
+      const turned = await measure();
+      if (turned.gate?.shown) {
+        rotFails.push('[rotation/turned] the card is still up at 844x390 — turning the '
+          + 'phone over does not put it away, so the game is unreachable in both orientations');
+      }
+      /* And the game is really back, not merely uncovered. `.vitals` is the
+       * left-hand readout column and is on screen in every playing state; a
+       * HUD still stuck in `overlaid` would have dropped it. */
+      if (!turned.named.some((b) => b.name === '.vitals')) {
+        rotFails.push('[rotation/turned] the card went but the HUD did not come back — '
+          + 'the vitals column is not on screen, so the overlay was never released');
+      }
+      const shotL = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(path.join(outDir, 'rotation-turned.png'), Buffer.from(shotL.data, 'base64'));
+
+      await setSize(390, 844);
+      const again = await measure();
+      rotFails.push(...assertGate(again, { id: 'rotation' }, 'upright-again'));
+
+      report.rotation = {
+        upright: upright.gate, turned: turned.gate, again: again.gate, failures: rotFails,
+      };
+      failures.push(...rotFails);
+      console.log(rotFails.length
+        ? `rotation round trip: ${rotFails.length} failures`
+        : 'rotation round trip: card up at 390x844, gone at 844x390, back at 390x844.');
+    }
 
     const src = await sourceChecks();
     report.source = src;
@@ -810,7 +1179,8 @@ async function main() {
     return 1;
   }
   console.log(`\nHUD layout OK across ${VIEWPORTS.length} viewports x ${sceneCount} scenes `
-    + `(${report.cases.length} cases).`);
+    + `(${report.cases.length} cases, ${gateCases} of them measured twice: the rotate `
+    + 'card first, then the layout a player gets after dismissing it).');
   console.log(`screenshots: ${path.relative(root, outDir)}`);
   return 0;
 }

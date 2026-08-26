@@ -3,7 +3,7 @@
  *
  * `hud-viewport-probe.mjs` drives real Chrome at real viewport sizes and
  * measures real rectangles, which is the only honest way to check a layout.
- * Four things are not visible in a rectangle, and this file is those four:
+ * Five things are not visible in a rectangle, and this file is those five:
  *
  *   1. `dvh` vs `vh`. A headless browser has no URL bar to slide away, so the
  *      two are identical in it and no measurement can tell them apart. On a
@@ -23,9 +23,14 @@
  *      An inline style beats every stylesheet, so while it did, no breakpoint
  *      could shrink the map and a 390 px phone got the same 220 px square a
  *      desktop does.
+ *   5. Whether anybody has "forced landscape" with a `transform: rotate(90deg)`
+ *      on the frame. That hack turns the pixels and leaves the input frame
+ *      where it was, so it looks perfect in every rectangle the probe measures
+ *      and every screenshot it takes, and is unplayable with a thumb. It is
+ *      the one defect here a browser makes MORE invisible rather than less.
  *
  * Exported rather than inlined in the probe so `scripts/tests/hud-responsive
- * .test.mjs` can run the same four under `npm test`, which is the gate this
+ * .test.mjs` can run the same five under `npm test`, which is the gate this
  * repository's CI actually runs on every push. `SHEETS` is the list they walk,
  * and it has to keep pace with what the probe positions - see the note on it,
  * and the test in `hud-responsive.test.mjs` that ties the two together.
@@ -161,6 +166,40 @@ export async function hudSourceChecks() {
   }
   if (!/--map/.test(hud)) {
     fails.push('hud.css no longer declares --map, so nothing sizes the minimap at all');
+  }
+
+  /* -- 5. THE CSS ROTATE HACK, BANNED OUTRIGHT -------------------------
+   *
+   * The stock answer to "force landscape on mobile" is
+   *
+   *     @media (orientation: portrait) { #ui-root { transform: rotate(90deg) } }
+   *
+   * and it is a trap. It rotates the PIXELS and nothing else: pointer
+   * coordinates, scroll, `innerWidth`/`innerHeight`, `env(safe-area-inset-*)`
+   * and the virtual keyboard all stay in the frame the browser thinks it is
+   * in. This game is played with a thumb dragging a look pad and a thumb on a
+   * floating stick, so every touch would land somewhere other than where it
+   * was aimed - and, being purely an input-frame defect, it looks PERFECT in
+   * a screenshot and in every rectangle `hud-viewport-probe.mjs` measures.
+   * That is exactly why it is checked here instead: a browser cannot see it.
+   *
+   * `src/ui/OrientationGate.js` is the honest version - a real
+   * `screen.orientation.lock` where the API exists, and a rotate prompt
+   * everywhere else. Narrow to the four elements the hack is ever applied to,
+   * because a rotated icon or a spinning ring is not this defect: the crosshair
+   * arms, the boot beacon and the mount wheel all legitimately rotate. */
+  const FRAME_SUBJECT = /^(html|body|#ui-root|#viewport)(?![\w-])/;
+  for (const file of SHEETS) {
+    const css = (await read(file)).replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/transform\s*:[^;]*\brotate[XYZ]?\s*\(/.test(rule[2])) continue;
+      const subjects = rule[1].split(',')
+        .map((s) => s.trim().split(/[\s>+~]+/).filter(Boolean).pop() ?? '');
+      if (!subjects.some((s) => FRAME_SUBJECT.test(s))) continue;
+      fails.push(`${file}: \`${rule[1].trim()}\` carries a rotate transform. Rotating the `
+        + 'whole frame turns the pixels and leaves touch coordinates, scroll and the '
+        + 'virtual keyboard where they were — see src/ui/OrientationGate.js');
+    }
   }
 
   return fails;

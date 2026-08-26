@@ -44,13 +44,19 @@ const read = async (p) => (await readFile(path.join(root, p), 'utf8')).replace(/
  *   - whether `Minimap.js` writes `canvas.style.width` again: an inline style
  *     beats every stylesheet, which is why a 390 px phone used to get the
  *     desktop's 220 px map.
+ *   - whether anybody has "forced landscape" with a `transform: rotate(90deg)`
+ *     on the frame. That is the one entry here a browser makes MORE invisible
+ *     rather than less: the pixels turn, the input frame does not, and the
+ *     result measures and photographs perfectly while being unplayable with a
+ *     thumb. `src/ui/OrientationGate.js` is the honest version, and
+ *     `scripts/tests/orientation-gate.test.mjs` is the rest of its contract.
  *
  * And it runs here, under `npm test`, because that is what CI runs on every
  * push. The probe needs a browser and a dev server and is invoked by hand or
  * by `npm run test:layout`.
  */
 
-test('the four facts a rectangle cannot carry', async () => {
+test('the five facts a rectangle cannot carry', async () => {
   const fails = await hudSourceChecks();
   assert.deepEqual(fails, [], `\n  - ${fails.join('\n  - ')}\n`);
 });

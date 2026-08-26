@@ -5,6 +5,7 @@ import { ChatBox } from './ChatBox.js';
 import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
 import { PauseMenu } from './PauseMenu.js';
+import { OrientationGate } from './OrientationGate.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -481,6 +482,25 @@ export class HUD {
 
     this._buildWipe();
     this._buildPause();
+
+    /**
+     * The rotate-to-landscape prompt.
+     *
+     * Built here rather than in `main.js` for the reason every panel in this
+     * file is: the HUD is what already holds `_overlays`, `showPauseOverlay`
+     * and the re-engagement path, and the gate needs all three. It is also
+     * what the layout harness constructs, so the gate is graded by
+     * `hud-viewport-probe.mjs` without the harness having to know it exists.
+     *
+     * It is a sibling of `.hud`, on `#ui-root`, like `.pause` and `.wstrip`:
+     * `.hud` fades as a unit and is dimmed by `overlaid`, and this card must
+     * be readable in both of those states.
+     */
+    this.orientationGate = new OrientationGate({
+      root: this.root,
+      bus: this.bus,
+      input: this.input,
+    });
 
     // The selector sits outside `.hud` so its slots stay clickable above the
     // pause overlay — pointer lock swallows clicks, so the only moment a slot
@@ -3650,6 +3670,7 @@ export class HUD {
     if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
     if (this._onLockEsc) window.removeEventListener('keydown', this._onLockEsc, true);
     this.pauseMenu.dispose();
+    this.orientationGate?.dispose();
     this.el.remove();
     this.wipe.remove();
     this.pause.remove();

@@ -1,0 +1,19 @@
+{
+  "comment": "Authored timber-frame carpentry for Aldermoor Vale (Phase 9, decision D4 - the environment pass the nine-branch art phase never gave this world). Written by scripts/make-medieval-glb.mjs; the .glb is reproduced byte for byte by re-running it, and scripts/tests/medieval-frame-assets.test.mjs holds every number below against the file on disk. glTF materials are DISCARDED on load - each part is MERGED into the village GeoBatch under the material slot named in 'bind', which the batch already flushes, so nothing in this manifest can add a draw call, a material or a shader program. 'brace' replaces the straight corner strap in every storey frame of MedievalWorld._house with the bowed blade a sawn oak arch-brace actually is; 'console' is the cyma bracket carried under each joist end of a jettied storey, which used to end on bare box ends. A missing file degrades to exactly the straight straps and bare joists the village drew before this pass.",
+  "assets": [
+    {
+      "id": "frame",
+      "file": "frame.glb",
+      "kind": "geometry",
+      "licence": "generated",
+      "source": "scripts/make-medieval-glb.mjs - procedurally authored in this repository, 2026-08-26",
+      "parts": ["brace", "console"],
+      "tris": 104,
+      "bytes": 9488
+    }
+  ],
+  "bind": {
+    "brace": { "slot": "beam" },
+    "console": { "slot": "beam" }
+  }
+}

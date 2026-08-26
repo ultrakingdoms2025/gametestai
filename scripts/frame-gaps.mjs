@@ -76,7 +76,7 @@ function parseArgs(argv) {
      * that silently covers five of seven axes is the failure shape this repo
      * keeps paying for - a gate reporting a pass for ground it never walked. */
     profile: null, events: 'keybind,weapon,mount,interaction,movement,entry,repeat',
-    warmWait: 0, awaitReady: true, settleAfterReady: 8000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
+    warmWait: 0, awaitReady: true, settleAfterReady: 8000, chainTimeoutMs: 600000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
     gl: false, listeners: false, frames: false, gate: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -109,6 +109,13 @@ function parseArgs(argv) {
      * would then read as a performance regression rather than as too short a
      * fuse. So the fuse is a knob. */
     else if (a === '--settle') out.settleMs = Number(next());
+    /* The chain wait had a hardcoded 600000 that NO flag reached - CI passed
+     * `--settle 960000`, which raised only the boot deadline, and then died on
+     * the chain wait's own ten-minute fuse with nothing to show for it. Same
+     * shape as the settle knob's comment above: on swiftshader the chain is
+     * slower by an amount nobody has measured yet, and a fuse that cannot be
+     * raised turns "slower than my desktop" into a red X. */
+    else if (a === '--chain-timeout') out.chainTimeoutMs = Number(next());
     else if (a === '--skip-build') out.skipBuild = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -134,6 +141,9 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --settle <ms>      boot-warm deadline (default 240000). Raise it on a slow or
                      GPU-less machine; a warm that times out makes every figure
                      after it a cold one.
+  --chain-timeout <ms>  deadline for the background world chain (default
+                     600000). Separate from --settle, which it does NOT
+                     inherit; on timeout the run prints which worlds built.
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
@@ -1223,12 +1233,43 @@ async function runOnce(args, pageUrl, runIndex) {
         console.warn('[frame-gaps] worlds:all-ready latch not armed; falling back to the '
           + 'built-predicate, which cannot see a volatile world still building.');
       }
-      await waitFor(() => evalIn(
-        latchArmed
-          ? 'window.__FG_CHAIN.ready === true'
-          : 'window.GAME.worldManager.ids.every((id) => window.GAME.worldManager.isVolatile(id)'
-            + ' || window.GAME.worldManager.isBuilt(id))',
-      ), { timeout: 600000, every: 1000, what: 'the background world chain to finish' });
+      try {
+        await waitFor(() => evalIn(
+          latchArmed
+            ? 'window.__FG_CHAIN.ready === true'
+            : 'window.GAME.worldManager.ids.every((id) => window.GAME.worldManager.isVolatile(id)'
+              + ' || window.GAME.worldManager.isBuilt(id))',
+        ), { timeout: args.chainTimeoutMs, every: 1000, what: 'the background world chain to finish' });
+      } catch (err) {
+        /* A timeout that says only "timed out" forces the next person to
+         * guess. The maiden CI run did exactly that: fifteen minutes of
+         * silence, then this error, and no way to tell four-worlds-in from
+         * hung-at-boot. Snapshot how far the chain got BEFORE rethrowing, so
+         * a timeout is a measurement - "built 11/18, 96 programs, stuck after
+         * medieval" - and the fix (a longer fuse, or a genuine hang) can be
+         * chosen from evidence. Best-effort: if the page is gone this must
+         * not mask the original error. */
+        try {
+          const progress = JSON.parse(await evalIn(
+            'JSON.stringify({'
+            + ' built: window.GAME.worldManager.ids.filter((id) => window.GAME.worldManager.isBuilt(id)),'
+            + ' unbuilt: window.GAME.worldManager.ids.filter((id) => !window.GAME.worldManager.isBuilt(id)'
+            + '   && !window.GAME.worldManager.isVolatile(id)),'
+            + ' volatile: window.GAME.worldManager.ids.filter((id) => window.GAME.worldManager.isVolatile(id)),'
+            + ' programs: window.GAME.engine.renderer.info.programs.length,'
+            + ' latch: window.__FG_CHAIN ?? null })'
+          ));
+          out.chainTimeoutProgress = progress;
+          console.error(
+            `[frame-gaps] chain timed out after ${args.chainTimeoutMs} ms with `
+            + `${progress.built.length}/${progress.built.length + progress.unbuilt.length} `
+            + `non-volatile worlds built, ${progress.programs} programs.\n`
+            + `  built:   ${progress.built.join(', ') || '(none)'}\n`
+            + `  unbuilt: ${progress.unbuilt.join(', ') || '(none)'}`
+          );
+        } catch { /* the page is gone; the original timeout is the story */ }
+        throw err;
+      }
       await sleep(args.settleAfterReady);
       if (args.profile === 'background') await profileOff('background-chain');
       out.events.backgroundChain = await closePhase('background-chain');

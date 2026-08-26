@@ -157,13 +157,27 @@ jobs:
       # background chain still BUILDS every world in every run, so a regression
       # in a world not listed here still shows up in `warm.programs` and in the
       # chain's own counters.
-      - name: Frame-gap gate
+      # CALIBRATING, deliberately: `continue-on-error` until this job's FIRST
+      # green run on this runner. The maiden run died on a fuse `--settle`
+      # never reached - the chain wait had its own hardcoded ten-minute
+      # timeout - after fifteen silent minutes, telling nobody how far the
+      # chain got. The fuse is now a knob (`--chain-timeout`), a timeout now
+      # prints which worlds built, and 35 minutes is a GUESS pending the
+      # measurement, because nobody has timed the 18-world chain on
+      # swiftshader. Until one green run proves the fuse and pastes the
+      # printed baseline into `BASELINES`, a red here is calibration data,
+      # not a regression - and a gate that reds on its own clock gets
+      # deleted, which is worse. FLIP THIS TO ENFORCING in the same commit
+      # that records the baseline.
+      - name: Frame-gap gate (calibrating)
+        continue-on-error: true
         env:
           FRAME_GAPS_GL: swiftshader
         run: >
           node scripts/frame-gaps.mjs --serve prod --gate
           --worlds dock,citadel,race,medieval,maze,sports
           --settle 960000
+          --chain-timeout 2100000
           --out .probe/ci-frame-gaps
 
       # The run's own JSON, whatever the verdict. A failure that cannot be read

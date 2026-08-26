@@ -47,3 +47,22 @@ export async function sql<T extends AnyRow = AnyRow>(
   const rows = await result;
   return { rows: Array.isArray(rows) ? rows : [...(rows as Iterable<T>)] };
 }
+
+/**
+ * Run a PRE-WRITTEN, PARAMETERIZED statement with `$1`-style placeholders.
+ *
+ * "Unsafe" is the postgres package's name for "text I did not build from a
+ * tagged template", not an invitation: the only legitimate callers pass
+ * CONSTANTS (the KPI statements in lib/kpiSql.ts, telemetry DDL in
+ * lib/kpi.ts) with values strictly in `params`. Never interpolate input into
+ * `text`.
+ */
+export async function sqlUnsafe<T extends AnyRow = AnyRow>(
+  text: string,
+  params: unknown[] = []
+): Promise<SqlResult<T>> {
+  const client = getClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (await (client as any).unsafe(text, params as any[])) as T[];
+  return { rows: Array.isArray(rows) ? rows : [...(rows as Iterable<T>)] };
+}

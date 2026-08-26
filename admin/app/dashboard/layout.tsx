@@ -21,6 +21,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="sidebar-logo">AETHER<span>NEXUS</span><br />Admin Panel</div>
         <nav>
           <Link href="/dashboard">Overview</Link>
+          <Link href="/dashboard/kpi">KPIs</Link>
           <Link href="/dashboard/players">Players</Link>
           <Link href="/dashboard/quests">Quests</Link>
           <Link href="/dashboard/marketplace">Marketplace</Link>

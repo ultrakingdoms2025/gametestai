@@ -356,6 +356,18 @@ const GRASS_HIDE_DISTANCE = 86;
 const CANOPY_LO_DISTANCE = 90;
 
 /**
+ * Canopy sway, in metres per metre-squared of height. @see MedievalWorld#_leafPatch
+ *
+ * Quadratic in height above the instance origin, which is the tree's own base:
+ * 0.0019 puts an 11 m oak crown at 23 cm and a 1 m bush at 2 mm, off one
+ * number. Anything past about 0.003 starts to separate a crown from the trunk
+ * it is sitting on, because the trunk is a different material and does not move.
+ */
+const LEAF_SWAY = 0.0019;
+/** Per-leaf flutter amplitude, metres. Small on purpose - it is texture, not motion. */
+const LEAF_FLUTTER = 0.018;
+
+/**
  * Radius multipliers for the cheap crown lumps.
  *
  * A lower-tessellation polyhedron inscribed in the same sphere encloses less
@@ -3029,8 +3041,74 @@ export class MedievalWorld extends World {
   _leafPatch(mat, gain = 1.0) {
     if (!mat) return;
     const sunView = this._sunViewU;
+    const time = this._timeU;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uSunView = sunView;
+      shader.uniforms.uTime = time;
+      /* ---- Wind, on the canopy.
+       *
+       * The vale's grass and its reeds have bent in the wind since they were
+       * authored; its woods - a million and a half triangles of them, sixty per
+       * cent of the world - have stood dead still. In a frame that contains
+       * both, the moving thing is what tells you the still thing is a model.
+       *
+       * Three reasons this is affordable where a second wind material would not
+       * have been:
+       *
+       *  1. **No new program.** It goes inside the patch the leaf material
+       *     already carries, under the cache key it already has. A separate
+       *     `windPatch` for foliage would have linked another one, and the
+       *     warm program count is this project's scarcest resource.
+       *  2. **Instanced only.** `_mats.leaf` is shared between the instanced
+       *     crowns, brush and bushes - which should move - and the MERGED
+       *     batches that use it for hedges, window boxes and pot plants, whose
+       *     local Y is a world height rather than a height above a trunk and
+       *     which would have been flung across the village by a Y-proportional
+       *     sway. `USE_INSTANCING` separates the two exactly, and costs
+       *     nothing, because three already links those as separate programs.
+       *  3. **Quadratic in height.** The same shape the grass uses: the sway is
+       *     `y * y`, so an 11 m oak crown moves ~22 cm and a 1 m bush moves
+       *     under 2 mm off one constant. Nothing needs per-species tuning, and
+       *     a crown never leaves the trunk it belongs to by enough to see.
+       *
+       * The crowns cast shadows and the depth material has no wind term, so the
+       * shadow lags the leaves by the sway amplitude. At 22 cm under a dappled
+       * canopy that is not visible; the grass had to give up its shadows for
+       * the same mismatch only because a 25 cm blade IS its own shadow.
+       *
+       * Measured in the running game after the change: two linked leaf
+       * programs, both carrying this code, both instanced - and the world's
+       * warm program count unmoved at 137. 93 leaf meshes, 11,824 instances,
+       * 2.04 M triangles go through it.
+       */
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+           #ifdef USE_INSTANCING
+             vec3 lfRoot = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+             float lfPh = lfRoot.x * 0.17 + lfRoot.z * 0.13;
+             /* A slow travelling gust on top of the carrier, so a wood breathes
+              * in patches rather than every tree leaning together. */
+             float lfGust = 0.60 + 0.40 * sin(uTime * 0.23 + lfRoot.x * 0.013 + lfRoot.z * 0.010);
+             float lfBend = sin(uTime * 0.83 + lfPh) * 0.62 + sin(uTime * 1.47 + lfPh * 1.7) * 0.26;
+             float lfUp = max(transformed.y, 0.0);
+             float lfW = lfBend * lfGust * lfUp * lfUp * ${LEAF_SWAY.toFixed(5)};
+             // Same bearing as the grass, so one wind blows through the frame.
+             transformed.x += lfW * 0.86;
+             transformed.z += lfW * 0.51;
+             /* Leaf-level flutter: fast, tiny, and keyed off the vertex's OWN
+              * position, so neighbouring clusters in the same crown are never in
+              * step. Without it the whole crown is one rigid lump on a stick. */
+             if (lfUp > 0.6) {
+               float lfF = sin(uTime * 3.7 + transformed.x * 2.1 + transformed.z * 1.7
+                               + transformed.y * 0.9) * lfGust;
+               transformed.x += lfF * ${LEAF_FLUTTER.toFixed(4)};
+               transformed.y += lfF * ${(LEAF_FLUTTER * 0.5).toFixed(4)};
+             }
+           #endif`
+        );
       /* ---- Distance LOD on the cut-out itself.
        *
        * Coverage-preserving mips stop the *statistical* erosion, but a crown

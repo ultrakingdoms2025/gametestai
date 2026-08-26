@@ -58,6 +58,10 @@ const _mzOut = new THREE.Vector3();
 const _dthDir = new THREE.Vector3();
 const _airEuler = new THREE.Euler();
 const _airQuat = new THREE.Quaternion();
+const _stowPoint = new THREE.Vector3();
+/* Handed to the animator, which keeps the reference and copies it each frame -
+ * so this is rewritten before every `animator.update` and never read after. */
+const _aimHold = new THREE.Vector3();
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const wrapPi = (a) => {
@@ -100,6 +104,77 @@ const TURN_MOVE = 11;
 const TURN_IDLE = 4.5;
 /** Idle dead zone: the body does not chase small camera turns while standing. */
 const TURN_DEADZONE = 0.6;
+/**
+ * Where an idle turn-in-place lets go again.
+ *
+ * The dead zone used to be a plain gate - inside it the body was frozen,
+ * outside it turned at the full rate - so a single slow look swept the body
+ * through start, stop, start, stop. Measured over a twelve-step camera sweep:
+ * the turn rate handed to the animator was a square wave, and the animator
+ * drives its shuffle-step cadence off exactly that number. Breaking at
+ * `TURN_DEADZONE` and not letting go until `TURN_SETTLE` makes one turn out of
+ * what was a stutter, which is the same latch a real neck-then-body turn has.
+ */
+const TURN_SETTLE = 0.06;
+/** Hysteresis on "moving", so the yaw target does not chatter at the boundary. */
+const MOVE_ENTER = 0.8;
+const MOVE_LEAVE = 0.42;
+/** Ceiling on the eased idle/aim turn, radians/second. Nothing may teleport. */
+const TURN_CEILING = 14;
+
+/**
+ * Locomotion lean.
+ *
+ * `NPCAnimator` has one upright gait and no lean layer, because an NPC walks
+ * at one speed on flat ground and never corners hard. A player sprints,
+ * stops dead and carves round a corner at 8 m/s, and a torso that stays
+ * vertical through all of it is the single loudest thing that reads as
+ * mechanical. Additive on the spine, exactly like `_applyAirPose`, so it
+ * costs no material, no program and no draw call.
+ */
+/** Forward fold at full sprint, radians, summed over the three spine joints. */
+const LEAN_SPRINT = 0.145;
+/** Extra fold per m/s2 of forward acceleration, and its ceiling. */
+const LEAN_ACCEL = 0.016;
+const LEAN_ACCEL_MAX = 0.11;
+/** Bank into a turn, radians per rad/s of body rotation, and its ceiling. */
+const LEAN_BANK = 0.052;
+const LEAN_BANK_MAX = 0.12;
+/** Forward fold contributed by a landing absorb, radians per absorb unit. */
+const LEAN_LAND = 0.13;
+
+/**
+ * STOWING THE CARBINE FOR A SPRINT, and the singularity it steps around.
+ *
+ * A sprint used to take the weapon away from the aim solver, which crossfaded
+ * the whole arm from a raised carbine to a running swing. Those two poses are
+ * very nearly ANTIPODAL at the elbow once the run cycle is at sprint amplitude
+ * - and a slerp between two rotations 180 degrees apart is genuinely ambiguous.
+ * Which of the two great circles it takes is decided by the sign of a dot
+ * product, so as the blend weight moved that sign flipped and the forearm
+ * jumped through the whole arc in one frame. Measured on both the old code and
+ * the new: 122 to 153 degrees, at a blend weight of about 0.37, in BOTH
+ * directions. It lives in `NPCAnimator._poseAimArms`, which is shared with
+ * every NPC in the game.
+ *
+ * It is stepped around rather than fought, and the way around it is also the
+ * better animation: a sprinting player does not let go of their weapon, they
+ * drop the muzzle. Keeping the aim layer at full weight and moving its TARGET
+ * down to a point on the ground ahead sweeps the whole arm down as one piece -
+ * no crossfade, no antipodal pair, and the gun visibly goes with it because the
+ * prop is parented to the hand.
+ *
+ * Free-fall and the character preview still release the weapon outright: there
+ * the arms are wanted free (the air pose counter-balances with them, and the
+ * preview wants a neutral stance), and both were measured to blend cleanly
+ * because neither is at sprint amplitude.
+ */
+/** Metres ahead of the feet the stowed muzzle points. */
+const STOW_AHEAD = 2.0;
+/** And how high, so the line comes out about 33 degrees below the shoulder. */
+const STOW_HEIGHT = 0.15;
+/** How fast the muzzle drops and comes back up, nepers/second. */
+const STOW_RATE = 7;
 
 /** Barrel tip in the weapon prop's local frame (end of the muzzle brake). */
 const MUZZLE_Z = -0.79;
@@ -416,6 +491,28 @@ export class PlayerAvatar {
     this._turnRate = 0;
     this._airWeight = 0;
     this._landAbsorb = 0;
+    /** Latched while an idle turn-in-place is running. @see TURN_SETTLE */
+    this._turnLatch = false;
+    /** Hysteretic "is walking", so the yaw target does not chatter. */
+    this._moving = false;
+    /**
+     * Damped rise/fall term for the air pose.
+     *
+     * `velocity.y` is a step function at touchdown - it goes from -6 to 0 in a
+     * single frame while `_airWeight` still has two thirds of its authority - so
+     * reading it raw swung the thighs 13 degrees in that one frame, every
+     * landing. The pose wants the SHAPE of the arc, not the instantaneous
+     * number, and a shape can be damped.
+     */
+    this._airRise = 0;
+    /** Muzzle-down blend while sprinting, 0 up to 1 stowed. @see STOW_AHEAD */
+    this._stow = 0;
+    /** Set by `_clearPoseLayers`: park the aim layer rather than ramp into it. */
+    this._aimSnap = true;
+    /** Damped locomotion-lean terms. @see _applyMoveLean */
+    this._leanPitch = 0;
+    this._leanRoll = 0;
+    this._prevSpeed = 0;
     this._dead = false;
     /** Mounts set this false and drive `root` themselves. */
     this.followPlayer = true;
@@ -597,6 +694,7 @@ export class PlayerAvatar {
       this.animator.setAimTarget(null);
       this._airWeight = 0;
       this._landAbsorb = 0;
+      this._clearPoseLayers();
       return;
     }
     if (this._preVisible !== undefined) {
@@ -883,7 +981,10 @@ export class PlayerAvatar {
     });
     this.humanoid.setDetailVisible(third || this._preview);
 
-    if (!this._dead && !p.movementOverride && this._airWeight > 0.002) this._applyAirPose();
+    if (!this._dead && !p.movementOverride) {
+      if (this._airWeight > 0.002) this._applyAirPose();
+      this._applyMoveLean();
+    }
   }
 
   /**
@@ -910,7 +1011,17 @@ export class PlayerAvatar {
     const vx = p.velocity.x;
     const vz = p.velocity.z;
     const speed = Math.hypot(vx, vz);
-    const moving = speed > 0.6 && p.grounded;
+    /* Hysteresis, not a threshold. The yaw TARGET is a different quantity on
+     * either side of this test - the direction of travel one side, the camera
+     * the other - so a speed hovering on the boundary swapped between two
+     * unrelated angles frame to frame. Coasting to a stop sits on it for about
+     * a third of a second. */
+    if (this._moving) {
+      if (speed < MOVE_LEAVE || !p.grounded) this._moving = false;
+    } else if (speed > MOVE_ENTER && p.grounded) {
+      this._moving = true;
+    }
+    const moving = this._moving;
     const aiming = p.isAiming || elapsed - p.lastFiredAt < 1.1;
 
     let want;
@@ -927,13 +1038,35 @@ export class PlayerAvatar {
     }
 
     let delta = wrapPi(want - this._bodyYaw);
-    // Standing still, small camera turns are a glance, not a turn-in-place.
-    if (!aiming && !moving && Math.abs(delta) < TURN_DEADZONE) delta = 0;
+    /* Standing still, small camera turns are a glance, not a turn-in-place -
+     * but the release has to be a different number from the break, or the body
+     * stops the instant it is back inside the zone and the next degree of look
+     * starts it again. @see TURN_SETTLE */
+    if (!aiming && !moving) {
+      const mag = Math.abs(delta);
+      if (mag > TURN_DEADZONE) this._turnLatch = true;
+      else if (mag < TURN_SETTLE) this._turnLatch = false;
+      if (!this._turnLatch) delta = 0;
+    } else {
+      this._turnLatch = false;
+    }
 
-    const maxTurn = rate * dt;
-    const applied = clamp(delta, -maxTurn, maxTurn);
+    /* Exponential approach under a hard ceiling, rather than a pure rate limit.
+     * A rate limit turns at one constant speed and then stops dead on the frame
+     * it arrives; the approach eases out of the last few degrees, which is what
+     * the end of a real turn looks like. The ceiling is what stops a 180-degree
+     * delta - the one you get by releasing W while running backwards - from
+     * being taken in a single frame. */
+    const eased = delta * (1 - Math.exp(-rate * dt));
+    const maxTurn = TURN_CEILING * dt;
+    const applied = clamp(eased, -maxTurn, maxTurn);
     this._bodyYaw = wrapPi(this._bodyYaw + applied);
-    this._turnRate = applied / Math.max(dt, 1e-4);
+    /* Damped, because this is what the animator's turn-shuffle cadence is
+     * driven from: an undamped value is a square wave the moment the latch
+     * above opens or closes, and a shuffle that starts at full amplitude on one
+     * frame is the stutter this whole latch exists to remove. */
+    const raw = applied / Math.max(dt, 1e-4);
+    this._turnRate = approach(this._turnRate, raw, 10, dt);
     this._root.rotation.y = this._bodyYaw;
   }
 
@@ -958,14 +1091,82 @@ export class PlayerAvatar {
     const rideCrouch = ridden ? (this._ridePose === 'saddle' ? 2.4 : 0.85) : 0;
     a.crouchTarget = Math.max(p.crouchAmount * CROUCH_DEPTH, rideCrouch) + this._landAbsorb;
 
-    // Aim layer: the arms hold the carbine on the crosshair whenever the weapon
-    // is up. Sprinting and free-fall drop it so the arms swing again.
-    const lowered = (p.isSprinting && !ridden) || this._airWeight > 0.72 || this._preview;
+    /* Aim layer, in two halves that used to be one.
+     *
+     * `stow` keeps hold of the weapon and drops the muzzle - a sprint.
+     * `release` lets go of it entirely - free-fall, and the character preview.
+     * @see STOW_AHEAD for why a sprint may not do the second one. */
+    const stowing = (p.isSprinting || this._airWeight > 0.72) && !ridden && !this._preview;
+    const release = this._preview;
     const target = rig?.aimPoint ?? null;
-    a.setAimTarget(lowered ? null : target);
+    this._stow = approach(this._stow, stowing && !release ? 1 : 0, STOW_RATE, dt);
+
+    let aimAt = target;
+    if (target && this._stow > 0.002) {
+      // A point on the ground ahead of the body's own facing, not the camera's:
+      // a sprinter's muzzle follows where they are running.
+      _stowPoint.set(
+        p.position.x - Math.sin(this._bodyYaw) * STOW_AHEAD,
+        p.position.y + STOW_HEIGHT,
+        p.position.z - Math.cos(this._bodyYaw) * STOW_AHEAD
+      );
+      aimAt = _aimHold.copy(target).lerp(_stowPoint, this._stow);
+    }
+    /* Never take the target away.
+     *
+     * `NPCAnimator._poseAimArms` is gated on `aimWeight > 0.001 && aimTarget`,
+     * so `setAimTarget(null)` does not fade the aim pose out - it stops solving
+     * it, and the arms leave a raised carbine for the run cycle between two
+     * consecutive frames. Measured in a real browser with a per-frame
+     * quaternion probe: `upperArmR` moved 150.8 degrees in one 16.7 ms frame on
+     * a sprint start, and 161.3 at the top of a jump, against a p50 of 0.7.
+     *
+     * So the target stays, and only the WANT is lowered - which now happens
+     * for the preview alone, because the two cases that used to do it are
+     * stowed instead. Where the want does fall, the solver keeps running
+     * against a LIVE target while `aimWeight` rings out over its own ramp, so
+     * the poses blend and the arms follow the camera down rather than freezing
+     * where it was last pointing. */
+    a.setAimTarget(aimAt);
+    a.setAiming(!!aimAt && !release);
+    /* A body that has just been teleported, respawned or spawned should
+     * ALREADY be holding its weapon, not spend half a second swinging up into
+     * the hold - and that ramp crosses the antipodal band described above, so
+     * the transient was also a 52-degree forearm flip at every respawn. Parked,
+     * not ramped. @see STOW_AHEAD */
+    if (this._aimSnap) {
+      this._aimSnap = false;
+      a.aimWeight = aimAt && !release ? 1 : 0;
+    }
     // A head tracking the crosshair while the body is on a turntable reads as a
-    // stiff neck; the preview wants a neutral, forward-looking head.
+    // stiff neck; the preview wants a neutral, forward-looking head. And the
+    // head follows the CROSSHAIR, never the stow point - a sprinter looks where
+    // they are going, not at their own muzzle.
     a.setLookTarget(this._preview ? null : target);
+
+    /* ---- signals the additive layers read, damped here where dt is ---- */
+    // @see _applyAirPose
+    this._airRise = approach(this._airRise, clamp(p.velocity.y / 6, -1, 1), 11, dt);
+
+    /* Lean. Sprinting folds the chest forward, accelerating folds it further,
+     * and turning banks it into the corner - all of it damped, and all of it
+     * off while a mount owns the body, because a rider's torso belongs to the
+     * saddle pose. @see _applyMoveLean */
+    const accel = (speed - this._prevSpeed) / Math.max(dt, 1e-4);
+    this._prevSpeed = speed;
+    const still = ridden || this._preview || !grounded;
+    const drive = still ? 0 : Math.min(1, speed / 7.5);
+    const pitchWant = still
+      ? 0
+      : drive * drive * LEAN_SPRINT
+        + clamp(accel * LEAN_ACCEL, -LEAN_ACCEL_MAX, LEAN_ACCEL_MAX)
+        + this._landAbsorb * LEAN_LAND;
+    const rollWant = still
+      ? 0
+      : clamp(this._turnRate * LEAN_BANK * drive, -LEAN_BANK_MAX, LEAN_BANK_MAX);
+    this._leanPitch = approach(this._leanPitch, pitchWant, 6, dt);
+    this._leanRoll = approach(this._leanRoll, rollWant, 5, dt);
+
     void third;
     void elapsed;
   }
@@ -999,9 +1200,9 @@ export class PlayerAvatar {
    */
   _applyAirPose() {
     const w = this._airWeight;
-    const vy = this.player.velocity.y;
-    // +1 at the top of a jump, -1 in a fall.
-    const rise = clamp(vy / 6, -1, 1);
+    /* +1 at the top of a jump, -1 in a fall - damped in `_driveLocomotion`,
+     * because the raw term is a step function at touchdown. @see _airRise */
+    const rise = this._airRise;
     const tuck = (0.42 + 0.5 * Math.max(0, rise) - 0.28 * Math.max(0, -rise)) * w;
 
     const B = this.humanoid.bones;
@@ -1028,6 +1229,54 @@ export class PlayerAvatar {
     }
   }
 
+  /**
+   * Additive locomotion lean.
+   *
+   * Three things a run cycle alone cannot say: that the character is *going*
+   * somewhere (a forward fold that grows with speed), that it just *started*
+   * or *stopped* (an acceleration term, which is what makes a stop read as
+   * braking rather than as the animation being switched off), and that it is
+   * *turning* (a bank into the corner). Landing borrows the same fold, so an
+   * impact folds the chest as well as dropping the pelvis.
+   *
+   * Split unevenly up the spine and paid back at the neck, which is the whole
+   * trick: without the pay-back a leaning character stares at the ground, and
+   * a player who cannot see their own character's head direction has lost the
+   * one cue that says where the body is about to go.
+   *
+   * Additive on top of the animator's output, the same mechanism and the same
+   * ordering as `_applyAirPose` - so `Parkour` and `Swim`, which run later and
+   * slerp to absolute poses, still win outright over it.
+   */
+  _applyMoveLean() {
+    const pitch = this._leanPitch;
+    const roll = this._leanRoll;
+    if (Math.abs(pitch) < 0.0015 && Math.abs(roll) < 0.0015) return;
+    /* The aim layer owns the chest while the weapon is up - it is what puts
+     * the sights on the crosshair - so the lean stands down in proportion to
+     * it rather than fighting it for the same three bones. */
+    const free = 1 - this.animator.aimWeight * 0.8;
+    const p = pitch * free;
+    const r = roll * free;
+
+    const B = this.humanoid.bones;
+    const add = (name, x, z) => {
+      const bone = B.get(name);
+      if (!bone) return;
+      _airEuler.set(x, 0, z);
+      _airQuat.setFromEuler(_airEuler);
+      bone.quaternion.multiply(_airQuat);
+    };
+
+    // Hips least, chest most: a fold that starts at the pelvis reads as a bow.
+    add('spine01', p * 0.22, r * 0.30);
+    add('spine02', p * 0.38, r * 0.36);
+    add('spine03', p * 0.40, r * 0.34);
+    // Head up out of the fold, and the neck takes the last of the bank.
+    add('neck', -p * 0.42, r * 0.22);
+    add('head', -p * 0.34, r * 0.18);
+  }
+
   /* ================================================================ */
   /* Death / respawn                                                   */
   /* ================================================================ */
@@ -1048,7 +1297,27 @@ export class PlayerAvatar {
     this.animator.revive();
     this._airWeight = 0;
     this._landAbsorb = 0;
+    this._clearPoseLayers();
     this._snap();
+  }
+
+  /**
+   * Zero every damped additive term.
+   *
+   * Called wherever the body is teleported rather than moved - a respawn, a
+   * preview, a world crossing. These terms are all rate-damped, so a lean or a
+   * fall-tuck carried across a discontinuity would take a third of a second to
+   * unwind on a body that has no business leaning at all.
+   */
+  _clearPoseLayers() {
+    this._airRise = 0;
+    this._stow = 0;
+    this._aimSnap = true;
+    this._leanPitch = 0;
+    this._leanRoll = 0;
+    this._prevSpeed = 0;
+    this._turnLatch = false;
+    this._moving = false;
   }
 
   /** Park the body on the player without a frame of interpolation. */
@@ -1058,6 +1327,7 @@ export class PlayerAvatar {
     this._root.position.copy(p.position);
     this._bodyYaw = p.yaw;
     this._turnRate = 0;
+    this._clearPoseLayers();
     this._root.rotation.y = this._bodyYaw;
     this._root.updateMatrixWorld(true);
   }

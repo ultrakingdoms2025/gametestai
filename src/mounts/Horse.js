@@ -91,6 +91,44 @@ const PHASE = {
   gallop: [0, 0.12, 0.5, 0.62],
 };
 
+/**
+ * THE GAIT CROSS-FADE, and the pop it exists to remove.
+ *
+ * The tables above are footfall patterns, and swapping one for another is a
+ * change of *timing*, not of pose - but the leg angle is read straight out of
+ * `(phase + offset) % 1`, so changing the offset moves the leg. Measured
+ * against the swing curve below, the worst single-frame jumps in the table as
+ * written are:
+ *
+ *   halt -> walk    hind-right offset 0 -> 0.75    (three legs teleport)
+ *   walk -> trot    hind-left  offset 0.25 -> 0.5  -> 54 degrees, one frame
+ *   trot -> canter  fore-right offset 0.5 -> 0.15  -> comparable
+ *
+ * The halt case is the loud one: it fires every single time the animal starts
+ * moving and every time it stops. And because the band test had no hysteresis,
+ * a horse held at exactly 2.6 m/s alternated tables frame to frame - the same
+ * teleport, twice a frame pair, indefinitely.
+ *
+ * So the offsets are no longer read from the table. They are STATE, damped
+ * toward the table on the shortest way round the circle, and the same is done
+ * for the three scalars (`stride`, `lift`, `bob`) that also stepped. A gait
+ * change is now what it is in an animal: the legs re-time over a couple of
+ * strides. `GAIT_BLEND` is that re-timing rate, in nepers per second.
+ */
+const GAIT_BLEND = 3.4;
+/**
+ * Hysteresis on the band test, m/s. A gait is entered this far above its lower
+ * edge and left this far below it, so a speed parked on a boundary picks one.
+ */
+const GAIT_HYST = 0.35;
+/** Signed shortest distance between two phases expressed in turns. */
+const wrapTurn = (d) => {
+  let x = d % 1;
+  if (x > 0.5) x -= 1;
+  if (x < -0.5) x += 1;
+  return x;
+};
+
 const MAX_SPEED = 15.5;
 const GALLOP_SPEED = 15.5;
 const CRUISE_SPEED = 8.4;
@@ -191,6 +229,18 @@ export class Horse {
     this._roll = 0;
     this._gait = GAITS[0];
     this._stridePhase = 0;
+    /* The live, damped gait. @see GAIT_BLEND */
+    this._legOffset = PHASE.halt.slice();
+    /* The walk's stride, not the halt's - the halt's is zero, and the phase
+     * rate is `distance / stride`. Damping this up from zero divides by a
+     * number a hair above nothing on the first moving frame, which advanced the
+     * cycle 0.04 turns in one frame and threw a leg 34 degrees: the exact pop
+     * this cross-fade exists to remove, reintroduced at the other end. A halt
+     * holds the last moving stride instead, which is why nothing damps it down.
+     */
+    this._gaitStride = GAITS[1].stride;
+    this._gaitLift = GAITS[0].lift;
+    this._gaitBob = GAITS[0].bob;
     this._alive = false;
     this._ridden = false;
     this._spawnT = 1;
@@ -849,13 +899,42 @@ export class Horse {
 
     /* ---- gait selection + stride phase -------------------------------- */
     const abs = Math.abs(this.speed);
-    let gait = GAITS[0];
-    for (const gt of GAITS) { gait = gt; if (abs <= gt.max) break; }
+    /* Hysteretic band test: the gait only moves up once the speed is clear of
+     * the edge, and only comes back down once it is clear the other way. @see
+     * GAIT_HYST - without it a horse held on a boundary flickered between two
+     * footfall patterns every frame. */
+    const held = GAITS.indexOf(this._gait);
+    let idx = 0;
+    for (let i = 0; i < GAITS.length; i++) { idx = i; if (abs <= GAITS[i].max) break; }
+    if (idx > held && abs <= GAITS[held].max + GAIT_HYST) idx = held;
+    else if (idx < held && abs > GAITS[idx].max - GAIT_HYST) idx = held;
+    const gait = GAITS[idx];
     this._gait = gait;
-    if (gait.stride > 0) {
+
+    /* ---- cross-fade toward it ----------------------------------------- *
+     * Damped, never assigned. The whole point is that a change of footfall
+     * pattern is a re-timing the legs walk into, not a cut. @see GAIT_BLEND */
+    const table = PHASE[gait.name] ?? PHASE.walk;
+    for (let i = 0; i < this._legOffset.length; i++) {
+      const cur = this._legOffset[i];
+      // Damp along the SHORT way round: 0 -> 0.75 is a quarter turn back, not
+      // three quarters forward, and taking the long way is a leg spinning the
+      // wrong direction through a transition.
+      const next = cur + wrapTurn(table[i] - cur) * (1 - Math.exp(-GAIT_BLEND * dt));
+      this._legOffset[i] = ((next % 1) + 1) % 1;
+    }
+    /* `stride` is the one that must not damp toward zero: at a halt the phase
+     * stops advancing anyway, and a stride tending to nothing while the animal
+     * is still rolling to a stop divides the cycle rate by it. Held at the last
+     * moving value instead. */
+    if (gait.stride > 0) this._gaitStride = damp(this._gaitStride, gait.stride, GAIT_BLEND, dt);
+    this._gaitLift = damp(this._gaitLift, gait.lift, GAIT_BLEND, dt);
+    this._gaitBob = damp(this._gaitBob, gait.bob, GAIT_BLEND, dt);
+
+    if (this._gaitStride > 0) {
       // Phase advances with distance travelled, not with time, so the hooves
       // do not skate when the horse changes speed.
-      this._stridePhase = (this._stridePhase + (abs * dt) / gait.stride) % 1;
+      this._stridePhase = (this._stridePhase + (abs * dt) / this._gaitStride) % 1;
     }
     void elapsed;
   }
@@ -872,9 +951,13 @@ export class Horse {
     this.root.scale.setScalar(Math.max(0.01, s));
     this.tilt.rotation.set(this._pitch, 0, this._roll);
 
-    const gait = this._gait;
     const phase = this._stridePhase;
-    const table = PHASE[gait.name] ?? PHASE.walk;
+    /* Every one of these four is now the DAMPED value, not the current gait's
+     * authored one - the gait band still decides what they head for, but a
+     * change of band is walked into rather than assigned. @see GAIT_BLEND */
+    const table = this._legOffset;
+    const gaitLift = this._gaitLift;
+    const gaitBob = this._gaitBob;
 
     for (let i = 0; i < this.legs.length; i++) {
       const leg = this.legs[i];
@@ -887,7 +970,7 @@ export class Horse {
       if (t < 0.4) {
         const u = t / 0.4;
         swing = Math.sin(u * Math.PI) * (leg.front ? 0.85 : 0.7);
-        lift = Math.sin(u * Math.PI) * gait.lift;
+        lift = Math.sin(u * Math.PI) * gaitLift;
       } else {
         const u = (t - 0.4) / 0.6;
         swing = -Math.sin(u * Math.PI) * (leg.front ? 0.5 : 0.62);
@@ -906,7 +989,12 @@ export class Horse {
        * land audibly in the pattern they visibly land in - a timer would drift
        * out of step with the gait within a couple of strides, and a trot that
        * sounds like a canter is worse than no sound at all. */
-      const landed = leg.prevT < 0.4 && t >= 0.4;
+      /* The cross-fade can slide an offset backwards, so the crossing test
+       * needs to know the phase actually ADVANCED through 0.4 rather than that
+       * it merely straddles it now: a leg being re-timed past the boundary
+       * would otherwise sound a hoofbeat it never took. */
+      const advanced = wrapTurn(t - leg.prevT) > 0;
+      const landed = advanced && leg.prevT < 0.4 && t >= 0.4;
       leg.prevT = t;
       if (landed && this._grounded && Math.abs(this.speed) > 0.4) {
         this.bus?.emit('mount:footfall', {
@@ -919,9 +1007,9 @@ export class Horse {
 
     // Body bob, twice a stride, and the head nods against it - a horse's head
     // moves in opposition to its body, which is the tell that it is alive.
-    const bob = Math.sin(phase * TAU * 2) * gait.bob;
+    const bob = Math.sin(phase * TAU * 2) * gaitBob;
     this.tilt.position.y = bob;
-    this._headBob = damp(this._headBob, Math.sin(phase * TAU) * gait.bob * 2.2, 10, dt);
+    this._headBob = damp(this._headBob, Math.sin(phase * TAU) * gaitBob * 2.2, 10, dt);
     this.neck.rotation.x = -0.06 + this._headBob;
     this.head.rotation.x = 0.1 - this._headBob * 0.6;
 
@@ -946,7 +1034,7 @@ export class Horse {
     // Body flexes along its length twice a stride, strongest at the gallop -
     // this is the bunch-and-extend that makes the animal look like it is
     // driving off its hind legs rather than being pushed along.
-    this.tilt.rotation.x = this._pitch + Math.sin(phase * TAU * 2) * gait.bob * 0.5 * (0.3 + reach);
+    this.tilt.rotation.x = this._pitch + Math.sin(phase * TAU * 2) * gaitBob * 0.5 * (0.3 + reach);
 
     // Lean into the turn. A horse banks a little and, more visibly, carries its
     // head to the inside of the corner.

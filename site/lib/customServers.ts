@@ -856,3 +856,156 @@ export async function listActivePlayers(db: Db, serverId: string): Promise<Activ
     handle: row.handle ?? null,
   }));
 }
+
+/* ---------------------------------------------------------------------- */
+/* The launch directory                                                    */
+/* ---------------------------------------------------------------------- */
+
+export interface ServerDirectoryRow {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  /** Approved members, the only state that can enter. */
+  members: number;
+  /** Approved members seen inside the presence window. */
+  online: number;
+  /**
+   * The caller's own standing, which decides the verb the launch modal offers:
+   * `approved` → enter, `invited` → accept, `requested` → wait, `null` → ask.
+   */
+  callerState: Exclude<MemberState, 'removed'> | null;
+}
+
+/**
+ * Every active server, with counts, for the launch modal's step two.
+ *
+ * NOT `listJoinableServers` widened: that list deliberately EXCLUDES servers
+ * the caller already has a row in, because it feeds "ask to join" and widening
+ * it would let a `requested` player re-ask and a `removed` player walk back in.
+ * This list is the other product: the whole directory, one row per server,
+ * with the caller's own standing attached so the UI can offer the one verb the
+ * state machine actually permits. Both lists serve exactly the same public
+ * facts — a name, a description, and now two counts. No content, no roster.
+ *
+ * `removed` is reported as `null`: a removed member's one legal player-side
+ * verb is `request`, which is exactly the no-row verb, so the modal owes them
+ * the same "Ask to join" button — and nothing else about that history.
+ *
+ * Suspended servers are excluded outright. `canUseServer` refuses them for
+ * everyone including their owner, so a directory row for one would be a door
+ * that appears to open and does not.
+ *
+ * The counts use the same two rules the rest of this file already enforces:
+ * `members` counts `approved` only (the only state that can enter), and
+ * `online` counts presence rows inside `PRESENCE_WINDOW_SECONDS` joined to
+ * approved members — the identical join `listActivePlayers` makes, so a stale
+ * heartbeat from an ejected member can no more inflate a count here than it
+ * can appear in a roster there.
+ */
+export async function listServersDirectory(
+  db: Db,
+  playerId: string
+): Promise<ServerDirectoryRow[]> {
+  const r = await db.query(
+    `SELECT s.id, s.name, s.slug, s.description,
+            (SELECT COUNT(*)::int FROM server_members m
+              WHERE m.server_id = s.id AND m.state = 'approved') AS members,
+            (SELECT COUNT(*)::int FROM server_presence p
+              JOIN server_members am
+                ON am.server_id = p.server_id AND am.player_id = p.player_id
+               AND am.state = 'approved'
+             WHERE p.server_id = s.id
+               AND p.last_seen > NOW() - ($2 || ' seconds')::interval) AS online,
+            me.state AS caller_state
+       FROM custom_servers s
+       LEFT JOIN server_members me ON me.server_id = s.id AND me.player_id = $1
+      WHERE s.status = 'active'
+      ORDER BY s.name, s.id`,
+    [playerId, String(PRESENCE_WINDOW_SECONDS)]
+  );
+  return r.rows.map((row) => {
+    const state = String(row.caller_state ?? '');
+    const callerState =
+      state === 'approved' || state === 'invited' || state === 'requested'
+        ? (state as Exclude<MemberState, 'removed'>)
+        : null;
+    return {
+      id: String(row.id),
+      name: String(row.name ?? ''),
+      slug: String(row.slug ?? ''),
+      description: String(row.description ?? ''),
+      members: Number(row.members ?? 0),
+      online: Number(row.online ?? 0),
+      callerState,
+    };
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Invite search                                                           */
+/* ---------------------------------------------------------------------- */
+
+/** Below this many characters a search is refused, not narrowed. */
+export const MEMBER_SEARCH_MIN_QUERY = 2;
+export const MEMBER_SEARCH_LIMIT = 10;
+
+export interface InvitablePlayer {
+  playerId: string;
+  handle: string;
+}
+
+/**
+ * Players an owner could invite, matched on handle and nothing else.
+ *
+ * ── This is a directory query over every account; the guardrails ARE the
+ *    design ────────────────────────────────────────────────────────────────
+ *
+ * 1. Handle only. The SELECT names `id, handle` and no other column — an
+ *    email address never enters the result shape, so there is no mapping step
+ *    that could leak one. Handles are the name players already show each
+ *    other; emails are the thing this table must never serve sideways.
+ * 2. Minimum query length (`MEMBER_SEARCH_MIN_QUERY`), enforced here as well
+ *    as at the route, so a one-character sweep of the player base is refused
+ *    wherever the call comes from.
+ * 3. Bounded (`MEMBER_SEARCH_LIMIT`): a page of candidates, not an export.
+ * 4. The route that exposes this is owner-gated through `requireOwnedServer`;
+ *    this function additionally requires the server id so there is no call
+ *    shape that searches outside the context of one server's roster.
+ *
+ * Players already on the roster in a live state (`invited`, `requested`,
+ * `approved`) are excluded — inviting them is either a no-op or the approve
+ * button's job. A `removed` player IS returned: `invite` from `removed` lands
+ * on `invited` in the transition table, and a search that hid them would make
+ * a member ejected in error impossible to bring back through the UI.
+ *
+ * `%`/`_`/`\` in the query are escaped, so a query of `%` matches handles that
+ * contain a percent sign (there are none) rather than every player there is.
+ */
+export async function searchInvitablePlayers(
+  db: Db,
+  serverId: string,
+  query: string,
+  limit = MEMBER_SEARCH_LIMIT
+): Promise<InvitablePlayer[]> {
+  const q = String(query ?? '').trim();
+  if (!serverId || q.length < MEMBER_SEARCH_MIN_QUERY) return [];
+  const pattern = '%' + q.replace(/[\\%_]/g, (ch) => '\\' + ch) + '%';
+  const r = await db.query(
+    `SELECT id, handle
+       FROM players
+      WHERE handle IS NOT NULL
+        AND handle ILIKE $2
+        AND NOT EXISTS (
+          SELECT 1 FROM server_members m
+           WHERE m.server_id = $1 AND m.player_id = players.id AND m.state <> 'removed'
+        )
+      ORDER BY LOWER(handle), id
+      LIMIT $3`,
+    [serverId, pattern, Math.max(1, Math.min(limit, MEMBER_SEARCH_LIMIT))]
+  );
+  return r.rows.map((row) => ({
+    playerId: String(row.id),
+    handle: String(row.handle),
+  }));
+}

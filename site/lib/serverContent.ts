@@ -5,6 +5,7 @@ import {
   MARKETPLACE_CATEGORIES,
   MARKETPLACE_WORLDS,
 } from './marketplaceCatalog';
+import { OVERLAY_WORLDS } from './mapOverlaySchema';
 
 /**
  * Owner CRUD over an owner's OWN lore, quests and marketplace items — and the
@@ -293,7 +294,13 @@ export async function createServerQuest(
     [
       id,
       questNumber,
-      text(input.world, 64).toLowerCase(),
+      /* Validated against the canonical world list, not free text. A quest
+       * authored into a world the game cannot enter is not dangerous the way a
+       * bogus `game_action` was (no reader throws on it) — it is worse in a
+       * quieter way: it is content no player can ever REACH, which is the
+       * defect class the medieval expansion shipped four of. `OVERLAY_WORLDS`
+       * is the one list already pinned against the game's registrations. */
+      oneOf(input.world, OVERLAY_WORLDS, 'world'),
       text(input.questLine, 120) || 'custom',
       text(input.title, 200),
       nonNegativeInt(input.rewardCredits),
@@ -356,7 +363,10 @@ export async function updateServerQuest(
     [
       questId,
       sid,
-      patch.world === undefined ? null : text(patch.world, 64).toLowerCase(),
+      /* Same canonical-list check as the create path. An absent world stays
+       * absent (COALESCE keeps the stored one, legacy included); a PRESENT one
+       * must be a world the game can enter. */
+      patch.world === undefined ? null : oneOf(patch.world, OVERLAY_WORLDS, 'world'),
       patch.questLine === undefined ? null : text(patch.questLine, 120),
       patch.title === undefined ? null : text(patch.title, 200),
       patch.rewardCredits === undefined ? null : nonNegativeInt(patch.rewardCredits),
@@ -426,6 +436,13 @@ export async function upsertServerLore(
   input: ServerLoreInput
 ): Promise<ServerLoreEntry> {
   const sid = requireServerId(serverId);
+  /* Deliberately NOT `oneOf(input.scope, LORE_SCOPES, ...)`, unlike the quest
+   * world one section up. "A scope the platform has never had is pure
+   * addition" is shipped merge behaviour — `lore.ts` orders unknown scopes
+   * last and serves them, no reader throws, and `loreScoping.test.ts`
+   * exercises exactly this. The owner UI offers the canonical scopes in a
+   * dropdown and shows an off-list one as a labelled legacy option; the WRITE
+   * stays permissive because the read was built to survive it. */
   const scope = text(input.scope, 64).toLowerCase();
   await db.query(
     `INSERT INTO server_lore_entries (server_id, scope, title, sign_label, body, updated_by)

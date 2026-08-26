@@ -73,31 +73,47 @@ function source(...parts: string[]): string {
 /* ---------------------------------------------------------------------- */
 
 describe('the start panel gives an invited player something to press', () => {
+  /* The panel became a two-step launch modal fed by the server directory, so
+   * the anchors moved — the GUARANTEES did not. Each test below is the same
+   * claim it was against the old markup: an invited player has a button, the
+   * button fires the verb that already exists, an invitation is never a
+   * sentence, and a suspended server is never a door. */
   const panel = source('components', 'ServerStartPanel.tsx');
 
   it('renders a control for memberships in the invited state', () => {
-    expect(panel).toContain("m.state === 'invited'");
-    expect(panel).toMatch(/Accept \{m\.name\}/);
+    /* A BUTTON inside the invited branch, not a status line. */
+    expect(panel).toMatch(/callerState === 'invited'[\s\S]{0,240}<button/);
+    expect(panel).toContain('Accept invitation');
   });
 
   it('and that control fires the verb that already exists', () => {
     /* Not a new endpoint and not a new action name. `request` on an `invited`
      * row is the accept, and `/api/game/server` already refuses a player acting
      * on anybody but themselves. */
-    expect(panel).toContain("action: 'request', serverId: m.id");
+    expect(panel).toContain("action: 'request', serverId: row.id");
   });
 
   it('does not leave the invitation in the inert "waiting on" line', () => {
-    /* The regression to catch is somebody re-widening `pending` back over every
-     * non-approved state, which would put the invitation back in a sentence and
-     * take the button away without failing anything else. */
-    expect(panel).toContain('!invitations.includes(m)');
+    /* The regression to catch is the invited state collapsing into the same
+     * "pending" prose the requested state gets — a sentence where a button
+     * should be. Only `requested` may read as waiting. */
+    expect(panel).toContain('Request pending');
+    expect(panel).not.toMatch(/callerState === 'invited'[\s\S]{0,240}Request pending/);
+    expect(panel).not.toMatch(/Waiting on/);
   });
 
   it('does not offer to join a suspended server', () => {
     /* The transition would succeed and `selectServer` would then refuse the
-     * entry: a button that appears to work and does not. */
-    expect(panel).toContain("m.state === 'invited' && m.status === 'active'");
+     * entry: a button that appears to work and does not. The refusal moved
+     * upstream: the directory the panel renders NEVER CONTAINS a suspended
+     * server (`listServersDirectory` filters on status = 'active';
+     * serverDirectory.test.ts proves it against Postgres), so there is no row
+     * for any state's button to appear on. */
+    const lib = source('lib', 'customServers.ts');
+    const fnAt = lib.indexOf('export async function listServersDirectory');
+    expect(fnAt).toBeGreaterThan(-1);
+    const fn = lib.slice(fnAt, lib.indexOf('\n}', fnAt));
+    expect(fn.replace(/\s+/g, ' ')).toContain("WHERE s.status = 'active'");
   });
 });
 

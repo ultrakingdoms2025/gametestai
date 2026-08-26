@@ -4,6 +4,7 @@ import { getUserById } from '@/lib/db';
 import { findOrCreatePlayer, getPlayerStatus, getGameState } from '@/lib/playerDb';
 import { currentServer, openServerDb } from '@/lib/serverRoutes';
 import { serverBalance } from '@/lib/serverCredits';
+import { getServer } from '@/lib/customServers';
 
 export async function GET() {
   const session = await auth();
@@ -34,10 +35,19 @@ export async function GET() {
    * They come from separate tables and neither can move the other. */
   const serverId = await currentServer(profile.playerId);
   let serverCredits: number | null = null;
+  /* `server` is the same fact as `server_id` with its NAME attached, for the
+   * game HUD to display. Resolved here, server-side, from the stored selection
+   * `currentServer` has already re-checked against membership — this handler
+   * takes no Request and reads no query parameter, so there is no way for the
+   * client to name a server it is not in. Additive: `server_id` and
+   * `server_credits` keep their exact shapes for every existing reader. */
+  let server: { id: string; name: string } | null = null;
   if (serverId) {
     const db = await openServerDb();
     try {
       serverCredits = await serverBalance(db, serverId, profile.playerId);
+      const row = await getServer(db, serverId);
+      if (row) server = { id: row.id, name: row.name };
     } catch (err) {
       console.error('[game/session] server balance failed:', err);
     } finally {
@@ -55,5 +65,6 @@ export async function GET() {
     game_state: gameState,
     server_id: serverId,
     server_credits: serverCredits,
+    server,
   });
 }

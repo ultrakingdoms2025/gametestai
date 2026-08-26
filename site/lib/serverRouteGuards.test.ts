@@ -30,6 +30,7 @@ const ROUTES: Array<[string, string[]]> = [
   ['servers', ['api', 'servers']],
   ['servers/[id]', ['api', 'servers', '[id]']],
   ['servers/[id]/members', ['api', 'servers', '[id]', 'members']],
+  ['servers/[id]/members/search', ['api', 'servers', '[id]', 'members', 'search']],
   ['servers/[id]/content', ['api', 'servers', '[id]', 'content']],
   ['game/server', ['api', 'game', 'server']],
   ['game/chat', ['api', 'game', 'chat']],
@@ -102,6 +103,74 @@ describe('the content scope is never taken from the request', () => {
     /* `request` is deliberately absent, so the two audiences never share an
      * endpoint and an owner cannot "request" somebody into their server. */
     expect(src).not.toMatch(/OWNER_ACTIONS.*'request'/);
+  });
+});
+
+describe('the invite search route', () => {
+  /* A directory query over every player account. The guardrails are the
+   * design: owner-gated, two characters minimum, handle only — and they are
+   * pinned here because each one, lost, is a different leak. */
+
+  it('is owner-gated BEFORE it answers anything, including "too short"', () => {
+    const src = route('api', 'servers', '[id]', 'members', 'search');
+    const gateAt = src.indexOf('requireOwnedServer');
+    const lengthAt = src.indexOf('MEMBER_SEARCH_MIN_QUERY', gateAt + 1);
+    const searchAt = src.indexOf('searchInvitablePlayers(');
+    expect(gateAt).toBeGreaterThan(-1);
+    /* Ownership first: a non-owner probing with a one-character query must
+     * learn "not found", not "a server exists and your query was short". */
+    expect(lengthAt).toBeGreaterThan(gateAt);
+    expect(searchAt).toBeGreaterThan(lengthAt);
+  });
+
+  it('refuses a short query with a 400 rather than answering broadly', () => {
+    const src = route('api', 'servers', '[id]', 'members', 'search');
+    expect(src).toMatch(/q\.length < MEMBER_SEARCH_MIN_QUERY/);
+    expect(src).toMatch(/status: 400/);
+  });
+
+  it('never so much as names an email column, in the route or the query', () => {
+    const src = route('api', 'servers', '[id]', 'members', 'search');
+    /* Not "redacts" — never touches. There is no email to strip from a payload
+     * whose SELECT never read one. The route's PROSE names email (its privacy
+     * note is required to), so the claim is made of the code alone. */
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/^\s*\*.*$/gm, '');
+    expect(code).not.toMatch(/email/i);
+
+    const lib = readFileSync(join(here, 'customServers.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const fnAt = lib.indexOf('export async function searchInvitablePlayers');
+    expect(fnAt).toBeGreaterThan(-1);
+    const fn = lib.slice(fnAt, lib.indexOf('\n}', fnAt));
+    expect(fn).toMatch(/SELECT id, handle\s*\n\s*FROM players/);
+    expect(fn).not.toMatch(/email/i);
+    expect(fn).toContain('LIMIT');
+  });
+});
+
+describe('the game session bootstrap', () => {
+  it('resolves the current server on the server side and cannot be told one', () => {
+    const src = route('api', 'game', 'session');
+    /* The handler takes NO Request at all, so there is no query string, no
+     * body and no header for a client to name a server through. */
+    expect(src).toMatch(/export async function GET\(\)/);
+    expect(src).not.toMatch(/searchParams/);
+    /* `server` is `server_id` with its name attached, resolved through the
+     * same membership-re-checking read (`currentServer` → `currentServerId`)
+     * the content routes use. */
+    expect(src).toMatch(/currentServer\(profile\.playerId\)/);
+    expect(src).toMatch(/getServer\(db, serverId\)/);
+    expect(src).toMatch(/server,\s*\n\s*\}\);/);
+  });
+
+  it('the launch directory rides the game/server read, scoped to the caller', () => {
+    const src = route('api', 'game', 'server');
+    expect(src).toMatch(/directory: await listServersDirectory\(db, actor\.playerId\)/);
+    /* And the deliberately narrower list survives beside it: `joinable` keeps
+     * its exclusion rule for its own consumers. */
+    expect(src).toMatch(/joinable: await listJoinableServers\(db, actor\.playerId\)/);
   });
 });
 

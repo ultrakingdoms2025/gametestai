@@ -5,6 +5,7 @@ import {
   currentServerId,
   listActivePlayers,
   listJoinableServers,
+  listServersDirectory,
   listServersForPlayer,
   selectServer,
   touchPresence,
@@ -44,6 +45,12 @@ export async function GET() {
       current,
       memberships: await listServersForPlayer(db, actor.playerId),
       joinable: await listJoinableServers(db, actor.playerId),
+      /* The launch modal's step two: every ACTIVE server, with an approved
+       * member count, an online-now count from the presence window, and the
+       * caller's own standing so the UI can offer the one legal verb.
+       * `memberships` and `joinable` stay as they are — they have other
+       * consumers and `listJoinableServers`' exclusion rule is deliberate. */
+      directory: await listServersDirectory(db, actor.playerId),
       credits: current ? await serverBalance(db, current, actor.playerId) : null,
       active: current ? await listActivePlayers(db, current) : [],
     });

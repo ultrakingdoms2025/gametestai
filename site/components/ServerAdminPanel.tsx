@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import HostingSubscribeButton from './HostingSubscribeButton';
+import { OVERLAY_WORLDS } from '@/lib/mapOverlaySchema';
+import { LORE_SCOPES } from '@/lib/loreScopes';
+import {
+  MARKETPLACE_ACTIONS,
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_WORLDS,
+} from '@/lib/marketplaceCatalog';
 
 /**
  * Owner CRUD over an owner's own server (7c), and the platform admin's view of
@@ -91,6 +98,52 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/* ---- dropdown sources -------------------------------------------------
+ * Every one of these is the CANONICAL list the write path validates against
+ * (or, for lore, the canonical order the read path sorts by). Nothing here is
+ * hand-written: a free-text `game_action` once took the whole marketplace of a
+ * server to a bodiless 500, and a hand-copied list is the same bug on a delay.
+ * `contentDropdowns.test.ts` fails this file if a second list appears. */
+const WORLD_OPTIONS = OVERLAY_WORLDS.map((w) => ({ value: w, label: w }));
+const LORE_SCOPE_OPTIONS = LORE_SCOPES.map((s) => ({ value: s, label: s }));
+const CATEGORY_OPTIONS = MARKETPLACE_CATEGORIES.map((c) => ({ value: c, label: c }));
+const ACTION_OPTIONS = MARKETPLACE_ACTIONS.map((a) => ({ value: a.id, label: `${a.label} — ${a.id}` }));
+const ITEM_WORLD_OPTIONS = MARKETPLACE_WORLDS.map((w) => ({ value: w, label: w }));
+
+/**
+ * A `<select>` over a canonical list.
+ *
+ * `legacyValues` is for rows that already hold a value outside the list (rows
+ * written before the write path validated, or scopes the platform never
+ * named): they are offered, labelled as legacy, rather than silently dropped
+ * or rewritten — deleting an owner's data by prettying up a form is not a UX
+ * improvement.
+ */
+function Picker(props: {
+  name: string;
+  ariaLabel: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  placeholder: string;
+  required?: boolean;
+  legacyValues?: readonly string[];
+}) {
+  const legacy = (props.legacyValues ?? []).filter(
+    (v, i, all) => v && all.indexOf(v) === i && !props.options.some((o) => o.value === v)
+  );
+  return (
+    <select name={props.name} aria-label={props.ariaLabel} style={input}
+      required={props.required} defaultValue="">
+      <option value="" disabled>{props.placeholder}</option>
+      {props.options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+      {legacy.map((v) => (
+        <option key={`legacy:${v}`} value={v}>{v} (legacy)</option>
+      ))}
+    </select>
+  );
+}
+
 /**
  * @param justSubscribed the customer arrived here straight from a completed
  * hosting purchase (`/admin/servers?subscribed=1`, which is both the live
@@ -127,6 +180,43 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
 
   useEffect(() => { void loadOverview(); }, [loadOverview]);
   useEffect(() => { void loadDetail(selected); }, [selected, loadDetail]);
+
+  /* ---- invite type-ahead ------------------------------------------------
+   * A searchable list instead of a blind handle field: the owner types two or
+   * more characters and the owner-gated search route answers with up to ten
+   * matching handles (players already on the roster excluded). Debounced so a
+   * keystroke is not a request, and stale responses are dropped so a slow
+   * early answer cannot overwrite a fast later one. */
+  const [inviteQuery, setInviteQuery] = useState('');
+  const [inviteResults, setInviteResults] = useState<Array<{ playerId: string; handle: string }>>([]);
+  const [searching, setSearching] = useState(false);
+  const detailServerId = detail?.server.id ?? null;
+
+  useEffect(() => { setInviteQuery(''); }, [selected]);
+
+  useEffect(() => {
+    const q = inviteQuery.trim();
+    if (!detailServerId || q.length < 2) {
+      setInviteResults([]);
+      setSearching(false);
+      return;
+    }
+    let stale = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api<{ players: Array<{ playerId: string; handle: string }> }>(
+          `/api/servers/${detailServerId}/members/search?q=${encodeURIComponent(q)}`
+        );
+        if (!stale) setInviteResults(data.players);
+      } catch {
+        if (!stale) setInviteResults([]);
+      } finally {
+        if (!stale) setSearching(false);
+      }
+    }, 250);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [inviteQuery, detailServerId]);
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -266,27 +356,83 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
           {/* ---- members ------------------------------------------------- */}
           <section style={card}>
             <h2 style={{ margin: 0, fontSize: 18 }}>Members of {detail.server.name}</h2>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const form = new FormData(e.currentTarget);
-                void run(() => api(`/api/servers/${detail.server.id}/members`, {
-                  method: 'POST',
-                  body: JSON.stringify({ action: 'invite', handle: String(form.get('handle') ?? '') }),
-                }));
-                e.currentTarget.reset();
-              }}
-              style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
-            >
-              <input name="handle" placeholder="player handle" style={{ ...input, maxWidth: 260 }} required />
-              <button type="submit" style={btn} disabled={busy}>Invite</button>
-            </form>
+
+            {/* Requests first: these are the rows where somebody is actively
+                waiting on the owner, so they outrank a roster that is merely
+                true. */}
+            {detail.members.some((m) => m.state === 'requested') && (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <h3 style={{ margin: 0, fontSize: 14, color: '#ffd9a0' }}>
+                  Requests to join
+                </h3>
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
+                  {detail.members.filter((m) => m.state === 'requested').map((m) => (
+                    <li key={m.playerId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ minWidth: 180 }}>{m.handle ?? '(no handle)'}</span>
+                      <button type="button" style={btn} disabled={busy}
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'approve'))}>
+                        Approve
+                      </button>
+                      <button type="button" style={btn} disabled={busy}
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'reject'))}>
+                        Reject
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Invite via search, not via a blind handle field. Results come
+                from the owner-gated search route: handle matches only, two
+                characters minimum, roster excluded, never an email. */}
+            <div style={{ display: 'grid', gap: 6 }}>
+              <label style={label} htmlFor="invite-search">INVITE A PLAYER</label>
+              <input
+                id="invite-search"
+                type="search"
+                role="combobox"
+                aria-expanded={inviteResults.length > 0}
+                aria-controls="invite-results"
+                autoComplete="off"
+                placeholder="Search by handle (2+ characters)"
+                style={{ ...input, maxWidth: 320 }}
+                value={inviteQuery}
+                onChange={(e) => setInviteQuery(e.target.value)}
+              />
+              <ul id="invite-results" role="listbox" aria-label="Matching players"
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {inviteResults.map((p) => (
+                  <li key={p.playerId} role="option" aria-selected={false}>
+                    <button type="button" style={{ ...btn, padding: '6px 12px' }} disabled={busy}
+                      onClick={() => {
+                        void run(() => api(`/api/servers/${detail.server.id}/members`, {
+                          method: 'POST',
+                          body: JSON.stringify({ action: 'invite', handle: p.handle }),
+                        }));
+                        setInviteQuery('');
+                      }}>
+                      Invite {p.handle}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p role="status" style={{ margin: 0, color: '#7fa4bd', fontSize: 12 }}>
+                {searching
+                  ? 'Searching…'
+                  : inviteQuery.trim().length >= 2 && !inviteResults.length
+                    ? 'No players match that handle (players already on the roster are not shown).'
+                    : ''}
+              </p>
+            </div>
+
+            {/* The roster. Requested rows live in the panel above. */}
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
-              {detail.members.map((m) => (
+              {detail.members.filter((m) => m.state !== 'requested').map((m) => (
                 <li key={m.playerId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span style={{ minWidth: 180 }}>{m.handle ?? '(no handle)'}</span>
                   <span style={{ color: '#7fa4bd', minWidth: 90 }}>{m.state}</span>
-                  {m.state === 'requested' || m.state === 'invited' ? (
+                  {m.state === 'invited' && (
                     <>
                       <button type="button" style={btn} disabled={busy}
                         onClick={() => run(() => memberAction(detail.server.id, m, 'approve'))}>
@@ -297,7 +443,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                         Reject
                       </button>
                     </>
-                  ) : null}
+                  )}
                   {m.state === 'approved' && m.playerId !== detail.server.ownerPlayerId && (
                     <button type="button" style={btn} disabled={busy}
                       onClick={() => run(() => memberAction(detail.server.id, m, 'remove'))}>
@@ -336,7 +482,11 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
               style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))' }}
             >
               <input name="title" placeholder="title" style={input} required />
-              <input name="world" placeholder="world id" style={input} required />
+              {/* The canonical 18, from `mapOverlaySchema` — the list a test
+                  already pins to the game's own world registrations. Free
+                  text here would author quests no player can ever reach. */}
+              <Picker name="world" ariaLabel="World" options={WORLD_OPTIONS}
+                placeholder="world…" required />
               <input name="questLine" placeholder="quest line" style={input} />
               <input name="rewardCredits" type="number" min={0} placeholder="reward" style={input} />
               <button type="submit" style={btn} disabled={busy}>Author</button>
@@ -382,7 +532,14 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
               style={{ display: 'grid', gap: 8 }}
             >
               <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))' }}>
-                <input name="scope" placeholder="world id" style={input} required />
+                {/* The canonical lore scopes in their canonical order, plus
+                    any scope an existing row of THIS server already holds
+                    outside that list — offered as "(legacy)" so the entry
+                    stays editable rather than stranded. Saving to an existing
+                    scope replaces that entry (upsert). */}
+                <Picker name="scope" ariaLabel="Lore scope" options={LORE_SCOPE_OPTIONS}
+                  placeholder="scope…" required
+                  legacyValues={detail.lore.map((l) => l.scope)} />
                 <input name="title" placeholder="title" style={input} required />
                 <input name="signLabel" placeholder="sign label" style={input} />
               </div>
@@ -420,7 +577,9 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     kind: 'item',
                     name: String(form.get('name') ?? ''),
                     description: String(form.get('description') ?? ''),
-                    category: String(form.get('category') ?? 'tools'),
+                    /* No fallback literal: the category is a required select
+                       over the canonical list, and the write validates. */
+                    category: String(form.get('category') ?? ''),
                     gameAction: String(form.get('gameAction') ?? ''),
                     worldName: String(form.get('worldName') ?? ''),
                     costBuy: Number(form.get('costBuy') ?? 0),
@@ -433,9 +592,16 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
             >
               <input name="name" placeholder="name" style={input} required />
               <input name="description" placeholder="description" style={input} />
-              <input name="category" placeholder="category" style={input} />
-              <input name="gameAction" placeholder="game action" style={input} />
-              <input name="worldName" placeholder="world" style={input} />
+              {/* All three from `marketplaceCatalog` — the SAME constants the
+                  write path validates against and the read path throws on. A
+                  free-text `gameAction` here once took a server's whole
+                  marketplace listing to a 500. */}
+              <Picker name="category" ariaLabel="Category" options={CATEGORY_OPTIONS}
+                placeholder="category…" required />
+              <Picker name="gameAction" ariaLabel="Game action" options={ACTION_OPTIONS}
+                placeholder="game action…" required />
+              <Picker name="worldName" ariaLabel="World" options={ITEM_WORLD_OPTIONS}
+                placeholder="world…" required />
               <input name="costBuy" type="number" min={0} placeholder="buy" style={input} />
               <input name="costSell" type="number" min={0} placeholder="sell" style={input} />
               <button type="submit" style={btn} disabled={busy}>Add</button>

@@ -34,7 +34,12 @@
  *   2. NO OVERLAP between interactive elements: two buttons in the same place
  *      means one of them cannot be pressed.
  *   3. NO OVERLAP between the readouts a player reads while playing.
- *   4. TOUCH TARGETS >= 44 CSS px in both axes wherever the primary pointer is
+ *   4. NOTHING STRANDED. A control pushed outside a container that cannot
+ *      scroll to it is unreachable, and - unlike 1 - it is invisible to a
+ *      clipping test, because an empty intersection is also how a closed panel
+ *      looks. See `stranded()`; the inventory's close button was 58 px off the
+ *      side of a 390 px phone and this file called that case clean.
+ *   5. TOUCH TARGETS >= 44 CSS px in both axes wherever the primary pointer is
  *      coarse.
  *   5. SAFE AREA. With the four `--sa-*` tokens forced to a real device's
  *      insets, nothing may sit inside the border they describe - and 1 to 4
@@ -86,8 +91,18 @@ const VIEWPORTS = [
   { id: 'desktop-wide', w: 1920, h: 1080, dpr: 1, coarse: false },
 ];
 
-/** The five states the interface is ever in while a player is looking at it. */
-const SCENES = ['play', 'touch', 'pause', 'chat', 'help'];
+/**
+ * The states the interface is ever in while a player is looking at it.
+ *
+ * THIS IS A FALLBACK, NOT THE LIST. The real one is `window.__harness.scenes`,
+ * read out of the page below, and it lives there because that is the file that
+ * knows what has been built. While the list was a literal here it said `play`,
+ * `touch`, `pause`, `chat`, `help` and nothing else - so ten panels, including
+ * the quest board a touch-tray button leads straight to, were laid out at no
+ * viewport at all and this gate printed "HUD layout OK" over the top of them.
+ * A panel added to the harness now costs no edit here.
+ */
+const FALLBACK_SCENES = ['play', 'touch', 'pause', 'chat', 'help'];
 
 /**
  * The notch, per orientation.
@@ -310,7 +325,77 @@ const MEASURE = `(() => {
     });
   }
 
-  const hits = [...document.querySelectorAll(INTERACTIVE)].filter(visible);
+  /**
+   * A control that has been pushed out of its own panel and cannot be scrolled
+   * back into it.
+   *
+   * THE DEFECT THIS EXISTS FOR. The inventory's ESC button sat at x=440 on a
+   * 390 px screen - 58 px past the right edge of the world, outside a header
+   * that does not wrap and inside a panel that does not scroll sideways. It
+   * was not reported as clipped, or as overlapping, or as too small. It was
+   * reported as NOTHING AT ALL, because \`clippedRect\` intersects to empty and
+   * an empty intersection is how this file spells "not on screen", which is
+   * also how it spells "deliberately hidden". A player could not close the bag.
+   *
+   * The distinction that makes this safe is SCROLLABILITY, not position. The
+   * pause hub lays seventeen rows past the bottom of a phone and that is fine:
+   * \`.pm-root\` scrolls, so every one of them is one flick away. A header that
+   * clips is not. So an element is stranded when it is outside a clipping
+   * ancestor on an axis THAT ANCESTOR CANNOT SCROLL.
+   */
+  function stranded(el) {
+    const own = el.getBoundingClientRect();
+    if (own.width < 0.5 || own.height < 0.5) return null;
+    let n = el.parentElement;
+    while (n && n !== document.documentElement) {
+      const cs = getComputedStyle(n);
+      /* Deliberately hidden is not stranded - a closed panel is meant to be
+       * unreachable, and every panel in this harness closes this way. */
+      if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+      if (parseFloat(cs.opacity) < 0.02) return null;
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+        const c = n.getBoundingClientRect();
+        const outX = own.right <= c.left + 0.5 || own.left >= c.right - 0.5;
+        const outY = own.bottom <= c.top + 0.5 || own.top >= c.bottom - 0.5;
+        const canX = n.scrollWidth > n.clientWidth + 1;
+        const canY = n.scrollHeight > n.clientHeight + 1;
+        /* A SCROLLABLE ANCESTOR ENDS THE WALK, and this is the whole
+         * correctness of the check. The pause hub's rows lay out past the
+         * bottom of \`.pm-root\`, which scrolls - so they are one flick away and
+         * are not stranded. Carrying on up would then find \`.pause-in\`, which
+         * does NOT scroll, and report every row below the fold. */
+        if ((outX && canX) || (outY && canY)) return null;
+        if (outX) return { axis: 'sideways', of: n };
+        if (outY) return { axis: 'below', of: n };
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  const all = [...document.querySelectorAll(INTERACTIVE)];
+  const lost = [];
+  for (const el of all) {
+    const s = stranded(el);
+    if (!s) continue;
+    const label = (el.className || el.tagName).toString().trim().split(/\\s+/).slice(0, 2).join('.');
+    const own = el.getBoundingClientRect();
+    lost.push({
+      name: '.' + label,
+      where: \`\${own.left.toFixed(0)},\${own.top.toFixed(0)} \${own.width.toFixed(0)}x\${own.height.toFixed(0)}\`,
+      axis: s.axis,
+      /* Named by its own first class where it has one, and by its tag where it
+       * does not - \`html, body { overflow: hidden }\` means \`body\` is a real
+       * answer here, and reporting the body class a panel happens to have set
+       * ("inv-menu-open") read as a container that does not exist. */
+      of: (s.of === document.body || s.of === document.documentElement)
+        ? s.of.tagName.toLowerCase()
+        : ((s.of.className || '').toString().trim().split(/\\s+/)[0]
+          || s.of.tagName.toLowerCase()),
+    });
+  }
+
+  const hits = all.filter(visible);
   const interactive = hits.map((el, i) => {
     const label = (el.className || el.tagName).toString().trim().split(/\\s+/).slice(0, 2).join('.');
     const b = box(el, '.' + label + '#' + i);
@@ -326,7 +411,7 @@ const MEASURE = `(() => {
   return {
     vw, vh,
     coarse: matchMedia('(pointer: coarse)').matches,
-    named, interactive,
+    named, interactive, lost,
     scroll: { w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight },
   };
 })()`;
@@ -427,7 +512,18 @@ function assertCase(m, vp, scene) {
     if (o) fails.push(`${x} and ${y} overlap by ${o.w}x${o.h}px`);
   }
 
-  /* 4. Touch targets. */
+  /* 4. Controls clipped out of a container that cannot scroll to them.
+   *
+   * Deliberately NOT gated on `vp.coarse`: the inventory's close button was
+   * off the side of a phone, and a header that does not wrap will do the same
+   * to a narrow desktop window. See `stranded()` for why scrollability rather
+   * than position is the test. */
+  for (const b of m.lost ?? []) {
+    fails.push(`${b.name} is stranded ${b.axis} .${b.of} at ${b.where} — that container `
+      + 'cannot scroll to it, so nothing on screen can reach it');
+  }
+
+  /* 5. Touch targets. */
   if (vp.coarse) {
     if (!m.coarse) fails.push('the page does not report a coarse pointer — the emulation is not taking');
     for (const b of m.interactive) {
@@ -504,6 +600,8 @@ async function main() {
   const failures = [];
   const report = { browser: chrome, base: harnessUrl, cases: [] };
   let client;
+  /* Filled from `window.__harness.scenes` once the page is up. */
+  let sceneCount = 0;
 
   try {
     await waitFor(async () => (await fetch(harnessUrl)).ok,
@@ -538,6 +636,29 @@ async function main() {
       }
     });
     const withLog = (e) => new Error(`${e.message}\n--- page console ---\n${pageLog.join('\n') || '(silent)'}`);
+
+    /* ---- ask the harness what there is to measure ---------------------
+     * One navigation before the grid, purely to read the case list. See
+     * FALLBACK_SCENES for why the list is not written down here. */
+    await call('Page.navigate', { url: harnessUrl });
+    await waitFor(async () => {
+      const r = await call('Runtime.evaluate', {
+        expression: "document.documentElement.dataset.harness === 'ready'",
+        returnByValue: true,
+      });
+      return r.result?.value === true;
+    }, { what: 'the harness to publish its scene list', timeout: 60000 })
+      .catch((e) => { throw withLog(e); });
+    const listed = (await call('Runtime.evaluate', {
+      expression: 'window.__harness.scenes', returnByValue: true,
+    })).result?.value;
+    const SCENES = Array.isArray(listed) && listed.length ? listed : FALLBACK_SCENES;
+    if (SCENES === FALLBACK_SCENES) {
+      throw withLog(new Error('the harness published no scene list — it is measuring '
+        + 'fewer panels than it builds'));
+    }
+    sceneCount = SCENES.length;
+    console.log(`scenes (${SCENES.length}): ${SCENES.join(', ')}`);
 
     for (const vp of VIEWPORTS) {
       await call('Emulation.setDeviceMetricsOverride', {
@@ -580,10 +701,27 @@ async function main() {
         }, { what: `the harness at ${vp.id}/${scene}`, timeout: 60000 })
           .catch((e) => { throw withLog(e); });
 
-        await call('Runtime.evaluate', {
+        /* A SCENE THAT DID NOT HAPPEN IS NOT A CLEAN SCENE.
+         *
+         * Every panel scene in the harness asserts that the panel it names is
+         * actually on screen afterwards, and throws if it is not. Ignoring the
+         * result here - which this call used to do - would turn "the mount
+         * drawer refuses to open because the stub stopped satisfying its
+         * precondition" into a green case measuring an empty viewport. That is
+         * the exact shape of gate this repository keeps paying for. */
+        const entered = await call('Runtime.evaluate', {
           expression: `window.__harness.scene(${JSON.stringify(scene)})`,
           awaitPromise: true, returnByValue: true,
         });
+        if (entered.exceptionDetails) {
+          const d = entered.exceptionDetails;
+          throw withLog(new Error(`${vp.id}/${scene} did not open: `
+            + `${d.exception?.description ?? d.text}`));
+        }
+        if (entered.result?.value !== scene) {
+          throw withLog(new Error(`${vp.id}/${scene}: the harness answered `
+            + `${JSON.stringify(entered.result?.value)} — it did not enter the scene`));
+        }
         /* One frame for the class-driven transitions to settle. */
         await sleep(120);
 
@@ -671,7 +809,8 @@ async function main() {
     console.error(`\nscreenshots + report: ${path.relative(root, outDir)}`);
     return 1;
   }
-  console.log(`\nHUD layout OK across ${VIEWPORTS.length} viewports x ${SCENES.length} scenes.`);
+  console.log(`\nHUD layout OK across ${VIEWPORTS.length} viewports x ${sceneCount} scenes `
+    + `(${report.cases.length} cases).`);
   console.log(`screenshots: ${path.relative(root, outDir)}`);
   return 0;
 }

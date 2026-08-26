@@ -27,6 +27,16 @@
   z-index: 80; /* above the pause overlay (60) and the wipe */
   display: grid;
   place-items: center;
+  /* The notch, through the four tokens `hud.css` declares - never `env()`
+     again, so the whole interface has one answer about where it is. Padded on
+     the SCRIM rather than the card: the dimmer stays full bleed, and a card
+     centred inside the padded box clears insets a card centred in the whole
+     viewport cannot, because a phone's insets are not symmetric. Measured
+     before this: the panel ran 33.7 px into both long-edge insets with the
+     phone turned over. */
+  padding:
+    calc(var(--sa-t, 0px) + 0.5rem) calc(var(--sa-r, 0px) + 0.5rem)
+    calc(var(--sa-b, 0px) + 0.5rem) calc(var(--sa-l, 0px) + 0.5rem);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -64,8 +74,18 @@ body.inv-menu-open .pause {
 /* ------------------------------------------------------------- shell ----- */
 .inv-panel {
   position: relative;
-  width: min(1180px, 94vw);
-  max-height: 88vh;
+  /* MEASURED FROM THE VIEWPORT, NOT FROM `100%` OF THE PARENT.
+     `width: min(Npx, 100%)` inside a `place-items: center` grid is circular:
+     the item does not stretch, so the auto column track is sized to the item's
+     MAX-CONTENT width, and the percentage then resolves against that track.
+     The inventory sheet came out 738 px wide inside a 374 px box - wider than
+     the screen, off both edges, and reported as fine because a percentage is
+     never "too big". The insets and the scrim's own gutter come off the
+     viewport instead, which has no such dependency.
+     `dvh`, not `vh`: on a phone a `vh` height is measured against the viewport
+     the URL bar is sitting in, so the footer would sit behind the chrome. */
+  width: min(1180px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
+  max-height: min(88dvh, calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem));
   display: flex;
   flex-direction: column;
   background: linear-gradient(155deg, var(--iv-glass-hi), var(--iv-glass)),
@@ -305,6 +325,10 @@ body.inv-menu-open .pause {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* A grid item's automatic minimum is its content's min-content width, so a
+     column whose slot grid is wider than its track pushes the track out rather
+     than scrolling. See the note on `.inv-grid`. */
+  min-width: 0;
   padding: 14px 18px 16px;
 }
 
@@ -382,7 +406,13 @@ body.inv-menu-open .pause {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  /* `minmax(0, 1fr)` and not a bare `1fr`, which is `minmax(auto, 1fr)`: the
+     `auto` minimum is the widest slot's MIN-CONTENT, and a slot carries an
+     item name. Six of those do not fit a phone's column, so the grid grew
+     wider than the panel and took the column header with it - which is how
+     the SORT button ended up at x=449 on a 390 px screen, outside a panel
+     that does not scroll sideways and unreachable. */
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px;
   overflow-y: auto;
   align-content: start;
@@ -667,8 +697,11 @@ body.inv-menu-open .pause {
 /* ==========================================================================
    MARKETPLACE
    ========================================================================== */
+/* Narrower than the bag - a shop is a list, not two grids. Measured from the
+   viewport minus the insets for the same reason `.inv-panel` is: `92vw` put
+   58 px of the sheet inside the right-hand notch on a phone in landscape. */
 .mkt-panel {
-  width: min(1000px, 92vw);
+  width: min(1000px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
 }
 
 .mkt-vendor {
@@ -1057,8 +1090,14 @@ body.inv-menu-open .pause {
     display: none;
   }
 
+  /* `1fr` is `minmax(auto, 1fr)` and `auto` is min-content, which for a text
+     input is wider than it looks; `minmax(0, 1fr)` is what actually lets the
+     row give way. The desktop pair is a 430 px minimum in a panel that is
+     366 px wide on a phone, and a grid whose tracks do not fit does not
+     collapse - it overflows. */
   .mkt-filters {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 14px 0;
   }
 
   .mkt-card {
@@ -1075,8 +1114,61 @@ body.inv-menu-open .pause {
     border-top: 1px solid var(--iv-soft);
   }
   .inv-grid {
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
+}
+
+/* ==========================================================================
+   NARROW VIEWPORTS — the header that pushed its own close button off screen
+
+   MEASURED, once the layout probe was widened to build this panel: `.inv-x` -
+   the ESC button - sat at x=440 on a 390 px phone. The head is a single flex
+   row with a 210 px title minimum, three siblings, 22 px gaps and 42 px of
+   padding; that is over 320 px before the capacity bar has said anything, so
+   the row overflows and the last item on it goes past the edge of the world.
+   The panel does not scroll sideways, so the bag could not be closed.
+
+   It read as clean to every check the probe had, because a control clipped to
+   nothing looks exactly like a control that is deliberately hidden. It is the
+   "verified BUILT, never verified REACHABLE" trap this repository keeps
+   paying for, and there is a `stranded` assertion for it now.
+   ========================================================================== */
+@media (max-width: 720px) {
+  .inv-head {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 12px 14px;
+  }
+
+  /* Title and ESC share the first row - the title gives way, the button does
+     not, because it is the one control that must always be hittable. */
+  .inv-title,
+  .mkt-vendor {
+    order: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .inv-title b { font-size: 19px; }
+
+  .inv-x {
+    order: 2;
+    flex: 0 0 auto;
+    align-self: center;
+    margin-left: auto;
+  }
+
+  /* The capacity readout takes the second row whole: it is the most important
+     thing on this panel and it carries a 30-tick bar. */
+  .inv-cap {
+    order: 3;
+    flex: 1 1 100%;
+    padding-left: 0;
+    border-left: none;
+  }
+
+  .inv-credits { order: 4; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1086,5 +1178,31 @@ body.inv-menu-open .pause {
   .inv-mid i {
     transition-duration: 0.01ms !important;
     animation: none !important;
+  }
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor
+
+   Both sheets this file styles - the bag and the shop - are reachable from the
+   touch tray, and every control on them measured under the minimum: ESC 49x28,
+   the STORE/EQUIP/DROP buttons 59x25, BUY 51x25, the BUY/SELL tabs 32 px tall
+   and the search field 36 px. Keyed on the pointer and not the width, like the
+   rest of the interface: a 1366 px tablet is a thumb and a 900 px browser
+   window is a mouse. Nothing here moves anything; it only enlarges what has to
+   be hit.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .inv-x,
+  .inv-btn,
+  .mkt-tab {
+    min-height: var(--tap, 2.75rem);
+  }
+
+  /* A text input's height is its content box plus padding, and a `min-height`
+     on a replaced control is honoured - so this is the whole fix. */
+  .mkt-search,
+  .mkt-select {
+    min-height: var(--tap, 2.75rem);
   }
 }

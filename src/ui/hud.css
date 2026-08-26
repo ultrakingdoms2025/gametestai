@@ -5091,6 +5091,37 @@ body {
   visibility: hidden;
 }
 
+/* A CURSOR-OWNING SHEET IS OPEN: the strip comes off, for the third time and
+ * the same reason.
+ *
+ * MEASURED, once the layout probe was widened past the three components it
+ * used to build. The strip sits at z-index 62 across the bottom centre and the
+ * inventory, marketplace, character, mount, ship, keybind and bug-report
+ * panels all reach it: 132x35 px shared with the inventory panel on a phone in
+ * landscape, 132x45 px with the character drawer, 86x10 px with a keybind cap
+ * on a 1280 px DESKTOP. Every one of those is a slot the player can see and
+ * cannot press, because the sheet on top of it has the click - which is the
+ * `.chat.open` defect above with a different panel on top.
+ *
+ * `.hud.overlaid` is the HUD's own "a sheet owns the screen" flag, set by
+ * `_wireOverlayEvents` for every one of those panels. `body.sm-open` is here
+ * because `ship:menu:open` is the one panel event that flag does not listen
+ * for - the same "cover it from the outside" move `maze-map.css` makes on
+ * `.pause`, and for the same reason: `HUD.js` belongs to someone else.
+ *
+ * `visibility`, not `pointer-events`: `#ui-root button` opts every slot back
+ * into pointer events by selector and would undo it. Same note as the chat
+ * rule above.
+ *
+ * And `#ui-root:has(> .hud.overlaid)`, not `.hud.overlaid .wstrip`: the strip
+ * is a SIBLING of `.hud`, not a child of it - `HUD.js:485` puts it straight on
+ * `#ui-root` so its slots stay clickable above the pause overlay, and says so.
+ * The descendant form matched nothing at all and read as working. */
+#ui-root:has(> .hud.overlaid) .wstrip,
+body.sm-open .wstrip {
+  visibility: hidden;
+}
+
 /* --------------------------------------------------------------------------
    2. COARSE POINTERS — the 44 px floor
 

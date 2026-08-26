@@ -24,6 +24,17 @@
   z-index: 88;
   display: grid;
   place-items: center;
+  /* THE NOTCH, and the only place this panel says anything about it.
+     `--sa-t/r/b/l` are declared once in `hud.css` as `env(safe-area-inset-*)`
+     with a 0 fallback; reading them here rather than calling `env()` again is
+     what `hud-source-checks.mjs` enforces, so the whole interface has one
+     answer about where the notch is. Padding the SCRIM's box rather than the
+     card means the dimmer still runs full bleed under the island while the
+     card and its close button stay out from under it - measured at 12.7 px
+     into the right inset on a phone in landscape before this existed. */
+  padding:
+    calc(var(--sa-t, 0px) + 8px) calc(var(--sa-r, 0px) + 8px)
+    calc(var(--sa-b, 0px) + 8px) calc(var(--sa-l, 0px) + 8px);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -57,8 +68,18 @@ body.quest-board-open .pause {
 /* ── Panel shell ─────────────────────────────────────────────────────── */
 .qb-panel {
   position: relative;
-  width: min(1100px, 94vw);
-  max-height: 88vh;
+  /* MEASURED FROM THE VIEWPORT, NOT FROM `100%` OF THE PARENT.
+     `width: min(Npx, 100%)` inside a `place-items: center` grid is circular:
+     the item does not stretch, so the auto column track is sized to the item's
+     MAX-CONTENT width, and the percentage then resolves against that track.
+     The inventory sheet came out 738 px wide inside a 374 px box - wider than
+     the screen, off both edges, and reported as fine because a percentage is
+     never "too big". The insets and the scrim's own gutter come off the
+     viewport instead, which has no such dependency.
+     `dvh`, not `vh`: on a phone a `vh` height is measured against the viewport
+     the URL bar is sitting in, so the footer would sit behind the chrome. */
+  width: min(1100px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
+  max-height: min(88dvh, calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem));
   display: flex;
   flex-direction: column;
   background:
@@ -148,7 +169,7 @@ body.quest-board-open .pause {
 /* ── Body layout ─────────────────────────────────────────────────────── */
 .qb-body {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -158,6 +179,8 @@ body.quest-board-open .pause {
 /* ── Quest list panel ────────────────────────────────────────────────── */
 .qb-list {
   border-right: 1px solid var(--qb-rule);
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 0;
   scrollbar-width: thin;
@@ -219,6 +242,8 @@ body.quest-board-open .pause {
 
 /* ── Detail panel ────────────────────────────────────────────────────── */
 .qb-detail {
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px 24px;
   scrollbar-width: thin;
@@ -369,3 +394,140 @@ body.quest-board-open .pause {
 /* Prevent the race panel from intercepting clicks when the quest board is open */
 body.quest-board-open .rc-panel,
 body.quest-board-open .rc-board { pointer-events: none !important; }
+
+/* ==========================================================================
+   NARROW VIEWPORTS
+
+   ── The defect this exists for ─────────────────────────────────────────
+
+   This file had NO media query of any kind, and a `280px 1fr` body inside
+   `overflow: hidden`. On a 390 px phone the card is ~367 px wide, so the
+   detail column got 87 px, and 48 px of that is its own padding: THIRTY-NINE
+   PIXELS of quest text, clipped rather than scrolled, with the ACCEPT button
+   and every step underneath it unreachable. Quest interaction is a named
+   acceptance criterion and the touch tray has a button that opens exactly
+   this panel, so the one screen a phone player is guaranteed to reach was the
+   one screen that did not work.
+
+   It shipped because the layout probe built three components - `HUD`,
+   `HelpMenu`, `TouchControls` - and this panel was not one of them, so no
+   viewport ever laid it out. It is in the probe now; see the harness.
+
+   ── What the breakpoint does ───────────────────────────────────────────
+
+   720 px, because that is where 280 px of list stops leaving a detail column
+   worth reading. Below it the two panes STACK, each keeping its own scroll
+   container: a list band you flick through and a detail band you read. Not
+   one long column - the selected quest has to stay visible while you pick
+   from the list, which is the whole interaction.
+   ========================================================================== */
+@media (max-width: 720px) {
+  .qb-header {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 12px 8px;
+  }
+
+  .qb-title {
+    flex: 1 1 auto;
+    font-size: 1rem;
+  }
+
+  /* Full width on their own row, sharing it equally. Three tabs plus a title
+     plus a close button do not fit across 366 px, and a flex row that runs
+     out of space squeezes the LAST item - which is the close button. */
+  .qb-tabs {
+    order: 3;
+    flex: 1 1 100%;
+    gap: 6px;
+  }
+
+  .qb-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 5px 4px;
+    text-align: center;
+  }
+
+  .qb-body {
+    grid-template-columns: minmax(0, 1fr);
+    /* Two BANDS, each its own scroll container. `auto` rows would let a long
+       list push the detail off the bottom of a panel that cannot scroll;
+       equal `1fr` rows would give a three-quest list the same room as a
+       seven-step quest. `minmax(0, ...)` is what makes each band scroll
+       rather than clip - the whole point of this breakpoint. */
+    grid-template-rows: minmax(4.5rem, 32%) minmax(0, 1fr);
+  }
+
+  .qb-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--qb-rule);
+  }
+
+  .qb-detail {
+    padding: 14px 14px 18px;
+  }
+
+  .qb-detail-meta {
+    gap: 6px 14px;
+    padding: 9px 11px;
+  }
+
+  /* Five columns of `20px 1fr auto auto auto` inside a 340 px band leaves the
+     label two words wide. A wrapping row instead: the label takes the line it
+     needs and the count, type and status fall under it. */
+  .qb-step {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 3px;
+    padding: 8px 10px;
+  }
+
+  .qb-step-icon { flex: 0 0 auto; width: 14px; text-align: left; }
+  .qb-step-label { flex: 1 1 8rem; min-width: 0; }
+  .qb-step-count,
+  .qb-step-type,
+  .qb-step-status { flex: 0 0 auto; }
+
+  .qb-footer { padding: 7px 8px; }
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor
+
+   Keyed on the pointer and not on the width, because the two are independent:
+   a 1366 px tablet is a thumb and a 900 px browser window is a mouse. Nothing
+   here moves anything; it only enlarges what has to be hit. `--tap` is
+   declared in `hud.css` and is 44 px; the fallback is for the panel being
+   styled before that sheet lands.
+
+   Measured before this block: the tabs were 27 px tall, the close button was
+   28x28, ACCEPT was 37 px.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .qb-tab {
+    min-height: var(--tap, 2.75rem);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .qb-close {
+    width: var(--tap, 2.75rem);
+    height: var(--tap, 2.75rem);
+  }
+
+  .qb-accept-btn,
+  .qb-step-done-btn {
+    min-height: var(--tap, 2.75rem);
+  }
+
+  /* A row is a hit target too, even though it is a `div` rather than a button
+     and so is invisible to the probe's `#ui-root button` sweep. 12 px of
+     padding on a one-line title is 44 px only by accident; state it. */
+  .qb-item {
+    min-height: var(--tap, 2.75rem);
+  }
+}

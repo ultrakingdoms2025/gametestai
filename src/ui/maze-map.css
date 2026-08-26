@@ -11,6 +11,18 @@
   background: rgba(4, 8, 5, 0.82);
   backdrop-filter: blur(2px);
   font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  /* The notch. `--sa-t/r/b/l` are declared once in `hud.css` as
+     `env(safe-area-inset-*)` with a 0 fallback - reading them rather than
+     calling `env()` again is what `hud-source-checks.mjs` enforces, so the
+     whole interface has one answer about where the notch is.
+
+     Padded HERE rather than on the panel because the panel is centred: with a
+     phone's asymmetric insets (59 px of island at the top, 34 px of home bar
+     at the bottom) a box centred in the WHOLE viewport still lands under one
+     of them. Centring inside the padded box cannot. */
+  padding:
+    calc(var(--sa-t, 0px) + 0.5rem) calc(var(--sa-r, 0px) + 0.5rem)
+    calc(var(--sa-b, 0px) + 0.5rem) calc(var(--sa-l, 0px) + 0.5rem);
   /* The second half of the owner's "the mouse is not interacting with the map".
      `#ui-root` is `pointer-events: none` (hud.css) so the HUD never eats the
      crosshair, and only `button`, `input`, `textarea` and `.interactive` opt
@@ -50,8 +62,23 @@ body.mz-map-open .pause {
 .mz-map-panel {
   display: flex;
   flex-direction: column;
-  width: min(92vw, 92vh);
-  height: min(92vw, 92vh);
+  /* SQUARE, because the overview lays the four floorplans out 2x2 - see the
+     note in `MazeMapLayout.js` and the aspect assertion in
+     `maze-map-levels.test.mjs`. A 1x4 strip in a square panel would fit each
+     level into a quarter of the panel edge; a 2x2 fits each into a half.
+
+     `dvh`, not `vh`: on a phone `92vh` is measured against the viewport the
+     URL bar is sitting in, so the legend along the bottom of the panel would
+     sit behind the browser chrome. The insets come off too, because the box
+     this is centred in has already been padded by them and a side computed
+     from the raw viewport would not fit inside it. */
+  --mz-side: min(
+    calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem),
+    calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem)
+  );
+  flex: 0 0 auto;
+  width: var(--mz-side);
+  height: var(--mz-side);
   border: 1px solid rgba(143, 214, 122, 0.35);
   background: #0d130e;
   box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
@@ -179,3 +206,64 @@ body.mz-map-open .pause {
    lines and then clip the hint off the panel edge. */
 .mz-map-head > * { flex: 0 0 auto; }
 .mz-map-tab { white-space: nowrap; }
+
+/* ==========================================================================
+   NARROW VIEWPORTS
+
+   This file had no media query at all. On a 390 px phone the header carries
+   THE VERDANT COIL, a level readout, five tabs, FIND ME and a 108-character
+   hint - every one of them `flex: 0 0 auto` and `white-space: nowrap` by the
+   rule directly above, which is correct on a desktop panel 700 px wide and is
+   how the hint ends up running off the panel edge on a phone.
+
+   So below 560 px the hint stops being a nowrap chip and becomes a wrapped
+   line of its own, and the title gives up its letter-spacing. Nothing else
+   moves: the tabs are how you page between floors and they stay on the row.
+   ========================================================================== */
+@media (max-width: 560px) {
+  .mz-map-head {
+    gap: 6px 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .mz-map-title { letter-spacing: 0.06em; }
+
+  .mz-map-levels { margin-left: 0; }
+
+  /* Its own line, wrapped rather than clipped. `margin-left: auto` is what
+     pushes it to the right of a row it no longer fits on. */
+  .mz-map-hint {
+    flex: 1 1 100%;
+    margin-left: 0;
+    white-space: normal;
+    line-height: 1.35;
+  }
+
+  .mz-map-foot {
+    gap: 8px 10px;
+    padding: 7px 10px;
+  }
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor
+
+   The level tabs and FIND ME measured 26x22 px. They are the only controls on
+   the map, and FIND ME is the one that undoes a lost pan - so a thumb that
+   cannot hit it is a player who cannot find themselves on a 400-cell grid.
+   Keyed on the pointer, not the width: a 1366 px tablet is a thumb.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .mz-map-tab {
+    min-width: var(--tap, 2.75rem);
+    min-height: var(--tap, 2.75rem);
+    padding: 3px 6px;
+  }
+
+  .mz-map-tab[data-lvl='all'] { padding: 3px 10px; }
+
+  .mz-map-recentre { padding: 3px 12px; }
+
+  .mz-map-levels { gap: 6px; }
+}

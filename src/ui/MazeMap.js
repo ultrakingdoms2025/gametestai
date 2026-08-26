@@ -173,6 +173,26 @@ export class MazeMap {
     this._panX = 0;
     this._panY = 0;
     this._drag = null;
+    /**
+     * Every pointer currently down on the canvas, by `pointerId`.
+     *
+     * The pan only ever needed one and tracked it in `_drag`. A pinch needs
+     * two AT ONCE, and there is no event that hands you both - `pointermove`
+     * fires once per finger with only that finger's position on it - so the
+     * live set has to be kept.
+     * @type {Map<number, {x:number, y:number}>}
+     */
+    this._pointers = new Map();
+    /**
+     * The span and midpoint the pinch was last measured at, or null.
+     *
+     * Both terms are needed. The RATIO of the spans is the zoom factor, and
+     * the midpoint is both the anchor to zoom about and, by its own movement,
+     * the pan - two fingers that travel together across the panel are dragging
+     * it, and a pinch that only zoomed would fight that.
+     * @type {{d:number, x:number, y:number}|null}
+     */
+    this._pinch = null;
 
     this.el = document.createElement('div');
     this.el.className = 'mz-map';
@@ -184,7 +204,7 @@ export class MazeMap {
           <span class="mz-map-level" data-level></span>
           <span class="mz-map-levels" data-levels></span>
           <button type="button" class="mz-map-tab mz-map-recentre" data-recentre>FIND ME</button>
-          <span class="mz-map-hint">WHEEL ZOOMS · DRAG PANS · CLICK A FLOOR TO ENLARGE · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
+          <span class="mz-map-hint">WHEEL OR PINCH ZOOMS · DRAG PANS · CLICK A FLOOR TO ENLARGE · FIND ME RECENTRES · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
         </div>
         <canvas class="mz-map-canvas"></canvas>
         <div class="mz-map-foot">
@@ -242,6 +262,11 @@ export class MazeMap {
     this.canvas.addEventListener('pointerdown', this._onDown);
     window.addEventListener('pointermove', this._onMove);
     window.addEventListener('pointerup', this._onUp);
+    /* A finger that leaves the panel, a palm the browser decides is not a
+     * gesture, a phone call arriving mid-drag: `pointercancel` and no
+     * `pointerup`. Without it that pointer stays in `_pointers` for ever and
+     * the NEXT single finger down is silently the second half of a pinch. */
+    window.addEventListener('pointercancel', this._onUp);
   }
 
   get isOpen() {
@@ -342,6 +367,13 @@ export class MazeMap {
     this.el.hidden = true;
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
     document.body.classList.remove('mz-map-open');
+    /* A panel that went away mid-gesture. Escape can close the map with two
+     * fingers still on the glass, and those `pointerup`s land on a hidden
+     * canvas - so the set is emptied here rather than waiting for events that
+     * would leave the NEXT single finger down looking like half a pinch. */
+    this._pointers.clear();
+    this._pinch = null;
+    this._drag = null;
     /* Wheel ticks spent zooming the map are the map's, not the loadout's.
      * `Input` accumulates every wheel event on `window` regardless of who
      * handled it, and `Loadout` drains that accumulator to switch weapons - so
@@ -1041,12 +1073,74 @@ export class MazeMap {
    */
   _onDown(e) {
     if (!this._open) return;
-    this._drag = { x: e.clientX, y: e.clientY, fromX: e.clientX, fromY: e.clientY, at: e.timeStamp };
+    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.canvas.setPointerCapture?.(e.pointerId);
+
+    /* A SECOND FINGER ENDS THE PAN AND BEGINS A PINCH.
+     *
+     * The wheel was the only way to zoom this map, and a phone has no wheel:
+     * a touch player could pan a 400-cell grid around at whatever scale it
+     * opened at and never change it. Two fingers is the gesture everyone
+     * already knows, and the canvas is `touch-action: none` (maze-map.css) so
+     * the browser hands us both rather than scrolling the page with them.
+     *
+     * `_drag` is cleared rather than left running: the first finger's motion
+     * during a pinch is half of the pinch, and counting it as a pan as well
+     * would move the sheet twice. */
+    if (this._pointers.size === 2) {
+      this._drag = null;
+      this._pinch = this._span();
+      return;
+    }
+    /* Three or more is not a gesture this panel has, and guessing which two of
+     * them meant it is worse than doing nothing. */
+    if (this._pointers.size > 2) {
+      this._drag = null;
+      this._pinch = null;
+      return;
+    }
+    this._drag = { x: e.clientX, y: e.clientY, fromX: e.clientX, fromY: e.clientY, at: e.timeStamp };
+  }
+
+  /** The distance between the two live pointers, and the point between them. */
+  _span() {
+    const [a, b] = [...this._pointers.values()];
+    if (!a || !b) return null;
+    return {
+      d: Math.hypot(b.x - a.x, b.y - a.y),
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    };
   }
 
   _onMove(e) {
-    if (!this._open || !this._drag) return;
+    if (!this._open) return;
+    const held = this._pointers.get(e.pointerId);
+    if (held) { held.x = e.clientX; held.y = e.clientY; }
+
+    if (this._pinch && this._pointers.size === 2) {
+      const now = this._span();
+      if (!now) return;
+      /* Zoom about where the fingers WERE, then translate to where they are.
+       *
+       * Anchoring on the new midpoint instead would be a frame late: the
+       * content the player is pinching is the content under the OLD midpoint,
+       * and holding the new one still walks the sheet out from under them.
+       * `_zoomAbout` solves the pan rather than nudging it, so the two steps
+       * compose exactly - see its own note on why that matters most on the
+       * small, frequent deltas a pinch is made of. */
+      if (this._pinch.d > 1 && now.d > 1) {
+        this._zoomAbout(this._pinch.x, this._pinch.y, now.d / this._pinch.d);
+      }
+      this._panX += now.x - this._pinch.x;
+      this._panY += now.y - this._pinch.y;
+      this._pinch = now;
+      this._clampNow();
+      this._draw();
+      return;
+    }
+
+    if (!this._drag) return;
     this._panX += e.clientX - this._drag.x;
     this._panY += e.clientY - this._drag.y;
     this._drag.x = e.clientX;
@@ -1069,9 +1163,28 @@ export class MazeMap {
    * it rather than when it happened.
    */
   _onUp(e) {
+    this._pointers.delete(e.pointerId);
+
+    /* Coming out of a pinch.
+     *
+     * Lifting one of two fingers leaves the other one down, and it is
+     * somewhere quite different from where it started - so the pan resumes
+     * from where that finger IS, and the press is marked `pinched` so the
+     * click test below cannot page the map to a floor the player never asked
+     * for on the way out of a zoom. */
+    if (this._pinch) {
+      if (this._pointers.size >= 2) return;
+      this._pinch = null;
+      const rest = [...this._pointers.values()][0];
+      this._drag = rest
+        ? { x: rest.x, y: rest.y, fromX: rest.x, fromY: rest.y, at: e.timeStamp, pinched: true }
+        : null;
+      return;
+    }
+
     const press = this._drag;
     this._drag = null;
-    if (!press || !this._open) return;
+    if (!press || !this._open || press.pinched) return;
     const moved = Math.hypot(e.clientX - press.fromX, e.clientY - press.fromY);
     if (moved > CLICK_SLOP_PX || e.timeStamp - press.at > CLICK_HOLD_MS) return;
     const w = this._mazeWorld();
@@ -1087,6 +1200,9 @@ export class MazeMap {
     window.removeEventListener('keydown', this._onKey, true);
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('pointerup', this._onUp);
+    window.removeEventListener('pointercancel', this._onUp);
+    this._pointers.clear();
+    this._pinch = null;
     /* Torn down with the map still open. Deliberately not `close()` - there is
      * nothing left to hand a pointer lock back to - but the class must go, or a
      * body class outliving its panel hides the STANDBY overlay for good. */

@@ -23,6 +23,15 @@
   z-index: 95;
   display: grid;
   place-items: center;
+  /* The notch, through the four tokens `hud.css` declares - never `env()`
+     again, so the whole interface has one answer. On the scrim rather than the
+     card: the dimmer stays full bleed and the card is centred inside the safe
+     box, which is the only way a card clears insets that are not symmetric.
+     Measured before this: SUBMIT and CANCEL sat 1.5 px inside the home bar on
+     a phone in landscape. */
+  padding:
+    calc(var(--sa-t, 0px) + 0.5rem) calc(var(--sa-r, 0px) + 0.5rem)
+    calc(var(--sa-b, 0px) + 0.5rem) calc(var(--sa-l, 0px) + 0.5rem);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -50,11 +59,26 @@
 /* ── Panel shell ─────────────────────────────────────────────────────── */
 .br-panel {
   position: relative;
-  width: min(600px, 92vw);
+  /* MEASURED FROM THE VIEWPORT, NOT FROM `100%` OF THE PARENT.
+     `width: min(Npx, 100%)` inside a `place-items: center` grid is circular:
+     the item does not stretch, so the auto column track is sized to the item's
+     MAX-CONTENT width, and the percentage then resolves against that track.
+     The inventory sheet came out 738 px wide inside a 374 px box - wider than
+     the screen, off both edges, and reported as fine because a percentage is
+     never "too big". The insets and the scrim's own gutter come off the
+     viewport instead, which has no such dependency.
+     `dvh`, not `vh`: on a phone a `vh` height is measured against the viewport
+     the URL bar is sitting in, so the footer would sit behind the chrome.
+     The height cap is new: this panel had none at all, and head + context + a
+     140 px textarea + footer is ~380 px against a phone in landscape with
+     390 px of screen and 21 px of home bar. */
+  width: min(600px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
+  max-height: min(92dvh, calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem));
   background: var(--br-glass);
   border: 1px solid var(--br-rule);
   border-radius: 6px;
   overflow: hidden;
+  overflow-y: auto;
   box-shadow: 0 0 48px rgba(82,233,255,.08), 0 12px 36px rgba(0,0,0,.55);
 }
 
@@ -249,4 +273,50 @@
 .br-btn-cancel:hover {
   color: var(--br-txt);
   border-color: var(--br-cy);
+}
+
+/* ==========================================================================
+   NARROW VIEWPORTS
+
+   This file had no media query. The context strip is three equal columns
+   carrying HANDLE / WORLD / POSITION, each with 32 px of its own padding: on a
+   390 px phone that is 117 px a column and every value came out ellipsised, so
+   the report a player files carried three fields none of which could be read
+   back before sending.
+   ========================================================================== */
+@media (max-width: 560px) {
+  .br-context {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* The right-hand cell of each row loses its divider, and the first row keeps
+     one along the bottom so the two rows do not read as one block. */
+  .br-ctx-field:nth-child(2n) { border-right: none; }
+  .br-ctx-field:nth-child(-n + 2) { border-bottom: 1px solid var(--br-soft); }
+  .br-ctx-field { padding: 8px 12px; }
+
+  .br-head { padding: 12px 14px; }
+  .br-title { font-size: 1.05rem; }
+  .br-body { padding: 14px; }
+  .br-textarea { min-height: 110px; }
+
+  .br-foot {
+    flex-wrap: wrap;
+    padding: 10px 14px 14px;
+  }
+
+  .br-status { flex: 1 1 100%; }
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor
+
+   Measured: the close button was 58x29 and both footer buttons were 36 px
+   tall. SUBMIT is the one control this panel exists for.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .br-close-btn,
+  .br-btn {
+    min-height: var(--tap, 2.75rem);
+  }
 }

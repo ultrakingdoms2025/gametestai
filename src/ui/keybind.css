@@ -14,6 +14,14 @@
   display: grid;
   place-items: center;
   background: rgba(4, 8, 14, 0.72);
+  /* The notch, through the four tokens `hud.css` declares - never `env()`
+     again, so the whole interface has one answer. Padded on the SCRIM so the
+     dimmer still runs full bleed while the card is centred inside the safe
+     box; a card centred in the whole viewport lands under a phone's island,
+     because a phone's insets are not symmetric. */
+  padding:
+    calc(var(--sa-t, 0px) + 0.5rem) calc(var(--sa-r, 0px) + 0.5rem)
+    calc(var(--sa-b, 0px) + 0.5rem) calc(var(--sa-l, 0px) + 0.5rem);
   opacity: 0;
   visibility: hidden;
   transition: opacity 130ms ease;
@@ -27,8 +35,18 @@
 }
 
 .kb-card {
-  width: min(820px, 92vw);
-  max-height: 86vh;
+  /* MEASURED FROM THE VIEWPORT, NOT FROM `100%` OF THE PARENT.
+     `width: min(Npx, 100%)` inside a `place-items: center` grid is circular:
+     the item does not stretch, so the auto column track is sized to the item's
+     MAX-CONTENT width, and the percentage then resolves against that track.
+     The inventory sheet came out 738 px wide inside a 374 px box - wider than
+     the screen, off both edges, and reported as fine because a percentage is
+     never "too big". The insets and the scrim's own gutter come off the
+     viewport instead, which has no such dependency.
+     `dvh`, not `vh`: on a phone a `vh` height is measured against the viewport
+     the URL bar is sitting in, so the footer would sit behind the chrome. */
+  width: min(820px, calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 1rem));
+  max-height: min(86dvh, calc(100dvh - var(--sa-t, 0px) - var(--sa-b, 0px) - 1rem));
   overflow: auto;
   padding: 22px 24px 18px;
   border: 1px solid rgba(120, 170, 200, 0.3);
@@ -80,7 +98,12 @@
 
 .kb-body {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  /* `min(320px, 100%)` and not a bare `320px`: a grid track whose MINIMUM is
+     wider than the container does not collapse to fit, it overflows. The card
+     is 359 px on a 390 px phone and 311 px of that is content, so the bare
+     form pushed nine pixels of every key cap off the card edge - and the card
+     is `overflow: auto`, so it scrolled sideways instead of saying so. */
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 8px 26px;
 }
 
@@ -172,4 +195,51 @@
   margin-top: 10px;
   font: 400 11px/1.5 'Rajdhani', system-ui, sans-serif;
   color: #6d8ea6;
+}
+
+/* ==========================================================================
+   COARSE POINTERS — the 44 px floor
+
+   Every key cap in this panel measured 86x21 px. It is the panel a player
+   opens BECAUSE a control is in the wrong place, so a cap a thumb cannot hit
+   is the one control that has to work. Keyed on the pointer and not the
+   width, like the rest of the interface: a 1366 px tablet is a thumb and a
+   900 px browser window is a mouse.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .kb-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--tap, 2.75rem);
+  }
+
+  .kb-btn {
+    min-height: var(--tap, 2.75rem);
+  }
+
+  /* The rows carry a 44 px control now, so their own 5 px padding would put
+     twenty of them past the bottom of a phone for no reason. */
+  .kb-row { padding: 2px 0; }
+}
+
+/* ==========================================================================
+   NARROW VIEWPORTS
+
+   One column below 560 px - `auto-fit` already does that - but the card's
+   desktop padding is 24 px a side out of 359, and the head puts the title and
+   the Esc hint on one row that does not fit.
+   ========================================================================== */
+@media (max-width: 560px) {
+  .kb-card { padding: 16px 14px 14px; }
+
+  .kb-head {
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .kb-body { gap: 4px 14px; }
+
+  .kb-foot { flex-wrap: wrap; gap: 8px 10px; }
 }

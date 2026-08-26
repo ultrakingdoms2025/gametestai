@@ -79,9 +79,10 @@ test('the panes are gapped, so four floorplans do not read as one', () => {
 });
 
 test('the sheet is near-square, because the panel it lands in is square', () => {
-  /* `min(92vw, 92vh)` in maze-map.css. A 1x4 strip in a square panel would fit
-   * each level into a quarter of the panel edge; a 2x2 fits each into a half,
-   * which is twice the linear scale for the same screen. */
+  /* `--mz-side` in maze-map.css is `min(width, height)` of the safe box, and
+   * the panel is that square. A 1x4 strip in a square panel would fit each
+   * level into a quarter of the panel edge; a 2x2 fits each into a half, which
+   * is twice the linear scale for the same screen. */
   const sheet = overviewSheet(100, 10);
   const ratio = sheet.width / sheet.height;
   assert.ok(ratio > 0.85 && ratio < 1.18, `overview aspect ${ratio.toFixed(2)} wastes half a square panel`);
@@ -371,8 +372,13 @@ test('the header hint tells the truth about the wheel and the click', async () =
   const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
   const hint = src.slice(src.indexOf('mz-map-hint'), src.indexOf('</span>', src.indexOf('mz-map-hint')));
   assert.ok(!/WHEEL SCROLLS/.test(hint), 'the hint still promises the old wheel behaviour');
-  assert.ok(/WHEEL ZOOMS/.test(hint), 'the hint does not say the wheel zooms');
+  assert.ok(/WHEEL(?: OR PINCH)? ZOOMS/.test(hint), 'the hint does not say the wheel zooms');
   assert.ok(/CLICK A FLOOR/i.test(hint), 'nothing tells the player a floorplan can be clicked');
+  /* And the half of it a phone can reach. A hint that names only the wheel on
+   * a device with no wheel tells a touch player the map has one zoom level. */
+  assert.ok(/PINCH/i.test(hint), 'nothing tells a touch player the map can be pinched');
+  assert.ok(/FIND ME/i.test(hint),
+    'nothing names the recentre control - Home is a key a phone does not have');
 });
 
 test('the legend names the route, now that it is drawn across four maps', async () => {
@@ -515,4 +521,104 @@ test('the STANDBY overlay is kept off the map it would otherwise cover', async (
   assert.match(js, /classList\.add\('mz-map-open'\)/, 'nothing marks the body while the map is open');
   assert.match(js, /classList\.remove\('mz-map-open'\)/, 'the body class outlives the map and hides STANDBY for good');
   assert.match(css, /body\.mz-map-open \.pause/, 'no rule keeps the STANDBY overlay off the open map');
+});
+
+/* ------------------------------------------------------------------ */
+/* The pinch                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ── WHAT THESE PROVE, AND WHAT THEY DO NOT ────────────────────────────────
+ *
+ * `MazeMap.js` starts with `import './maze-map.css'`, which Node cannot load,
+ * so nothing in this repository can construct the class under `node --test`.
+ * Every gate in this file is therefore a source gate, and these are too: they
+ * pin WHICH CALL IS MADE IN WHICH METHOD, and they cannot tell you the map
+ * zooms.
+ *
+ * THE BROWSER IS WHERE THAT WAS ESTABLISHED, and it was measured rather than
+ * eyeballed: the real `MazeMap` built by `scripts/harness/hud-viewport.js`,
+ * driven at 390x844 with a coarse pointer by `Input.dispatchTouchEvent` over
+ * CDP - two real touch points, not synthesised `PointerEvent`s.
+ *
+ *     two fingers 40 px apart, spread to 380 px   zoom 1     -> 10
+ *     two fingers 360 px apart, closed to 40 px   zoom 10    -> 1.11
+ *     one finger, tapped on a floorplan           level all  -> level 1
+ *
+ * The third line is the one that is easy to lose: a pinch must not end as a
+ * click on a pane, and a tap after a pinch must still page. Re-run it against
+ * `window.__harness.panels.mazeMap` if any of this changes.
+ */
+test('a second finger starts a pinch instead of a second pan', async () => {
+  const down = await mazeMapMethod('_onDown(e) {', '_span() {');
+  assert.match(down, /this\._pointers\.set\(e\.pointerId/,
+    '_onDown no longer tracks the pointer - a pinch needs two at once and no event carries both');
+  assert.match(down, /this\._pointers\.size === 2/,
+    'nothing notices the second finger, so a phone has no way to zoom this map at all');
+  const two = down.slice(down.indexOf('this._pointers.size === 2'));
+  assert.match(two, /this\._drag = null/,
+    'the pan keeps running through the pinch - the first finger would move the sheet twice');
+  assert.match(two, /this\._pinch = this\._span\(\)/,
+    'the pinch never records the span it started at, so there is no ratio to zoom by');
+});
+
+test('the pinch zooms about where the fingers were, and pans by where they went', async () => {
+  const move = await mazeMapMethod('_onMove(e) {', '_onUp(e) {');
+  assert.match(move, /this\._pinch && this\._pointers\.size === 2/,
+    '_onMove no longer has a pinch branch');
+  const pinch = move.slice(move.indexOf('this._pinch && this._pointers.size === 2'));
+  assert.match(pinch, /_zoomAbout\(this\._pinch\.x, this\._pinch\.y, now\.d \/ this\._pinch\.d\)/,
+    'the pinch does not zoom about the OLD midpoint by the span ratio - anchoring on the new '
+    + 'midpoint is a frame late and walks the sheet out from under the fingers');
+  assert.match(pinch, /this\._panX \+= now\.x - this\._pinch\.x/,
+    'two fingers travelling together no longer pan, so a pinch fights the drag it is part of');
+  assert.match(pinch, /this\._clampNow\(\)/, 'the pinch can push the sheet outside the grid');
+
+  /* And the single-finger pan still exists below it. */
+  assert.match(move, /if \(!this\._drag\) return;/,
+    'the one-finger pan branch went with the pinch');
+});
+
+test('coming out of a pinch does not page the map to a floor', async () => {
+  /* MEASURED as the third line of the browser run above. `_onUp` doubles as
+   * the click hit-test: without the flag, lifting the second finger inside the
+   * 5 px slop and 500 ms hold reads as a tap on whatever pane it was over, and
+   * the map pages to a floor the player never asked for at the end of every
+   * zoom. */
+  const up = await mazeMapMethod('_onUp(e) {', 'dispose() {');
+  assert.match(up, /this\._pointers\.delete\(e\.pointerId\)/,
+    '_onUp no longer forgets the pointer - the next single finger down is half a pinch for ever');
+  assert.match(up, /pinched: true/,
+    'the finger left over from a pinch is not marked, so the pinch ends as a click on a floorplan');
+  assert.match(up, /press\.pinched/,
+    'the click hit-test does not check the pinch flag, so the mark above does nothing');
+  /* One finger left of two keeps panning, from where that finger IS. */
+  assert.match(up, /const rest = \[\.\.\.this\._pointers\.values\(\)\]\[0\]/,
+    'lifting one of two fingers drops the pan entirely instead of continuing from the other');
+});
+
+test('a cancelled pointer is forgotten, or the next tap is half a pinch', async () => {
+  /* A finger that leaves the panel, a palm rejected as a gesture, a call
+   * arriving mid-drag: `pointercancel` and no `pointerup`. That pointer would
+   * sit in the set for ever, and the NEXT single finger down would be the
+   * second half of a pinch that nobody started. */
+  const src = await readFile(path.join(root, 'src/ui/MazeMap.js'), 'utf8');
+  assert.match(src, /addEventListener\('pointercancel', this\._onUp\)/,
+    'nothing listens for pointercancel, so a lost finger is remembered for ever');
+  assert.match(src, /removeEventListener\('pointercancel', this\._onUp\)/,
+    'the pointercancel listener outlives the panel');
+  /* Escape can close the map with two fingers still on the glass. */
+  const close = await mazeMapMethod('close() {', '_centreOnPlayer() {');
+  assert.match(close, /this\._pointers\.clear\(\)/,
+    'closing mid-gesture leaves the pointers behind - the map reopens already pinching');
+});
+
+test('the canvas keeps touch-action: none, or the browser takes the gesture', async () => {
+  /* Without it the browser claims a two-finger drag for page zoom and a
+   * one-finger drag for scrolling, and neither ever reaches this panel. It
+   * predates the pinch and is now load-bearing for it. */
+  const css = await readFile(path.join(root, 'src/ui/maze-map.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.mz-map-canvas {'), css.indexOf('}', css.indexOf('.mz-map-canvas {')));
+  assert.match(rule, /touch-action:\s*none/,
+    'the map canvas no longer claims its own gestures - the browser eats the pinch');
 });

@@ -98,3 +98,88 @@ test('the layout probe measures the game, not a copy of it', async () => {
   assert.match(harness, /fetch\('\.\.\/\.\.\/index\.html'\)/,
     'the layout harness no longer reads the shipped viewport meta out of index.html');
 });
+
+/* ====================================================================== */
+/* And it must keep measuring the PANELS                                  */
+/* ====================================================================== */
+
+/** Every panel the probe is expected to lay out, and the sheet it brings in. */
+const PANELS = [
+  ['src/ui/QuestBoard.js', 'src/ui/quest-board.css'],
+  ['src/ui/InventoryUI.js', 'src/ui/inventory.css'],
+  ['src/ui/MarketplaceUI.js', 'src/ui/inventory.css'],
+  ['src/ui/CharacterMenu.js', 'src/ui/character.css'],
+  ['src/ui/MountMenu.js', 'src/ui/mount-menu.css'],
+  ['src/ui/ShipMenu.js', 'src/ui/ship-menu.css'],
+  ['src/ui/KeybindMenu.js', 'src/ui/keybind.css'],
+  ['src/ui/MazeMap.js', 'src/ui/maze-map.css'],
+  ['src/ui/MountWheel.js', 'src/ui/mountwheel.css'],
+  ['src/ui/BugReport.js', 'src/ui/bug-report.css'],
+];
+
+test('the layout probe still builds every panel, and one scene per panel', async () => {
+  /* THE FAILURE THIS EXISTS TO CATCH, AND IT IS NOT HYPOTHETICAL.
+   *
+   * The harness used to build `HUD`, `HelpMenu` and `TouchControls` and stop.
+   * Ten panels were therefore laid out at NO viewport by anything, and one of
+   * them - the quest board, which the touch tray has a button for - shipped
+   * with a fixed `280px 1fr` grid inside `overflow: hidden` and not one media
+   * query in its stylesheet. On a 390 px phone its detail pane was 39 px of
+   * clipped, unscrollable text with the ACCEPT button underneath it.
+   *
+   * The probe reads its case list out of the harness, so deleting a scene
+   * here is silent: the run gets shorter and still prints "HUD layout OK".
+   * This is what makes it loud. */
+  const harness = await read('scripts/harness/hud-viewport.js');
+  const scenes = harness.slice(harness.indexOf('const SCENES = {'), harness.indexOf('function clearScene'));
+  assert.ok(scenes.length > 0, 'the harness no longer has a SCENES map at all');
+
+  for (const [mod] of PANELS) {
+    assert.ok(harness.includes(`from '../../${mod}'`),
+      `the layout harness no longer imports ${mod} — that panel is measured at no viewport`);
+  }
+
+  /* One scene per panel, named, and each of them proving the panel opened. */
+  for (const name of ['quests', 'inventory', 'market', 'character', 'mount',
+    'ship', 'keybinds', 'map', 'wheel', 'bug']) {
+    assert.ok(new RegExp(`\\n  ${name}\\(\\) \\{`).test(scenes),
+      `the layout harness has no \`${name}\` scene — that panel is built and never shown`);
+  }
+
+  /* A scene that opens nothing would be measured as an empty screen and
+   * reported clean, which is worse than not measuring it at all. */
+  const shows = (scenes.match(/\bshown\(/g) ?? []).length;
+  assert.ok(shows >= 10,
+    `only ${shows} scenes assert the panel they name actually opened; a scene that `
+    + 'silently opens nothing measures a blank viewport and passes');
+
+  /* And the list has to be published, or the probe falls back to the five HUD
+   * states it used to hardcode. */
+  assert.match(harness, /scenes:\s*Object\.keys\(SCENES\)/,
+    'the harness no longer publishes its scene list — the probe cannot read it');
+});
+
+test('the source-level sheet list covers every panel the probe lays out', async () => {
+  /* The two checks in `hud-source-checks.mjs` that walk `SHEETS` are both
+   * about a phone: `vh` against a moving URL bar, and one answer to "where is
+   * the notch". A panel that the probe now positions at 390 px but whose
+   * stylesheet is not on that list gets the rectangle half of its contract
+   * graded and not the other half - which is how eleven sheets came to be
+   * measuring heights in `vh`. */
+  const src = await read('scripts/hud-source-checks.mjs');
+  const list = src.slice(src.indexOf('const SHEETS = ['), src.indexOf('];', src.indexOf('const SHEETS = [')));
+  const missing = [...new Set(PANELS.map(([, sheet]) => sheet))]
+    .filter((sheet) => !list.includes(`'${sheet}'`));
+  assert.deepEqual(missing, [],
+    `the layout probe positions these panels but hud-source-checks.mjs does not read their `
+    + `stylesheets: ${missing.join(', ')}`);
+
+  /* Each panel really does bring that sheet in itself - which is how the
+   * harness loads them, and the reason the list above is not a guess. */
+  for (const [mod, sheet] of PANELS) {
+    const js = await read(mod);
+    const name = sheet.split('/').pop();
+    assert.ok(js.includes(`import './${name}'`),
+      `${mod} no longer imports ${name} — the harness would lay it out unstyled`);
+  }
+});

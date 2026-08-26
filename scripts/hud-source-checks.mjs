@@ -9,13 +9,16 @@
  *      two are identical in it and no measurement can tell them apart. On a
  *      phone `100vh` is the LARGE viewport - the one that includes the space
  *      the URL bar is sitting in - so the bottom of anything sized in `vh` is
- *      behind the browser chrome for as long as the bar is up.
+ *      behind the browser chrome for as long as the bar is up. Checked in the
+ *      four properties that are a height AND inside custom properties, because
+ *      `--x: min(52vh, 460px)` plus `height: var(--x)` is the same defect with
+ *      the unit moved one line away from the property it sizes.
  *   2. The shipped `<meta name="viewport">`. Without `viewport-fit=cover` every
  *      `env(safe-area-inset-*)` in the tree resolves to 0, so the whole
  *      safe-area layer is dead code that reads as done.
- *   3. Whether the two stylesheets agree about where the safe area is. They
+ *   3. Whether every stylesheet agrees about where the safe area is. They all
  *      have to read the SAME four tokens, or the probe drives one of them and
- *      grades both.
+ *      grades the rest.
  *   4. Whether `Minimap.js` has gone back to writing `canvas.style.width`.
  *      An inline style beats every stylesheet, so while it did, no breakpoint
  *      could shrink the map and a 390 px phone got the same 220 px square a
@@ -23,7 +26,9 @@
  *
  * Exported rather than inlined in the probe so `scripts/tests/hud-responsive
  * .test.mjs` can run the same four under `npm test`, which is the gate this
- * repository's CI actually runs on every push.
+ * repository's CI actually runs on every push. `SHEETS` is the list they walk,
+ * and it has to keep pace with what the probe positions - see the note on it,
+ * and the test in `hud-responsive.test.mjs` that ties the two together.
  *
  * ── CRLF ──────────────────────────────────────────────────────────────────
  *
@@ -46,8 +51,39 @@ async function read(rel) {
   return (await readFile(path.join(root, rel), 'utf8')).replace(/\r\n/g, '\n');
 }
 
-/** The stylesheets that lay out the interface. */
-const SHEETS = ['src/ui/hud.css', 'src/ui/pause-menu.css', 'src/ui/touch.css'];
+/**
+ * THE STYLESHEETS THAT LAY OUT THE INTERFACE.
+ *
+ * This list said `hud.css`, `pause-menu.css`, `touch.css` and nothing else,
+ * which is three sheets out of the sixteen in `src/ui`. Both of the checks
+ * that walk it are about a PHONE - `vh` against a moving URL bar, and one
+ * answer to "where is the notch" - and the nine added here are the panels a
+ * phone player opens: the quest board, the bag and the shop (one sheet), the
+ * three customisers, the key list, the map, the mount wheel and the bug form.
+ * Eight of the nine were measuring a height in `vh` when they were added.
+ *
+ * The panels are laid out by the viewport probe now (see the harness), and
+ * this is the half of their contract a rectangle cannot carry.
+ *
+ * A sheet belongs here when it positions something. `audio.css`, `flight.css`,
+ * `minigame.css` and `race.css` are not in the probe yet, so putting them here
+ * would be a rule with no measurement behind it - add them together or not at
+ * all.
+ */
+const SHEETS = [
+  'src/ui/hud.css',
+  'src/ui/pause-menu.css',
+  'src/ui/touch.css',
+  'src/ui/quest-board.css',
+  'src/ui/inventory.css',
+  'src/ui/character.css',
+  'src/ui/mount-menu.css',
+  'src/ui/ship-menu.css',
+  'src/ui/keybind.css',
+  'src/ui/maze-map.css',
+  'src/ui/mountwheel.css',
+  'src/ui/bug-report.css',
+];
 
 /**
  * @returns {Promise<string[]>} one line per failure; empty means clean.
@@ -73,11 +109,25 @@ export async function hudSourceChecks() {
 
   /* -- 2. dvh, not vh, in anything that is a height -------------------- */
   for (const file of SHEETS) {
-    const css = await read(file);
+    /* Comments stripped FIRST. Every one of these files now carries a note
+     * saying why the `vh` it used to have became `dvh`, and a scan that reads
+     * prose would fail on the explanation of its own fix. */
+    const css = (await read(file)).replace(/\/\*[\s\S]*?\*\//g, '');
     const re = /(^|[\n;{])\s*((?:max-|min-)?height|inset|bottom|top)\s*:\s*([^;}]*\d(?:\.\d+)?vh[^;}]*)/g;
     for (const m of css.matchAll(re)) {
       fails.push(`${file}: \`${m[2]}: ${m[3].trim()}\` is measured in vh, which a `
         + 'mobile URL bar moves — use dvh');
+    }
+    /* AND THE SAME UNIT HIDING IN A CUSTOM PROPERTY.
+     *
+     * The rule above names four properties, so `--mw-size: min(52vh, 460px)`
+     * followed by `height: var(--mw-size)` passed it while being the exact
+     * defect it exists for. A custom property has no type to inspect, so the
+     * unit is refused outright: a length that is used as a height must be
+     * `dvh`, and one that is only ever used as a width should be `vw`. */
+    for (const m of css.matchAll(/(^|[\n;{])\s*(--[\w-]+)\s*:\s*([^;}]*\d(?:\.\d+)?vh[^;}]*)/g)) {
+      fails.push(`${file}: \`${m[2]}: ${m[3].trim()}\` puts vh inside a custom property, `
+        + 'where the height check above cannot see it — use dvh');
     }
   }
 

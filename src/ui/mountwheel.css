@@ -37,9 +37,28 @@
 }
 
 .mw-ring {
+  /* THE RING IS SIZED BY HEIGHT AND IS DRAWN WIDER THAN IT.
+   *
+   * MEASURED at 390x844: `min(52vh, 460px)` is a 439 px ring inside a 390 px
+   * screen, 49 px of it off the right edge - and the six labels hang OUTSIDE
+   * the ring, because each `.mw-slot` is centred at 33.75% of the ring's width
+   * from the middle and is 104 px wide. The outermost label ran to x=400 on a
+   * 390 px screen. With the width term below the ring is 326 px and the labels
+   * span x=48..342, entirely on screen.
+   *
+   * So the width of the screen is a third term, minus the 4 rem those labels
+   * need, and the insets come off it because a notched phone in landscape puts
+   * 59 px of nothing down each long edge. `dvh`, not `vh`: on a phone `52vh`
+   * is measured against the viewport the URL bar is sitting in.
+   */
+  --mw-size: min(
+    52dvh,
+    calc(100vw - var(--sa-l, 0px) - var(--sa-r, 0px) - 4rem),
+    460px
+  );
   position: relative;
-  width: min(52vh, 460px);
-  height: min(52vh, 460px);
+  width: var(--mw-size);
+  height: var(--mw-size);
   transform: scale(0.9) rotate(-4deg);
   opacity: 0;
   transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), opacity 140ms ease;

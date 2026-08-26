@@ -174,11 +174,15 @@ jobs:
       # them); the full chain-warmed entry gate remains a local or
       # workflow_dispatch run on real hardware, where it takes minutes.
       #
-      # CALIBRATING (`continue-on-error`) until this job's FIRST green run
-      # on this runner pastes the printed baseline into `BASELINES`. Flip to
-      # enforcing in the same commit that records it.
-      - name: Frame-gap gate (cold, calibrating)
-        continue-on-error: true
+      # ENFORCING since 2026-08-26: the first green run (32928309409) proved
+      # the shape - ~6 min of gate inside a 15-min job - and its printed
+      # baseline (warmPrograms 111) is recorded in `BASELINES` under
+      # `linux-swiftshader`, in the same commit that removed
+      # `continue-on-error`, per the rule written when it was added. That run
+      # also confirmed movement/interaction pass on this runner, and that its
+      # watchdog sees 10 s no-rAF stretches - the clock stays printed, never
+      # asserted.
+      - name: Frame-gap gate (cold)
         env:
           FRAME_GAPS_GL: swiftshader
         run: >

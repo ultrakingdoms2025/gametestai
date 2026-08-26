@@ -2427,6 +2427,21 @@ const BASELINES = {
       'entry:sports': 23,
     },
   },
+
+  /* Recorded 2026-08-26 from the cold gate's FIRST green run on the GitHub
+   * runner (run 32928309409), exactly as the run printed it. COLD, so no
+   * entry events and an empty dProg - the counter this platform actually
+   * gates is warmPrograms. 111 differs from win32's 143 because a cold run
+   * never links the entry-world programs the chain would have added; the two
+   * keys are different measurements and must never be compared to each
+   * other. The same run's watchdog counted five 10 s no-rAF stretches, so
+   * this runner starves too - one more reason the clock is printed and never
+   * asserted here. */
+  'linux-swiftshader': {
+    recorded: '2026-08-26',
+    warmPrograms: 111,
+    dProg: {},
+  },
 };
 
 /** How far a counter may drift before it is a regression rather than noise. */

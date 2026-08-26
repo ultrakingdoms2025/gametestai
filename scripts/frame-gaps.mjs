@@ -1732,15 +1732,47 @@ async function runOnce(args, pageUrl, runIndex) {
         await mark(label);
         await press(s.open);
         await sleep(s.settle);
-        if (s.close) { await press(s.close); await sleep(600); }
+        /* THE 600 MS WALL SLEEP WAS THE MOVEMENT BUG'S SIBLING. A close that
+         * releases the text capture on its NEXT FRAME is correct game code -
+         * and on a runner that starves rAF in 10 s stretches, "600 ms after
+         * Escape" can land entirely inside a stretch where that frame never
+         * ran. CI run 18:56 26 Aug flagged chat as "left the keyboard
+         * captured" on a tree that had passed the same gate twice; the same
+         * run's boot took 54 s and its movement hold starved for 15 s. So the
+         * check polls: released is an instant pass, and "still captured" is
+         * only believed once at least 30 frames have actually RENDERED since
+         * the close - at which point the game had every chance to let go and
+         * genuinely did not. */
+        let stuck = false;
+        let stuckFrames = 0;
+        if (s.close) {
+          await press(s.close);
+          const f0 = Number(await evalIn(FRAME_NOW));
+          /* 20 s, not 8: the observed starvation stretches are 10 s, and a cap
+           * that cannot ride one out re-creates the timing-luck failure this
+           * poll exists to remove. Reaching the cap with under 30 frames means
+           * the page is genuinely not rendering, which is its own failure. */
+          const cap = Date.now() + 20000;
+          for (;;) {
+            await sleep(250);
+            stuck = await evalIn('!!(window.GAME.input && window.GAME.input.textCaptured)');
+            stuckFrames = Number(await evalIn(FRAME_NOW)) - f0;
+            if (!stuck) break;
+            if (stuckFrames >= 30 || Date.now() >= cap) break;
+          }
+        } else {
+          stuck = await evalIn('!!(window.GAME.input && window.GAME.input.textCaptured)');
+        }
         const phase = await closePhase(label);
         if (phase) {
           /* Did the keyboard come back? `textCaptured` is what every key
            * handler in the game checks first, so a true here means every
            * measurement after this point is measuring a game nobody can type
            * at. Recorded per surface rather than once at the end so the reader
-           * knows WHICH one kept it. */
-          phase.stuck = await evalIn('!!(window.GAME.input && window.GAME.input.textCaptured)');
+           * knows WHICH one kept it - and `stuckFrames` says whether the game
+           * was ever given a frame in which to release it. */
+          phase.stuck = stuck;
+          phase.stuckFrames = stuckFrames;
           out.events[label] = phase;
         }
       }
@@ -2583,7 +2615,12 @@ function gateRun(run, args) {
       if (ev.worldChanged) failures.push(`${name} changed world mid-traversal; it measured a crossing`);
     }
     if (name.startsWith('interaction:') && ev.stuck) {
-      failures.push(`${name} left the keyboard captured; every event after it is suspect`);
+      failures.push(`${name} left the keyboard captured`
+        + (ev.stuckFrames != null
+          ? ` across ${ev.stuckFrames} rendered frame(s) after the close`
+            + (ev.stuckFrames < 30 ? ' - the runner starved before the game could release it' : '')
+          : '')
+        + '; every event after it is suspect');
     }
   }
 

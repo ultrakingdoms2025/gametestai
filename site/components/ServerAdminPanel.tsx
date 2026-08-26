@@ -479,16 +479,31 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
               {detail.members.filter((m) => m.state !== 'requested').map((m) => (
                 <li key={m.playerId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span style={{ minWidth: 180 }}>{m.handle ?? '(no handle)'}</span>
-                  <span style={{ color: '#7fa4bd', minWidth: 90 }}>{m.state}</span>
+                  {/* The owner's own row says WHY it has no Remove button. A
+                      fresh server's roster is exactly one row - the owner -
+                      and a lone unlabelled row with no controls made the whole
+                      remove capability look absent; the owner reported it as
+                      missing. Ownership rides `owner_player_id` on the server,
+                      not this row, so removing it would only strand the owner
+                      out of scoped play on their own server. */}
+                  {m.playerId === detail.server.ownerPlayerId ? (
+                    <span style={{ color: '#d8b25a', minWidth: 90 }}>owner</span>
+                  ) : (
+                    <span style={{ color: '#7fa4bd', minWidth: 90 }}>{m.state}</span>
+                  )}
                   {m.state === 'invited' && (
                     <>
                       <button type="button" style={btn} disabled={busy}
                         onClick={() => run(() => memberAction(detail.server.id, m, 'approve'))}>
                         Approve
                       </button>
+                      {/* `reject` from `invited` IS retraction - same verb the
+                          transition table already carries; only the word on
+                          the button changes, because "Reject" on an invitation
+                          the owner sent themselves reads backwards. */}
                       <button type="button" style={btn} disabled={busy}
                         onClick={() => run(() => memberAction(detail.server.id, m, 'reject'))}>
-                        Reject
+                        Retract invite
                       </button>
                     </>
                   )}
@@ -501,6 +516,12 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                 </li>
               ))}
             </ul>
+            {detail.members.filter((m) => m.state !== 'requested' && m.playerId !== detail.server.ownerPlayerId).length === 0 && (
+              <p style={{ color: '#7fa4bd', fontSize: 13, margin: '8px 0 0' }}>
+                No members yet. Players you invite or approve appear here, each with a
+                Remove control.
+              </p>
+            )}
           </section>
 
           {/* ---- content mode --------------------------------------------

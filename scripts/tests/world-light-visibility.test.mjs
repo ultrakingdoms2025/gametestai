@@ -69,6 +69,52 @@ import * as THREE from 'three';
  */
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  WHY THIS SCOPE IS `src/worlds` AND MUST NOT BE WIDENED
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * An audit on 2026-08-25 reported sixteen lights "still born visible" outside
+ * this directory - in `weapons/{Fireball,Bow,Sword}.js`, `player/Weapon.js`,
+ * `mounts/{Car,Dragon,Hoverboard}.js` and `systems/{Portals,Projectiles,
+ * VFX}.js` - and proposed widening the scan to catch them. Every one of those
+ * sixteen was read before anything was changed. THE FINDING WAS WRONG, and
+ * acting on it would have introduced the defect this gate exists to prevent.
+ *
+ * A world light and an effect light are opposites:
+ *
+ *   - A WORLD light is built once per world and then lives under a group the
+ *     renderer stops walking. Born visible, it is counted for the frames
+ *     between construction and `claim()`, and the count is what keys the
+ *     program cache. Hiding it at birth is the fix, and that is this gate.
+ *
+ *   - An EFFECT light must fire mid-frame, with no `world:changed` anywhere
+ *     near it. So it is a FIXED POOL: added to the scene once, never removed,
+ *     never hidden, parked at intensity 0 and off-screen when idle. The count
+ *     never moves, so the cache never invalidates. `Car.js` states the rule in
+ *     four words - "Intensity, not membership, is what gets switched."
+ *
+ * Three's cache key reads `numPointLights` (`WebGLPrograms.js:472-478`), and
+ * `projectObject` (`WebGLRenderer.js:1833`) returns before `pushLight` for a
+ * hidden light. Intensity is the ONLY property that does not move the count -
+ * `WebGLLights.js:281,313,362,375,409` multiply a colour uniform and never
+ * gate inclusion. That asymmetry is the whole reason the two patterns differ.
+ *
+ * The pool sites are not undocumented, either. Each carries the freeze it was
+ * written to prevent, measured: 71 programs and 24 s on a weapon switch
+ * (`player/Weapon.js`), 79 programs and 28 s on a first dismount
+ * (`mounts/Dragon.js`), 28 s on a hoverboard summon (`mounts/Hoverboard.js`).
+ * Converting them to `gfx/WorldLight.js` would hide them - and a hidden light
+ * emits nothing, so the muzzle flash, the portal spill and the headlight would
+ * all go dark, and the first attempt to switch one back on would reproduce
+ * those freezes exactly.
+ *
+ * A gate that measures something the game does not do is worse than no gate:
+ * widened, this one would fail on correct code, and the obvious way to make it
+ * pass again is the bug. If you widen it, you must first teach it the
+ * difference between the two patterns - membership that is constant is the
+ * thing to assert, not visibility.
+ */
 const WORLDS_DIR = path.join(root, 'src/worlds');
 
 /**

@@ -207,6 +207,19 @@ export default function AccountPage() {
           )}
         </section>
 
+        {/* `/admin/servers` links "Back to your account" here; without this the
+            round trip only went one way, and the account page named every other
+            thing this site sells except the one recurring subscription. */}
+        <section className="auth-section">
+          <h2 className="auth-section-title">Custom servers</h2>
+          <p style={{ color: 'var(--txt-2)', fontSize: '0.9rem', margin: '0 0 12px' }}>
+            Your own lore, quests and marketplace items, played by the people you invite.
+            Hosting is a monthly subscription; server credits stay separate from your main
+            balance.
+          </p>
+          <Link href="/admin/servers" className="btn btn-ghost">Your servers</Link>
+        </section>
+
         <section className="auth-section">
           <SignOutButton />
         </section>

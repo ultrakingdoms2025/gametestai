@@ -76,6 +76,16 @@ export default async function AccountDashboard() {
                 Buy more credits
               </Link>
             )}
+            {/* The home page hides `SiteHeader` (it has its own hero nav), so for
+                a signed-in visitor who never leaves the front page this is the
+                ONLY link to the custom-server dashboard. Unconditional: the page
+                is the place you go to start hosting as well as the place you go
+                to run what you already host, so gating it on an entitlement this
+                component does not read would hide the product from exactly the
+                people who have not bought it yet. */}
+            <Link href="/admin/servers" className="btn btn-ghost btn-sm">
+              Your servers
+            </Link>
           </div>
         </div>
       </div>

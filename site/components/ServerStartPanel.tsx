@@ -23,6 +23,24 @@ import { useCallback, useEffect, useState, type CSSProperties } from 'react';
  * An unapproved server shows an "ask to join" button rather than being hidden.
  * A server nobody can find is a server nobody can request, and nothing about a
  * server's CONTENT is served here — only its name.
+ *
+ * ── Accepting an invitation, and why it needs its own control ─────────────
+ *
+ * The "ask to join" list is fed by `listJoinableServers`, which excludes any
+ * server the player already has a non-removed row in. An `invited` row is such
+ * a row — so the moment an owner invites somebody, the server LEAVES the list
+ * the invitation could have been answered from, and the invited player was left
+ * with a line of inert text reading "Waiting on: Name (invited)". The owner was
+ * waiting on them; they were told they were waiting on the owner. Nobody could
+ * move.
+ *
+ * The verb already existed: `request` on an `invited` row lands on `approved`
+ * (`customServers.ts` TRANSITIONS), which is exactly "the player-side verb for
+ * yes is the same verb as please, and the state the owner already set decides
+ * which it means". So this is a button, not a new route and not a relaxed
+ * exclusion — widening `listJoinableServers` would also let a `requested`
+ * player re-ask and a `removed` player walk back in, and the state machine is
+ * right as it stands.
  */
 
 type ServerRow = { id: string; name: string; slug: string; description: string; status: string };
@@ -65,11 +83,18 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  /**
+   * @param prefer the server to leave selected in the dropdown, for the reload
+   *   that follows an accepted invitation. Without it the reload resets the
+   *   choice to `current` — still default mode — and a player who has just
+   *   joined has to go and find their new server in the list themselves, which
+   *   is most of the way back to the dead end this control exists to fix.
+   */
+  const load = useCallback(async (prefer?: string) => {
     try {
       const data = await api<View>('/api/game/server');
       setView(data);
-      setChoice(data.current ?? '');
+      setChoice(prefer ?? data.current ?? '');
     } catch (e) {
       setNote((e as Error).message);
     }
@@ -86,7 +111,15 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
   }
 
   const approved = view.memberships.filter((m) => m.state === 'approved' && m.status === 'active');
-  const pending = view.memberships.filter((m) => m.state !== 'approved');
+  /* Invitations the player can answer NOW: the owner has offered, the server is
+   * running, and `request` from `invited` lands on `approved` in one call.
+   * A suspended server is deliberately not offered — the transition would
+   * succeed and `selectServer` would then refuse the entry, which is a button
+   * that appears to work and does not. Those fall through to "waiting on". */
+  const invitations = view.memberships.filter((m) => m.state === 'invited' && m.status === 'active');
+  const pending = view.memberships.filter(
+    (m) => m.state !== 'approved' && !invitations.includes(m)
+  );
   const chosen = approved.find((m) => m.id === choice) ?? null;
 
   return (
@@ -141,6 +174,44 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
           Credits earned here are this server&rsquo;s own and stay separate from your
           main balance.
         </p>
+      )}
+
+      {invitations.length > 0 && (
+        <div style={row}>
+          <span style={{ color: '#7fa4bd', fontSize: 13 }}>
+            You have been invited to join:
+          </span>
+          {invitations.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              style={{ ...btn, padding: '6px 12px' }}
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setNote(null);
+                try {
+                  /* The SAME verb the "ask to join" list fires. On an `invited`
+                   * row the transition table reads it as "yes", so one call
+                   * lands on `approved` — there is no accept endpoint to add
+                   * and no owner round trip to wait for. */
+                  await api('/api/game/server', {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'request', serverId: m.id }),
+                  });
+                  setNote(`Joined ${m.name}. Press Enter ${m.name} to play there.`);
+                  await load(m.id);
+                } catch (e) {
+                  setNote((e as Error).message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Accept {m.name}
+            </button>
+          ))}
+        </div>
       )}
 
       {pending.length > 0 && (

@@ -370,6 +370,15 @@ describe('POST /api/admin/map/report', () => {
     expect(store.recordWorldReport).not.toHaveBeenCalled();
   });
 
+  /** An array parses as JSON and is an object to `typeof`, but it is not a report; the answer is "malformed", not "no such world". */
+  it('refuses an array body as malformed, not as an unknown world, without reaching the store', async () => {
+    signedInAs(ADMIN);
+    const res = await post([REPORT]);
+    expect(res.status).toBe(400);
+    expect(store.recordWorldReport).not.toHaveBeenCalled();
+    expect(connections).toHaveLength(0);
+  });
+
   it('hands the layout fields to the store untouched, for the store to validate', async () => {
     signedInAs(ADMIN);
     const res = await post({ ...REPORT, ...LAYOUT });

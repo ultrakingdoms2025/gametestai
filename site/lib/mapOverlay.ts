@@ -5,7 +5,7 @@ import {
   type OverlayEntry,
   type RejectedEntry,
 } from './mapOverlaySchema';
-import { LAYOUT_SCHEMA, validateBounds, validateGround, validateLayout, validateShapes, type WorldLayout } from './mapLayout';
+import { LAYOUT_SCHEMA, MAX_SHAPES, validateBounds, validateGround, validateLayout, validateShapes, type WorldLayout } from './mapLayout';
 
 /**
  * Where a world's placement overlay is kept.
@@ -319,8 +319,14 @@ function clampNumber(value: unknown): number {
  * Only the keys that arrived AND passed. `bounds`/`shapes` travel on every report, `ground`
  * only when sampling finished; jsonb `||` is shallow, so bounds without ground keeps
  * yesterday's ground, and nothing keeps everything.
+ *
+ * Every way a layout comes back thinner, or not at all, is said on the console here, where it
+ * is first known. `saveOverlayVersion` hands `rejected` back for the editor to show; a report
+ * has no one to show it to, and a quietly missing or thinner map hides a world file's bug.
+ * Absent is not unusable: a field that was not sent is the keep-the-prior rule working, and
+ * says nothing.
  */
-function layoutPatch(report: ReportedLayoutFields): Partial<WorldLayout> {
+function layoutPatch(worldId: string, report: ReportedLayoutFields): Partial<WorldLayout> {
   const patch: Partial<WorldLayout> = {};
   if (report.layoutSchema !== LAYOUT_SCHEMA) return patch;
   const bounds = validateBounds(report.bounds);
@@ -328,12 +334,25 @@ function layoutPatch(report: ReportedLayoutFields): Partial<WorldLayout> {
     patch.schema = LAYOUT_SCHEMA;
     patch.bounds = bounds;
     // Present means replace, absent means keep — the same rule as `ground`, so a report of bounds alone cannot erase the shapes.
-    if (Array.isArray(report.shapes)) patch.shapes = validateShapes(report.shapes);
+    if (Array.isArray(report.shapes)) {
+      patch.shapes = validateShapes(report.shapes);
+      // Truncation is not unreadability: the cap keeps the first MAX_SHAPES of a longer list, and
+      // calling the rest "unreadable" would send someone hunting a bug a world file does not have.
+      if (patch.shapes.length === MAX_SHAPES && report.shapes.length > MAX_SHAPES) {
+        console.warn(`[map-report] kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes for ${worldId}`);
+      } else if (patch.shapes.length < report.shapes.length) {
+        console.warn(`[map-report] dropped ${report.shapes.length - patch.shapes.length} unreadable shapes for ${worldId}`);
+      }
+    }
+  } else if (report.bounds !== undefined) {
+    console.warn(`[map-report] unusable bounds for ${worldId}`);
   }
-  const ground = report.ground === undefined || report.ground === null ? null : validateGround(report.ground);
+  const ground = report.ground == null ? null : validateGround(report.ground);
   if (ground) {
     patch.schema = LAYOUT_SCHEMA;
     patch.ground = ground;
+  } else if (report.ground != null) {
+    console.warn(`[map-report] unusable ground for ${worldId}; prior kept`);
   }
   // A valid ground under invalid bounds stores { schema, ground }: readWorldReport answers `layout: null` until bounds arrive, and the ground is already there when they do. Self-healing, not a bug.
   return patch;
@@ -374,13 +393,7 @@ export async function recordWorldReport(
       reason: String((u as UnresolvedOutcome)?.reason ?? '').slice(0, 64),
     }));
 
-  const patch = layoutPatch(report);
-  // `saveOverlayVersion` hands `rejected` back for the editor to show; a report has no one to
-  // show it to, and a shape the validator could not read is a world file's bug that a quietly
-  // thinner map would hide. So the count goes to the log, here, where it is first known.
-  if (Array.isArray(report.shapes) && patch.shapes && patch.shapes.length < report.shapes.length) {
-    console.warn(`[map-report] dropped ${report.shapes.length - patch.shapes.length} unreadable shapes for ${worldId}`);
-  }
+  const patch = layoutPatch(worldId, report);
 
   await db.query(
     `INSERT INTO map_world_reports

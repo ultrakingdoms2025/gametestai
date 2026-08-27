@@ -60,7 +60,8 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
-  if (!body || typeof body !== 'object') {
+  // An array parses, and is an object to `typeof`, but it is not a report: malformed, not "no such world".
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 

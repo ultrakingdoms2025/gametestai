@@ -13,7 +13,7 @@ import {
   revertOverlayTo,
   saveOverlayVersion,
 } from './mapOverlay';
-import { encodeHeights } from './mapLayout';
+import { MAX_SHAPES, encodeHeights } from './mapLayout';
 import { flat, makeFakeDb } from './fakeDb';
 
 /**
@@ -393,6 +393,41 @@ describe('recordWorldReport — the SQL it emits', () => {
       expect(warn).toHaveBeenCalledWith('[map-report] dropped 2 unreadable shapes for test-overlay-sql');
       warn.mockClear();
       await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [rect] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** Truncation is not unreadability: MAX_SHAPES + 1 good shapes lose exactly one to the cap, and calling that one "unreadable" would send someone hunting a bug in a world file that has none. */
+  it('says it kept the first MAX_SHAPES when a report carries more, rather than calling the rest unreadable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: Array(MAX_SHAPES + 1).fill(rect) });
+      expect(patchOf(db).shapes).toHaveLength(MAX_SHAPES);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(`[map-report] kept the first ${MAX_SHAPES} of ${MAX_SHAPES + 1} shapes for test-overlay-sql`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** A bounds or ground that arrived and failed leaves the editor with no map, or yesterday's; that must be said somewhere, and absent is not the same as unusable. */
+  it('says when bounds or ground it was sent could not be used, and nothing when they were simply not sent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: { min: 'no' }, shapes: [] });
+      expect(warn).toHaveBeenCalledWith('[map-report] unusable bounds for test-overlay-sql');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(1), nx: 4 } });
+      expect(warn).toHaveBeenCalledWith('[map-report] unusable ground for test-overlay-sql; prior kept');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: null });
+      await recordWorldReport(db, 'test-overlay-sql', PLAIN);
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();

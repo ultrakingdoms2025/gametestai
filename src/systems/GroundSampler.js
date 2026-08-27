@@ -43,6 +43,7 @@ export function planGrid(bounds) {
   const w = max.x - min.x;
   const d = max.z - min.z;
   if (!(w > 0) || !(d > 0)) return null;
+  if (!Number.isFinite(w) || !Number.isFinite(d)) return null;
   const step = Math.max(MIN_STEP, Math.ceil(Math.max(w, d) / TARGET_CELLS));
   return { originX: min.x, originZ: min.z, step, nx: Math.floor(w / step) + 1, nz: Math.floor(d / step) + 1 };
 }
@@ -51,6 +52,7 @@ export function planGrid(bounds) {
  * Int16 → little-endian bytes → base64. Byte order written by hand, not read
  * off the typed array's buffer, so the wire format does not depend on the
  * machine; `btoa` not Buffer, so it runs in the browser.
+ * @param {Int16Array} values
  */
 export function encodeInt16Base64(values) {
   const n = values.length;
@@ -70,6 +72,61 @@ export function encodeInt16Base64(values) {
 
 const toCm = (metres) => Math.max(-32767, Math.min(32767, Math.round(metres * 100)));
 
-export function createJob() {
-  throw new Error('createJob: not implemented yet (Task 2)');
+/**
+ * A resumable sampling job over `plan`.
+ * @param {{originX:number, originZ:number, step:number, nx:number, nz:number}} plan
+ * @param {(x:number, yTop:number, z:number, maxDrop:number) => number|null} cast
+ *   The first surface below `yTop` within `maxDrop`, or null.
+ * @param {{layers?:number, topY?:number, floorY?:number}} [opts] `topY`: where
+ *   each cell's first cast starts (bounds.max.y + 10 - the dome and a 260 m
+ *   planet both sit above groundHeight's 200 m default); `floorY`: where it stops.
+ */
+export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY = -200 } = {}) {
+  const { originX, originZ, step, nx, nz } = plan;
+  const L = Math.max(1, Math.min(MAX_LAYERS, layers | 0));
+  const total = nx * nz;
+  const heights = new Int16Array(total * L).fill(NO_SAMPLE);
+  let next = 0; // cell index j*nx + i; cells are sampled in wire order
+
+  function sampleCell(i, j) {
+    const x = originX + i * step;
+    const z = originZ + j * step;
+    const base = (j * nx + i) * L;
+    let y = topY;
+    for (let k = 0; k < L; k++) {
+      const drop = y - floorY;
+      if (!(drop > 0)) break;
+      const h = cast(x, y, z, drop);
+      if (typeof h !== 'number' || !Number.isFinite(h)) break;
+      heights[base + k] = toCm(h);
+      y = h - PEEL;
+    }
+  }
+
+  return {
+    plan,
+    layers: L,
+    cells: total,
+    get done() { return next >= total; },
+    get sampled() { return next; },
+    get progress() { return total ? next / total : 1; },
+    /** Sample until `budgetMs` of `now()` has elapsed; checked BEFORE each cell,
+     *  so budget 0 samples nothing and a late frame overpays by at most one cell. */
+    run(budgetMs, now) {
+      const start = now();
+      while (next < total && now() - start < budgetMs) {
+        const i = next % nx;
+        sampleCell(i, (next - i) / nx);
+        next++;
+      }
+      return next >= total;
+    },
+    result() {
+      // The site's decoder throws on a length mismatch; the game must never send one.
+      if (heights.length !== nx * nz * L) {
+        throw new Error(`GroundSampler: ${heights.length} heights for a ${nx}×${nz}×${L} grid`);
+      }
+      return { originX, originZ, step, nx, nz, layers: L, heightsCm: encodeInt16Base64(heights) };
+    },
+  };
 }

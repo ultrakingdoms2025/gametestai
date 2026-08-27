@@ -965,6 +965,13 @@ const CONTRACT_V2 = [
     exports: ['MapOverlay', 'grantForPlacement'],
     methods: ['dispose'],
   },
+  /* The editor's ground grid. Pure, reached only through MapOverlay, so a
+   * renamed export would surface as "the editor never gets a layout" one admin
+   * visit later rather than as a failed check here. */
+  {
+    file: 'src/systems/GroundSampler.js',
+    exports: ['planGrid', 'createJob', 'encodeInt16Base64', 'NO_SAMPLE', 'MAX_LAYERS', 'LAYOUT_SCHEMA'],
+  },
   { file: 'src/mounts/MountManager.js', exports: ['MountManager'], methods: ['summon', 'dismount', 'update'] },
   { file: 'src/mounts/Hoverboard.js', exports: [], methods: [] },
   { file: 'src/mounts/Dragon.js', exports: [], methods: [] },

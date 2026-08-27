@@ -63,11 +63,22 @@ function makeWorld(id = 'station') {
   return { id, group, crate, bounds, minimapShapes };
 }
 
-function makeFetch(overlay) {
+/**
+ * `overlay` is the GET's answer, or a function of the world id that returns
+ * (or resolves) one. `refuseGround`: the site answers 413 to a layout report
+ * over its cap - a refusal, never a throw.
+ */
+function makeFetch(overlay, { refuseGround = false } = {}) {
   const calls = [];
   const fn = async (url, init) => {
-    calls.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : null });
-    if ((init?.method ?? 'GET') === 'GET') return { ok: true, status: 200, json: async () => overlay };
+    const body = init?.body ? JSON.parse(init.body) : null;
+    calls.push({ url, method: init?.method ?? 'GET', body });
+    if ((init?.method ?? 'GET') === 'GET') {
+      const worldId = new URL(url, 'http://game').searchParams.get('world');
+      const answer = typeof overlay === 'function' ? await overlay(worldId) : overlay;
+      return { ok: true, status: 200, json: async () => answer };
+    }
+    if (refuseGround && body?.ground) return { ok: false, status: 413, json: async () => ({ error: 'too large' }) };
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   };
   fn.calls = calls;
@@ -89,7 +100,7 @@ const doc = (entries, { version = 1, admin = false, world = 'station' } = {}) =>
  * x ∈ [2, 42], so grid cell x=4 is under it and x=0 is not. `clockPerCast`
  * advances the injected clock per REAL raycast: a deterministic frame.
  */
-function setup(overlay, { forceLayout = false, clockPerCast = 0 } = {}) {
+function setup(overlay, { forceLayout = false, clockPerCast = 0, refuseGround = false } = {}) {
   const bus = makeBus();
   const physics = new Physics(bus);
   physics.addBox(0, -1, 0, 100, 1, 100);
@@ -99,7 +110,7 @@ function setup(overlay, { forceLayout = false, clockPerCast = 0 } = {}) {
   const raycast = physics.raycast.bind(physics);
   physics.raycast = (...a) => { casts++; clock += clockPerCast; return raycast(...a); };
   const loot = { spawn: () => null, despawn: () => true };
-  const fetchImpl = makeFetch(overlay);
+  const fetchImpl = makeFetch(overlay, { refuseGround });
   const engine = makeEngine();
   const world = makeWorld();
   const system = new MapOverlay({ bus, physics, loot, engine, fetch: fetchImpl, forceLayout, now: () => clock });
@@ -114,6 +125,7 @@ async function enter({ bus, system, world }) {
 /** Tick frames until the current world's sampling completes, then await its POST. */
 async function finish(rig) {
   for (let n = 0; n < 100000 && !rig.system.layoutSampled; n++) rig.engine.tick();
+  assert.equal(rig.system.layoutSampled, true, 'sampling did not complete within 100000 frames');
   return rig.system.sampling;
 }
 
@@ -153,15 +165,27 @@ test('a world with no bounds still reports, without a bounds field', async () =>
   assert.deepEqual(body.shapes, rig.world.minimapShapes);
 });
 
-test('an empty Box3 (±Infinity) sends no bounds field and starts no sampling', async () => {
+test('an empty Box3 (±Infinity) sends no bounds field and starts no sampling, even after a good sample', async () => {
   const rig = setup(doc([], { admin: true }));
-  rig.world.bounds = new THREE.Box3(); // makeEmpty: min = +Infinity, max = -Infinity
   await enter(rig);
-  const body = rig.fetchImpl.posts()[0].body;
+  assert.equal((await finish(rig)).cells, 441, 'a complete station sample first');
+  const cast = rig.casts();
+  rig.world.bounds = new THREE.Box3(); // makeEmpty: min = +Infinity, max = -Infinity
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await enter(rig); // re-entry: the report, then nothing to sample
+    for (let n = 0; n < 10; n++) rig.engine.tick();
+  } finally {
+    console.warn = warn;
+  }
+  const body = rig.fetchImpl.posts()[2].body;
   assert.equal('bounds' in body, false, 'JSON writes Infinity as null, and a present bounds key is "replace" to the server');
-  for (let n = 0; n < 10; n++) rig.engine.tick();
-  assert.equal(rig.casts(), 0, 'no grid can be planned from an empty box');
-  assert.equal(await rig.system.sampling, null);
+  assert.equal(rig.casts(), cast, 'no grid can be planned from an empty box');
+  assert.equal(warned.length, 1, `one warning: ${warned}`);
+  assert.equal(await rig.system.sampling, null, 'not the previous visit\'s summary');
+  assert.equal(rig.system.layoutSampled, false);
 });
 
 /* ---------------------------------------------------- the layout report -- */
@@ -191,6 +215,7 @@ test('(b) after sampling, a second POST carries a grid with two layers under the
   assert.ok(ev, 'map-overlay:layout was emitted');
   assert.equal(ev.payload.cells, 441);
   assert.equal(typeof ev.payload.sampledMs, 'number');
+  assert.ok(Number.isFinite(summary.sampledMs), `sampledMs is a duration, got ${summary.sampledMs}`);
 });
 
 test('(c) one frame samples about one cell at 1 ms per cast, and the job resumes on the next', async () => {
@@ -201,9 +226,10 @@ test('(c) one frame samples about one cell at 1 ms per cast, and the job resumes
   assert.ok(rig.casts() >= 1 && rig.casts() <= 3, `one 2 ms frame cast ${rig.casts()} rays`);
   assert.equal(rig.system.layoutSampled, false);
   assert.equal(rig.fetchImpl.posts().length, 1, 'no layout POST mid-job');
-  await finish(rig);
+  const summary = await finish(rig);
   assert.equal(rig.fetchImpl.posts().length, 2);
   assert.ok(rig.casts() >= 441 * 2, `every cell cast at least twice, got ${rig.casts()}`);
+  assert.ok(summary.sampledMs >= 441 * 2, `the clock advanced 1 ms per cast: sampledMs ${summary.sampledMs}`);
 });
 
 test('(d) leaving the world mid-job posts no layout for it, and the promise resolves null', async () => {
@@ -293,6 +319,44 @@ test('a cast that throws abandons the job on that frame: one warning, null, and 
   assert.equal(await rig.system.sampling, null);
   assert.equal(rig.system.layoutSampled, false);
   assert.equal(rig.fetchImpl.posts().length, 1, 'the immediate report only');
+});
+
+test('a layout report the editor refuses is said so once, and sampling still resolves', async () => {
+  const rig = setup(doc([], { admin: true }), { refuseGround: true });
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  let summary;
+  try {
+    await enter(rig);
+    summary = await finish(rig);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(summary.cells, 441, 'the promise resolved with the summary');
+  assert.equal(rig.fetchImpl.posts().length, 2, 'the layout POST was made once: no retry');
+  assert.equal(warned.length, 1, `one warning: ${warned}`);
+  assert.match(warned[0], /\[map-overlay\] the editor refused the report.*413/);
+});
+
+test('a stale document for the world before lands after a portal, and the layout POST still names the world sampled', async () => {
+  // The station GET is held until released; elsewhere answers at once, as admin.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const overlays = { station: doc([], { admin: true }), elsewhere: doc([], { admin: true, world: 'elsewhere' }) };
+  const rig = setup(async (worldId) => { if (worldId === 'station') await held; return overlays[worldId]; }, { clockPerCast: 1 });
+  rig.bus.emit('world:changed', { id: 'station', world: rig.world });
+  rig.bus.emit('world:changed', { id: 'elsewhere', world: makeWorld('elsewhere') });
+  await rig.system.applying;
+  rig.engine.tick(); // elsewhere's job is in flight
+  release();
+  await new Promise((r) => setTimeout(r, 0)); // the station continuation runs to its end
+  assert.equal(rig.system.report.world, 'station', 'precondition: the stale document arrived after the portal');
+  const summary = await finish(rig);
+  assert.equal(summary.world, 'elsewhere');
+  const layout = rig.fetchImpl.posts().find((p) => p.body.ground);
+  assert.equal(layout.body.world, 'elsewhere', 'the ground is posted for the world it was sampled in');
+  assert.equal(layout.body.appliedVersion, 1);
 });
 
 /* ------------------------------------------------------------ the peel -- */

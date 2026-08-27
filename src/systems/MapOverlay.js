@@ -195,20 +195,19 @@ export class MapOverlay {
 
     const document = await this._read(id);
     const admin = document?.admin === true;
-    if (!document) {
-      this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
-    } else {
-      await this._applyDocument(id, world, document, admin);
-    }
+    const report = document
+      ? await this._applyDocument(id, world, document, admin)
+      : this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
 
     /* The ground is sampled AFTER the overlay is applied, so a moved building's
      * colliders are where the editor will draw them. Admin, or the dev switch;
      * and only if this is still the world we are in - both awaits above are
-     * places a portal can land. */
-    if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin);
+     * places a portal can land. The job carries THIS report: a document for the
+     * world before can land after a portal and republish over `this.report`. */
+    if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin, report);
   }
 
-  /** Apply the entries, publish, and report. Unchanged from before the sampler. */
+  /** Apply the entries, publish, and report; returns the report. */
   async _applyDocument(id, world, document, admin) {
     const entries = Array.isArray(document.entries) ? document.entries : [];
     const applied = [];
@@ -232,6 +231,7 @@ export class MapOverlay {
     this._publish(report);
 
     if (admin) await this._reportBack(report, world);
+    return report;
   }
 
   /** Undo everything applied to the world this system last touched. */
@@ -255,6 +255,7 @@ export class MapOverlay {
     this._placed.length = 0;
     this._cancelSampling();
     this.layoutSampled = false;
+    this.sampling = Promise.resolve(null);
     this._world = null;
   }
 
@@ -282,12 +283,13 @@ export class MapOverlay {
   _publish(report) {
     this.report = report;
     this.bus?.emit?.('map-overlay:applied', report);
+    return report;
   }
 
   async _reportBack(report, world, ground = null) {
     if (!this._fetch) return;
     try {
-      await this._fetch(this.reportEndpoint, {
+      const res = await this._fetch(this.reportEndpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -302,6 +304,9 @@ export class MapOverlay {
           ...(ground ? { ground } : {}),
         }),
       });
+      // A 413 over the site's layout cap, or a 400, is a refusal, not a throw:
+      // said once (spec §10), never retried - the next visit reports afresh.
+      if (!res?.ok) console.warn('[map-overlay] the editor refused the report:', res?.status);
     } catch (err) {
       // The editor loses one refresh of its object picker. Nothing in the game
       // depends on this landing.
@@ -329,8 +334,12 @@ export class MapOverlay {
   /* The ground grid                                                     */
   /* ------------------------------------------------------------------ */
 
-  /** Start a job for `world`; `post`: to the editor (admin) or only the bus (dev switch). */
-  _startSampling(id, world, post) {
+  /**
+   * Start a job for `world`; `post`: to the editor (admin) or only the bus
+   * (dev switch); `report`: what the layout report will carry alongside the
+   * grid - the one published for THIS world, whatever is published meanwhile.
+   */
+  _startSampling(id, world, post, report) {
     this._cancelSampling();
     // The same bounds the report carries, so a world whose bounds the report
     // omits (a NaN height, an empty Box3) samples nothing: every cell would be
@@ -348,6 +357,8 @@ export class MapOverlay {
       floorY: bounds.min.y - 20,
     });
     job.world = id;
+    job.target = world;
+    job.report = report;
     job.post = post;
     job.startedAt = this._now();
     this.sampling = new Promise((resolve) => { job.resolve = resolve; });
@@ -392,7 +403,7 @@ export class MapOverlay {
     };
     this.layoutSampled = true;
     this.bus?.emit?.('map-overlay:layout', summary);
-    const posted = job.post ? this._reportBack(this.report, this._world, ground) : Promise.resolve();
+    const posted = job.post ? this._reportBack(job.report, job.target, ground) : Promise.resolve();
     posted.then(() => job.resolve?.(summary));
   }
 

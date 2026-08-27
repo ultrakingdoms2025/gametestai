@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { Client } from 'pg';
 import { requireMarketplaceAdmin } from '@/lib/adminAccess';
 import { isKnownOverlayWorld } from '@/lib/mapOverlaySchema';
+import { MAX_LAYOUT_BYTES } from '@/lib/mapLayout';
 import { recordWorldReport } from '@/lib/mapOverlay';
 
 /**
@@ -41,16 +42,25 @@ export async function POST(request: Request) {
   const admin = await requireMarketplaceAdmin();
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
+  /* Checked twice: the declared length refuses an honest oversized client before a byte
+   * is read; the bytes that arrived are checked again because the header is the client's
+   * claim. `Buffer.byteLength` counts UTF-8 bytes (a Cyrillic name is not under-counted as
+   * `text.length` would); this is a Node route. 4 MB sits under Vercel's 4.5 MB body limit. */
+  const declared = Number(request.headers.get('content-length') ?? 0);
+  if (declared > MAX_LAYOUT_BYTES) return NextResponse.json({ error: 'Report too large' }, { status: 413 });
+  const text = await request.text();
+  if (Buffer.byteLength(text, 'utf8') > MAX_LAYOUT_BYTES) return NextResponse.json({ error: 'Report too large' }, { status: 413 });
+
   let body: {
-    world?: unknown;
-    appliedVersion?: unknown;
-    objects?: unknown;
-    applied?: unknown;
-    unresolved?: unknown;
+    world?: unknown; appliedVersion?: unknown; objects?: unknown; applied?: unknown; unresolved?: unknown;
+    layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown;
   };
   try {
-    body = await request.json();
+    body = JSON.parse(text);
   } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+  if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
@@ -64,11 +74,17 @@ export async function POST(request: Request) {
   try {
     // Every field is clamped and coerced inside recordWorldReport: this is data
     // from a browser, and being an admin's browser does not make it structured.
+    // The layout fields go through as-is for the same reason: the store, not
+    // the route, decides what a usable grid is, and keeps the prior one if not.
     await recordWorldReport(db, world, {
       appliedVersion: Number(body.appliedVersion) || 0,
       objects: Array.isArray(body.objects) ? (body.objects as never[]) : [],
       applied: Array.isArray(body.applied) ? (body.applied as never[]) : [],
       unresolved: Array.isArray(body.unresolved) ? (body.unresolved as never[]) : [],
+      layoutSchema: body.layoutSchema,
+      bounds: body.bounds,
+      shapes: body.shapes,
+      ground: body.ground,
     });
     return NextResponse.json({ ok: true, world });
   } catch (err) {

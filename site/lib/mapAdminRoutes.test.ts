@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MAX_LAYOUT_BYTES, encodeHeights } from '@/lib/mapLayout';
 
 /**
  * WHO CAN REACH THE MAP EDITOR.
@@ -336,6 +337,11 @@ describe('POST /api/admin/map/report', () => {
     unresolved: [],
   };
 
+  const LAYOUT = {
+    layoutSchema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [{ kind: 'rect', x: 0, z: 0, w: 4, d: 4 }],
+    ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
+  };
+
   it('refuses an anonymous game client', async () => {
     signedInAs(null);
     const res = await post(REPORT);
@@ -362,6 +368,64 @@ describe('POST /api/admin/map/report', () => {
     const res = await post({ ...REPORT, world: '../../etc' });
     expect(res.status).toBe(404);
     expect(store.recordWorldReport).not.toHaveBeenCalled();
+  });
+
+  it('hands the layout fields to the store untouched, for the store to validate', async () => {
+    signedInAs(ADMIN);
+    const res = await post({ ...REPORT, ...LAYOUT });
+    expect(res.status).toBe(200);
+    expect(store.recordWorldReport.mock.calls[0][2]).toMatchObject(LAYOUT);
+  });
+
+  it('refuses a report over the byte cap with 413 and never opens a connection; still 400 for non-JSON', async () => {
+    signedInAs(ADMIN);
+    const res = await post({ ...REPORT, ...LAYOUT, pad: 'x'.repeat(MAX_LAYOUT_BYTES) });
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: 'Report too large' });
+    const { POST } = await import('@/app/api/admin/map/report/route');
+    const bad = await POST(new Request('http://localhost/api/admin/map/report', { method: 'POST', body: 'not json' }));
+    expect(bad.status).toBe(400);
+    expect(store.recordWorldReport).not.toHaveBeenCalled();
+    expect(connections).toHaveLength(0);
+  });
+
+  /**
+   * A Request built in-process carries no content-length, so the test above reaches the 413
+   * only by measuring the bytes. This one sets the header by hand: the declared length alone
+   * must refuse the report, and the body — small, and honest JSON — must never be read for it.
+   */
+  it('refuses a declared oversize before reading the body at all', async () => {
+    signedInAs(ADMIN);
+    const text = vi.spyOn(Request.prototype, 'text');
+    try {
+      const { POST } = await import('@/app/api/admin/map/report/route');
+      const res = await POST(
+        new Request('http://localhost/api/admin/map/report', {
+          method: 'POST',
+          body: JSON.stringify({ ...REPORT, ...LAYOUT }),
+          headers: { 'content-type': 'application/json', 'content-length': String(MAX_LAYOUT_BYTES + 1) },
+        })
+      );
+      expect(res.status).toBe(413);
+      expect(text).not.toHaveBeenCalled();
+      expect(store.recordWorldReport).not.toHaveBeenCalled();
+      expect(connections).toHaveLength(0);
+    } finally {
+      text.mockRestore();
+    }
+  });
+
+  it('refuses an anonymous client before reading a byte of the body', async () => {
+    signedInAs(null);
+    const text = vi.spyOn(Request.prototype, 'text');
+    try {
+      const res = await post({ ...REPORT, ...LAYOUT });
+      expect(res.status).toBe(403);
+      expect(text).not.toHaveBeenCalled();
+      noDatabaseWasTouched();
+    } finally {
+      text.mockRestore();
+    }
   });
 });
 

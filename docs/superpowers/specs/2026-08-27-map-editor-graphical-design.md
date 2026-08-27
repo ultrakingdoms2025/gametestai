@@ -31,8 +31,9 @@ without touching a world file").
   re-applying to a cached world is idempotent.
 - Every world merges props for draw-call budgets, through **eight primitives**:
   `GeoBatch` (medieval, station, dock), `Batch` (citadel, race), `instanced` (station kits and
-  six other worlds), `_instanced` (sports), `buildPropField` (planets), `_bake` (space dock), and
-  `MazeBatches` (maze). ~220 emission sites feed them. A merged prop has no name and cannot be
+  dock), `_instanced` (sports), `buildPropField` (planets), `_bake` (space dock), and
+  `MazeBatches` (maze). ~220 emission sites feed them, plus ~31 inline `new THREE.InstancedMesh`
+  sites that bypass all of them (§6.2). A merged prop has no name and cannot be
   addressed by the current overlay at all. Gate comments forbid un-merging (citadel "ceiling of
   150", dock "220-draw budget", maze "<= 120", planets "1,186 draws is three frames' budget").
 - Ground height: pure-JS height functions exist for medieval, citadel and the planets; station,
@@ -77,12 +78,17 @@ without touching a world file").
    `main.js` injects `ctx.overlayProvider = (worldId) => Promise<OverlayLookup | null>` from
    `MapOverlay`, which owns the endpoint, the parsing and a **per-world, per-session cache**
    (it cannot be keyed on a version the client has not fetched yet). `_runBuild` awaits the
-   provider **raced against a 1 500 ms timeout** before `ensureBuilt`; on timeout or failure the
-   world builds with no overlay and logs once — identical to today's behaviour when the endpoint
-   is down. The entry world builds behind the loading gate before `engine.start()`, so
-   `MapOverlay` starts that world's fetch at construction, and the race normally resolves before
-   the build reaches it. Fetched for every client, players and admins alike. Nothing in
-   `src/worlds/` imports anything from the site; a world sees only `ctx.overlay`.
+   provider before `ensureBuilt` — with **no timeout while `!engine.running`** (the entry world
+   builds behind the loading gate, where a wait costs nothing visible and a cold function would
+   otherwise leave the station at `builtVersion 0` for the session) and a **1 500 ms race** for
+   background builds. On failure or timeout the world builds with no overlay and logs once —
+   identical to today's behaviour when the endpoint is down. `main.js` calls
+   `mapOverlay.prefetch(startWorld)` before `worldManager.build`, so the entry fetch overlaps
+   the gate. The post-build applier's fresh `no-store` document refreshes the provider cache, so
+   a volatile rebuild after an in-session save is not against the stale one. Fetched for every
+   client, players and admins alike. Nothing in `src/worlds/` imports anything from the site:
+   `_runBuild` turns the lookup into `world.registry` (§6.1) and `world.builtVersion`, and
+   **those two properties are all a world ever sees**.
 2. **Primitives consult it and fill a registry** (§6). Merging, budgets, LOD and AO are untouched.
 3. **`MapOverlay` post-build** does what it does today (named-object moves, live) plus: collider
    handling for registry-targeted moves and removes, and — admin only — the **layout report** (§7).
@@ -128,21 +134,38 @@ type OverlayEntry = MoveEntry | RemoveEntry | PlaceEntry;
 
 ```js
 class PropRegistry {
-  constructor(overlay)                 // Map<id, {position?, rotationY?, removed?}> | null
-  claim(family, x, z)  → id            // 'family@x,z' ('#n' on collision); stable per build
-  resolve(id, matrix)  → matrix | null // null = removed; else the matrix to emit at
-  record(id, family, matrix, localAabb)// {id, family, position, yaw, aabb} for the report
-  entries()                            // report payload
-  consumed()                           // overlay ids hit during this build; the rest are unresolved
+  constructor(overlay)                     // Map<id, {position?, rotationY?, removed?}> | null
+  claim(family, x, z)  → id                // 'family@x,z' ('#n' on collision); stable per build
+
+  // MATRIX PATH — GeoBatch, Batch, _bake. `matrix` is anything with a 16-element `.elements`
+  // (duck-typed, so node --test feeds plain arrays; no Three.js import).
+  resolve(id, matrix)  → matrix | null     // null = removed; else the matrix to emit at
+  record(id, family, matrix, localAabb)    // authored + effective transform/AABB for the report
+
+  // ARRAY PATH — instanced, _instanced, buildPropField, inline InstancedMesh sites.
+  // Filters removed items out, rewrites moved ones in place, records every item (removed too),
+  // and preserves the order of untouched items (index-paired collider arrays depend on it).
+  instances(family, items, {
+    at:    (item) => ({ x, y, z, yaw }),               // read the authored transform
+    apply: (item, { position, rotationY }) => item,    // write the effective one
+    aabb:  (item) => localAabb,                        // optional; default 1 m cube
+  }) → items'
+
+  entries()                                // report payload (§7 props[])
+  consumed()                               // overlay ids hit during this build; the rest are unresolved
 }
 ```
 
-`resolve` composes the overlay's absolute position/yaw into the transform the primitive already
-holds. Where the site has a tuple (`[x, y, z, rx, ry, rz, sx, sy, sz]`) or a `points` record it
-rewrites `x, y, z, ry` and keeps the rest. Where it only has a `Matrix4` it decomposes to
-position/quaternion/scale, keeps scale, and sets rotation to a pure Y rotation of `yaw` — an
-authored X/Z tilt is **not** preserved on a matrix-path move (tilted batched props are rare; the
-loss is documented here rather than hidden behind an Euler-order guess).
+`resolve` (matrix path) decomposes to position/quaternion/scale, keeps scale, sets translation
+and a pure Y rotation of `yaw` — an authored X/Z tilt is **not** preserved on a matrix-path move
+(tilted batched props are rare; the loss is documented rather than hidden behind an Euler-order
+guess). `instances` (array path) rewrites only `x, y, z, yaw` through the caller's `apply` and
+keeps everything else the item carried.
+
+`record` needs a local AABB. Computing `computeBoundingBox()` per emitted geometry across ~220
+sites would be a measurable cost in a 6.5 s station build, so the registry keeps a **per-family
+cache keyed on the prototype geometry object** (`WeakMap<BufferGeometry, Box3>`); the first
+emission of each geometry pays, the rest look up. Boot timing is a gate in §11.
 
 `record` **always runs — for removed props too.** It stores the **authored** world transform
 and AABB (what collider matching uses, §6.3) and the **effective** one (`null` when removed), so
@@ -168,6 +191,15 @@ primitives do not use the registry yet simply leave it empty.
 | **inline `new THREE.InstancedMesh`** — medieval (17 sites: trees, bushes, rocks, reeds, grass, setts, puddles, figures…), citadel + oasis (4), race (3), planets (3), space dock (3), belt (1) | a local array of items turned into matrices in a `setMatrixAt` loop | `registry.instances(family, items, toTransform)` filters/rewrites the array **before** the loop — one line per site, ~31 sites | same call drops the item |
 | `MazeBatches` — maze | per cell | **out of scope** | **out of scope** |
 
+**How a primitive reaches the registry.** `Batch`, `_bake` and the inline sites are world
+methods and read `this.registry`. `buildPropField` has `ctx` and reads `ctx.registry`.
+`GeoBatch` is a standalone class with a no-arg constructor and `instanced()` is a module
+function, so both take it explicitly: `new GeoBatch(registry)` (37 construction sites, mechanical)
+and `instanced(geo, mat, entries, { registry, family })` — `instanced` already has an `opts`
+argument. Sports' `_instanced(geo, mat, placements, cast = true, receive = true)` keeps its
+positional booleans and gains a sixth `opts = {}` for `family` (it is a world method, so the
+registry is `this.registry`). A primitive handed no registry behaves exactly as today.
+
 **Family key.** `GeoBatch.add(key, …)` and `Batch.add(key, …)` already take a string key: that is
 the family. `instanced`, `_instanced` and `_bake` take **no key** (`_bake` buckets by the
 `Material` object), so they gain an optional `opts.family`; absent that, `mat.name`, then
@@ -184,11 +216,22 @@ elsewhere or absent. Citadel's shared `mulberry32` stream is unaffected because 
 
 ### 6.3 Colliders
 
-The 145 `physics.add*` calls in worlds (`addBox` 68, `addRotatedBox` 63, `addHeightfield` 8,
-`addBoxFromObject` 5, `addTriangleSoup` 1) stay as they are. Post-build, `MapOverlay` walks the
-registry: for each consumed overlay id it takes the authored AABB from `record` and applies the
-existing `_moveColliders` heuristic — shift by the move's delta, or remove for a `remove`. Same
-code path, same tests, fed by the registry instead of `setFromObject`. Heightfields never move.
+The ~140 `physics.add*` calls in worlds (`addBox` 65, `addRotatedBox` 60, `addHeightfield` 6,
+`addBoxFromObject` 5, `addTriangleSoup` 1, bare `add` 3) stay as they are. Post-build,
+`MapOverlay` walks the registry and, for each consumed overlay id, takes the authored AABB from
+`record`:
+
+- **Move** — the existing `_moveColliders` heuristic, unchanged: colliders whose **centre** lies
+  in the authored box are shifted by the delta. Its documented failure mode is under-moving,
+  which is safe.
+- **Remove** — that heuristic would invert to **over-removing** (a fence post whose centre sits
+  inside a house-sized box would vanish with the house). So a remove drops only colliders whose
+  **own AABB is contained** in the authored box expanded by 5 cm. Sites whose colliders are
+  index-paired with the item array (inline `InstancedMesh` sites, station `_solidifyProps`) never
+  emit the collider for a removed item, so the sweep correctly finds 0 there.
+
+Same code path and tests for the move case, fed by the registry instead of `setFromObject`.
+Heightfields never move.
 
 Station is the exception that needs no work: `_solidifyProps` derives its prop colliders from
 the instance matrices *after* they have been rewritten, so those colliders are already at the new
@@ -234,9 +277,13 @@ They build no report and sample no grid. Added cost: one cached fetch per world 
   to take 10–30 s after the loading gate, during which the editor banner shows "layout: sampling…".
   If the admin leaves the world before sampling finishes, no report is sent and the previous one
   stands. `frame-gaps.mjs` is the gate that this budget holds.
-- **Storage**: `map_world_reports` gains `layout JSONB NOT NULL DEFAULT '{}'::jsonb` and
-  `layout_schema INTEGER NOT NULL DEFAULT 0` via the existing `ensureMapOverlaySchema` DDL
-  (`ADD COLUMN IF NOT EXISTS`). `recordWorldReport` validates and clamps every field (props ≤ 20 000,
+- **`builtVersion`** is stored by `_runBuild` as `world.builtVersion` (0 when no overlay was
+  available) — it exists from stage 2, before the registry does.
+- **Storage**: `map_world_reports` gains `layout JSONB NOT NULL DEFAULT '{}'::jsonb`,
+  `layout_schema INTEGER NOT NULL DEFAULT 0` and `built_version INTEGER NOT NULL DEFAULT 0`.
+  `ensureMapOverlaySchema` is documented as additive `CREATE TABLE IF NOT EXISTS` only; this adds
+  the first `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements to it, in the same idempotent
+  style. `reported_at` already exists and is returned as `reportedAt`. `recordWorldReport` validates and clamps every field (props ≤ 20 000,
   grid ≤ 400 × 400, payload ≤ 4 MB) and rejects the rest with 413/400; a rejected report leaves the
   prior layout in place.
 - **Read**: `GET /api/admin/map/{world}` returns `layout` alongside `overlay`, `versions`, `report`,
@@ -271,11 +318,16 @@ Map-first layout; the version list, notes, save and revert stay as they are.
   type-to-filter). Both set one `selected` target; the map pans to and highlights it. The dropdown
   is the keyboard path and the fallback for props too small to click.
 - **Move**: drag on the map (x/z) or type. **Y defaults to the ground height under the new x/z**
-  ("snap Y to ground", on by default). Yaw is a ring handle on the map and a degrees field.
+  ("snap Y to ground", on by default) — specifically `ground(x, z, y_current)`, the nearest layer
+  at or below the prop's *current* effective y, so a crate dragged across the station hub stays
+  on the deck and does not jump onto the dome. Yaw is a ring handle on the map and a degrees
+  field.
 - **Remove**: adds a `remove` entry; the map draws the prop struck-through until saved. Marketplace
   placements are removed by deleting their entry, as today.
 - **Place**: click empty ground → choose an item from the existing marketplace dropdown → a
-  `place` entry at that spot with Y from the grid.
+  `place` entry at that spot with Y from the **lowest** layer under the click. When the cell has
+  more than one layer (deck under dome, room under roof) the selection panel shows a layer picker
+  ("Deck 2.4 m / Roof 158.0 m") so a rooftop placement is one click, never a guess.
 - **Warnings** appear beside the selection and in the pending list. **Errors** disable Save;
   **warnings** do not (an overlap with a fence is sometimes intended).
 - **Stale layout**: the banner shows the layout's age; edits are validated against whatever the
@@ -300,19 +352,26 @@ tested for overlap where it now stands, not where it came from.
 | code | level | rule |
 |---|---|---|
 | `out-of-bounds` | ⛔ | x/z outside `bounds` (5 m margin) or \|coord\| > 20 000 |
-| `unresolved-target` | ⛔ for `{id}` | id absent from the layout's **authored** ids. `{id}` targets can only be chosen from a layout, so a layout must exist. |
+| `unresolved-target` | ⛔ / ⚠ for `{id}` | id absent from the layout's **authored** ids. ⛔ when the entry was **added or edited in this session** (a fresh mistake); ⚠ when it was already in the current saved version (inert, and blocking it would make the whole document unsaveable after one art pass). The pending list offers **"drop unresolved"** to clear them in one click. |
 | `stale-name` | ⚠ for `{name}` | name absent from `objects[]`. Advisory only: the catalogue is capped at 2 000 and a world with **no layout yet** must still save free-text moves as it does today. |
-| `duplicate-target` | ⛔ | two entries in the document act on the same target |
-| `underground` | ⚠ | `aabb.min.y` < ground(x, z, y) − 0.25 m |
-| `floating` | ⚠ | `aabb.min.y` > ground(x, z, y) + 1.5 m |
+| `duplicate-target` | ⚠ | two entries act on the same target. v1 allowed this (last wins), so existing versions must stay saveable: the normaliser keeps the **last** entry and reports the dropped one, mirroring the existing entry-id `duplicate` reject. |
+| `underground` | ⚠ | footprint bottom < ground(x, z, y) − 0.25 m |
+| `floating` | ⚠ | footprint bottom > ground(x, z, y) + 1.5 m |
 | `no-ground` | ⚠ | no layer at (x, z) — water, a hole, off the deck |
-| `overlap` | ⚠ | the entry's footprint (AABB, translated and yaw-rotated) intersects another occupied footprint, a named object's point ± 1 m, or another entry's footprint; names the offender |
+| `overlap` | ⚠ | the entry's footprint intersects another occupied footprint or another entry's footprint; names the offender |
 
-`ground(x, z, y)` = the nearest layer **at or below** `y` (bilinear across the four cell corners of
-that layer), falling back to the lowest layer when none is below; `INT16_MIN` cells are no sample.
-Under the station dome that picks the deck, not the roof. When `layout` is `null`, only
-`out-of-bounds` (against the ±20 000 limit), `duplicate-target` and `unresolved-target` for `{id}`
-apply. Footprints for `place` entries come from a small per-item size table (default 1 × 1 × 1 m).
+**Footprints.** `{id}` entries and `props[]` have real AABBs. `{name}` targets and `objects[]`
+carry only a position (`_catalogue` reports `{name, position}` and computing a world AABB for
+2 000 arbitrary groups is not free), so they are validated **as a point**: "footprint bottom" is
+`position.y`, and for overlap a named object is a 1 m-radius disc. `place` entries take a footprint
+from a small per-item size table (default 1 × 1 × 1 m).
+
+`ground(x, z, y)`: for each of the cell's four corners pick the nearest layer **at or below** `y`
+(a corner with none takes its lowest layer; a corner with no layers at all is *no sample*), then
+interpolate bilinearly. Per-corner, because at a dome or roof edge the corners have different layer
+counts and "layer k" is not one surface across the cell. Under the station dome this picks the deck,
+not the roof. When `layout` is `null`, only `out-of-bounds` (against the ±20 000 limit),
+`duplicate-target` and `unresolved-target` for `{id}` apply.
 On save the route runs the same function; error-level results are returned as
 `rejected[{index, id, reason}]` and nothing is written (the existing single-transaction rule with
 the audit row holds). A client that skips the check cannot save an invalid document.
@@ -323,7 +382,7 @@ the audit row holds). A client that skips the check cannot save an invalid docum
 |---|---|
 | overlay fetch fails at build | world builds with no overlay; logged once; editor banner shows "layout: unavailable" after the next report |
 | a primitive throws on an entry | caught per entry → `unresolved: {id, reason: 'error'}`; the rest of the world builds |
-| id gone after an art pass | `unresolved`; editor flags it; world unaffected |
+| id gone after an art pass | `unresolved`; editor flags it ⚠ (not ⛔ — it was already saved), "drop unresolved" clears it; the rest of the document stays saveable; world unaffected |
 | admin leaves before the grid finishes | no report sent; previous layout stands; banner shows "layout: sampling…" while in-world |
 | cached world built against an older version than the one just saved | the new `{id}` entry is reported `unresolved: pending-rebuild`; editor shows "applies on next world load"; `builtVersion` in the report says what `props[]` reflect |
 | overlay provider times out (1 500 ms) at build | world builds with no overlay; the post-build applier still applies named-object moves live; the build's `builtVersion` is 0 |
@@ -356,9 +415,15 @@ do is worse than no gate — this repository has paid for that nine times).
   items' order (inline `InstancedMesh` sites depend on index-paired collider arrays).
 - Editor — Playwright: sign in as admin, seed a layout, load `/admin/map`, click a footprint, assert
   the selection panel, drag, assert the pending entry and its warning, save, assert the version.
-- Perf — `scripts/frame-gaps.mjs` on station with sampling running shows no new hitch frames
-  (the 2 ms budget is what it measures); `scripts/world-shot.mjs` budgets (draws, programs,
-  triangles) unchanged for every world touched.
+- Perf — `scripts/frame-gaps.mjs` on station **with sampling actually running** shows no new
+  hitch frames. Sampling is admin-only and the harness boots with no session, so as-is the gate
+  would measure a run in which the sampler never starts — the exact trap §11 opens with. The
+  sampler therefore also runs under `?dev=1&layout=sample` (the harness's existing dev switch
+  family), discarding the POST; `frame-gaps.mjs` passes it and `report.json` records
+  `layoutSampled: true` next to the numbers so a run that lost it cannot be read as one that did
+  not. `scripts/world-shot.mjs` budgets (draws, programs, triangles) and the `[World] built`
+  timing stay unchanged for every world touched (the AABB cache in §6.1 is what keeps the build
+  time flat).
 
 ## 12. Staging
 

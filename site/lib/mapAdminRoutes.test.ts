@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MAX_LAYOUT_BYTES, encodeHeights } from '@/lib/mapLayout';
+import { MAX_LAYOUT_BYTES, encodeHeights, type WorldLayout } from '@/lib/mapLayout';
 
 /**
  * WHO CAN REACH THE MAP EDITOR.
@@ -342,6 +342,108 @@ describe('POST /api/admin/map/[world]', () => {
     );
     expect(res.status).toBe(400);
     expect(store.saveOverlayVersion).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The conflict gate. The editor shows the same conflicts live, but the
+   * editor is a courtesy; this route is the boundary. Only error-level
+   * conflicts refuse, and a refusal writes nothing — no version, no audit row,
+   * because the audit row records saves and there was no save.
+   */
+  const TINY: WorldLayout = {
+    schema: 1,
+    bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 10, z: 10 } },
+    shapes: [],
+    ground: null,
+  };
+  /** Six by six samples 4 m apart from (−10, −10): a flat deck at y = 0 over the whole of TINY. */
+  const FLAT_DECK = { originX: -10, originZ: -10, step: 4, nx: 6, nz: 6, layers: 1, heightsCm: encodeHeights(new Int16Array(36)) };
+  function worldReports(layout: WorldLayout | null) {
+    const objects = [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }];
+    store.readWorldReport.mockResolvedValue({ appliedVersion: 1, objects, applied: [], unresolved: [], layout, reportedAt: '2026-08-27T00:00:00.000Z' });
+  }
+  const crateTo = (x: number, y = 0, z = 0) => ({ kind: 'move', id: 'e1', target: { name: 'crate' }, position: { x, y, z } });
+
+  it('refuses a move outside the world bounds and writes nothing, not even an audit row', async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ entries: [crateTo(500)] });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'conflicts', rejected: [{ index: 0, id: 'e1', reason: 'out-of-bounds' }] });
+    expect(store.saveOverlayVersion).not.toHaveBeenCalled();
+    expect(appendAudit).not.toHaveBeenCalled();
+    expect(connections[0].statements).toContain('ROLLBACK');
+    expect(connections[0].statements).not.toContain('COMMIT');
+  });
+
+  it("saves a document that only carries warnings: an underground move is the admin's call", async () => {
+    signedInAs(ADMIN);
+    worldReports({ ...TINY, ground: FLAT_DECK });
+    // A grid that fails to decode is warned about and skipped rather than refused, so
+    // the spy is what proves the warning came from a decoded grid, not a skipped one.
+    const warned = vi.spyOn(console, 'warn');
+    try {
+      const entries = [crateTo(0, -5, 0)];
+      const res = await post({ entries });
+      expect(res.status).toBe(200);
+      expect(warned).not.toHaveBeenCalled();
+      expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+      expect(store.saveOverlayVersion.mock.calls[0][1].entries).toEqual(entries);
+      expect(appendAudit).toHaveBeenCalledTimes(1);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  it('saves free-text moves exactly as before when the world has no layout yet', async () => {
+    signedInAs(ADMIN);
+    store.readWorldReport.mockResolvedValue(null);
+    const res = await post({ entries: [crateTo(500)] });
+    expect(res.status).toBe(200);
+    expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a rejected row by the index the client sent, not the normaliser's compacted one", async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ entries: [{ kind: 'delete', id: 'junk' }, crateTo(500)] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).rejected).toEqual([{ index: 1, id: 'e1', reason: 'out-of-bounds' }]);
+  });
+
+  it('does not run the gate on a revert: a version that was accepted once stays reachable', async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ revertTo: 1 });
+    expect(res.status).toBe(200);
+    expect(store.readWorldReport).not.toHaveBeenCalled();
+    expect(store.revertOverlayTo).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A stored grid that will not decode must not make the world unsaveable, and must not
+   * make it lawless either: the ground rules are skipped (they are warnings) with one
+   * warning in the log, and the bounds rule — the one that refuses — still refuses.
+   * The store validates on both sides today, so this is a row edited by hand.
+   */
+  it('degrades an undecodable stored grid to bounds-only: still refuses out-of-bounds, still saves the rest', async () => {
+    signedInAs(ADMIN);
+    const corrupt = { ...FLAT_DECK, heightsCm: encodeHeights(new Int16Array(3)) };
+    worldReports({ ...TINY, ground: corrupt });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refused = await post({ entries: [crateTo(500)] });
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).rejected).toEqual([{ index: 0, id: 'e1', reason: 'out-of-bounds' }]);
+      expect(store.saveOverlayVersion).not.toHaveBeenCalled();
+      const saved = await post({ entries: [crateTo(0, -5, 0)] });
+      expect(saved.status).toBe(200);
+      expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+      expect(warned).toHaveBeenCalledTimes(2);
+      expect(String(warned.mock.calls[0][0])).toMatch(/^\[map-conflicts\] stored ground did not decode/);
+    } finally {
+      warned.mockRestore();
+    }
   });
 });
 

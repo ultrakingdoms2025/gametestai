@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { MoveEntry, PlaceEntry } from './mapOverlaySchema';
-import type { WorldLayout } from './mapLayout';
+import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround, type WorldLayout } from './mapLayout';
 import { conflictsFor, conflictsForDocument, hasErrors, type Conflict, type ConflictContext } from './mapConflicts';
 
 /**
@@ -150,5 +150,105 @@ describe('out-of-bounds, the only error', () => {
   it('names the axis in the detail, so the row says which number to fix', () => {
     const m = move({ position: { x: 2, y: 2, z: 300 } });
     expect(conflictsFor(m, 0, [m], bounded())[0].detail).toMatch(/^z = 300 /);
+  });
+});
+
+describe('the ground rules, through a real Int16 grid', () => {
+  /** Four samples 4 m apart with origin (0,0): one cell covering x,z ∈ [0, 4], one layer. */
+  function flatGround(heightCm: number): DecodedGround {
+    const heightsCm = encodeHeights(Int16Array.from([heightCm, heightCm, heightCm, heightCm]));
+    return decodeGround({ originX: 0, originZ: 0, step: 4, nx: 2, nz: 2, layers: 1, heightsCm });
+  }
+  const twoMetres = () => ctx({ layout: layout(), ground: flatGround(200) });
+  /** A move whose bottom is at `y`, in the middle of the cell. */
+  const at = (y: number) => move({ position: { x: 2, y, z: 2 } });
+
+  it('accepts a bottom within the tolerances around the ground', () => {
+    for (const y of [2, 1.8, 3.4]) {
+      const m = move({ position: { x: 2, y, z: 2 } });
+      expect(conflictsFor(m, 0, [m], twoMetres()), `y=${y}`).toEqual([]);
+    }
+  });
+
+  it('warns underground when the bottom is more than 0.25 m below the ground, for moves and places', () => {
+    const m = move({ position: { x: 2, y: 1.7, z: 2 } });
+    const p = place({ position: { x: 2, y: 1.7, z: 2 } });
+    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['underground']);
+    expect(codes(conflictsFor(p, 0, [p], twoMetres()))).toEqual(['underground']);
+    expect(conflictsFor(m, 0, [m], twoMetres())[0].level).toBe('warn');
+  });
+
+  it('warns floating when the bottom is more than 1.5 m above the ground', () => {
+    const m = move({ position: { x: 2, y: 3.6, z: 2 } });
+    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['floating']);
+  });
+
+  it('draws both lines to the centimetre: exactly on a tolerance is on the ground, one more is not', () => {
+    // Over 2 m ground, 1.75 and 3.50 are still "resting on it"; 1.74 and 3.51 are not. A rule with `<=`, or
+    // one comparing a rounded y, passes 1.7 / 3.6 above and is still wrong here.
+    for (const y of [1.75, 3.5]) expect(conflictsFor(at(y), 0, [at(y)], twoMetres()), `y=${y}`).toEqual([]);
+    expect(codes(conflictsFor(at(1.74), 0, [at(1.74)], twoMetres()))).toEqual(['underground']);
+    expect(codes(conflictsFor(at(3.51), 0, [at(3.51)], twoMetres()))).toEqual(['floating']);
+  });
+
+  it('warns no-ground where the grid has no surface at all', () => {
+    const m = move({ position: { x: 2, y: 2, z: 2 } });
+    const c = ctx({ layout: layout(), ground: flatGround(NO_SAMPLE) });
+    expect(codes(conflictsFor(m, 0, [m], c))).toEqual(['no-ground']);
+  });
+
+  it('warns no-ground inside the bounds but off the sampled grid', () => {
+    // The one cell covers [0, 4]; x = 50 is well inside the ±100 bounds and has no sample under it.
+    const m = move({ position: { x: 50, y: 2, z: 2 } });
+    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['no-ground']);
+  });
+
+  it('under a dome, measures against the deck an object would stand on, not the roof over it', () => {
+    // Two layers per corner: layer 0 the roof at 5 m, layer 1 the deck at 2 m. `groundAt` takes, per corner,
+    // the nearest layer at or below the entry's own y, and the lowest when nothing is below it.
+    const heightsCm = encodeHeights(Int16Array.from([500, 200, 500, 200, 500, 200, 500, 200]));
+    const dome = decodeGround({ originX: 0, originZ: 0, step: 4, nx: 2, nz: 2, layers: 2, heightsCm });
+    const c = () => ctx({ layout: layout(), ground: dome });
+    expect(conflictsFor(at(2.1), 0, [at(2.1)], c()), 'on the deck').toEqual([]);
+    expect(conflictsFor(at(5.2), 0, [at(5.2)], c()), 'on the roof').toEqual([]);
+    // Just under the roof is hovering over the deck, not "under" the roof.
+    expect(codes(conflictsFor(at(4.9), 0, [at(4.9)], c()))).toEqual(['floating']);
+    // Below every layer: under the deck.
+    expect(codes(conflictsFor(at(1.5), 0, [at(1.5)], c()))).toEqual(['underground']);
+  });
+
+  it('checks a hidden move that carries a position: its colliders go there', () => {
+    const m = move({ hidden: true, position: { x: 2, y: 1.7, z: 2 } });
+    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['underground']);
+  });
+
+  it('says nothing about the ground when the layout has no grid yet', () => {
+    const m = move({ position: { x: 2, y: -50, z: 2 } });
+    expect(conflictsFor(m, 0, [m], ctx({ layout: layout(), ground: null }))).toEqual([]);
+  });
+
+  it('says nothing about the ground without a layout, whatever grid is handed over', () => {
+    // A grid without the layout it came from is not a context the callers build; the rule does not guess.
+    const m = move({ position: { x: 2, y: -50, z: 2 } });
+    expect(conflictsFor(m, 0, [m], ctx({ layout: null, ground: flatGround(200) }))).toEqual([]);
+  });
+
+  it('stops at out-of-bounds: a refused position does not also read as no-ground', () => {
+    const m = move({ position: { x: 300, y: 2, z: 2 } });
+    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['out-of-bounds']);
+  });
+
+  it('are all warnings, so hasErrors stays false and the route still saves', () => {
+    const elsewhere = move({ id: 'm2', target: { name: 'well' }, position: { x: 50, y: 2, z: 2 } });
+    const all = conflictsForDocument([at(1.7), place({ position: { x: 2, y: 3.6, z: 2 } }), elsewhere], twoMetres());
+    expect(all.map(codes)).toEqual([['underground'], ['floating'], ['no-ground']]);
+    expect(all.flat().every((c) => c.level === 'warn')).toBe(true);
+    expect(hasErrors(all)).toBe(false);
+  });
+
+  it('says in the detail how far under or over, to the millimetre', () => {
+    // 2 − 1.7 is 0.30000000000000004 in a double; the row must not say so.
+    expect(conflictsFor(at(1.7), 0, [at(1.7)], twoMetres())[0].detail).toMatch(/^bottom at y = 1\.7 is 0\.3 m under the ground at 2$/);
+    expect(conflictsFor(at(3.6), 0, [at(3.6)], twoMetres())[0].detail).toMatch(/^bottom at y = 3\.6 is 1\.6 m above the ground at 2$/);
   });
 });

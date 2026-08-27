@@ -1,5 +1,5 @@
 import { round, type OverlayEntry, type PlaceEntry, type Vec3 } from './mapOverlaySchema';
-import type { WorldLayout, DecodedGround } from './mapLayout';
+import { groundAt, type DecodedGround, type WorldLayout } from './mapLayout';
 import type { CatalogueObject } from './mapOverlay';
 
 /**
@@ -163,12 +163,30 @@ function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): boolean {
   return false;
 }
 
+/**
+ * The bottom of a point entry is its `position.y`, for a move and a place alike (stage 1 has no per-item
+ * height). `groundAt` picks the layer at or below that y per corner, so under a dome this measures against
+ * the deck, not the roof; below every layer it measures against the lowest, so "underground" always has a
+ * surface to be under.
+ */
+function groundRule(pos: Vec3, ground: DecodedGround, out: Conflict[]): void {
+  const g = groundAt(ground, pos.x, pos.z, pos.y);
+  if (g === null) {
+    out.push(warn('no-ground', `no surface under (${fmt(pos.x)}, ${fmt(pos.z)}) — water, a hole, or off the sampled grid`));
+  } else if (pos.y < g - UNDERGROUND_TOLERANCE) {
+    out.push(warn('underground', `bottom at y = ${fmt(pos.y)} is ${fmt(g - pos.y)} m under the ground at ${fmt(g)}`));
+  } else if (pos.y > g + FLOATING_TOLERANCE) {
+    out.push(warn('floating', `bottom at y = ${fmt(pos.y)} is ${fmt(pos.y - g)} m above the ground at ${fmt(g)}`));
+  }
+}
+
 function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext, prepared: Prepared): Conflict[] {
   const out: Conflict[] = [];
   nameRules(entry, index, document, prepared, out);
   const pos = entry.position;
   if (!pos || !ctx.layout) return out;
   if (boundsRule(pos, ctx.layout, out)) return out;
+  if (ctx.ground) groundRule(pos, ctx.ground, out);
   return out;
 }
 

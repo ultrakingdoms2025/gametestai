@@ -5,7 +5,7 @@ import {
   type OverlayEntry,
   type RejectedEntry,
 } from './mapOverlaySchema';
-import { LAYOUT_SCHEMA, MAX_SHAPES, validateBounds, validateGround, validateLayout, validateShapes, type WorldLayout } from './mapLayout';
+import { LAYOUT_SCHEMA, MAX_SHAPES, auditShapes, validateBounds, validateGround, validateLayout, type WorldLayout } from './mapLayout';
 
 /**
  * Where a world's placement overlay is kept.
@@ -335,17 +335,21 @@ function layoutPatch(worldId: string, report: ReportedLayoutFields): Partial<Wor
     patch.bounds = bounds;
     // Present means replace, absent means keep — the same rule as `ground`, so a report of bounds alone cannot erase the shapes.
     if (Array.isArray(report.shapes)) {
-      patch.shapes = validateShapes(report.shapes);
-      // Truncation is not unreadability: the cap keeps the first MAX_SHAPES of a longer list, and
-      // calling the rest "unreadable" would send someone hunting a bug a world file does not have.
-      if (patch.shapes.length === MAX_SHAPES && report.shapes.length > MAX_SHAPES) {
+      const audit = auditShapes(report.shapes);
+      patch.shapes = audit.shapes;
+      // Two lines from two counts, each only when it happened. Truncation is not unreadability: the cap keeps
+      // the first MAX_SHAPES readable and never reads the rest, and calling those "unreadable" would send
+      // someone hunting a bug a world file does not have — while the shape it really could not read went unsaid.
+      if (audit.truncated > 0) {
         console.warn(`[map-report] kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes for ${worldId}`);
-      } else if (patch.shapes.length < report.shapes.length) {
-        console.warn(`[map-report] dropped ${report.shapes.length - patch.shapes.length} unreadable shapes for ${worldId}`);
+      }
+      if (audit.unreadable > 0) {
+        console.warn(`[map-report] dropped ${audit.unreadable} unreadable shapes for ${worldId}`);
       }
     }
-  } else if (report.bounds !== undefined) {
-    console.warn(`[map-report] unusable bounds for ${worldId}`);
+  } else if (report.bounds != null) {
+    // `!= null` as for `ground` below: null means not sent, for both, and says nothing.
+    console.warn(`[map-report] unusable bounds for ${worldId}; prior bounds and shapes kept`);
   }
   const ground = report.ground == null ? null : validateGround(report.ground);
   if (ground) {

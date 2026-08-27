@@ -208,16 +208,34 @@ export function validateBounds(raw: unknown): LayoutBounds | null {
   return { min, max };
 }
 
-/** Unknown kinds and unusable shapes are dropped one at a time, never the whole list: a map with one bad wall is still a map. */
-export function validateShapes(raw: unknown): LayoutShape[] {
-  if (!Array.isArray(raw)) return [];
-  const out: LayoutShape[] = [];
-  for (const item of raw) {
-    if (out.length >= MAX_SHAPES) break;
-    const shape = validateShape(item);
-    if (shape) out.push(shape);
+export interface ShapeAudit {
+  shapes: LayoutShape[];
+  /** Read and could not be used. */
+  unreadable: number;
+  /** Never read: the cap was reached first. */
+  truncated: number;
+}
+
+/**
+ * Unknown kinds and unusable shapes are dropped one at a time, never the whole list: a map with one bad wall is
+ * still a map. The two counts are kept apart because neither follows from the lengths: MAX_SHAPES readable out of
+ * MAX_SHAPES + 1 sent is one unreadable and NOTHING truncated, and a caller comparing lengths would say the reverse.
+ */
+export function auditShapes(raw: unknown): ShapeAudit {
+  if (!Array.isArray(raw)) return { shapes: [], unreadable: 0, truncated: 0 };
+  const shapes: LayoutShape[] = [];
+  let unreadable = 0;
+  let i = 0;
+  for (; i < raw.length && shapes.length < MAX_SHAPES; i++) {
+    const shape = validateShape(raw[i]);
+    if (shape) shapes.push(shape);
+    else unreadable++;
   }
-  return out;
+  return { shapes, unreadable, truncated: raw.length - i };
+}
+
+export function validateShapes(raw: unknown): LayoutShape[] {
+  return auditShapes(raw).shapes;
 }
 
 export function validateGround(input: unknown): LayoutGround | null {

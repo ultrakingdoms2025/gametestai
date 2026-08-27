@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { WORLD_COORD_LIMIT } from './mapOverlaySchema';
 import {
   LAYOUT_SCHEMA, MAX_GRID_AXIS, MAX_LAYERS, MAX_SHAPES, NO_SAMPLE,
-  decodeGround, encodeHeights, groundAt, layersAt, validateGround, validateLayout,
+  auditShapes, decodeGround, encodeHeights, groundAt, layersAt, validateGround, validateLayout, validateShapes,
   type LayoutGround,
 } from './mapLayout';
 
@@ -271,5 +271,55 @@ describe('validateLayout', () => {
     expect(huge).not.toHaveProperty('width');
     expect(l.shapes[2]).toEqual({ kind: 'path', points: [[0, 0], [1, 1]] });
     expect(JSON.parse(JSON.stringify(l.shapes))).toEqual(l.shapes);   // what Postgres stores is what was validated
+  });
+});
+
+describe('auditShapes', () => {
+  const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+  const good = (n: number) => Array(n).fill(rect);
+
+  /**
+   * The two counts are independent: `truncated` is what the cap stopped it READING, `unreadable` is what it read
+   * and could not use. The boundary is MAX_SHAPES readable out of MAX_SHAPES + 1 sent — one unreadable, nothing
+   * truncated — which a check on lengths alone reports as the reverse, and then never names the shape it could not read.
+   */
+  it('counts what the cap left unread apart from what it read and could not use', () => {
+    expect(auditShapes(good(MAX_SHAPES + 1))).toMatchObject({ unreadable: 0, truncated: 1 });
+    expect(auditShapes([{ kind: 'hexagon' }, ...good(MAX_SHAPES)])).toMatchObject({ unreadable: 1, truncated: 0 });
+    expect(auditShapes([{ kind: 'hexagon' }, ...good(MAX_SHAPES + 1)])).toMatchObject({ unreadable: 1, truncated: 1 });
+    expect(auditShapes(good(MAX_SHAPES + 1)).shapes).toHaveLength(MAX_SHAPES);
+    expect(auditShapes(good(3))).toEqual({ shapes: good(3), unreadable: 0, truncated: 0 });
+    expect(auditShapes('no')).toEqual({ shapes: [], unreadable: 0, truncated: 0 });
+  });
+
+  it('is what validateShapes returns, so validateLayout is unchanged by the audit', () => {
+    const mixed = [rect, { kind: 'hexagon' }, ...good(MAX_SHAPES)];
+    expect(validateShapes(mixed)).toEqual(auditShapes(mixed).shapes);
+    expect(validateShapes('no')).toEqual([]);
+  });
+});
+
+describe('auditShapes', () => {
+  const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+  const good = (n: number) => Array(n).fill(rect);
+
+  /**
+   * The two counts are independent: `truncated` is what the cap stopped it READING, `unreadable` is what it read
+   * and could not use. The boundary is MAX_SHAPES readable out of MAX_SHAPES + 1 sent — one unreadable, nothing
+   * truncated — which a check on lengths alone reports as the reverse, and then never names the shape it could not read.
+   */
+  it('counts what the cap left unread apart from what it read and could not use', () => {
+    expect(auditShapes(good(MAX_SHAPES + 1))).toMatchObject({ unreadable: 0, truncated: 1 });
+    expect(auditShapes([{ kind: 'hexagon' }, ...good(MAX_SHAPES)])).toMatchObject({ unreadable: 1, truncated: 0 });
+    expect(auditShapes([{ kind: 'hexagon' }, ...good(MAX_SHAPES + 1)])).toMatchObject({ unreadable: 1, truncated: 1 });
+    expect(auditShapes(good(MAX_SHAPES + 1)).shapes).toHaveLength(MAX_SHAPES);
+    expect(auditShapes(good(3))).toEqual({ shapes: good(3), unreadable: 0, truncated: 0 });
+    expect(auditShapes('no')).toEqual({ shapes: [], unreadable: 0, truncated: 0 });
+  });
+
+  it('is what validateShapes returns, so validateLayout is unchanged by the audit', () => {
+    const mixed = [rect, { kind: 'hexagon' }, ...good(MAX_SHAPES)];
+    expect(validateShapes(mixed)).toEqual(auditShapes(mixed).shapes);
+    expect(validateShapes('no')).toEqual([]);
   });
 });

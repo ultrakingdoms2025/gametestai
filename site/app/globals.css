@@ -1807,6 +1807,21 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
    SITE HEADER
    ========================================================================== */
 
+/* ── THE HEADER MUST NEVER BE WIDER THAN THE PHONE ──────────────────────
+   Signed in, the nav is logo + Credits + Servers + the e-mail + Account +
+   Enter game + Sign out, none of which wrap, and that row is ~716 px wide.
+   On a phone that is not a cosmetic overflow: Chrome for Android grows the
+   LAYOUT VIEWPORT to the widest content, so `window.innerWidth` on a 412 px
+   Galaxy became 716 - and `.play-shell`, being `position: fixed; inset: 0`,
+   sized the game's iframe to 716 px as well. The game then laid itself out
+   for a 716 px screen (desktop HUD, a 630 px title card) and the phone showed
+   the left 412 px of it. Reproduced in Chrome's device emulation at 412 x 915
+   with this stylesheet and a copy of the header's DOM: innerWidth 716.
+
+   So the nav is a scroll container that owns its own overflow (a scroll
+   container's intrinsic width does not reach the document), and on narrow
+   screens the e-mail comes off and the buttons tighten. And while the game is
+   up the header is not rendered at all - see `body.in-game` below. */
 .site-header {
   position: sticky;
   top: 0;
@@ -1814,6 +1829,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
   padding: 0 24px;
   height: 54px;
   background: rgba(4, 7, 13, 0.88);
@@ -1835,7 +1852,29 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
+.site-header-nav::-webkit-scrollbar { display: none; }
+.site-header-nav > * { flex: 0 0 auto; }
+
+@media (max-width: 720px) {
+  .site-header { padding: 0 12px; gap: 8px; }
+  .site-header-nav { gap: 6px; }
+  .site-header-email { display: none; }
+  .site-header-link { padding: 6px 6px; font-size: 0.8rem; }
+  .site-header-btn { padding: 6px 10px; font-size: 0.75rem; }
+}
+
+/* The game owns the whole screen. Its HUD has a Menu, its top-left corner is
+   the credits and health readouts, and a 54 px bar over them at z-index 200
+   was covering exactly that. `PlayShell` sets the class while the iframe is
+   mounted and clears it when it unmounts. */
+body.in-game .site-header { display: none; }
 
 .site-header-link {
   color: var(--txt-2);

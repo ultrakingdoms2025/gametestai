@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ServerStartPanel } from './ServerStartPanel';
 import { ServerChatPanel } from './ServerChatPanel';
 
@@ -23,6 +23,17 @@ import { ServerChatPanel } from './ServerChatPanel';
  */
 export function PlayShell({ src }: { src: string }) {
   const [entered, setEntered] = useState(false);
+
+  /* While the iframe is mounted the site header is not rendered (see
+   * `body.in-game` in globals.css): the game owns the whole screen, and on a
+   * phone the header's own overflow was what widened the layout viewport the
+   * iframe is sized from. Cleared on unmount so the rest of the site gets its
+   * header back. */
+  useEffect(() => {
+    if (!entered) return undefined;
+    document.body.classList.add('in-game');
+    return () => document.body.classList.remove('in-game');
+  }, [entered]);
 
   /* `play-gate`, NOT `play-shell`. The shell is `position: fixed; inset: 0`,
    * which is right for a full-bleed game iframe and wrong for a panel that

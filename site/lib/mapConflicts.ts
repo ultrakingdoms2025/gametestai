@@ -1,5 +1,5 @@
 import { round, type OverlayEntry, type PlaceEntry, type Vec3 } from './mapOverlaySchema';
-import { groundAt, type DecodedGround, type WorldLayout } from './mapLayout';
+import { decodeGround, groundAt, type DecodedGround, type WorldLayout } from './mapLayout';
 import type { CatalogueObject } from './mapOverlay';
 
 /**
@@ -36,8 +36,24 @@ import type { CatalogueObject } from './mapOverlay';
  * "overlap" its own old position. Every entry with a position stands at it,
  * except a move superseded by a later move of the same object: the game
  * applies a document in order and the last one wins, so the earlier move
- * stands nowhere — it is not an occupant and is not tested for overlap (it
- * already carries `duplicate-target`).
+ * stands nowhere — it is not an occupant, and it gets neither the ground
+ * rules nor overlap (it already carries `duplicate-target`). It still gets
+ * bounds: an out-of-bounds coordinate must never be saved, inert or not, or
+ * it would slip through the moment a second move of the same object followed
+ * it. On the route path the normaliser keeps such duplicates exactly as sent
+ * (it de-duplicates ids, not targets); only `lastMove` in `prepare` composes.
+ *
+ * ── The grid answers in bounded time for any input ─────────────────────────
+ *
+ * The editor path hands over raw floats. A footprint's cost is its area in
+ * cells, so a side is capped at `FOOTPRINT_MAX` (a placed item is never a
+ * hundred metres wide) and anything else falls back to the default. A
+ * coordinate the grid cannot place — one whose millimetre value is not a safe
+ * integer — stands nowhere: `mm(1e308)` is Infinity and a cell loop from
+ * −Infinity never ends, and `mm(1e20)` is a finite 1e23 past which `cx++` no
+ * longer changes `cx`, which never ends either. Such a position is not an
+ * occupant and is not tested for overlap; the bounds rule reads the position
+ * itself and still refuses it.
  *
  * ── Why `{name}` targets are points ─────────────────────────────────────────
  *
@@ -115,6 +131,8 @@ export const POINT_CLEARANCE = 1;
 /** How far a footprint rect grows when tested against a point. */
 const POINT_HALF = POINT_CLEARANCE / 2;
 const DEFAULT_FOOTPRINT = { w: 1, d: 1, h: 1 };
+/** The widest side a placed item can claim, in metres: its cost to the grid is its area in cells. */
+const FOOTPRINT_MAX = 100;
 /** Width of an occupancy bucket, in millimetres: a few metres, so a cell holds a handful of neighbours. */
 const CELL_MM = 4000;
 
@@ -130,6 +148,8 @@ const CELL_MM = 4000;
 const mm = (metres: number): number => Math.round(metres * 1000);
 const POINT_HALF_MM = mm(POINT_HALF);
 const CLEARANCE_SQ_MM = mm(POINT_CLEARANCE) ** 2;
+const UNDERGROUND_MM = mm(UNDERGROUND_TOLERANCE);
+const FLOATING_MM = mm(FLOATING_TOLERANCE);
 
 /** An axis-aligned footprint, in whole millimetres. */
 interface Rect { minX: number; maxX: number; minZ: number; maxZ: number }
@@ -141,12 +161,16 @@ interface Rect { minX: number; maxX: number; minZ: number; maxZ: number }
 interface Occupant { key: string; label: string; order: number; x: number; z: number; rect: Rect | null }
 /** Every occupant by key, and the cells each one's reach touches. */
 interface Occupancy { byKey: Map<string, Occupant>; cells: Map<number, Occupant[]> }
-interface Prepared { names: Set<string>; occupancy: Occupancy }
+/** The reported names, the occupancy, and for each moved name the index of the move that wins. */
+interface Prepared { names: Set<string>; occupancy: Occupancy; lastMove: Map<string, number> }
 
 /**
  * A cell's Map key as one integer rather than a string: `prepare` runs every drag frame and a string per cell
- * per occupant was a measurable share of its cost. Cell indices fit ±32 767 with room to spare — the
- * normaliser caps a position at ±20 000 m, which is ±5 000 cells.
+ * per occupant was a measurable share of its cost. Cell indices fit ±32 767 with room to spare on the route
+ * path — the normaliser caps a position at ±20 000 m, which is ±5 000 cells. Reported-object positions are
+ * only finiteness-checked by the store and the editor's floats are raw, so a key CAN collide beyond that; it
+ * does not matter. A point spans at most two cells an axis whatever its magnitude (`placeable` keeps the
+ * indices where `cx++` still counts), and a collision only adds candidates that `occupantsMeet` rejects.
  */
 const cellKey = (cx: number, cz: number): number => (cx + 0x8000) * 0x10000 + (cz + 0x8000);
 
@@ -158,10 +182,26 @@ const entryKey = (index: number): string => `entry:${index}`;
 /** Detail numbers to the millimetre, the schema's own rounding: on the editor path a drag hands over raw floats. */
 const fmt = (n: number): string => String(round(n, 3));
 
+/** A footprint side the callback can hand over raw: not finite, negative or wider than `FOOTPRINT_MAX` falls back. */
+const side = (n: number, fallback: number): number => (Number.isFinite(n) && n >= 0 && n <= FOOTPRINT_MAX ? n : fallback);
+
 function footprintRect(entry: PlaceEntry, ctx: ConflictContext): Rect {
   const size = ctx.placeFootprint?.(entry) ?? DEFAULT_FOOTPRINT;
+  const w = side(size.w, DEFAULT_FOOTPRINT.w);
+  const d = side(size.d, DEFAULT_FOOTPRINT.d);
   const { x, z } = entry.position;
-  return { minX: mm(x - size.w / 2), maxX: mm(x + size.w / 2), minZ: mm(z - size.d / 2), maxZ: mm(z + size.d / 2) };
+  return { minX: mm(x - w / 2), maxX: mm(x + w / 2), minZ: mm(z - d / 2), maxZ: mm(z + d / 2) };
+}
+
+/**
+ * A position in whole millimetres, or null when the grid cannot place it (see the header). A safe integer
+ * is exactly the condition under which the cell loops terminate: `mm(1e308)` is Infinity, and `mm(1e20)` is
+ * finite but past 2^53, where `cx++` stops counting.
+ */
+function placeable(x: number, z: number): { x: number; z: number } | null {
+  const mx = mm(x);
+  const mz = mm(z);
+  return Number.isSafeInteger(mx) && Number.isSafeInteger(mz) ? { x: mx, z: mz } : null;
 }
 
 /**
@@ -207,19 +247,23 @@ function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
   let order = 0;
   for (const obj of ctx.objects) {
     if (lastMove.has(obj.name)) continue;
-    const { x, z } = obj.position;
-    addOccupant(occupancy, { key: `object:${obj.name}`, label: obj.name, order: order++, x: mm(x), z: mm(z), rect: null });
+    // A position the grid cannot place stands nowhere (see the header).
+    const at = placeable(obj.position.x, obj.position.z);
+    if (!at) continue;
+    addOccupant(occupancy, { key: `object:${obj.name}`, label: obj.name, order: order++, x: at.x, z: at.z, rect: null });
   }
   document.forEach((entry, index) => {
     // A hidden move that carries a position still sends the object's colliders there (see the header), so it
     // occupies the new spot like any other move. Only an entry with no position stands nowhere new.
     if (!entry.position) return;
     if (entry.kind === 'move' && lastMove.get(entry.target.name) !== index) return;
+    // A position the grid cannot place stands nowhere; the bounds rule still refuses it.
+    const at = placeable(entry.position.x, entry.position.z);
+    if (!at) return;
     const rect = entry.kind === 'place' ? footprintRect(entry, ctx) : null;
-    const { x, z } = entry.position;
-    addOccupant(occupancy, { key: entryKey(index), label: entry.id, order: order++, x: mm(x), z: mm(z), rect });
+    addOccupant(occupancy, { key: entryKey(index), label: entry.id, order: order++, x: at.x, z: at.z, rect });
   });
-  return { names, occupancy };
+  return { names, occupancy, lastMove };
 }
 
 function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[], prepared: Prepared, out: Conflict[]): void {
@@ -262,9 +306,9 @@ function groundRule(pos: Vec3, ground: DecodedGround, out: Conflict[]): void {
   const g = groundAt(ground, pos.x, pos.z, pos.y);
   if (g === null) {
     out.push(warn('no-ground', `no surface under (${fmt(pos.x)}, ${fmt(pos.z)}) — water, a hole, or off the sampled grid`));
-  } else if (mm(g - pos.y) > mm(UNDERGROUND_TOLERANCE)) {
+  } else if (mm(g - pos.y) > UNDERGROUND_MM) {
     out.push(warn('underground', `bottom at y = ${fmt(pos.y)} is ${fmt(g - pos.y)} m under the ground at ${fmt(g)}`));
-  } else if (mm(pos.y - g) > mm(FLOATING_TOLERANCE)) {
+  } else if (mm(pos.y - g) > FLOATING_MM) {
     out.push(warn('floating', `bottom at y = ${fmt(pos.y)} is ${fmt(pos.y - g)} m above the ground at ${fmt(g)}`));
   }
 }
@@ -321,6 +365,9 @@ function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntr
   const pos = entry.position;
   if (!pos || !ctx.layout) return out;
   if (boundsRule(pos, ctx.layout, out)) return out;
+  // A move superseded by a later move of the same object stands nowhere (see the header): bounds was still
+  // applied above, but there is no ground under nowhere and nothing there to overlap.
+  if (entry.kind === 'move' && prepared.lastMove.get(entry.target.name) !== index) return out;
   if (ctx.ground) groundRule(pos, ctx.ground, out);
   overlapRule(index, prepared.occupancy, out);
   return out;
@@ -342,4 +389,29 @@ export function conflictsForDocument(document: OverlayEntry[], ctx: ConflictCont
 
 export function hasErrors(all: Conflict[][]): boolean {
   return all.some((conflicts) => conflicts.some((c) => c.level === 'error'));
+}
+
+/**
+ * The one way a `ConflictContext` is built, so the save route and the editor's panel can never disagree
+ * about a grid. The ground is decoded ONCE here. A grid that will not decode is a warning in the log and
+ * `ground: null`, never a throw: the ground rules are warnings, and a warning that cannot be computed is
+ * simply not shown, while the bounds rule — the one that refuses — needs no grid and keeps the layout. (From
+ * the store this cannot fire today: `validateGround` decodes on the way in and `readWorldReport` validates
+ * again on the way out. The helper does not know its caller.)
+ */
+export function conflictContextFor(
+  layout: WorldLayout | null,
+  objects: CatalogueObject[],
+  placeFootprint?: ConflictContext['placeFootprint']
+): ConflictContext {
+  let ground: DecodedGround | null = null;
+  if (layout?.ground) {
+    try {
+      ground = decodeGround(layout.ground);
+    } catch (err) {
+      const { nx, nz, layers } = layout.ground;
+      console.warn(`[map-conflicts] stored ground did not decode for a ${nx}×${nz}×${layers} grid; treating as no grid:`, err);
+    }
+  }
+  return { layout, ground, objects, ...(placeFootprint ? { placeFootprint } : {}) };
 }

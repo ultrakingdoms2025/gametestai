@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { MoveEntry, OverlayEntry, PlaceEntry } from './mapOverlaySchema';
 import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround, type WorldLayout } from './mapLayout';
-import { conflictsFor, conflictsForDocument, hasErrors, type Conflict, type ConflictContext } from './mapConflicts';
+import { conflictContextFor, conflictsFor, conflictsForDocument, hasErrors, type Conflict, type ConflictContext } from './mapConflicts';
 
 /**
  * What the map editor says is wrong with an entry — and what the save route
@@ -407,6 +407,54 @@ describe('overlap: the last move wins, whole millimetres, and the bucket grid', 
     expect(hasErrors(all)).toBe(false);
   });
 
+  it('gives a superseded move the bounds rule but not the ground or overlap rules: it stands nowhere', () => {
+    // Four samples 4 m apart from (0,0), one cell over [0, 4] at 2 m: `first` is 0.3 m under it, and would
+    // read as underground if it were tested. It is not — the later move is where the crate ends up — but a
+    // coordinate outside the world is refused whether or not the entry is inert, or an out-of-bounds move
+    // would save the moment a second move of the same object followed it.
+    const heightsCm = encodeHeights(Int16Array.from([200, 200, 200, 200]));
+    const ground = decodeGround({ originX: 0, originZ: 0, step: 4, nx: 2, nz: 2, layers: 1, heightsCm });
+    const c = () => ({ ...withLayout([crate]), ground });
+    const first = move({ id: 'first', target: { name: 'crate' }, position: { x: 2, y: 1.7, z: 2 } });
+    const last = move({ id: 'last', target: { name: 'crate' }, position: { x: 50, y: 2, z: 50 } });
+    // `beside` stands 0.3 m from where `first` would be: no overlap, because `first` is not an occupant, and the
+    // crate itself is gone from (0, 0) because `last` moved it.
+    const beside = place({ id: 'beside', position: { x: 2.3, y: 2, z: 2 } });
+    expect(conflictsForDocument([first, last, beside], c()).map(codes)).toEqual([
+      ['duplicate-target'], ['duplicate-target', 'no-ground'], [],
+    ]);
+    const far = move({ id: 'first', target: { name: 'crate' }, position: { x: 300, y: 1.7, z: 2 } });
+    expect(conflictsForDocument([far, last], c()).map(codes)).toEqual([['duplicate-target', 'out-of-bounds'], ['duplicate-target', 'no-ground']]);
+  });
+
+  it('cannot be made to hang: an absurd footprint falls back to the default and an unplaceable coordinate stands nowhere', () => {
+    // The editor path hands over raw floats, and a footprint's cost is its area in cells; the grid must answer
+    // in bounded time for ANY input. `mm(1e308)` is Infinity and a cell loop from −Infinity never ends;
+    // `mm(1e20)` is a finite 1e23, but past 2^53 `cx++` no longer changes `cx` and the loop never ends either.
+    const p = place({ position: at(2, 2) });
+    const inside = move({ id: 'in', position: at(2.9, 2) });
+    const outside = move({ id: 'out', target: silo, position: at(4, 2) });
+    const absurd = { ...withLayout(), placeFootprint: () => ({ w: Infinity, d: NaN, h: 1 }) };
+    expect(conflictsForDocument([p, inside, outside], absurd)).toEqual([[overlapWith('in')], [overlapWith('p1')], []]);
+    const negative = { ...withLayout(), placeFootprint: () => ({ w: -5, d: 500, h: 1 }) };
+    expect(conflictsForDocument([p, inside, outside], negative)).toEqual([[overlapWith('in')], [overlapWith('p1')], []]);
+    // A hundred metres is the widest a placed item can claim; exactly that is still honoured.
+    const wide = { ...withLayout(), placeFootprint: () => ({ w: 100, d: 100, h: 1 }) };
+    expect(codes(conflictsForDocument([p, outside], wide)[1])).toEqual(['overlap']);
+
+    for (const huge of [1e308, 1e20, -1e20]) {
+      const m = move({ id: 'huge', position: at(huge, 0) });
+      const q = place({ id: 'q', position: at(huge, 0) });
+      // Bounds still refuse it — that rule reads the position, not the grid — and nothing else is said.
+      expect(conflictsForDocument([m, q], withLayout()).map(codes), `entries at ${huge}`).toEqual([['out-of-bounds'], ['out-of-bounds']]);
+      // A reported object the grid cannot place is skipped too; the roof is here so `near` has a real target.
+      const reported = { name: 'far', position: { x: huge, y: 0, z: 0 } };
+      const roof = { name: 'barn.roof', position: { x: 50, y: 0, z: 50 } };
+      const near = move({ id: 'near', position: at(0, 0) });
+      expect(conflictsForDocument([near], withLayout([reported, roof])), `object at ${huge}`).toEqual([[]]);
+    }
+  });
+
   it('agrees with a pairwise scan at the caps chunks 4-6 drag at, 2 000 objects and 500 entries, in a frame', () => {
     // A deterministic scatter (mulberry32) over the whole world, positions to the millimetre like the schema's.
     let seed = 0x9e3779b9;
@@ -424,11 +472,18 @@ describe('overlap: the last move wins, whole millimetres, and the bucket grid', 
         : place({ id: `e${i}`, position: { x: coord(), y: 2, z: coord() } }));
     const sizes = [1, 2, 3, 5, 9];
     const footprint = (e: PlaceEntry) => { const s = sizes[Number(e.id.slice(1)) % sizes.length]; return { w: s, d: s, h: 1 }; };
-    const c: ConflictContext = { ...withLayout(objects), placeFootprint: footprint };
+    // A real flat deck at 2 m over the whole ±100 m bounds, 51 samples an axis 4 m apart, so the timed run
+    // below measures what the editor does on a drag: the grid AND a ground lookup for every entry.
+    const deck = { originX: -100, originZ: -100, step: 4, nx: 51, nz: 51, layers: 1, heightsCm: encodeHeights(new Int16Array(51 * 51).fill(200)) };
+    const c = conflictContextFor(layout({ ground: deck }), objects, footprint);
+    expect(c.ground).not.toBeNull();
 
     const all = conflictsForDocument(entries, c);
+    // Every entry is in bounds, on the deck, and moves a name that was reported: only overlaps can speak.
+    expect(all.flat().every((x) => x.code === 'overlap')).toBe(true);
 
     // The reference: the same composition and the same millimetre geometry, every entry against every occupant.
+    // It deliberately omits last-move-wins — no two entries here move the same name — which is pinned separately above.
     type Occ = { label: string; x: number; z: number; rect: { minX: number; maxX: number; minZ: number; maxZ: number } | null };
     const mm = (m: number) => Math.round(m * 1000);
     const moved = new Set(entries.flatMap((e) => (e.kind === 'move' && e.position ? [e.target.name] : [])));
@@ -458,12 +513,55 @@ describe('overlap: the last move wins, whole millimetres, and the bucket grid', 
     // Not vacuous: the scatter is dense enough that hundreds of pairs meet.
     expect(expected.flat().length).toBeGreaterThan(200);
 
-    // The whole document, grid and all, well inside a frame: a median of about 1 ms on the machine that wrote
-    // this, where the pairwise reference above takes about 6 ms. The bound is loose so a slow runner does not
-    // flake, and tight enough that a grid which degenerates to a scan of everything fails.
+    // A catastrophe bound — an O(n²) allocation blow-up; NOT a degenerate-grid detector (a single-cell grid
+    // measured ~15 ms here, well under it); the pairwise oracle above is the correctness gate. A median of
+    // about 1.5 ms on the machine that wrote this.
     const times: number[] = [];
     for (let i = 0; i < 10; i++) { const t0 = performance.now(); conflictsForDocument(entries, c); times.push(performance.now() - t0); }
     times.sort((x, y) => x - y);
-    expect(times[5], `median ms over 10 runs: ${times[5].toFixed(2)}`).toBeLessThan(20);
+    expect(times[5], `median ms over 10 runs: ${times[5].toFixed(2)}`).toBeLessThan(100);
+  });
+});
+
+describe('conflictContextFor, the one way a context is built', () => {
+  // The route and the editor panel build their context through this so the two can never disagree about a
+  // grid: decoded once, and a grid that will not decode is a warning in the log and `ground: null`, never a
+  // throw — the bounds rule, the one that refuses, needs no grid.
+  const deck = { originX: -10, originZ: -10, step: 4, nx: 6, nz: 6, layers: 1, heightsCm: encodeHeights(new Int16Array(36)) };
+
+  it('decodes a valid ground once and keeps the layout, the objects and the footprint callback', () => {
+    const l = layout({ ground: deck });
+    const footprint = () => ({ w: 2, d: 2, h: 1 });
+    const c = conflictContextFor(l, [crate], footprint);
+    expect(c.layout).toBe(l);
+    expect(c.objects).toEqual([crate]);
+    expect(c.placeFootprint).toBe(footprint);
+    expect(c.ground).toEqual(decodeGround(deck));
+    expect(conflictContextFor(l, [])).not.toHaveProperty('placeFootprint');
+  });
+
+  it('degrades a ground that will not decode to no grid, keeps the bounds, and warns once', () => {
+    // `validateGround` decodes on the way in and `readWorldReport` validates again on the way out, so a row
+    // from the store cannot reach here undecodable today; the helper does not know its caller.
+    const corrupt = { ...deck, heightsCm: encodeHeights(new Int16Array(3)) };
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const c = conflictContextFor(layout({ ground: corrupt }), []);
+      expect(c.ground).toBeNull();
+      expect(c.layout?.bounds).toEqual(layout().bounds);
+      expect(warned).toHaveBeenCalledTimes(1);
+      expect(String(warned.mock.calls[0][0])).toMatch(/^\[map-conflicts\] stored ground did not decode/);
+      // Bounds-only still refuses, and says nothing about the ground it cannot see.
+      const under = move({ position: { x: 2, y: -50, z: 2 } });
+      const out = move({ id: 'o', target: { name: 'silo' }, position: { x: 300, y: 2, z: 2 } });
+      expect(conflictsForDocument([under, out], c).map(codes)).toEqual([[], ['out-of-bounds']]);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  it('builds an empty context for a world with no layout yet', () => {
+    expect(conflictContextFor(null, [])).toEqual({ layout: null, ground: null, objects: [] });
+    expect(conflictContextFor(layout(), [crate])).toEqual({ layout: layout(), ground: null, objects: [crate] });
   });
 });

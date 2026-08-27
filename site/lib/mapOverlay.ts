@@ -5,6 +5,7 @@ import {
   type OverlayEntry,
   type RejectedEntry,
 } from './mapOverlaySchema';
+import { LAYOUT_SCHEMA, validateBounds, validateGround, validateLayout, validateShapes, type WorldLayout } from './mapLayout';
 
 /**
  * Where a world's placement overlay is kept.
@@ -26,8 +27,10 @@ import {
  *   - `(db: Db, ...)` signatures, so the ROUTE owns the connection. A module
  *     that opens its own connection cannot be made to share a transaction, and
  *     Postgres has no nested BEGIN to paper over it later.
- *   - Additive `CREATE TABLE IF NOT EXISTS` only. Whichever app runs first wins
- *     and the other is a no-op; no deployment is ever stranded mid-migration.
+ *   - Additive DDL only: `CREATE TABLE IF NOT EXISTS`, and — since the layout
+ *     columns — `ALTER TABLE … ADD COLUMN IF NOT EXISTS` with a DEFAULT, so a
+ *     row written before the column reads as "no layout", never as NULL.
+ *     Whichever app runs first wins and the other is a no-op.
  *   - The ensure is memoised as a **promise**, not a boolean. A boolean set
  *     before the awaited DDL finishes lets a second concurrent caller straight
  *     past a half-built schema — the bug is invisible until two requests land
@@ -89,6 +92,11 @@ export interface WorldReport {
   reportedAt?: string;
 }
 
+/** Layout fields a report may carry, typed `unknown` because they are validated HERE, not in the route; a failed layout still records the catalogue and keeps the prior layout. */
+export interface ReportedLayoutFields { layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown }
+
+export interface StoredWorldReport extends WorldReport { reportedAt: string; layout: WorldLayout | null }
+
 /**
  * How many named objects one world may report.
  *
@@ -134,6 +142,16 @@ export function ensureMapOverlaySchema(db: Db): Promise<void> {
           unresolved      JSONB NOT NULL DEFAULT '[]'::jsonb,
           reported_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+      `);
+      // These columns arrived after the table was live: ADD COLUMN IF NOT EXISTS
+      // is the additive form, and the DEFAULTs let an old row read as "no layout yet".
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS layout JSONB NOT NULL DEFAULT '{}'::jsonb
+      `);
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS layout_schema INTEGER NOT NULL DEFAULT 0
       `);
     })().catch((err) => {
       // A failed ensure must not be remembered as done, or every later request
@@ -298,16 +316,33 @@ function clampNumber(value: unknown): number {
 }
 
 /**
- * Record what the running game found and did.
- *
- * One row per world, replaced each time: this is a cache of the last report,
- * not a history. The history that matters is `map_overlays`, and it is
- * append-only.
+ * Only the keys that arrived AND passed. `bounds`/`shapes` travel on every report, `ground`
+ * only when sampling finished; jsonb `||` is shallow, so bounds without ground keeps
+ * yesterday's ground, and nothing keeps everything.
  */
+function layoutPatch(report: ReportedLayoutFields): Partial<WorldLayout> {
+  const patch: Partial<WorldLayout> = {};
+  if (report.layoutSchema !== LAYOUT_SCHEMA) return patch;
+  const bounds = validateBounds(report.bounds);
+  if (bounds) {
+    patch.schema = LAYOUT_SCHEMA;
+    patch.bounds = bounds;
+    patch.shapes = validateShapes(report.shapes);
+  }
+  const ground = report.ground === undefined || report.ground === null ? null : validateGround(report.ground);
+  if (ground) {
+    patch.schema = LAYOUT_SCHEMA;
+    patch.ground = ground;
+  }
+  // A valid ground under invalid bounds stores { schema, ground }: readWorldReport answers `layout: null` until bounds arrive, and the ground is already there when they do. Self-healing, not a bug.
+  return patch;
+}
+
+/** Record what the running game found and did: one row per world, a cache of the last report, not a history (that is `map_overlays`). The layout is the one part that MERGES — see `layoutPatch`. */
 export async function recordWorldReport(
   db: Db,
   worldId: string,
-  report: WorldReport
+  report: WorldReport & ReportedLayoutFields
 ): Promise<void> {
   await ensureMapOverlaySchema(db);
 
@@ -338,14 +373,19 @@ export async function recordWorldReport(
       reason: String((u as UnresolvedOutcome)?.reason ?? '').slice(0, 64),
     }));
 
+  const patch = layoutPatch(report);
+
   await db.query(
-    `INSERT INTO map_world_reports (world_id, applied_version, objects, applied, unresolved, reported_at)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, NOW())
+    `INSERT INTO map_world_reports
+       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, reported_at)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, NOW())
      ON CONFLICT (world_id) DO UPDATE
        SET applied_version = EXCLUDED.applied_version,
            objects         = EXCLUDED.objects,
            applied         = EXCLUDED.applied,
            unresolved      = EXCLUDED.unresolved,
+           layout          = map_world_reports.layout || EXCLUDED.layout,
+           layout_schema   = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema),
            reported_at     = NOW()`,
     [
       worldId,
@@ -353,14 +393,16 @@ export async function recordWorldReport(
       JSON.stringify(objects),
       JSON.stringify(applied),
       JSON.stringify(unresolved),
+      JSON.stringify(patch),
+      patch.schema === LAYOUT_SCHEMA ? LAYOUT_SCHEMA : 0,
     ]
   );
 }
 
-export async function readWorldReport(db: Db, worldId: string): Promise<WorldReport | null> {
+export async function readWorldReport(db: Db, worldId: string): Promise<StoredWorldReport | null> {
   await ensureMapOverlaySchema(db);
   const r = await db.query(
-    `SELECT applied_version, objects, applied, unresolved, reported_at
+    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, reported_at
        FROM map_world_reports WHERE world_id = $1`,
     [worldId]
   );
@@ -371,6 +413,8 @@ export async function readWorldReport(db: Db, worldId: string): Promise<WorldRep
     objects: Array.isArray(row.objects) ? (row.objects as CatalogueObject[]) : [],
     applied: Array.isArray(row.applied) ? (row.applied as AppliedOutcome[]) : [],
     unresolved: Array.isArray(row.unresolved) ? (row.unresolved as UnresolvedOutcome[]) : [],
-    reportedAt: row.reported_at ? new Date(row.reported_at).toISOString() : undefined,
+    // Validated again on the way out, like `rowEntries`: a row edited in psql reaches the editor as "no layout", not a canvas crash.
+    layout: Number(row.layout_schema ?? 0) >= LAYOUT_SCHEMA ? validateLayout(row.layout) : null,
+    reportedAt: new Date(row.reported_at).toISOString(),
   };
 }

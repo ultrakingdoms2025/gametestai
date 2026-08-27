@@ -9,9 +9,12 @@ import {
   readCurrentOverlay,
   readWorldReport,
   recordWorldReport,
+  resetMapOverlaySchemaMemo,
   revertOverlayTo,
   saveOverlayVersion,
 } from './mapOverlay';
+import { encodeHeights } from './mapLayout';
+import { flat, makeFakeDb } from './fakeDb';
 
 /**
  * The overlay store, against a real Postgres.
@@ -55,6 +58,12 @@ const suite = URL_ ? describe : describe.skip;
 
 const WORLD = 'test-overlay-alpha';
 const OTHER = 'test-overlay-beta';
+const PLAIN = { appliedVersion: 1, objects: [], applied: [], unresolved: [] };
+const BOUNDS = { min: { x: -20, y: 0, z: -20 }, max: { x: 20, y: 10, z: 20 } };
+/** A 3×3 single-layer grid at 20 m, every cell at `cm`. */
+function ground(cm: number) {
+  return { originX: -20, originZ: -20, step: 20, nx: 3, nz: 3, layers: 1, heightsCm: encodeHeights(new Int16Array(9).fill(cm)) };
+}
 
 function connect(): Client {
   return new Client({ connectionString: URL_!, ssl: { rejectUnauthorized: false } });
@@ -274,5 +283,90 @@ suite('mapOverlay (integration)', () => {
     });
     const report = await readWorldReport(db, WORLD);
     expect(report!.objects.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('adds the layout columns to a table that already existed, and again without complaint', async () => {
+    resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
+    resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
+    const cols = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'map_world_reports'`);
+    expect(cols.rows.map((r) => r.column_name)).toEqual(expect.arrayContaining(['layout', 'layout_schema']));
+  });
+
+  it('reads layout null, with a fresh reportedAt, for a world whose reports never carried one', async () => {
+    await recordWorldReport(db, WORLD, PLAIN);
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.layout).toBeNull();
+    expect(Date.now() - Date.parse(stored!.reportedAt)).toBeLessThan(60_000);
+  });
+
+  it('stores a layout and hands it back byte for byte', async () => {
+    const shapes = [{ kind: 'rect', x: 0, z: 0, w: 4, d: 4, fill: 0x224466 }];
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes, ground: ground(150) });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes, ground: ground(150) });
+  });
+
+  it('keeps the ground when a later report carries bounds and shapes but no ground', async () => {
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    const moved = { min: { x: -30, y: 0, z: -30 }, max: { x: 30, y: 10, z: 30 } };
+    await recordWorldReport(db, WORLD, { ...PLAIN, appliedVersion: 2, layoutSchema: 1, bounds: moved, shapes: [{ kind: 'circle', x: 1, z: 1, r: 2 }] });
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.appliedVersion).toBe(2);
+    expect(stored?.layout?.bounds).toEqual(moved);
+    expect(stored?.layout?.shapes).toHaveLength(1);
+    expect(stored?.layout?.ground).toEqual(ground(150));
+  });
+
+  it('leaves the layout alone for a report with no layout fields, and keeps the prior ground over one that does not decode', async () => {
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    await recordWorldReport(db, WORLD, { ...PLAIN, appliedVersion: 3 });
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.appliedVersion).toBe(3);
+    expect(stored?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(999), nx: 4 } });
+    expect((await readWorldReport(db, WORLD))?.layout?.ground).toEqual(ground(150));
+  });
+
+  it('replaces only the ground for a report that carries a ground and nothing else', async () => {
+    const shapes = [{ kind: 'circle', x: 1, z: 1, r: 2 }];
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes, ground: ground(150) });
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, ground: ground(300) });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes, ground: ground(300) });
+  });
+});
+
+/**
+ * The merge rule as EMITTED SQL, on every machine: one shallow jsonb `||` with a patch of the
+ * keys that passed. The integration suite proves the consequence; this pins the statement where it cannot run.
+ */
+describe('recordWorldReport — the SQL it emits', () => {
+  const patchOf = (db: ReturnType<typeof makeFakeDb>) => JSON.parse(String(db.only('INSERT INTO map_world_reports').params[5]));
+
+  it('merges the patch over the stored layout rather than replacing it', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+    const q = db.only('INSERT INTO map_world_reports');
+    expect(flat(q.sql)).toContain('layout = map_world_reports.layout || EXCLUDED.layout');
+    expect(flat(q.sql)).toContain('layout_schema = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema)');
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });
+    expect(q.params[6]).toBe(1);
+  });
+
+  it('sends an empty patch and schema 0 for a report with no layout, or one under a schema it does not read', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', PLAIN);
+    expect(patchOf(db)).toEqual({});
+    expect(db.only('INSERT INTO map_world_reports').params[6]).toBe(0);
+    db.clear();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 7, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    expect(patchOf(db)).toEqual({});
+  });
+
+  it('includes a ground only when it decodes, and keeps the bounds when it does not', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(1), nx: 4 } });
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });
+    db.clear();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    expect(patchOf(db).ground).toEqual(ground(150));
   });
 });

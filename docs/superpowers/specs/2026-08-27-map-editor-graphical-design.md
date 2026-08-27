@@ -1,7 +1,7 @@
 # Map editor: graphical map, conflict warnings, select-to-move, remove
 
 **Date:** 2026-08-27
-**Status:** Design approved section by section by the owner; awaiting written-spec review.
+**Status:** Design approved section by section by the owner; three reviewer rounds applied (registry timing, layered ground grid, containment collider drop, no-layout save rule). Awaiting owner review of the written spec before planning.
 **Supersedes nothing.** Extends the Phase 8 map editor (`b936fc0`, "The map an admin can move,
 without touching a world file").
 
@@ -62,10 +62,10 @@ without touching a world file").
 ```
                  site (Next.js)                          game (browser)
 ┌──────────────────────────────┐   GET /api/game/map-overlay?world=   ┌──────────────────────────┐
-│ overlay versions (JSONB)     │ ───────────────────────────────────▶ │ WorldManager.build(id)   │
-│ + world layout (JSONB) NEW   │                                      │   overlay → world.ctx    │
+│ overlay versions (JSONB)     │ ───────────────────────────────────▶ │ WorldManager._runBuild   │
+│ + world layout (JSONB) NEW   │                                      │   ctx.overlayProvider →  │
 │                              │                                      │   primitives consult it  │
-│ /admin/map editor            │                                      │   and fill a REGISTRY    │
+│ /admin/map editor            │                                      │   fill world.registry    │
 │  • canvas map (draws layout) │   POST /api/admin/map/report         │ MapOverlay (post-build)  │
 │  • click → select id         │ ◀─────────────────────────────────── │   • colliders for moves/ │
 │  • dropdown → select id      │   {registry, bounds, shapes,         │     removes (AABB)       │
@@ -75,8 +75,10 @@ without touching a world file").
 ```
 
 1. **The overlay reaches the build.** `WorldManager` has no fetch of its own and gains none.
-   `main.js` injects `ctx.overlayProvider = (worldId) => Promise<OverlayLookup | null>` from
-   `MapOverlay`, which owns the endpoint, the parsing and a **per-world, per-session cache**
+   `main.js` sets `worldManager.ctx.overlayProvider = (worldId) => Promise<OverlayLookup | null>`
+   from `MapOverlay` after constructing it (line ~314, before the entry build at ~1247);
+   `_runBuild` reads **the manager's `this.ctx`**, not the per-world copy spread at `getWorld()`.
+   `MapOverlay` owns the endpoint, the parsing and a **per-world, per-session cache**
    (it cannot be keyed on a version the client has not fetched yet). `_runBuild` awaits the
    provider before `ensureBuilt` — with **no timeout while `!engine.running`** (the entry world
    builds behind the loading gate, where a wait costs nothing visible and a cold function would
@@ -109,8 +111,10 @@ type OverlayEntry = MoveEntry | RemoveEntry | PlaceEntry;
 ```
 
 - `remove` is a first-class kind. For `{name}` targets the applier hides the object **and** drops
-  colliders whose centre lies inside its AABB. For `{id}` targets the primitive does not emit the
-  prop and `MapOverlay` drops the colliders inside the registry's authored AABB.
+  its colliders; for `{id}` targets the primitive does not emit the prop and `MapOverlay` drops
+  its colliders. **Both use the containment rule of §6.3** (a collider's own AABB inside the
+  object's box + 5 cm) — never centre-in-box, which over-removes. The `{name}` box is
+  `Box3.setFromObject`, as the mover already computes.
 - `hidden: true` is retired. The normaliser migrates a v1 `move` with `hidden` to `kind: 'remove'`
   on read, so every stored version and every revert still loads. `position: null` is no longer valid
   on a move (reject reason `position`).
@@ -118,10 +122,12 @@ type OverlayEntry = MoveEntry | RemoveEntry | PlaceEntry;
   only when two props of one family share a rounded spot. Keyed on the source position so an art pass
   inserting props elsewhere does not renumber anything. If an art pass moves *that* prop, its id
   disappears and the entry becomes `unresolved` — the semantics a renamed object already has.
+  A family key may carry a namespace, as medieval's `medieval:${key}` batch keys already do —
+  which is why the §8 mock shows `medieval:house@12.3,-40.1`.
 - Target ids ≤ 128 chars. Other limits unchanged: 500 entries, |coord| ≤ 20 000 rounded to 3 dp,
   yaw wrapped to (−π, π] at 6 dp, entry ids ≤ 64 chars. `normaliseOverlayEntries` still never
-  throws and still returns `rejected[{index, id, reason}]`; new reasons: `target` (bad shape),
-  `position` (null on a move).
+  throws and still returns `rejected[{index, id, reason}]`; the existing `target` and `position`
+  reasons widen to cover a malformed `{id}` target and a null position on a move.
 - A v1 client reading a v2 document does not crash: its applier dispatches only `move`/`place`,
   so a `remove` is **silently skipped** (nothing hidden, nothing reported), and a `move` with an
   `{id}` target lands in `unresolved` with reason `name`. Acceptable for the deploy window, since
@@ -192,9 +198,12 @@ primitives do not use the registry yet simply leave it empty.
 | `MazeBatches` — maze | per cell | **out of scope** | **out of scope** |
 
 **How a primitive reaches the registry.** `Batch`, `_bake` and the inline sites are world
-methods and read `this.registry`. `buildPropField` has `ctx` and reads `ctx.registry`.
-`GeoBatch` is a standalone class with a no-arg constructor and `instanced()` is a module
-function, so both take it explicitly: `new GeoBatch(registry)` (37 construction sites, mechanical)
+methods and read `this.registry`. `buildPropField` receives an ad-hoc object literal from
+`PlanetWorld.js:1833`, not `world.ctx`; that call site adds `registry: this.registry` to the
+literal. `GeoBatch` — **two classes**, `src/worlds/MedievalWorld.js:895` and
+`src/worlds/station/StationKit.js:978` (dock and the station zones import the latter), both
+patched — has a no-arg constructor and `instanced()` is a module function, so both take it
+explicitly: `new GeoBatch(registry)` (37 construction sites, mechanical)
 and `instanced(geo, mat, entries, { registry, family })` — `instanced` already has an `opts`
 argument. Sports' `_instanced(geo, mat, placements, cast = true, receive = true)` keeps its
 positional booleans and gains a sixth `opts = {}` for `family` (it is a world method, so the
@@ -318,10 +327,12 @@ Map-first layout; the version list, notes, save and revert stay as they are.
   type-to-filter). Both set one `selected` target; the map pans to and highlights it. The dropdown
   is the keyboard path and the fallback for props too small to click.
 - **Move**: drag on the map (x/z) or type. **Y defaults to the ground height under the new x/z**
-  ("snap Y to ground", on by default) — specifically `ground(x, z, y_current)`, the nearest layer
-  at or below the prop's *current* effective y, so a crate dragged across the station hub stays
-  on the deck and does not jump onto the dome. Yaw is a ring handle on the map and a degrees
-  field.
+  ("snap Y to ground", on by default) — specifically
+  `ground(x, z, y_current) + (y_current − ground(x_current, z_current, y_current))`: the nearest
+  layer at or below the prop's *current* effective y, **plus the prop's authored sink or lift**,
+  so a crate dragged across the station hub stays on the deck rather than jumping onto the dome,
+  and a deliberately half-buried rock stays half-buried instead of popping to the surface and
+  then tripping `underground`. Yaw is a ring handle on the map and a degrees field.
 - **Remove**: adds a `remove` entry; the map draws the prop struck-through until saved. Marketplace
   placements are removed by deleting their entry, as today.
 - **Place**: click empty ground → choose an item from the existing marketplace dropdown → a
@@ -385,7 +396,7 @@ the audit row holds). A client that skips the check cannot save an invalid docum
 | id gone after an art pass | `unresolved`; editor flags it ⚠ (not ⛔ — it was already saved), "drop unresolved" clears it; the rest of the document stays saveable; world unaffected |
 | admin leaves before the grid finishes | no report sent; previous layout stands; banner shows "layout: sampling…" while in-world |
 | cached world built against an older version than the one just saved | the new `{id}` entry is reported `unresolved: pending-rebuild`; editor shows "applies on next world load"; `builtVersion` in the report says what `props[]` reflect |
-| overlay provider times out (1 500 ms) at build | world builds with no overlay; the post-build applier still applies named-object moves live; the build's `builtVersion` is 0 |
+| overlay provider times out (1 500 ms) on a **background** build (behind the loading gate there is no timeout) | world builds with no overlay; the post-build applier still applies named-object moves live; the build's `builtVersion` is 0 |
 | v1 client reads a v2 document | `remove` silently skipped, `{id}` moves → `unresolved: name`; no crash |
 | report too large / malformed | 413/400; prior layout kept; game logs and moves on |
 | save with an error-level conflict | 400 with `rejected[]`; nothing written; no audit row |
@@ -397,7 +408,8 @@ Each gate measures what the game actually does (a gate that measures something t
 do is worse than no gate — this repository has paid for that nine times).
 
 - `PropRegistry` — `node --test`: id stability under insertion elsewhere, `#n` collisions,
-  resolve/remove, `consumed()` → unresolved, matrix composition keeps scale/tilt.
+  resolve/remove, `consumed()` → unresolved, matrix composition keeps scale and replaces rotation
+  with pure yaw (tilt dropped, per §6.1 — the test asserts the drop, not its preservation).
 - Per primitive — build one world headlessly (`scripts/tests/_flightrig.mjs` dom harness, no
   WebGL) with an overlay that moves one prop and removes one; assert the registry entry, the
   affected bucket's vertex count, and `physics.colliders` count and centres. Planets first.
@@ -419,9 +431,9 @@ do is worse than no gate — this repository has paid for that nine times).
   hitch frames. Sampling is admin-only and the harness boots with no session, so as-is the gate
   would measure a run in which the sampler never starts — the exact trap §11 opens with. The
   sampler therefore also runs under `?dev=1&layout=sample` (the harness's existing dev switch
-  family), discarding the POST; `frame-gaps.mjs` passes it and `report.json` records
+  family), discarding the POST; `frame-gaps.mjs` passes it and its `summary.json` records
   `layoutSampled: true` next to the numbers so a run that lost it cannot be read as one that did
-  not. `scripts/world-shot.mjs` budgets (draws, programs, triangles) and the `[World] built`
+  not (`report.json` is `world-shot.mjs`'s file, not frame-gaps'). `scripts/world-shot.mjs` budgets (draws, programs, triangles) and the `[World] built`
   timing stay unchanged for every world touched (the AABB cache in §6.1 is what keeps the build
   time flat).
 
@@ -432,10 +444,12 @@ Each stage ships on its own; the editor is useful from stage 1.
 1. **Editor + layout report + conflicts** over today's named objects, with `bounds`, `shapes` and
    the layered ground grid — the map works for every world immediately. Ships the
    `layout === null` rule (§9) so a world nobody has visited still saves free-text moves on day
-   one, and `MapOverlay` gains `engine` and the overlay provider (§4.1) even though no primitive
-   reads it yet.
-2. **Schema v2 + `remove`** with collider drop for named objects; `hidden` migration;
-   `builtVersion` / `pending-rebuild` reporting.
+   one, and `MapOverlay` gains `engine` for the sampler. Purely additive: nothing in the build
+   path changes.
+2. **Schema v2 + `remove`** with the containment collider drop for named objects; `hidden`
+   migration; the overlay provider wired into `_runBuild` (§4.1) with `world.builtVersion` and
+   `pending-rebuild` reporting — the build-path change lands here, where its first consumer
+   (`builtVersion`) is, rather than in stage 1 with none.
 3. **`PropRegistry` + planets + space dock** (`buildPropField`, `_bake`, and their inline
    `InstancedMesh` sites) — proves the primitive pattern end to end, including the registry
    creation point in `_runBuild`.

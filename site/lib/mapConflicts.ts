@@ -89,7 +89,7 @@ interface Occupant { key: string; label: string; x: number; z: number; rect: Rec
 interface Prepared { names: Set<string>; occupants: Occupant[] }
 
 const warn = (code: ConflictCode, detail: string, other?: string): Conflict =>
-  ({ level: 'warn', code, detail, ...(other ? { other } : {}) });
+  ({ level: 'warn', code, detail, ...(other !== undefined ? { other } : {}) });
 
 const entryKey = (index: number): string => `entry:${index}`;
 
@@ -111,7 +111,9 @@ function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
     occupants.push({ key: `object:${obj.name}`, label: obj.name, x: obj.position.x, z: obj.position.z, rect: null });
   }
   document.forEach((entry, index) => {
-    if (!entry.position) return;
+    // A hidden move may still carry a position (the game moves the object, then hides it), but a hidden
+    // object stands nowhere: nothing can collide with it, so it is not an occupant.
+    if (!entry.position || (entry.kind === 'move' && entry.hidden)) return;
     const rect = entry.kind === 'place' ? footprintRect(entry, ctx) : null;
     occupants.push({ key: entryKey(index), label: entry.id, x: entry.position.x, z: entry.position.z, rect });
   });
@@ -121,11 +123,11 @@ function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
 function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[], prepared: Prepared, out: Conflict[]): void {
   if (entry.kind !== 'move') return;
   const name = entry.target.name;
-  // `names` holds what `recordWorldReport` stored, and it clamps each name to 200 chars — so a target authored
-  // longer than that can never match and reads as stale. No reported name is anywhere near that today, and a
-  // false "stale" is a warning rather than a refusal, so nothing is clamped here to paper over it.
+  // `names` holds what `recordWorldReport` stored, which clamps each name to 200 chars; the normaliser clamps
+  // a move's target to 200 too (`readName(…, 200)`). Both sides clamp to 200, so the comparison is consistent
+  // and a long target still matches its long reported name.
   if (prepared.names.size > 0 && !prepared.names.has(name)) {
-    out.push(warn('stale-name', `"${name}" is not among the ${prepared.names.size} objects this world last reported`));
+    out.push(warn('stale-name', `"${name}" is not among the ${prepared.names.size} known names this world last reported`));
   }
   document.forEach((other, j) => {
     if (j !== index && other.kind === 'move' && other.target.name === name) {
@@ -134,13 +136,30 @@ function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[],
   });
 }
 
+function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): void {
+  const { min, max } = layout.bounds;
+  for (const [axis, value, lo, hi] of [['x', pos.x, min.x, max.x], ['z', pos.z, min.z, max.z]] as const) {
+    if (value < lo - BOUNDS_MARGIN || value > hi + BOUNDS_MARGIN) {
+      const detail = `${axis} = ${value} is outside the world's bounds (${lo} to ${hi}, ±${BOUNDS_MARGIN} m)`;
+      out.push({ level: 'error', code: 'out-of-bounds', detail });
+      return;
+    }
+  }
+}
+
 function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext, prepared: Prepared): Conflict[] {
   const out: Conflict[] = [];
   nameRules(entry, index, document, prepared, out);
+  const pos = entry.position;
+  if (!pos || !ctx.layout) return out;
+  boundsRule(pos, ctx.layout, out);
   return out;
 }
 
-/** Conflicts for one entry of `document` (which must contain it at `index`). */
+/**
+ * Conflicts for one entry of `document` (which must contain it at `index`).
+ * Re-prepares per call; for a whole document use `conflictsForDocument`, which prepares once.
+ */
 export function conflictsFor(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext): Conflict[] {
   return conflictsWith(entry, index, document, ctx, prepare(document, ctx));
 }

@@ -71,6 +71,19 @@ describe('the name rules, which need no layout', () => {
     expect(codes(found)).toEqual(['stale-name']);
   });
 
+  it('does not let a hidden move that still carries a position occupy that spot: a hidden object stands nowhere', () => {
+    // The game moves the object and then hides it, so the position is real data — but nothing can collide with
+    // a hidden object. Pinned now, before the overlap rule exists, so that rule inherits the guard rather than
+    // discovering it: without it the place at the same spot would report `overlap` with `other: 'm1'`.
+    const spot = { x: 50, y: 0, z: 50 };
+    const beside = place({ position: spot });
+    const stranger = move({ hidden: true, position: spot });
+    const known = move({ hidden: true, position: spot, target: { name: 'crate' } });
+    const world = () => ctx({ layout: layout(), objects: [crate] });
+    expect(conflictsForDocument([stranger, beside], world()).map(codes)).toEqual([['stale-name'], []]);
+    expect(conflictsForDocument([known, beside], world()).map(codes)).toEqual([[], []]);
+  });
+
   it('lets a move a kilometre out through when there is no layout to measure against', () => {
     const far = move({ position: { x: 1000, y: 0, z: 1000 } });
     expect(conflictsFor(far, 0, [far], ctx())).toEqual([]);
@@ -84,5 +97,45 @@ describe('hasErrors', () => {
     expect(hasErrors([])).toBe(false);
     expect(hasErrors([[warn], []])).toBe(false);
     expect(hasErrors([[], [warn, error]])).toBe(true);
+  });
+});
+
+describe('out-of-bounds, the only error', () => {
+  const bounded = () => ctx({ layout: layout() });
+
+  it('accepts a position inside the bounds and within the 5 m margin', () => {
+    for (const [x, z] of [[0, 0], [100, 0], [104, 0], [-104, 0], [0, 104], [0, -104]]) {
+      const m = move({ position: { x, y: 2, z } });
+      expect(conflictsFor(m, 0, [m], bounded()), `x=${x} z=${z}`).toEqual([]);
+    }
+  });
+
+  it("ignores y: the bounds are a floor plan, and height is the floating rule's business", () => {
+    const high = move({ position: { x: 0, y: 500, z: 0 } });
+    expect(conflictsFor(high, 0, [high], bounded())).toEqual([]);
+  });
+
+  it('refuses, as an error, a position past the margin on either axis, for moves and places', () => {
+    const error = [expect.objectContaining({ level: 'error', code: 'out-of-bounds' })];
+    for (const [x, z] of [[106, 0], [-106, 0], [0, 106], [0, -106]]) {
+      const m = move({ position: { x, y: 2, z } });
+      const p = place({ position: { x, y: 2, z } });
+      expect(conflictsFor(m, 0, [m], bounded()), `move ${x},${z}`).toEqual(error);
+      expect(conflictsFor(p, 0, [p], bounded()), `place ${x},${z}`).toEqual(error);
+    }
+  });
+
+  it('is an error the route can see through hasErrors, on a layout that has bounds but no ground yet', () => {
+    // `layout()` carries `ground: null`: the immediate report, before sampling. The bounds alone must refuse.
+    expect(layout().ground).toBeNull();
+    const doc = [move(), place({ position: { x: 0, y: 2, z: -300 } })];
+    const all = conflictsForDocument(doc, bounded());
+    expect(all.map(codes)).toEqual([[], ['out-of-bounds']]);
+    expect(hasErrors(all)).toBe(true);
+  });
+
+  it('names the axis in the detail, so the row says which number to fix', () => {
+    const m = move({ position: { x: 2, y: 2, z: 300 } });
+    expect(conflictsFor(m, 0, [m], bounded())[0].detail).toMatch(/^z = 300 /);
   });
 });

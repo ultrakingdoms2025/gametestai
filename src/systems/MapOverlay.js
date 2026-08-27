@@ -332,13 +332,20 @@ export class MapOverlay {
   /** Start a job for `world`; `post`: to the editor (admin) or only the bus (dev switch). */
   _startSampling(id, world, post) {
     this._cancelSampling();
-    const plan = this.physics ? planGrid(world.bounds) : null;
-    if (!plan) return;
+    // The same bounds the report carries, so a world whose bounds the report
+    // omits (a NaN height, an empty Box3) samples nothing: every cell would be
+    // NO_SAMPLE, and posting that would replace the last good grid.
+    const { bounds } = this._layoutFields(world);
+    const plan = this.physics && bounds ? planGrid(bounds) : null;
+    if (!plan) {
+      console.warn(`[map-overlay] ground not sampled for ${id}: ${this.physics ? 'bounds are not usable' : 'no physics'}`);
+      return;
+    }
     const job = createJob(plan, (x, yTop, z, maxDrop) => this._castDown(x, yTop, z, maxDrop), {
       layers: MAX_LAYERS,
       // The dome and a 260 m planet are both above groundHeight's 200 m default.
-      topY: world.bounds.max.y + 10,
-      floorY: world.bounds.min.y - 20,
+      topY: bounds.max.y + 10,
+      floorY: bounds.min.y - 20,
     });
     job.world = id;
     job.post = post;

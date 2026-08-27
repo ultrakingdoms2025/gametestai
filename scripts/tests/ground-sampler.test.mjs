@@ -100,17 +100,43 @@ test('a -400 m surface clamps to -32767 cm, never to the -32768 that means "no s
   assert.deepEqual([...decode(job.result().heightsCm)], new Array(9).fill(-32767));
 });
 
-test('a hit at or above the ray start ends the cell, so layer 0 is topmost even under a misbehaving cast', () => {
+test('a hit at or above the ray start is never stored, so layer 0 is topmost; a cast that keeps doing it ends the cell after a bounded number of re-casts', () => {
   // An honest first hit at 10 m; every re-cast then "finds" a surface 100 m above where it started.
   const job = createJob(PLAN, (x, yTop) => (yTop === 40 ? 10 : yTop + 100), { layers: 4, topY: 40, floorY: -25 });
   job.run(1e9, () => 0);
   const h = decode(job.result().heightsCm);
   assert.deepEqual([...h.subarray(0, 4)], [1000, NO_SAMPLE, NO_SAMPLE, NO_SAMPLE]);
   assert.ok(h.every((v, n) => v === (n % 4 === 0 ? 1000 : NO_SAMPLE)), 'every cell: one layer, then padding');
-  // Misbehaving from the first cast: no layer at all.
-  const bad = createJob(PLAN, (x, yTop) => yTop + 100, { layers: 4, topY: 40, floorY: -25 });
+  // Misbehaving from the first cast: no layer at all, and the cell gives up after one
+  // attempt plus four steps down - never one re-cast per frame for ever.
+  let casts = 0;
+  const bad = createJob(PLAN, (x, yTop) => { casts++; return yTop + 100; }, { layers: 4, topY: 40, floorY: -25 });
   bad.run(1e9, () => 0);
   assert.ok(decode(bad.result().heightsCm).every((v) => v === NO_SAMPLE));
+  assert.equal(casts, CELLS * 5, 'one attempt and four skips per cell');
+});
+
+test('a float-noise hit at the re-cast origin is skipped, not stored, and the surfaces beneath it are still found', () => {
+  // Honest surfaces at 20 and 0. The first re-cast, from 20 - PEEL, answers EXACTLY its own
+  // origin: what the physics does when the re-cast starts on the face it just found and the
+  // distance rounds to nothing. Under `if (h >= y) break` that ended the cell and the floor
+  // beneath was lost - for every column of a world, at ~6% of slab heights.
+  const honest = (x, yTop, z, maxDrop) => {
+    const below = [20, 0].filter((s) => s <= yTop && yTop - s <= maxDrop);
+    return below.length ? Math.max(...below) : null;
+  };
+  const origins = [];
+  const noisy = (x, yTop, z, maxDrop) => { origins.push(yTop); return yTop === 20 - 0.01 ? yTop : honest(x, yTop, z, maxDrop); };
+  const job = createJob(PLAN, noisy, { layers: 4, topY: 40, floorY: -25 });
+  job.run(1e9, () => 0);
+  const h = decode(job.result().heightsCm);
+  assert.deepEqual([...h.subarray(0, 4)], [2000, 0, NO_SAMPLE, NO_SAMPLE], 'the roof, then the floor; the noise is not a layer');
+  assert.ok(h.every((v, n) => v === [2000, 0, NO_SAMPLE, NO_SAMPLE][n % 4]), 'every cell alike');
+  // Cell 0's origins: the top, the noisy re-cast, one centimetre lower, then below the floor.
+  assert.equal(origins[0], 40);
+  assert.equal(origins[1], 20 - 0.01);
+  assert.ok(Math.abs(origins[2] - (20 - 0.02)) < 1e-9, `stepped down one peel from the noise, got ${origins[2]}`);
+  assert.equal(origins[3], 0 - 0.01);
 });
 
 test('createJob refuses a plan it could not index', () => {

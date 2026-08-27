@@ -13,6 +13,8 @@
  * top-down, re-cast from a centimetre below the last - a ray that STARTS
  * INSIDE a box does not hit it (`Physics._raycastCollider`, `tmin <= 0`), so
  * the re-cast finds the next surface. Layer 0 is topmost; the rest NO_SAMPLE.
+ * Resolution: surfaces closer than ~2 cm may merge into one layer, because a
+ * re-cast from 1 cm below a hit can start on, or inside, the next surface.
  *
  * RESUMABLE, because 62 000 cells do not fit in a frame: `run(budgetMs, now)`
  * samples until the budget is spent; MapOverlay ticks it every frame.
@@ -29,8 +31,14 @@ export const MAX_LAYERS = 4;
 /** Never finer than 4 m, never more than ~256 samples an axis (spec §7). */
 const MIN_STEP = 4;
 const TARGET_CELLS = 256;
-/** How far below a hit the next cast starts. */
+/** How far below a hit the next cast starts (spec §7: 1 cm). */
 const PEEL = 0.01;
+/**
+ * How many times a cell may step down past a hit AT its own origin before it
+ * gives up. Such a hit is float noise from the face the re-cast started on -
+ * the physics rounded the distance to nothing - never a surface below.
+ */
+const MAX_SKIPS = 4;
 
 /**
  * @param {{min:{x:number,z:number}, max:{x:number,z:number}}|null} bounds
@@ -98,15 +106,24 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
     const z = originZ + j * step;
     const base = (j * nx + i) * L;
     let y = topY;
-    for (let k = 0; k < L; k++) {
+    let skips = 0;
+    for (let k = 0; k < L; ) {
       const drop = y - floorY;
       if (!(drop > 0)) break;
       const h = cast(x, y, z, drop);
       if (typeof h !== 'number' || !Number.isFinite(h)) break;
-      // A hit at or above where the ray started is not a surface below it;
-      // stopping here keeps layer 0 topmost whatever the cast does.
-      if (h >= y) break;
-      heights[base + k] = toCm(h);
+      if (h >= y) {
+        // A hit at or above where the ray started is not a surface below it.
+        // Storing it would repeat a layer; ENDING the cell here - as this once
+        // did - lost everything beneath, the floor included, in every column
+        // of a world at about 6% of slab heights. Step down and cast again, a
+        // bounded number of times, so a cast that always does this cannot spin.
+        if (++skips > MAX_SKIPS) break;
+        y -= PEEL;
+        continue;
+      }
+      // Stored heights only ever fall: layer 0 is topmost by construction.
+      heights[base + k++] = toCm(h);
       y = h - PEEL;
     }
   }

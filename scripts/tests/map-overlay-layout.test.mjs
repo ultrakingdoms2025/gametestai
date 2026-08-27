@@ -253,6 +253,26 @@ test('dispose drops the frame subscription and the job', async () => {
   assert.equal(await pending, null);
 });
 
+test('bounds with a NaN height start no job: nothing is posted over the last good grid, and one warning says why', async () => {
+  const rig = setup(doc([], { admin: true }));
+  rig.world.bounds.max.y = NaN;
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await enter(rig);
+    for (let n = 0; n < 20; n++) rig.engine.tick();
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal('bounds' in rig.fetchImpl.posts()[0].body, false);
+  assert.equal(rig.fetchImpl.posts().length, 1, 'no layout POST: an all-NO_SAMPLE grid would replace the last good one');
+  assert.equal(rig.casts(), 0);
+  assert.equal(await rig.system.sampling, null);
+  assert.equal(warned.length, 1, `one warning: ${warned}`);
+  assert.match(warned[0], /\[map-overlay\] ground not sampled/);
+});
+
 test('a cast that throws abandons the job on that frame: one warning, null, and no further casts', async () => {
   const rig = setup(doc([], { admin: true }));
   await enter(rig);
@@ -292,4 +312,33 @@ test('two surfaces 2 cm apart are two layers: the peel re-casts from below the l
   const h = decode(g);
   // cell (1, 10) is x = -36, z = 0.
   assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 1, 10, k)), [1000, 998, 0, NO_SAMPLE]);
+});
+
+test('a top exactly 1 cm below the last hit never loses the floor beneath it: six slab heights on offset grids', async () => {
+  // Two 1 cm slabs over the whole world, tops T and T - 0.01, over the floor at 0. The re-cast
+  // from T - 0.01 starts ON the lower top, and the physics answers one of three things by
+  // T's rounding alone: null (a ray on a face has tmin 0: the slab merges), a hit a few ulp
+  // below (kept), or a hit that rounds back to EXACTLY the origin. That last one, under the
+  // old `if (h >= y) break`, ended the cell and lost every column's floor: T = 13.05, 9.3
+  // and 8.27 do it; 20 and 10 merge the lower slab; 7.77 keeps it. Grids offset by fractions.
+  const PLACEMENTS = [[13.05, 0.42, 0.43], [9.3, 0.31, 0.86], [8.27, 0.19, 0.48], [20, 0, 0], [10, 0.5, 0.25], [7.77, 0.37, 0.61]];
+  for (const [T, fx, fz] of PLACEMENTS) {
+    const rig = setup(doc([], { admin: true }));
+    rig.world.bounds = new THREE.Box3(new THREE.Vector3(-40 + fx, -5, -40 + fz), new THREE.Vector3(40 + fx, 30, 40 + fz));
+    rig.physics.addBox(0, T - 0.005, 0, 100, 0.005, 100);
+    rig.physics.addBox(0, T - 0.015, 0, 100, 0.005, 100);
+    await enter(rig);
+    await finish(rig);
+    const g = rig.fetchImpl.posts()[1].body.ground;
+    const h = decode(g);
+    const top = Math.round(T * 100);
+    // Every column west of the rig's roof (x < 2): i <= 9 is x <= -4 + fx.
+    for (let j = 0; j < g.nz; j++) {
+      for (let i = 0; i <= 9; i++) {
+        const col = [0, 1, 2, 3].map((k) => at(g, h, i, j, k)).filter((v) => v !== NO_SAMPLE);
+        assert.equal(col[0], top, `T=${T} cell (${i},${j}): layer 0 is the top slab`);
+        assert.ok(col.length >= 2 && col[col.length - 1] === 0, `T=${T} cell (${i},${j}) ends on the floor, got [${col}]`);
+      }
+    }
+  }
 });

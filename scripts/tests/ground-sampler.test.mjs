@@ -55,13 +55,15 @@ test('Int16 little-endian base64 round-trips a hand-built array, extremes includ
 });
 
 /* A roof at 20 m over the quadrant x ≥ 0, z < 0 and a floor at 0 everywhere;
- * the cast answers the highest surface strictly below yTop and within maxDrop,
- * like a real ray. The roof depends on BOTH axes and the plan is rectangular,
- * so a transposed index, a swapped x/z or a swapped nx/nz reads a different
- * cell than it wrote - a square plan with an x-only roof let all three pass. */
+ * the cast answers the highest surface AT or below yTop and within maxDrop, so
+ * a re-cast from exactly a hit height re-hits it: only the job's 1 cm peel
+ * moves on to the next surface, and dropping the peel is visible here. The
+ * roof depends on BOTH axes and the plan is rectangular, so a transposed
+ * index, a swapped x/z or a swapped nx/nz reads a different cell than it
+ * wrote - a square plan with an x-only roof let all three pass. */
 const surfacesAt = (x, z) => (x >= 0 && z < 0 ? [20, 0] : [0]);
 function fakeCast(x, yTop, z, maxDrop) {
-  const below = surfacesAt(x, z).filter((h) => h < yTop && yTop - h <= maxDrop);
+  const below = surfacesAt(x, z).filter((h) => h <= yTop && yTop - h <= maxDrop);
   return below.length ? Math.max(...below) : null;
 }
 const at = (g, h, i, j, k) => h[((j * g.nx) + i) * g.layers + k];

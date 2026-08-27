@@ -82,6 +82,11 @@ const toCm = (metres) => Math.max(-32767, Math.min(32767, Math.round(metres * 10
  *   planet both sit above groundHeight's 200 m default); `floorY`: where it stops.
  */
 export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY = -200 } = {}) {
+  const usable = !!plan
+    && Number.isInteger(plan.nx) && plan.nx > 0 && Number.isInteger(plan.nz) && plan.nz > 0
+    && Number.isFinite(plan.step) && plan.step > 0
+    && Number.isFinite(plan.originX) && Number.isFinite(plan.originZ);
+  if (!usable) throw new Error('GroundSampler.createJob: invalid plan');
   const { originX, originZ, step, nx, nz } = plan;
   const L = Math.max(1, Math.min(MAX_LAYERS, layers | 0));
   const total = nx * nz;
@@ -98,6 +103,9 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
       if (!(drop > 0)) break;
       const h = cast(x, y, z, drop);
       if (typeof h !== 'number' || !Number.isFinite(h)) break;
+      // A hit at or above where the ray started is not a surface below it;
+      // stopping here keeps layer 0 topmost whatever the cast does.
+      if (h >= y) break;
       heights[base + k] = toCm(h);
       y = h - PEEL;
     }
@@ -119,13 +127,10 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
         sampleCell(i, (next - i) / nx);
         next++;
       }
-      return next >= total;
+      return this.done;
     },
     result() {
-      // The site's decoder throws on a length mismatch; the game must never send one.
-      if (heights.length !== nx * nz * L) {
-        throw new Error(`GroundSampler: ${heights.length} heights for a ${nx}×${nz}×${L} grid`);
-      }
+      if (next < total) throw new Error(`GroundSampler: result() before the job is done (${next}/${total})`);
       return { originX, originZ, step, nx, nz, layers: L, heightsCm: encodeInt16Base64(heights) };
     },
   };

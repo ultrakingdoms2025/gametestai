@@ -54,30 +54,36 @@ test('Int16 little-endian base64 round-trips a hand-built array, extremes includ
   assert.deepEqual([...Buffer.from(encodeInt16Base64(new Int16Array([256])), 'base64')], [0x00, 0x01]);
 });
 
-/* A roof over x ≥ 0 at 20 m and a floor at 0 everywhere; the cast answers the
- * highest surface strictly below yTop and within maxDrop, like a real ray. */
-const surfacesAt = (x) => (x >= 0 ? [20, 0] : [0]);
+/* A roof at 20 m over the quadrant x ≥ 0, z < 0 and a floor at 0 everywhere;
+ * the cast answers the highest surface strictly below yTop and within maxDrop,
+ * like a real ray. The roof depends on BOTH axes and the plan is rectangular,
+ * so a transposed index, a swapped x/z or a swapped nx/nz reads a different
+ * cell than it wrote - a square plan with an x-only roof let all three pass. */
+const surfacesAt = (x, z) => (x >= 0 && z < 0 ? [20, 0] : [0]);
 function fakeCast(x, yTop, z, maxDrop) {
-  const below = surfacesAt(x).filter((h) => h < yTop && yTop - h <= maxDrop);
+  const below = surfacesAt(x, z).filter((h) => h < yTop && yTop - h <= maxDrop);
   return below.length ? Math.max(...below) : null;
 }
 const at = (g, h, i, j, k) => h[((j * g.nx) + i) * g.layers + k];
-const PLAN = planGrid(box(-40, -5, -40, 40, 30, 40)); // 21×21, step 4, x = -40 + 4i
+const PLAN = planGrid(box(-40, -5, -40, 40, 30, 60)); // 21×26, step 4, x = -40 + 4i, z = -40 + 4j
+const CELLS = 21 * 26;
 
 test('each cell holds its surfaces top-down in cm, NO_SAMPLE below the last, cell order (j*nx)+i', () => {
   const job = createJob(PLAN, fakeCast, { layers: 4, topY: 40, floorY: -25 });
   assert.equal(job.done, false);
-  assert.equal(job.cells, 441);
+  assert.equal(job.cells, CELLS);
   assert.equal(job.run(1e9, () => 0), true, 'an unbounded budget finishes in one run');
   assert.equal(job.done, true);
   const g = job.result();
-  assert.deepEqual([g.originX, g.originZ, g.step, g.nx, g.nz, g.layers], [-40, -40, 4, 21, 21, 4]);
+  assert.deepEqual([g.originX, g.originZ, g.step, g.nx, g.nz, g.layers], [-40, -40, 4, 21, 26, 4]);
   const h = decode(g.heightsCm);
-  assert.equal(h.length, 21 * 21 * 4);
-  // (11,10): x = 4 under the roof, z = 0. (0,0): open floor. (20,20): the last cell.
-  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 11, 10, k)), [2000, 0, NO_SAMPLE, NO_SAMPLE]);
+  assert.equal(h.length, CELLS * 4);
+  // (11,9): x = 4, z = -4, under the roof. (9,11): its transpose, x = -4, z = 4, open floor.
+  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 11, 9, k)), [2000, 0, NO_SAMPLE, NO_SAMPLE]);
+  assert.deepEqual([0, 1].map((k) => at(g, h, 9, 11, k)), [0, NO_SAMPLE]);
+  // (0,0): open floor. (20,25): the last cell, x = 40, z = 60, open.
   assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 0, 0, k)), [0, NO_SAMPLE, NO_SAMPLE, NO_SAMPLE]);
-  assert.deepEqual([0, 1].map((k) => at(g, h, 20, 20, k)), [2000, 0]);
+  assert.deepEqual([0, 1].map((k) => at(g, h, 20, 25, k)), [0, NO_SAMPLE]);
 });
 
 test('a 400 m surface clamps to 32767 cm rather than wrapping', () => {
@@ -86,19 +92,52 @@ test('a 400 m surface clamps to 32767 cm rather than wrapping', () => {
   assert.deepEqual([...decode(job.result().heightsCm)], new Array(9).fill(32767));
 });
 
+test('a -400 m surface clamps to -32767 cm, never to the -32768 that means "no sample"', () => {
+  const job = createJob(planGrid(box(0, 0, 0, 8, 500, 8)), () => -400, { layers: 1, topY: 0, floorY: -410 });
+  job.run(1e9, () => 0);
+  assert.deepEqual([...decode(job.result().heightsCm)], new Array(9).fill(-32767));
+});
+
+test('a hit at or above the ray start ends the cell, so layer 0 is topmost even under a misbehaving cast', () => {
+  // An honest first hit at 10 m; every re-cast then "finds" a surface 100 m above where it started.
+  const job = createJob(PLAN, (x, yTop) => (yTop === 40 ? 10 : yTop + 100), { layers: 4, topY: 40, floorY: -25 });
+  job.run(1e9, () => 0);
+  const h = decode(job.result().heightsCm);
+  assert.deepEqual([...h.subarray(0, 4)], [1000, NO_SAMPLE, NO_SAMPLE, NO_SAMPLE]);
+  assert.ok(h.every((v, n) => v === (n % 4 === 0 ? 1000 : NO_SAMPLE)), 'every cell: one layer, then padding');
+  // Misbehaving from the first cast: no layer at all.
+  const bad = createJob(PLAN, (x, yTop) => yTop + 100, { layers: 4, topY: 40, floorY: -25 });
+  bad.run(1e9, () => 0);
+  assert.ok(decode(bad.result().heightsCm).every((v) => v === NO_SAMPLE));
+});
+
+test('createJob refuses a plan it could not index', () => {
+  assert.throws(() => createJob(null, fakeCast), /GroundSampler\.createJob: invalid plan/);
+  assert.throws(() => createJob({ ...PLAN, nx: 20.5 }, fakeCast), /invalid plan/);
+  assert.throws(() => createJob({ ...PLAN, step: 0 }, fakeCast), /invalid plan/);
+  assert.throws(() => createJob({ ...PLAN, originX: NaN }, fakeCast), /invalid plan/);
+});
+
+test('result() refuses to pack a grid that is not done', () => {
+  const job = createJob(PLAN, fakeCast, { layers: 4, topY: 40, floorY: -25 });
+  assert.throws(() => job.result(), /GroundSampler: result\(\) before the job is done \(0\/546\)/);
+  job.run(1e9, () => 0);
+  assert.doesNotThrow(() => job.result());
+});
+
 test('the budget is a clock, not a count: budget 0 samples nothing; slices resume where they stopped', () => {
   let t = 0;
   const cast = (...a) => { t += 1; return fakeCast(...a); };   // one millisecond per cast
   const now = () => t;
   const job = createJob(PLAN, cast, { layers: 4, topY: 40, floorY: -25 });
-  job.run(0, now);
+  assert.equal(job.run(0, now), false);
   assert.equal(job.sampled, 0, 'nothing sampled with no budget');
   job.run(2, now);
   assert.ok(job.sampled >= 1 && job.sampled <= 2, `2 ms at 1 ms/cast is one cell, sampled ${job.sampled}`);
   assert.ok(job.progress > 0 && job.progress < 1);
   for (let runs = 0; !job.done && runs < 10000; runs++) job.run(2, now);
   assert.equal(job.done, true);
-  assert.equal(job.sampled, 441);
+  assert.equal(job.sampled, CELLS);
   assert.equal(job.progress, 1);
   assert.equal(MAX_LAYERS, 4);
   // Same grid as the unbudgeted run: slicing changed when, never what.

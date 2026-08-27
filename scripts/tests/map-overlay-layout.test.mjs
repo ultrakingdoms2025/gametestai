@@ -155,14 +155,24 @@ test('(a) the immediate admin report carries layoutSchema, bounds and shapes, an
   assert.ok(body.objects.some((o) => o.name === 'crate.alpha'));
 });
 
-test('a world with no bounds still reports, without a bounds field', async () => {
+test('a world with no bounds still reports, without a bounds field, and says once why nothing is sampled', async () => {
   const rig = setup(doc([], { admin: true }));
   delete rig.world.bounds;
-  await enter(rig);
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await enter(rig);
+    for (let n = 0; n < 20; n++) rig.engine.tick();
+  } finally {
+    console.warn = warn;
+  }
   const body = rig.fetchImpl.posts()[0].body;
   assert.equal(body.layoutSchema, 1);
   assert.equal('bounds' in body, false);
   assert.deepEqual(body.shapes, rig.world.minimapShapes);
+  assert.equal(warned.filter((w) => /\[map-overlay\] ground not sampled/.test(w)).length, 1, `one warning: ${warned}`);
+  assert.equal(warned.length, 1, `nothing else was said: ${warned}`);
 });
 
 test('an empty Box3 (±Infinity) sends no bounds field and starts no sampling, even after a good sample', async () => {
@@ -405,4 +415,36 @@ test('a top exactly 1 cm below the last hit never loses the floor beneath it: si
       }
     }
   }
+});
+
+/* ------------------------------------------------------ the dev switch -- */
+
+test('?layout=sample reaches applyUrlOverrides as layout: "sample", and its absence as null', async () => {
+  const { applyUrlOverrides } = await import('../../src/core/Config.js');
+  const saved = globalThis.location;
+  try {
+    globalThis.location = { search: '?dev=1&layout=sample' };
+    assert.equal(applyUrlOverrides().layout, 'sample');
+    globalThis.location = { search: '?dev=1' };
+    assert.equal(applyUrlOverrides().layout, null);
+  } finally {
+    globalThis.location = saved;
+  }
+});
+
+test('main.js hands the engine and the switch to MapOverlay', async () => {
+  const main = await readCode('src/main.js');
+  assert.match(main, /new MapOverlay\(\{ bus, physics, loot, engine, forceLayout: overrides\.layout === 'sample' \}\)/,
+    'MapOverlay is constructed without the engine or the ?layout=sample switch');
+});
+
+test('frame-gaps can switch the sampler on, waits for it, records whether it finished, and gates on that', async () => {
+  const fg = await readCode('scripts/frame-gaps.mjs');
+  assert.match(fg, /a === '--layout-sample'/, 'no --layout-sample flag');
+  assert.match(fg, /args\.layoutSample \? '&layout=sample' : ''/, 'the flag never reaches the page URL');
+  assert.match(fg, /mapOverlay\?\.layoutSampled === true/, 'the run never asks the game whether sampling finished');
+  assert.match(fg, /layoutSampled: run\.layoutSampled === true/, 'summary.json runs[] do not record layoutSampled');
+  const gate = fg.slice(fg.indexOf('function gateRun'));
+  assert.ok(/args\.layoutSample && run\.layoutSampled !== true/.test(gate),
+    'the gate does not fail a --layout-sample run whose sampler never finished');
 });

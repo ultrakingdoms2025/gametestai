@@ -78,6 +78,7 @@ function parseArgs(argv) {
     profile: null, events: 'keybind,weapon,mount,interaction,movement,entry,repeat',
     warmWait: 0, awaitReady: true, settleAfterReady: 8000, chainTimeoutMs: 600000, envWarm: false, envWarmSoak: 30000, cacheKeys: false,
     gl: false, listeners: false, frames: false, gate: false,
+    layoutSample: false, layoutTimeoutMs: 60000,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -102,6 +103,11 @@ function parseArgs(argv) {
     else if (a === '--listeners') out.listeners = true;
     else if (a === '--frames') out.frames = true;
     else if (a === '--gate') out.gate = true;
+    /* The map editor's ground sampler is admin-only, and this harness has no
+     * session. Without the switch every run measures a game in which the
+     * sampler never starts - and reads as proof that it costs nothing. */
+    else if (a === '--layout-sample') out.layoutSample = true;
+    else if (a === '--layout-timeout') out.layoutTimeoutMs = Number(next());
     /* The boot-warm deadline. A default tuned on a machine with a GPU is not a
      * universal constant: the same warm on a shared CI runner with a software
      * rasteriser is several times slower, and a warm that TIMES OUT makes every
@@ -147,6 +153,11 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
+  --layout-sample    boot with &layout=sample so the map editor's ground sampler
+                     runs on the entry world (admin-only otherwise; a harness has
+                     no session). Waited for in its own "layout" phase; summary.json
+                     records layoutSampled; with --gate an unfinished sampler fails.
+  --layout-timeout <ms>  how long to wait for it (default 60000)
   --profile background|entry|repeat   CPU-sample the background world chain,
                      the first world entry, or one repeated crossing pair, and
                      fold the samples into a self-time table. Use with
@@ -1186,6 +1197,27 @@ async function runOnce(args, pageUrl, runIndex) {
     await evalIn('window.HARNESS.dismissBoot(), window.HARNESS.setGameplayDriven(true), 1');
     out.warm = await evalIn('JSON.stringify(window.HARNESS.stats().warm)').then((s) => JSON.parse(s));
     out.events.boot = await closePhase('boot');
+    /* --- layout ------------------------------------------------------ */
+    /* Wait for the ground sampler INSIDE the measured window, in a phase of
+     * its own: the `layout` row says what its frames cost, every later row
+     * says whether it disturbed them. A timeout is recorded, never hidden. */
+    if (args.layoutSample) {
+      await mark('layout');
+      const t0 = Date.now();
+      try {
+        await waitFor(() => evalIn('window.GAME?.mapOverlay?.layoutSampled === true'),
+          { timeout: args.layoutTimeoutMs, every: 500, what: 'the ground sampler to finish the entry world' });
+      } catch (err) {
+        out.notes.push(`layout sampling did not finish in ${args.layoutTimeoutMs} ms: ${err.message}`);
+      }
+      out.layoutSampled = await evalIn('window.GAME?.mapOverlay?.layoutSampled === true');
+      out.layoutWorld = await evalIn('window.GAME?.mapOverlay?.report?.world ?? null');
+      out.layoutWaitMs = Date.now() - t0;
+      out.events.layout = await closePhase('layout');
+      console.log(`layout sampled: ${out.layoutSampled} (${out.layoutWorld}, waited ${out.layoutWaitMs} ms)`);
+    } else {
+      out.layoutSampled = false;
+    }
     /* AFTER the boot phase closes, and after the composer exists. The boot
      * warm is not what this is aimed at, and instrumenting it would only add
      * wrappers to the one phase that already has an explanation. */
@@ -2593,6 +2625,10 @@ function gateRun(run, args) {
   if (run.pageErrors?.length) {
     failures.push(`${run.pageErrors.length} uncaught page error(s), first: ${run.pageErrors[0]}`);
   }
+  if (args.layoutSample && run.layoutSampled !== true) {
+    failures.push('the ground sampler never finished on the entry world, so its per-frame cost was'
+      + ' not inside the measured window - raise --layout-timeout, or find what stalled it');
+  }
   for (const [name, ev] of Object.entries(run.events)) {
     if (!ev) continue;
     if (name.startsWith('entry:') && ev.builtBefore === false) {
@@ -2693,7 +2729,8 @@ async function main() {
    * by-proximity preparation (systems/WorldPrefetch.js) - because "what a
    * player who does not wait actually gets" is now that. */
   const qs = `?dev=1&autostart=1&quality=high&world=${encodeURIComponent(args.entryWorld)}`
-    + (args.awaitReady ? '&prefetch=all' : '');
+    + (args.awaitReady ? '&prefetch=all' : '')
+    + (args.layoutSample ? '&layout=sample' : '');
 
   if (args.serve === 'dev') {
     console.warn('!! --serve dev: these numbers DO NOT satisfy the production criterion.');
@@ -2744,7 +2781,7 @@ async function main() {
       printCacheKeys(run);
       if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
       if (args.gate) gated.push({ run: i, ...gateRun(run, args) });
-      runs.push({ run: i, rows, warm: run.warm });
+      runs.push({ run: i, rows, warm: run.warm, layoutSampled: run.layoutSampled === true, layoutWaitMs: run.layoutWaitMs ?? null });
     }
   } finally {
     await stop();
@@ -2752,6 +2789,9 @@ async function main() {
 
   const summary = {
     serve: args.serve, budget: args.budget, at: new Date().toISOString(), runs,
+    /* True only when EVERY run finished sampling. A run that lost the sampler
+     * must not be readable as one in which it cost nothing. */
+    layoutSampled: args.layoutSample && runs.every((r) => r.layoutSampled === true),
     ...(args.gate ? { gate: gated, platform: platformKey() } : {}),
   };
   await writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));

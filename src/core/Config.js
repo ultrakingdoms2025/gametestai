@@ -289,5 +289,10 @@ export function applyUrlOverrides() {
      * instruments, whose baselines were recorded at one tier and must not move
      * when the runner's GPU string changes what detection would pick. */
     quality: params.get('quality') || null,
+    /* `sample`: run the map editor's ground sampler without an admin session
+     * and discard the report. For frame-gaps, which has no session and would
+     * otherwise measure a run in which the sampler never starts
+     * (systems/MapOverlay.js). */
+    layout: params.get('layout') || null,
   };
 }

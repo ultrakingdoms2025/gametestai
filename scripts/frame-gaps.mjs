@@ -751,6 +751,35 @@ const CHAIN_LATCH = `(() => {
 })()`;
 
 /**
+ * The ground sampler's own completion signal, latched on the page clock.
+ *
+ * `map-overlay:layout` is emitted by MapOverlay when the current world's grid
+ * has been sampled (systems/MapOverlay.js) - `{ world, cells, layers,
+ * sampledMs }`. Stamped with `performance.now()` so it sits on the same clock
+ * as `__FG.marks`: whether the sampler finished BEFORE the `layout` phase
+ * opened is then a comparison of two timestamps, not a guess from how few
+ * frames the phase saw. Armed at document start and polled for the bus,
+ * exactly as CHAIN_LATCH is and for the same reason; installed only under
+ * --layout-sample, so a run without the flag is the run it was.
+ */
+const LAYOUT_LATCH = `(() => {
+  const S = window.__FG_LAYOUT = { armed: false, event: null };
+  let tries = 0;
+  const arm = () => {
+    const bus = window.GAME && window.GAME.bus;
+    if (!bus || typeof bus.on !== 'function') {
+      if (tries++ < 6000) setTimeout(arm, 50);
+      return;
+    }
+    S.armed = true;
+    bus.on('map-overlay:layout', (e) => {
+      S.event = { ...e, t: Math.round(performance.now()) };
+    });
+  };
+  arm();
+})()`;
+
+/**
  * `Input.js`'s own `TOUCH_LOOK_GAIN`, copied.
  *
  * `applyLook(dx, dy)` takes CSS PIXELS and multiplies by
@@ -1105,6 +1134,7 @@ async function runOnce(args, pageUrl, runIndex) {
         + ` else setTimeout(set, 0); }; set(); })()`,
     });
     await call('Page.addScriptToEvaluateOnNewDocument', { source: CHAIN_LATCH });
+    if (args.layoutSample) await call('Page.addScriptToEvaluateOnNewDocument', { source: LAYOUT_LATCH });
     await call('Page.navigate', { url: pageUrl });
 
     const evalIn = async (expr, awaitPromise = true) => {
@@ -1202,7 +1232,7 @@ async function runOnce(args, pageUrl, runIndex) {
      * its own: the `layout` row says what its frames cost, every later row
      * says whether it disturbed them. A timeout is recorded, never hidden. */
     if (args.layoutSample) {
-      await mark('layout');
+      const layoutMarkT = Math.round(Number(await mark('layout')));
       const t0 = Date.now();
       try {
         await waitFor(() => evalIn('window.GAME?.mapOverlay?.layoutSampled === true'),
@@ -1211,10 +1241,34 @@ async function runOnce(args, pageUrl, runIndex) {
         out.notes.push(`layout sampling did not finish in ${args.layoutTimeoutMs} ms: ${err.message}`);
       }
       out.layoutSampled = await evalIn('window.GAME?.mapOverlay?.layoutSampled === true');
-      out.layoutWorld = await evalIn('window.GAME?.mapOverlay?.report?.world ?? null');
+      /* The sampler's own completion event, latched on the page clock by
+       * LAYOUT_LATCH: { world, cells, layers, sampledMs, t }. Null when it has
+       * not fired, or when the latch never found the bus. */
+      out.layoutEvent = JSON.parse(await evalIn('JSON.stringify(window.__FG_LAYOUT?.event ?? null)'));
+      /* The world the grid was sampled in. The event names it directly; the
+       * overlay's `report.world` is the applied document's, which a stale
+       * answer for the world before can overwrite after a portal. */
+      out.layoutWorld = out.layoutEvent?.world ?? await evalIn('window.GAME?.mapOverlay?.report?.world ?? null');
       out.layoutWaitMs = Date.now() - t0;
       out.events.layout = await closePhase('layout');
-      console.log(`layout sampled: ${out.layoutSampled} (${out.layoutWorld}, waited ${out.layoutWaitMs} ms)`);
+      /* A ROW THAT MEASURED NOTHING MUST SAY SO. The entry world's
+       * `world:changed` fires before engine.start(), so on a fast GPU the
+       * sampler is done inside `boot`; this phase then spans a few CDP
+       * round-trips and its row prints a verdict on no frames. The latch's
+       * timestamp and the phase mark are on the same clock, so "finished
+       * before the phase opened" is a comparison (an event stamped in the
+       * millisecond the phase opened did not happen inside its frames);
+       * without the latch, fewer than 30 frames is the floor below which the
+       * row cannot have judged anything. */
+      const frames = out.events.layout?.frames ?? 0;
+      const ev = out.layoutEvent;
+      const insideBoot = ev && Number.isFinite(layoutMarkT) ? ev.t <= layoutMarkT : frames < 30;
+      if (out.layoutSampled && insideBoot) {
+        out.notes.push(`the sampler finished inside boot${ev ? ` (at ${ev.t} ms; the layout phase opened at ${layoutMarkT} ms)` : ''};`
+          + ` the layout row measured ${frames} frame(s) and judges nothing - read the boot row`);
+      }
+      console.log(`layout sampled: ${out.layoutSampled} (${out.layoutWorld}, waited ${out.layoutWaitMs} ms,`
+        + ` ${frames} frame(s) in the layout phase${ev ? `, ${ev.cells} cells in ${ev.sampledMs} ms` : ''})`);
     } else {
       out.layoutSampled = false;
     }
@@ -2246,11 +2300,13 @@ function summarise(run, budget) {
 
 function printTable(rows, budget) {
   const w = Math.max(...rows.map((r) => r.event.length), 10);
-  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'blocked'.padStart(8)} ${'>250'.padStart(5)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
-  console.log('-'.repeat(w + 54));
+  /* `frames` is how many frames the verdict rests on. A `0` beside `pass`
+   * is a row that judged nothing, and a reader must be able to see that. */
+  console.log(`\n${'event'.padEnd(w)}  ${'worst ms'.padStart(9)} ${'blocked'.padStart(8)} ${'>250'.padStart(5)} ${'frames'.padStart(6)} ${'dProg'.padStart(6)} ${'dGeom'.padStart(6)} ${'dTex'.padStart(5)}  verdict`);
+  console.log('-'.repeat(w + 61));
   for (const r of rows) {
     console.log(
-      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.blocked ?? '-').padStart(8)} ${String(r.over).padStart(5)} `
+      `${r.event.padEnd(w)}  ${String(r.worst).padStart(9)} ${String(r.blocked ?? '-').padStart(8)} ${String(r.over).padStart(5)} ${String(r.frames).padStart(6)} `
       + `${String(r.dPrograms).padStart(6)} ${String(r.dGeometries).padStart(6)} ${String(r.dTextures).padStart(5)}  `
       + (r.pass ? 'pass' : `FAIL (>${budget})`)
       + (r.starved ? '  STARVED - no rAF, main thread idle; not this phase\'s work' : '')
@@ -2594,7 +2650,10 @@ function platformKey() {
  */
 function gateRun(run, args) {
   const failures = [];
-  const notes = [];
+  /* What the run noted on its way - a sampler that timed out, a layout row
+   * that measured nothing - is printed under the verdict too. A reader of
+   * the GATE block alone would otherwise never see it. */
+  const notes = [...(run.notes ?? [])];
 
   /* ---- A. invariants ------------------------------------------------- */
   if (args.awaitReady === false) {
@@ -2628,6 +2687,9 @@ function gateRun(run, args) {
   if (args.layoutSample && run.layoutSampled !== true) {
     failures.push('the ground sampler never finished on the entry world, so its per-frame cost was'
       + ' not inside the measured window - raise --layout-timeout, or find what stalled it');
+  } else if (args.layoutSample && run.layoutWorld !== args.entryWorld) {
+    failures.push(`the ground sampler finished on "${run.layoutWorld}", not the entry world`
+      + ` "${args.entryWorld}" - the layout row measured some other world's grid`);
   }
   for (const [name, ev] of Object.entries(run.events)) {
     if (!ev) continue;
@@ -2708,6 +2770,13 @@ function gateRun(run, args) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { console.log(HELP); return 0; }
+  /* `Number(undefined)` is NaN and a NaN deadline is an instant timeout: a
+   * `--layout-timeout` left without a value would report the sampler as never
+   * finishing, and the gate would fail the game for the flag's typo. */
+  if (!(Number.isFinite(args.layoutTimeoutMs) && args.layoutTimeoutMs > 0)) {
+    console.error(`--layout-timeout needs a positive number of milliseconds, got "${args.layoutTimeoutMs}"`);
+    return 1;
+  }
   if (!browserCandidates()[0]) {
     console.error('NO BROWSER FOUND - this harness measured nothing. Set CHROME_PATH.');
     return 1;
@@ -2781,7 +2850,11 @@ async function main() {
       printCacheKeys(run);
       if (args.frames) printFrames(run, { phases: ["repeat", "ablated", "entry", "unbound"], top: 10 });
       if (args.gate) gated.push({ run: i, ...gateRun(run, args) });
-      runs.push({ run: i, rows, warm: run.warm, layoutSampled: run.layoutSampled === true, layoutWaitMs: run.layoutWaitMs ?? null });
+      runs.push({
+        run: i, rows, warm: run.warm,
+        layoutSampled: run.layoutSampled === true, layoutWaitMs: run.layoutWaitMs ?? null,
+        layoutWorld: run.layoutWorld ?? null, layoutEvent: run.layoutEvent ?? null, notes: run.notes ?? [],
+      });
     }
   } finally {
     await stop();
@@ -2789,9 +2862,11 @@ async function main() {
 
   const summary = {
     serve: args.serve, budget: args.budget, at: new Date().toISOString(), runs,
-    /* True only when EVERY run finished sampling. A run that lost the sampler
-     * must not be readable as one in which it cost nothing. */
-    layoutSampled: args.layoutSample && runs.every((r) => r.layoutSampled === true),
+    /* True only when EVERY run finished sampling, and there was at least one:
+     * `[].every()` is true, and `--repeat 0` must not read as a pass. A run
+     * that lost the sampler must not be readable as one in which it cost
+     * nothing. */
+    layoutSampled: args.layoutSample && runs.length > 0 && runs.every((r) => r.layoutSampled === true),
     ...(args.gate ? { gate: gated, platform: platformKey() } : {}),
   };
   await writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));

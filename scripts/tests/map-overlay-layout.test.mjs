@@ -441,10 +441,21 @@ test('main.js hands the engine and the switch to MapOverlay', async () => {
 test('frame-gaps can switch the sampler on, waits for it, records whether it finished, and gates on that', async () => {
   const fg = await readCode('scripts/frame-gaps.mjs');
   assert.match(fg, /a === '--layout-sample'/, 'no --layout-sample flag');
+  assert.match(fg, /a === '--layout-timeout'/, 'no --layout-timeout flag');
+  assert.match(fg, /Number\.isFinite\(args\.layoutTimeoutMs\)/,
+    'a --layout-timeout left without a value is NaN - an instant timeout - and nothing refuses it');
   assert.match(fg, /args\.layoutSample \? '&layout=sample' : ''/, 'the flag never reaches the page URL');
   assert.match(fg, /mapOverlay\?\.layoutSampled === true/, 'the run never asks the game whether sampling finished');
+  assert.match(fg, /bus\.on\('map-overlay:layout'/, "the sampler's completion event is not latched on the page clock");
+  assert.match(fg, /finished inside boot/, 'a layout row that measured nothing is never said so');
   assert.match(fg, /layoutSampled: run\.layoutSampled === true/, 'summary.json runs[] do not record layoutSampled');
+  assert.match(fg, /layoutSampled: args\.layoutSample && runs\.length > 0 && runs\.every\(\(r\) => r\.layoutSampled === true\)/,
+    'summary.layoutSampled can read true on zero runs ([].every() is true) or on a run that never finished');
   const gate = fg.slice(fg.indexOf('function gateRun'));
   assert.ok(/args\.layoutSample && run\.layoutSampled !== true/.test(gate),
     'the gate does not fail a --layout-sample run whose sampler never finished');
+  assert.ok(/run\.layoutWorld !== args\.entryWorld/.test(gate),
+    'the gate does not fail a run whose sampler finished on some other world');
+  assert.ok(/const notes = \[\.\.\.\(run\.notes \?\? \[\]\)\]/.test(gate),
+    'the gate never prints what the run itself noted - a timeout, a row that measured nothing');
 });

@@ -143,7 +143,7 @@ const MAX_STROKE_WIDTH = 64;   // the widest stroke any minimap draws today is 1
 /** A stroke width in [0, MAX_STROKE_WIDTH] to the millimetre; else absent. Bounded, not merely finite: 1e306 rounds to Infinity, which JSONB stores as null. */
 function strokeWidth(raw: unknown): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
-  const w = round(raw, 3);
+  const w = round(raw, 3) + 0;   // -0.0004 rounds to -0, which passes `>= 0`; adding 0 makes it the 0 it means
   return w >= 0 && w <= MAX_STROKE_WIDTH ? w : undefined;
 }
 
@@ -227,7 +227,7 @@ export function validateGround(input: unknown): LayoutGround | null {
   const step = finiteCoord(r.step);   // checked for > 0 AFTER rounding: a 0.1 mm step would otherwise pass as 0
   const nx = integer(r.nx, 1, MAX_GRID_AXIS), nz = integer(r.nz, 1, MAX_GRID_AXIS), layers = integer(r.layers, 1, MAX_LAYERS);
   if (originX === null || originZ === null || step === null || step <= 0 || nx === null || nz === null || layers === null) return null;
-  // The longest base64 THIS header can need; a longer string is refused before atob touches it. (Exact for a valid grid — the max-grid test holds the boundary.)
+  // The length of `btoa`'s output for THIS header, exactly — so a string carrying whitespace, extra padding or more bytes than the grid holds is over the bound and refused before atob touches it. (The max-grid test holds the boundary.)
   if (typeof r.heightsCm !== 'string' || r.heightsCm.length > 4 * Math.ceil((nx * nz * layers * 2) / 3)) return null;
   const ground: LayoutGround = { originX, originZ, step, nx, nz, layers, heightsCm: r.heightsCm };
   try {
@@ -239,7 +239,7 @@ export function validateGround(input: unknown): LayoutGround | null {
 }
 
 /**
- * Clamp/validate an untrusted layout; returns null when unusable. Reads the wire key `layoutSchema` or the stored key `schema`.
+ * Validate an untrusted layout; returns null when unusable. Reads the wire key `layoutSchema` or the stored key `schema`.
  *
  * The policy, so the route and the editor agree on it:
  * - A coordinate that is not finite or lies outside ±WORLD_COORD_LIMIT is REFUSED, never clamped (the overlay schema's

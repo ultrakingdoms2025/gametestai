@@ -239,6 +239,7 @@ describe('validateLayout', () => {
         { kind: 'path', points: 'not an array' },
         { kind: 'circle', x: 0, z: 0, r: 1, fill: 'x'.repeat(33), width: -1 },   // a 33-char colour and a negative width go; the circle stays
         { kind: 'circle', x: 2, z: 2, r: 1, fill: 0x1000000, stroke: 1.5 },      // a numeric colour is an 0xrrggbb integer or nothing
+        { kind: 'circle', x: 3, z: 3, r: 1, fill: -1, width: -0.0004 },          // a negative colour goes; a width that rounds to -0 is stored as the 0 it means
         'not a shape',
         null,
       ],
@@ -249,6 +250,7 @@ describe('validateLayout', () => {
       { kind: 'path', points: [[0, 0], [1, 1]], closed: true },
       { kind: 'circle', x: 0, z: 0, r: 1 },
       { kind: 'circle', x: 2, z: 2, r: 1 },
+      { kind: 'circle', x: 3, z: 3, r: 1, width: 0 },   // `toEqual` tells -0 from 0, and -0 is what `round(-0.0004, 3)` returns
     ]);
     const many = Array.from({ length: MAX_SHAPES + 7 }, (_, i) => ({ kind: 'circle', x: i, z: 0, r: 1 }));
     expect(validateLayout({ ...GOOD_LAYOUT, shapes: many })!.shapes).toHaveLength(MAX_SHAPES);

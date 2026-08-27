@@ -191,6 +191,20 @@ describe('the ground rules, through a real Int16 grid', () => {
     expect(codes(conflictsFor(at(3.51), 0, [at(3.51)], twoMetres()))).toEqual(['floating']);
   });
 
+  it('holds those lines over a ground that is not a round number', () => {
+    // The 2 m ground above is exact in a double; most are not. Over 0.08 m, `g − 0.25` is −0.17000000000000004,
+    // so a bottom at exactly −0.17 read as underground; over 0.36 m, `g + 1.5` is 1.8599999999999999, so 1.86
+    // read as floating. A sweep of every integer-centimetre ground in ±50 m found 77 such undergrounds and 316
+    // such floatings. The data is in millimetres (the schema rounds to three places), so the rule compares in
+    // millimetres, and these two grounds are the ones that exposed it.
+    const eightCm = () => ctx({ layout: layout(), ground: flatGround(8) });
+    expect(conflictsFor(at(-0.17), 0, [at(-0.17)], eightCm())).toEqual([]);
+    expect(codes(conflictsFor(at(-0.171), 0, [at(-0.171)], eightCm()))).toEqual(['underground']);
+    const thirtySixCm = () => ctx({ layout: layout(), ground: flatGround(36) });
+    expect(conflictsFor(at(1.86), 0, [at(1.86)], thirtySixCm())).toEqual([]);
+    expect(codes(conflictsFor(at(1.861), 0, [at(1.861)], thirtySixCm()))).toEqual(['floating']);
+  });
+
   it('warns no-ground where the grid has no surface at all', () => {
     const m = move({ position: { x: 2, y: 2, z: 2 } });
     const c = ctx({ layout: layout(), ground: flatGround(NO_SAMPLE) });

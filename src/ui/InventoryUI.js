@@ -1,5 +1,6 @@
 import './inventory.css';
 import { itemIconSVG, stackSize } from '../systems/ItemDefs.js';
+import { HoldToUse, HOLD_TO_USE_MS } from './HoldToUse.js';
 
 /**
  * The inventory panel: store on the left, 30-slot active bag on the right.
@@ -14,6 +15,13 @@ import { itemIconSVG, stackSize } from '../systems/ItemDefs.js';
  * Interaction is deliberately redundant: drag between the grids, or click a
  * stack to send it across, or shift-click to send a single unit. Whichever a
  * player tries first, it works.
+ *
+ * Using an item is the one gesture that must NOT be easy to do by accident,
+ * because it destroys the unit: hover a usable bag item and a "HOLD" ring
+ * appears; press and hold the primary button and the ring fills while the
+ * number counts 3, 2, 1; at three seconds the item is used through the same
+ * `inventory:use` event the Use button fires. Let go early and nothing
+ * happens. The timing lives in `HoldToUse` so it can be tested off the DOM.
  */
 
 export function el(tag, cls, text) {
@@ -94,6 +102,23 @@ export class InventoryUI {
     this._recent = new Set();
     this._detailRow = null;
     this._detailZone = null;
+
+    /* -- hold to use --------------------------------------------------- */
+    this._hold = new HoldToUse();
+    /** @type {{ cell: HTMLElement, id: string, num: HTMLElement }|null} */
+    this._holdView = null;
+    this._holdRaf = 0;
+    this._onHoldTick = () => this._tickHold();
+    /* Window-level release: the pointer can come up anywhere - off the cell,
+     * off the panel, off the window - and every one of those must end the
+     * hold. Bound while the panel is open only (see `open`/`close`). */
+    this._onPointerUp = () => {
+      this._cancelHold();
+      /* pointerup → mouseup → click are dispatched back to back in the same
+       * task, so a zero-delay timer runs AFTER the click the timer told us to
+       * swallow. Clearing synchronously here would un-arm it one event early. */
+      setTimeout(() => this._hold.release(), 0);
+    };
 
     this._build();
 
@@ -201,6 +226,7 @@ export class InventoryUI {
       '<span><b>Click</b>move stack</span>' +
       '<span><b>⇧</b>move one</span>' +
       '<span><b>Drag</b>between panels</span>' +
+      '<span><b>Hold 3s</b>use item</span>' +
       '<span><b>Hover</b>select · Use/Drop below</span>' +
       '<span><b>I</b>close</span>';
 
@@ -257,6 +283,9 @@ export class InventoryUI {
     if (!this._open) return;
     const inv = this.inventory;
 
+    // The cells are about to be rebuilt; a hold on one of them has nothing
+    // left to draw into. (A fired hold has already cleared itself.)
+    this._cancelHold();
     this._fillGrid(this.bagGrid, inv.bag, 'bag', inv.bagCapacity);
     this._fillGrid(this.storeGrid, inv.items, 'store', inv.storeCapacity);
 
@@ -308,8 +337,35 @@ export class InventoryUI {
 
     cell.title = `${def?.name ?? row.id} — ${row.qty} held, stacks of ${stack}`;
     cell.addEventListener('mouseenter', () => this._setDetail(row, zone));
-    cell.addEventListener('click', (e) => this._move(row.id, zone, e.shiftKey ? 1 : Infinity));
+    cell.addEventListener('click', (e) => {
+      // The release at the end of a hold - completed or abandoned - is not a
+      // request to move the stack.
+      if (this._hold.swallowClick) return;
+      this._move(row.id, zone, e.shiftKey ? 1 : Infinity);
+    });
+
+    if (this._usable(def, zone)) {
+      cell.classList.add('usable');
+      cell.title += ` — hold ${HOLD_TO_USE_MS / 1000}s to use`;
+      const hold = el('div', 'inv-hold');
+      hold.append(el('i', 'inv-hold-ring'), el('b', 'inv-hold-num', 'HOLD'));
+      cell.appendChild(hold);
+      cell.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return; // primary button only; right-click is nothing here
+        this._beginHold(row, zone, cell, hold.lastElementChild);
+      });
+      // Any way the pointer stops being "down on this cell" ends the hold.
+      cell.addEventListener('pointerup', () => this._cancelHold());
+      cell.addEventListener('pointerleave', () => this._cancelHold());
+      cell.addEventListener('pointercancel', () => this._cancelHold());
+      // A long press on touch would otherwise pop the context menu mid-count.
+      cell.addEventListener('contextmenu', (e) => {
+        if (this._hold.active) e.preventDefault();
+      });
+    }
+
     cell.addEventListener('dragstart', (e) => {
+      this._cancelHold(); // the press became a drag; that is a different gesture
       this._drag = { zone, id: row.id };
       cell.classList.add('dragging');
       e.dataTransfer?.setData('text/plain', row.id);
@@ -322,12 +378,63 @@ export class InventoryUI {
     return cell;
   }
 
+  /** Only bag items have an effect to apply; only consumables and skins have one at all. */
+  _usable(def, zone) {
+    return !!def && zone === 'bag' && (def.kind === 'consumable' || def.kind === 'skin');
+  }
+
+  /* -- hold to use --------------------------------------------------------- */
+
+  _beginHold(row, zone, cell, num) {
+    this._cancelHold();
+    this._hold.begin(`${zone}:${row.id}`, performance.now());
+    this._holdView = { cell, id: row.id, num };
+    cell.classList.add('holding');
+    cell.style.setProperty('--hold', '0');
+    num.textContent = String(HOLD_TO_USE_MS / 1000);
+    this._holdRaf = requestAnimationFrame(this._onHoldTick);
+  }
+
+  _tickHold() {
+    this._holdRaf = 0;
+    const view = this._holdView;
+    if (!view || !this._hold.active) return;
+    const { progress, seconds, fired } = this._hold.advance(performance.now());
+    if (fired) {
+      const id = view.id;
+      this._clearHoldView();
+      // Same path as the Use button. ItemUse decides whether the effect can
+      // apply, consumes the unit, and toasts; `inventory:changed` redraws us.
+      this.bus?.emit('inventory:use', { itemId: id });
+      return;
+    }
+    view.cell.style.setProperty('--hold', progress.toFixed(4));
+    view.num.textContent = String(seconds);
+    this._holdRaf = requestAnimationFrame(this._onHoldTick);
+  }
+
+  _cancelHold() {
+    this._hold.cancel(performance.now());
+    this._clearHoldView();
+  }
+
+  _clearHoldView() {
+    if (this._holdRaf) cancelAnimationFrame(this._holdRaf);
+    this._holdRaf = 0;
+    const view = this._holdView;
+    this._holdView = null;
+    if (!view) return;
+    view.cell.classList.remove('holding');
+    view.cell.style.removeProperty('--hold');
+    view.num.textContent = 'HOLD';
+  }
+
   _setDetail(row, zone) {
     this._detailRow = row ?? null;
     this._detailZone = row ? zone : null;
     const def = row?.def;
     const inBag = zone === 'bag';
-    const usable = !!def && inBag && (def.kind === 'consumable' || def.kind === 'skin');
+    const usable = this._usable(def, zone);
     const droppable = !!def && inBag;
     this.useBtn.hidden = !usable;
     this.useBtn.disabled = !usable;
@@ -341,7 +448,7 @@ export class InventoryUI {
     }
     const stack = stackSize(def.id);
     const actions = [];
-    if (usable) actions.push('Click <b>Use</b> to apply the item effect.');
+    if (usable) actions.push(`Hold the mouse button on it for <b>${HOLD_TO_USE_MS / 1000}s</b> to use it, or click <b>Use</b>.`);
     if (droppable) actions.push('Click <b>Drop</b> to leave it on the map.');
     this.detail.innerHTML =
       itemIconSVG(def.id, 30) +
@@ -417,6 +524,8 @@ export class InventoryUI {
     this._setDetail(null);
     this._render();
     window.addEventListener('keydown', this._onKey, true);
+    window.addEventListener('pointerup', this._onPointerUp, true);
+    window.addEventListener('pointercancel', this._onPointerUp, true);
     this.bus?.emit('inventory:open', {});
   }
 
@@ -425,6 +534,10 @@ export class InventoryUI {
     this._open = false;
     this.el.classList.remove('open');
     window.removeEventListener('keydown', this._onKey, true);
+    window.removeEventListener('pointerup', this._onPointerUp, true);
+    window.removeEventListener('pointercancel', this._onPointerUp, true);
+    this._cancelHold();
+    this._hold.release();
     this._drag = null;
     menuFocusOut(this.input, this._hadLock, document.querySelector('.inv-root.open') !== null);
     this.bus?.emit('inventory:close', {});

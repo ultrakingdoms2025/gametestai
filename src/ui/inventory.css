@@ -534,6 +534,75 @@ body.inv-menu-open .pause {
 .inv-slot.kind-currency { box-shadow: inset 0 -2px 0 rgba(255, 180, 74, 0.45); }
 .inv-slot.kind-skin { box-shadow: inset 0 -2px 0 rgba(255, 154, 213, 0.45); }
 
+/* ---- hold to use ----------------------------------------------------------
+   Usable bag items carry a ring that appears on hover reading HOLD. Pressing
+   and holding fills the ring (driven by `--hold`, 0..1, set per frame from
+   InventoryUI) while the number counts 3, 2, 1. Lime, like the consumable
+   underline, so the colour says "this does something" before the word does. */
+.inv-slot.usable {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.inv-hold {
+  --hold: 0;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.inv-slot.usable:hover .inv-hold,
+.inv-slot.holding .inv-hold {
+  opacity: 1;
+}
+
+.inv-hold-ring {
+  grid-area: 1 / 1;
+  width: 58%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--iv-lime) calc(var(--hold, 0) * 360deg),
+    rgba(182, 255, 90, 0.18) 0
+  );
+  /* Punch the middle out so the fill reads as a ring, not a disc. */
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 64%);
+  mask: radial-gradient(circle, transparent 62%, #000 64%);
+  filter: drop-shadow(0 0 4px rgba(182, 255, 90, 0.35));
+}
+
+.inv-hold-num {
+  grid-area: 1 / 1;
+  font-family: var(--iv-disp);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--iv-lime);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+  background: rgba(6, 11, 18, 0.72);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.inv-slot.holding {
+  border-color: var(--iv-lime);
+  cursor: progress;
+}
+
+.inv-slot.holding .inv-hold-num {
+  font-size: 18px;
+  letter-spacing: 0;
+  padding: 0 5px;
+}
+
+.inv-slot.holding .inv-ico {
+  opacity: 0.35;
+}
+
 /* Landed-in-this-container flash, so a move is felt. */
 .inv-slot.flash {
   animation: inv-flash 0.5s ease-out;

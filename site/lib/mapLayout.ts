@@ -1,9 +1,9 @@
-import { WORLD_COORD_LIMIT, type Vec3 } from './mapOverlaySchema';
+import { finiteCoord, readAngle, readVec3, round, type Vec3 } from './mapOverlaySchema';
 
 /**
  * The layout a world reports about itself, and the arithmetic over it.
  *
- * Imports one type and one limit, for `mapOverlaySchema.ts`'s reason: pure
+ * Imports one type and the coordinate readers, for `mapOverlaySchema.ts`'s reason: pure
  * functions over plain data, so the editor (browser), the save route (lambda)
  * and the tests (node) run the SAME code — hence `atob`/`btoa` over a
  * `DataView`, not `Buffer`; the editor decodes the grid to draw it. The grid is
@@ -133,31 +133,23 @@ export function layersAt(g: DecodedGround | null, x: number, z: number): number[
   return out.sort((a, b) => b - a);   // top-down is this function's promise, not the byte producer's
 }
 
-/** A finite coordinate inside the schema's ±WORLD_COORD_LIMIT, to the millimetre; else null. */
-function coord(raw: unknown): number | null {
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || Math.abs(raw) > WORLD_COORD_LIMIT) return null;
-  return Math.round(raw * 1000) / 1000;
-}
-
-function vec3(raw: unknown): Vec3 | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const x = coord(r.x), y = coord(r.y), z = coord(r.z);
-  return x === null || y === null || z === null ? null : { x, y, z };
-}
-
+/** An integer in [min, max]; else null. */
 function integer(raw: unknown, min: number, max: number): number | null {
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= min && raw <= max ? raw : null;
 }
 
-function finite(raw: unknown, places: number): number | undefined {
+const MAX_STROKE_WIDTH = 64;   // the widest stroke any minimap draws today is 19
+
+/** A stroke width in [0, MAX_STROKE_WIDTH] to the millimetre; else absent. Bounded, not merely finite: 1e306 rounds to Infinity, which JSONB stores as null. */
+function strokeWidth(raw: unknown): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
-  return Math.round(raw * 10 ** places) / 10 ** places;
+  const w = round(raw, 3);
+  return w >= 0 && w <= MAX_STROKE_WIDTH ? w : undefined;
 }
 
-/** Minimap colours arrive as a Three hex number or a CSS string; both are kept as sent. */
+/** Minimap colours arrive as a Three hex number (an 0xrrggbb integer) or a CSS string; a well-formed one is kept as sent, anything else is absent. */
 function colour(raw: unknown): number | string | undefined {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'number') return Number.isInteger(raw) && raw >= 0 && raw <= 0xffffff ? raw : undefined;
   return typeof raw === 'string' && raw.length > 0 && raw.length <= 32 ? raw : undefined;
 }
 
@@ -165,10 +157,10 @@ type Style = { fill?: number | string; stroke?: number | string; width?: number 
 
 function style(r: Record<string, unknown>): Style {
   const s: Style = {};
-  const fill = colour(r.fill), stroke = colour(r.stroke), width = finite(r.width, 3);
+  const fill = colour(r.fill), stroke = colour(r.stroke), width = strokeWidth(r.width);
   if (fill !== undefined) s.fill = fill;
   if (stroke !== undefined) s.stroke = stroke;
-  if (width !== undefined && width >= 0) s.width = width;
+  if (width !== undefined) s.width = width;
   return s;
 }
 
@@ -179,21 +171,21 @@ function validateShape(raw: unknown): LayoutShape | null {
   const r = raw as Record<string, unknown>;
   const s = style(r);
   if (r.kind === 'rect') {
-    const x = coord(r.x), z = coord(r.z), w = coord(r.w), d = coord(r.d);
+    const x = finiteCoord(r.x), z = finiteCoord(r.z), w = finiteCoord(r.w), d = finiteCoord(r.d);
     if (x === null || z === null || w === null || d === null) return null;
-    const rotation = finite(r.rotation, 6);
+    const rotation = readAngle(r.rotation);   // wrapped into (-π, π] like an overlay entry's yaw, so 1e303 cannot round to Infinity
     return { kind: 'rect', x, z, w, d, ...(rotation !== undefined ? { rotation } : {}), ...s };
   }
   if (r.kind === 'circle') {
-    const x = coord(r.x), z = coord(r.z), rad = coord(r.r);
+    const x = finiteCoord(r.x), z = finiteCoord(r.z), rad = finiteCoord(r.r);
     if (x === null || z === null || rad === null) return null;
     return { kind: 'circle', x, z, r: rad, ...s };
   }
   if (r.kind === 'path' && Array.isArray(r.points)) {
     const points: [number, number][] = [];
     for (const p of r.points.slice(0, MAX_PATH_POINTS)) {
-      const px = Array.isArray(p) ? coord(p[0]) : null;
-      const pz = Array.isArray(p) ? coord(p[1]) : null;
+      const px = Array.isArray(p) ? finiteCoord(p[0]) : null;
+      const pz = Array.isArray(p) ? finiteCoord(p[1]) : null;
       if (px !== null && pz !== null) points.push([px, pz]);   // one bad vertex does not lose the wall
     }
     if (points.length < 2) return null;
@@ -211,7 +203,7 @@ function validateShape(raw: unknown): LayoutShape | null {
 export function validateBounds(raw: unknown): LayoutBounds | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const min = vec3(r.min), max = vec3(r.max);
+  const min = readVec3(r.min), max = readVec3(r.max);
   if (!min || !max || min.x > max.x || min.y > max.y || min.z > max.z) return null;
   return { min, max };
 }
@@ -228,16 +220,15 @@ export function validateShapes(raw: unknown): LayoutShape[] {
   return out;
 }
 
-const MAX_HEIGHTS_BASE64 = Math.ceil((MAX_GRID_AXIS * MAX_GRID_AXIS * MAX_LAYERS * 2) / 3) * 4;   // longest base64 a grid at the caps can be; longer is refused before decoding
-
 export function validateGround(input: unknown): LayoutGround | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const r = input as Record<string, unknown>;
-  const originX = coord(r.originX), originZ = coord(r.originZ);
-  const step = coord(r.step);   // checked for > 0 AFTER rounding: a 0.1 mm step would otherwise pass as 0
+  const originX = finiteCoord(r.originX), originZ = finiteCoord(r.originZ);
+  const step = finiteCoord(r.step);   // checked for > 0 AFTER rounding: a 0.1 mm step would otherwise pass as 0
   const nx = integer(r.nx, 1, MAX_GRID_AXIS), nz = integer(r.nz, 1, MAX_GRID_AXIS), layers = integer(r.layers, 1, MAX_LAYERS);
   if (originX === null || originZ === null || step === null || step <= 0 || nx === null || nz === null || layers === null) return null;
-  if (typeof r.heightsCm !== 'string' || r.heightsCm.length > MAX_HEIGHTS_BASE64) return null;
+  // The longest base64 THIS header can need; a longer string is refused before atob touches it. (Exact for a valid grid — the max-grid test holds the boundary.)
+  if (typeof r.heightsCm !== 'string' || r.heightsCm.length > 4 * Math.ceil((nx * nz * layers * 2) / 3)) return null;
   const ground: LayoutGround = { originX, originZ, step, nx, nz, layers, heightsCm: r.heightsCm };
   try {
     decodeGround(ground);   // the only way to know the bytes fit the header is to look
@@ -247,7 +238,19 @@ export function validateGround(input: unknown): LayoutGround | null {
   return ground;
 }
 
-/** Clamp/validate an untrusted layout; returns null when unusable. Never throws. Reads the wire key `layoutSchema` or the stored key `schema`. */
+/**
+ * Clamp/validate an untrusted layout; returns null when unusable. Reads the wire key `layoutSchema` or the stored key `schema`.
+ *
+ * The policy, so the route and the editor agree on it:
+ * - A coordinate that is not finite or lies outside ±WORLD_COORD_LIMIT is REFUSED, never clamped (the overlay schema's
+ *   rule): in the bounds it refuses the layout, in a shape it drops that shape, in the ground header it drops the ground.
+ * - Shape and vertex lists are cut at MAX_SHAPES / MAX_PATH_POINTS; an unreadable shape or vertex is dropped, not the layout.
+ * - Rotation is wrapped into (-π, π]; a stroke width outside [0, MAX_STROKE_WIDTH] or a colour that is neither an
+ *   0xrrggbb integer nor a 1-32 character string is dropped from its shape, which is otherwise kept.
+ * - `ground: null` in the result means ABSENT OR INVALID. The report route must treat it as keep-prior, never as clear.
+ * - Never throws for JSON-shaped input. A throwing getter is outside that contract, so there is deliberately no
+ *   try/catch around the body: it would hide a bug as "no layout".
+ */
 export function validateLayout(input: unknown): WorldLayout | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const r = input as Record<string, unknown>;

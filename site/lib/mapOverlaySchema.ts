@@ -161,18 +161,20 @@ const MAX_CONFIG_KEYS = 20;
 /** Names that are dangerous as object keys anywhere downstream. */
 const FORBIDDEN_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
-function round(value: number, places: number): number {
+// `round`, `finiteCoord`, `readVec3` and `readAngle` are exported for `mapLayout.ts`: a layout's coordinates
+// and angles follow this file's rule, and the rounding places must not drift between the two.
+export function round(value: number, places: number): number {
   const f = 10 ** places;
   return Math.round(value * f) / f;
 }
 
-function finiteCoord(value: unknown): number | null {
+export function finiteCoord(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   if (Math.abs(value) > WORLD_COORD_LIMIT) return null;
   return round(value, 3);
 }
 
-function readVec3(raw: unknown): Vec3 | null {
+export function readVec3(raw: unknown): Vec3 | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const x = finiteCoord(r.x);
@@ -182,7 +184,7 @@ function readVec3(raw: unknown): Vec3 | null {
   return { x, y, z };
 }
 
-function readAngle(raw: unknown): number | undefined {
+export function readAngle(raw: unknown): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
   let w = raw % TWO_PI;
   if (w > Math.PI + ANGLE_EPS) w -= TWO_PI;

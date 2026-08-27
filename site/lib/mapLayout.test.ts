@@ -173,6 +173,7 @@ describe('validateGround', () => {
     ['heights that do not fit the grid', { ...GOOD_GROUND, heightsCm: encodeHeights(new Int16Array(8)) }],
     ['heights that are not base64', { ...GOOD_GROUND, heightsCm: '***' }],
     ['heights that are not a string', { ...GOOD_GROUND, heightsCm: [GOOD_GROUND.heightsCm] }],   // atob would coerce the array to its one string
+    ['heights longer than the header could need', { ...GOOD_GROUND, heightsCm: 'A'.repeat(1_000_000) }],   // refused by length, before any decode
     ['a NaN origin', { ...GOOD_GROUND, originX: NaN }],
     ['an origin sent as a string', { ...GOOD_GROUND, originZ: '0' }],
     ['an origin past the coordinate limit', { ...GOOD_GROUND, originZ: WORLD_COORD_LIMIT + 1 }],
@@ -189,6 +190,12 @@ describe('validateGround', () => {
 
   it('keeps a well-formed grid byte for byte, coordinates rounded to millimetres, nothing else carried over', () => {
     expect(validateGround({ ...GOOD_GROUND, originX: 1.23456, extra: 'dropped' })).toEqual({ ...GOOD_GROUND, originX: 1.235 });
+  });
+
+  it('accepts the largest grid the caps allow, byte for byte', () => {
+    // The base64 bound is exact equality; a one-off there would refuse every real full-size grid in production with nothing red.
+    const max = grid(MAX_GRID_AXIS, MAX_GRID_AXIS, MAX_LAYERS, fill(MAX_GRID_AXIS * MAX_GRID_AXIS * MAX_LAYERS));
+    expect(validateGround(max)).toEqual(max);
   });
 });
 
@@ -224,26 +231,43 @@ describe('validateLayout', () => {
       ...GOOD_LAYOUT,
       shapes: [
         { kind: 'rect', x: 0, z: 0, w: 4, d: 4, fill: 0x224466, stroke: '#fff', width: 2, rotation: 0.5 },
-        { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)' },
+        { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)', stroke: 0xffffff },
         { kind: 'path', points: [[0, 0], [1, 1], [NaN, 2]], closed: true },
         { kind: 'triangle', x: 0, z: 0 },
         { kind: 'rect', x: 1e9, z: 0, w: 1, d: 1 },
         { kind: 'path', points: [[0, 0]] },
         { kind: 'path', points: 'not an array' },
         { kind: 'circle', x: 0, z: 0, r: 1, fill: 'x'.repeat(33), width: -1 },   // a 33-char colour and a negative width go; the circle stays
+        { kind: 'circle', x: 2, z: 2, r: 1, fill: 0x1000000, stroke: 1.5 },      // a numeric colour is an 0xrrggbb integer or nothing
         'not a shape',
         null,
       ],
     })!;
     expect(l.shapes).toEqual([
       { kind: 'rect', x: 0, z: 0, w: 4, d: 4, rotation: 0.5, fill: 0x224466, stroke: '#fff', width: 2 },
-      { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)' },
+      { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)', stroke: 0xffffff },
       { kind: 'path', points: [[0, 0], [1, 1]], closed: true },
       { kind: 'circle', x: 0, z: 0, r: 1 },
+      { kind: 'circle', x: 2, z: 2, r: 1 },
     ]);
     const many = Array.from({ length: MAX_SHAPES + 7 }, (_, i) => ({ kind: 'circle', x: i, z: 0, r: 1 }));
     expect(validateLayout({ ...GOOD_LAYOUT, shapes: many })!.shapes).toHaveLength(MAX_SHAPES);
     const long = validateLayout({ ...GOOD_LAYOUT, shapes: [{ kind: 'path', points: Array.from({ length: 4001 }, (_, i) => [i, 0]) }] })!.shapes[0];
     expect(long.kind === 'path' ? long.points.length : -1).toBe(4000);   // a path is cut at 4000 vertices, not refused
+  });
+
+  it('wraps a rotation into (-π, π] and drops a stroke width outside [0, 64], so neither reaches JSONB as Infinity', () => {
+    // 1e303 rounded to six places is Infinity; JSON.stringify writes that as null, and the editor would read a null rotation.
+    const l = validateLayout({ ...GOOD_LAYOUT, shapes: [
+      { kind: 'rect', x: 0, z: 0, w: 1, d: 1, rotation: 4, width: 64 },
+      { kind: 'rect', x: 0, z: 0, w: 1, d: 1, rotation: 1e303, width: 1e306 },
+      { kind: 'path', points: [[0, 0], [1, 1]], width: 64.001 },
+    ] })!;
+    expect(l.shapes[0]).toEqual({ kind: 'rect', x: 0, z: 0, w: 1, d: 1, rotation: -2.283185, width: 64 });   // 4 - 2π, the overlay schema's readAngle
+    const huge = l.shapes[1];
+    expect(huge.kind === 'rect' && Number.isFinite(huge.rotation) && Math.abs(huge.rotation!) <= Math.PI).toBe(true);
+    expect(huge).not.toHaveProperty('width');
+    expect(l.shapes[2]).toEqual({ kind: 'path', points: [[0, 0], [1, 1]] });
+    expect(JSON.parse(JSON.stringify(l.shapes))).toEqual(l.shapes);   // what Postgres stores is what was validated
   });
 });

@@ -73,3 +73,56 @@ export function decodeGround(g: LayoutGround): DecodedGround {
   for (let i = 0; i < count; i++) heights[i] = view.getInt16(i * 2, true);
   return { originX: g.originX, originZ: g.originZ, step: g.step, nx: g.nx, nz: g.nz, layers: g.layers, heights };
 }
+
+/** One corner, in cm: nearest layer at or below `yCm`; else its lowest ("underground" needs a surface to be under); else null. */
+function cornerCm(g: DecodedGround, i: number, j: number, yCm: number): number | null {
+  const base = (j * g.nx + i) * g.layers;
+  let below: number | null = null;
+  let lowest: number | null = null;
+  for (let k = 0; k < g.layers; k++) {
+    const h = g.heights[base + k];
+    if (h === NO_SAMPLE) continue;
+    if (lowest === null || h < lowest) lowest = h;
+    if (h <= yCm && (below === null || h > below)) below = h;
+  }
+  return below ?? lowest;
+}
+
+/** Nearest layer at or below `y`, chosen PER CORNER, then bilinear. A corner with no layer at/below takes its lowest; a corner with no layers is no sample → null. */
+export function groundAt(g: DecodedGround | null, x: number, z: number, y: number): number | null {
+  if (!g || g.nx < 1 || g.nz < 1 || !(g.step > 0)) return null;
+  const fx = (x - g.originX) / g.step;
+  const fz = (z - g.originZ) / g.step;
+  // A positive test, so NaN falls out here rather than inside an index.
+  if (!(fx >= 0 && fz >= 0 && fx <= g.nx - 1 && fz <= g.nz - 1)) return null;
+  const i0 = Math.min(Math.floor(fx), g.nx - 1);
+  const j0 = Math.min(Math.floor(fz), g.nz - 1);
+  const i1 = Math.min(i0 + 1, g.nx - 1);
+  const j1 = Math.min(j0 + 1, g.nz - 1);
+  const tx = fx - i0;
+  const tz = fz - j0;
+  const yCm = y * CM;
+  const c00 = cornerCm(g, i0, j0, yCm);
+  const c10 = cornerCm(g, i1, j0, yCm);
+  const c01 = cornerCm(g, i0, j1, yCm);
+  const c11 = cornerCm(g, i1, j1, yCm);
+  if (c00 === null || c10 === null || c01 === null || c11 === null) return null;
+  const near = c00 + (c10 - c00) * tx;
+  const far = c01 + (c11 - c01) * tx;
+  return (near + (far - near) * tz) / CM;
+}
+
+/** All surfaces at the nearest sample to (x,z), top-down, metres — for the layer picker. */
+export function layersAt(g: DecodedGround | null, x: number, z: number): number[] {
+  if (!g || g.nx < 1 || g.nz < 1 || !(g.step > 0)) return [];
+  const i = Math.round((x - g.originX) / g.step);
+  const j = Math.round((z - g.originZ) / g.step);
+  if (!(i >= 0 && j >= 0 && i < g.nx && j < g.nz)) return [];
+  const base = (j * g.nx + i) * g.layers;
+  const out: number[] = [];
+  for (let k = 0; k < g.layers; k++) {
+    const h = g.heights[base + k];
+    if (h !== NO_SAMPLE) out.push(h / CM);
+  }
+  return out.sort((a, b) => b - a);   // top-down is this function's promise, not the byte producer's
+}

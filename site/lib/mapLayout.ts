@@ -90,6 +90,7 @@ function cornerCm(g: DecodedGround, i: number, j: number, yCm: number): number |
 
 /** Nearest layer at or below `y`, chosen PER CORNER, then bilinear. A corner with no layer at/below takes its lowest; a corner with no layers is no sample → null. */
 export function groundAt(g: DecodedGround | null, x: number, z: number, y: number): number | null {
+  if (!Number.isFinite(y)) return null;   // a NaN y would otherwise read every corner's lowest layer, silently
   if (!g || g.nx < 1 || g.nz < 1 || !(g.step > 0)) return null;
   const fx = (x - g.originX) / g.step;
   const fz = (z - g.originZ) / g.step;
@@ -101,7 +102,9 @@ export function groundAt(g: DecodedGround | null, x: number, z: number, y: numbe
   const j1 = Math.min(j0 + 1, g.nz - 1);
   const tx = fx - i0;
   const tz = fz - j0;
-  const yCm = y * CM;
+  // Round: 0.57 * 100 is 56.99999999999999 in a double, which would miss the 57 cm layer the value denotes.
+  // Half a centimetre is the widest symmetric tolerance that cannot reach a neighbouring layer (the sampler re-casts 1 cm below each hit).
+  const yCm = Math.round(y * CM);
   const c00 = cornerCm(g, i0, j0, yCm);
   const c10 = cornerCm(g, i1, j0, yCm);
   const c01 = cornerCm(g, i0, j1, yCm);

@@ -107,6 +107,16 @@ describe('groundAt', () => {
     expect(groundAt(edge, 5, 5, 25)).toBe(10);   // above the roof: near corners roof, far corners floor, blended
   });
 
+  it('reads the layer a two-decimal metre denotes, not the one below it', () => {
+    // 0.57 * 100 is 56.99999999999999 in a double; "at or below" must still find the 57 cm mezzanine, not the -5 m floor.
+    const mezzanine = decodeGround(grid(2, 2, 3, [2000, 57, -500, 2000, 57, -500, 2000, 57, -500, 2000, 57, -500]));
+    expect(groundAt(mezzanine, 5, 5, 0.57)).toBe(0.57);
+  });
+
+  it('is null for a NaN y rather than silently reading the lowest layer', () => {
+    expect(groundAt(slope, 5, 3, NaN)).toBeNull();
+  });
+
   it('is null outside the grid, for NaN, and without a grid; honours the origin', () => {
     expect(groundAt(slope, -0.01, 5, 50)).toBeNull();
     expect(groundAt(slope, 10.01, 5, 50)).toBeNull();
@@ -126,6 +136,10 @@ describe('layersAt', () => {
     expect(layersAt(dome, 1, 2)).toEqual([20, 0]);   // nearest sample is (0,0)
     expect(layersAt(dome, 3, 8)).toEqual([5]);       // (0,1)
     expect(layersAt(dome, 9, 9)).toEqual([]);        // (1,1): no surface
+  });
+
+  it('orders top-down itself when the bytes arrive bottom-up', () => {
+    expect(layersAt(decodeGround(grid(1, 1, 3, [0, 2000, NO_SAMPLE])), 0, 0)).toEqual([20, 0]);
   });
 
   it('is empty outside the grid or without one', () => {

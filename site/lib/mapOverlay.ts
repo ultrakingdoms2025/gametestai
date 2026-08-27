@@ -375,6 +375,12 @@ export async function recordWorldReport(
     }));
 
   const patch = layoutPatch(report);
+  // `saveOverlayVersion` hands `rejected` back for the editor to show; a report has no one to
+  // show it to, and a shape the validator could not read is a world file's bug that a quietly
+  // thinner map would hide. So the count goes to the log, here, where it is first known.
+  if (Array.isArray(report.shapes) && patch.shapes && patch.shapes.length < report.shapes.length) {
+    console.warn(`[map-report] dropped ${report.shapes.length - patch.shapes.length} unreadable shapes for ${worldId}`);
+  }
 
   await db.query(
     `INSERT INTO map_world_reports

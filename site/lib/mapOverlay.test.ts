@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -380,6 +380,23 @@ describe('recordWorldReport — the SQL it emits', () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS });
     expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS });
+  });
+
+  /** A shape the validator cannot read is a bug in a world file, and a silently thinner map hides it; the log line is the only place the count goes. */
+  it('says on the console how many shapes it dropped and for which world, and nothing when it dropped none', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [rect, { kind: 'hexagon' }, 7] });
+      expect(patchOf(db).shapes).toEqual([rect]);
+      expect(warn).toHaveBeenCalledWith('[map-report] dropped 2 unreadable shapes for test-overlay-sql');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [rect] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('sends an empty patch and schema 0 for a report with no layout, or one under a schema it does not read', async () => {

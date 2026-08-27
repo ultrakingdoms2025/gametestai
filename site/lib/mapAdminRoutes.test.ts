@@ -399,15 +399,15 @@ describe('POST /api/admin/map/report', () => {
     const text = vi.spyOn(Request.prototype, 'text');
     try {
       const { POST } = await import('@/app/api/admin/map/report/route');
-      const res = await POST(
-        new Request('http://localhost/api/admin/map/report', {
-          method: 'POST',
-          body: JSON.stringify({ ...REPORT, ...LAYOUT }),
-          headers: { 'content-type': 'application/json', 'content-length': String(MAX_LAYOUT_BYTES + 1) },
-        })
-      );
+      const req = new Request('http://localhost/api/admin/map/report', {
+        method: 'POST',
+        body: JSON.stringify({ ...REPORT, ...LAYOUT }),
+        headers: { 'content-type': 'application/json', 'content-length': String(MAX_LAYOUT_BYTES + 1) },
+      });
+      const res = await POST(req);
       expect(res.status).toBe(413);
       expect(text).not.toHaveBeenCalled();
+      expect(req.bodyUsed).toBe(false);
       expect(store.recordWorldReport).not.toHaveBeenCalled();
       expect(connections).toHaveLength(0);
     } finally {
@@ -415,13 +415,24 @@ describe('POST /api/admin/map/report', () => {
     }
   });
 
+  /**
+   * The spy proves `.text()` was not called; `bodyUsed` proves NO reader was — `.json()`,
+   * `.arrayBuffer()` and a stream all flip it — so the test holds however the route reads.
+   */
   it('refuses an anonymous client before reading a byte of the body', async () => {
     signedInAs(null);
     const text = vi.spyOn(Request.prototype, 'text');
     try {
-      const res = await post({ ...REPORT, ...LAYOUT });
+      const { POST } = await import('@/app/api/admin/map/report/route');
+      const req = new Request('http://localhost/api/admin/map/report', {
+        method: 'POST',
+        body: JSON.stringify({ ...REPORT, ...LAYOUT }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const res = await POST(req);
       expect(res.status).toBe(403);
       expect(text).not.toHaveBeenCalled();
+      expect(req.bodyUsed).toBe(false);
       noDatabaseWasTouched();
     } finally {
       text.mockRestore();

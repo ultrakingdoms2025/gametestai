@@ -58,7 +58,7 @@ export function encodeHeights(h: Int16Array): string {
 /**
  * Throws on a length mismatch or bad base64: a grid that does not fit its own header is not a grid.
  * Header assumed validated (positive integers within MAX_GRID_AXIS / MAX_LAYERS); see `validateGround`
- * (Task 3) — this only checks the byte count.
+ * — this only checks the byte count.
  */
 export function decodeGround(g: LayoutGround): DecodedGround {
   const count = g.nx * g.nz * g.layers;
@@ -88,7 +88,10 @@ function cornerCm(g: DecodedGround, i: number, j: number, yCm: number): number |
   return below ?? lowest;
 }
 
-/** Nearest layer at or below `y`, chosen PER CORNER, then bilinear. A corner with no layer at/below takes its lowest; a corner with no layers is no sample → null. */
+/**
+ * Nearest layer at or below `y`, chosen PER CORNER, then bilinear. A corner with no layer at/below takes its lowest; a corner with no layers is no sample → null.
+ * `y` must be finite, else null — to get the lowest layer under a point use `layersAt(...).at(-1)`.
+ */
 export function groundAt(g: DecodedGround | null, x: number, z: number, y: number): number | null {
   if (!Number.isFinite(y)) return null;   // a NaN y would otherwise read every corner's lowest layer, silently
   if (!g || g.nx < 1 || g.nz < 1 || !(g.step > 0)) return null;
@@ -128,4 +131,129 @@ export function layersAt(g: DecodedGround | null, x: number, z: number): number[
     if (h !== NO_SAMPLE) out.push(h / CM);
   }
   return out.sort((a, b) => b - a);   // top-down is this function's promise, not the byte producer's
+}
+
+/** A finite coordinate inside the schema's ±WORLD_COORD_LIMIT, to the millimetre; else null. */
+function coord(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || Math.abs(raw) > WORLD_COORD_LIMIT) return null;
+  return Math.round(raw * 1000) / 1000;
+}
+
+function vec3(raw: unknown): Vec3 | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const x = coord(r.x), y = coord(r.y), z = coord(r.z);
+  return x === null || y === null || z === null ? null : { x, y, z };
+}
+
+function integer(raw: unknown, min: number, max: number): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= min && raw <= max ? raw : null;
+}
+
+function finite(raw: unknown, places: number): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  return Math.round(raw * 10 ** places) / 10 ** places;
+}
+
+/** Minimap colours arrive as a Three hex number or a CSS string; both are kept as sent. */
+function colour(raw: unknown): number | string | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  return typeof raw === 'string' && raw.length > 0 && raw.length <= 32 ? raw : undefined;
+}
+
+type Style = { fill?: number | string; stroke?: number | string; width?: number };
+
+function style(r: Record<string, unknown>): Style {
+  const s: Style = {};
+  const fill = colour(r.fill), stroke = colour(r.stroke), width = finite(r.width, 3);
+  if (fill !== undefined) s.fill = fill;
+  if (stroke !== undefined) s.stroke = stroke;
+  if (width !== undefined && width >= 0) s.width = width;
+  return s;
+}
+
+const MAX_PATH_POINTS = 4000;   // the longest minimap path today is a few hundred points
+
+function validateShape(raw: unknown): LayoutShape | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const s = style(r);
+  if (r.kind === 'rect') {
+    const x = coord(r.x), z = coord(r.z), w = coord(r.w), d = coord(r.d);
+    if (x === null || z === null || w === null || d === null) return null;
+    const rotation = finite(r.rotation, 6);
+    return { kind: 'rect', x, z, w, d, ...(rotation !== undefined ? { rotation } : {}), ...s };
+  }
+  if (r.kind === 'circle') {
+    const x = coord(r.x), z = coord(r.z), rad = coord(r.r);
+    if (x === null || z === null || rad === null) return null;
+    return { kind: 'circle', x, z, r: rad, ...s };
+  }
+  if (r.kind === 'path' && Array.isArray(r.points)) {
+    const points: [number, number][] = [];
+    for (const p of r.points.slice(0, MAX_PATH_POINTS)) {
+      const px = Array.isArray(p) ? coord(p[0]) : null;
+      const pz = Array.isArray(p) ? coord(p[1]) : null;
+      if (px !== null && pz !== null) points.push([px, pz]);   // one bad vertex does not lose the wall
+    }
+    if (points.length < 2) return null;
+    return {
+      kind: 'path',
+      points,
+      ...(s.stroke !== undefined ? { stroke: s.stroke } : {}),
+      ...(s.width !== undefined ? { width: s.width } : {}),
+      ...(r.closed === true ? { closed: true } : {}),
+    };
+  }
+  return null;
+}
+
+export function validateBounds(raw: unknown): LayoutBounds | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const min = vec3(r.min), max = vec3(r.max);
+  if (!min || !max || min.x > max.x || min.y > max.y || min.z > max.z) return null;
+  return { min, max };
+}
+
+/** Unknown kinds and unusable shapes are dropped one at a time, never the whole list: a map with one bad wall is still a map. */
+export function validateShapes(raw: unknown): LayoutShape[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LayoutShape[] = [];
+  for (const item of raw) {
+    if (out.length >= MAX_SHAPES) break;
+    const shape = validateShape(item);
+    if (shape) out.push(shape);
+  }
+  return out;
+}
+
+const MAX_HEIGHTS_BASE64 = Math.ceil((MAX_GRID_AXIS * MAX_GRID_AXIS * MAX_LAYERS * 2) / 3) * 4;   // longest base64 a grid at the caps can be; longer is refused before decoding
+
+export function validateGround(input: unknown): LayoutGround | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const r = input as Record<string, unknown>;
+  const originX = coord(r.originX), originZ = coord(r.originZ);
+  const step = coord(r.step);   // checked for > 0 AFTER rounding: a 0.1 mm step would otherwise pass as 0
+  const nx = integer(r.nx, 1, MAX_GRID_AXIS), nz = integer(r.nz, 1, MAX_GRID_AXIS), layers = integer(r.layers, 1, MAX_LAYERS);
+  if (originX === null || originZ === null || step === null || step <= 0 || nx === null || nz === null || layers === null) return null;
+  if (typeof r.heightsCm !== 'string' || r.heightsCm.length > MAX_HEIGHTS_BASE64) return null;
+  const ground: LayoutGround = { originX, originZ, step, nx, nz, layers, heightsCm: r.heightsCm };
+  try {
+    decodeGround(ground);   // the only way to know the bytes fit the header is to look
+  } catch {
+    return null;
+  }
+  return ground;
+}
+
+/** Clamp/validate an untrusted layout; returns null when unusable. Never throws. Reads the wire key `layoutSchema` or the stored key `schema`. */
+export function validateLayout(input: unknown): WorldLayout | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const r = input as Record<string, unknown>;
+  if ((r.schema ?? r.layoutSchema) !== LAYOUT_SCHEMA) return null;
+  const bounds = validateBounds(r.bounds);
+  if (!bounds) return null;
+  const ground = r.ground === undefined || r.ground === null ? null : validateGround(r.ground);
+  return { schema: LAYOUT_SCHEMA, bounds, shapes: validateShapes(r.shapes), ground };
 }

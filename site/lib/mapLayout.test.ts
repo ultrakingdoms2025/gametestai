@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { WORLD_COORD_LIMIT } from './mapOverlaySchema';
 import {
   LAYOUT_SCHEMA, MAX_GRID_AXIS, MAX_LAYERS, MAX_SHAPES, NO_SAMPLE,
-  decodeGround, encodeHeights, groundAt, layersAt,
+  decodeGround, encodeHeights, groundAt, layersAt, validateGround, validateLayout,
   type LayoutGround,
 } from './mapLayout';
 
@@ -18,6 +18,11 @@ import {
  * metres, and the roof's EDGE, where the four corners hold different layer
  * counts and any per-cell "layer k" reads a hole or the roof instead of the
  * floor. `layersAt` is the picker's list at the nearest sample.
+ * `validateGround` / `validateLayout` are the boundary: a browser sent the
+ * layout, and the report route must never hand `decodeGround` an unvalidated
+ * header — so each rejection fixture below is one that would DECODE if its
+ * check were gone (byte counts chosen to fit the nonsense header), never one
+ * decode would refuse anyway.
  */
 
 /** index = ((j * nx) + i) * layers + k — the wire order, so fixtures read that way. */
@@ -146,5 +151,99 @@ describe('layersAt', () => {
     expect(layersAt(dome, 16, 0)).toEqual([]);
     expect(layersAt(dome, -6, 0)).toEqual([]);
     expect(layersAt(null, 0, 0)).toEqual([]);
+  });
+});
+
+const GOOD_GROUND = grid(3, 3, 1, new Array(9).fill(150));
+const BOUNDS = { min: { x: -50, y: 0, z: -50 }, max: { x: 50, y: 20, z: 50 } };
+const GOOD_LAYOUT = { layoutSchema: 1, bounds: BOUNDS, shapes: [{ kind: 'rect', x: 0, z: 0, w: 4, d: 4, fill: 0x224466 }], ground: GOOD_GROUND };
+
+describe('validateGround', () => {
+  // Every header fixture keeps nx*nz*layers equal to the samples sent (nine, or a count named beside it):
+  // take away the check under test and `decodeGround` would accept the grid, so a null here proves the check.
+  it.each([
+    ['nx over the cap', { ...GOOD_GROUND, nx: MAX_GRID_AXIS + 1, nz: 1, heightsCm: encodeHeights(new Int16Array(MAX_GRID_AXIS + 1)) }],
+    ['nz below one', { ...GOOD_GROUND, nz: 0, heightsCm: '' }],
+    ['a negative axis', { ...GOOD_GROUND, nx: -3, nz: -3 }],                        // (-3)(-3)(1) = 9
+    ['a fractional axis', { ...GOOD_GROUND, nx: 1.5, nz: 6 }],                      // 1.5 * 6 = 9
+    ['an axis sent as a string', { ...GOOD_GROUND, nx: '3' }],                       // '3' * 3 * 1 coerces to 9
+    ['layers over the cap', { ...GOOD_GROUND, layers: MAX_LAYERS + 1, heightsCm: encodeHeights(new Int16Array(9 * (MAX_LAYERS + 1))) }],
+    ['layers below one', { ...GOOD_GROUND, layers: 0, heightsCm: '' }],
+    ['a fractional layer count', { ...GOOD_GROUND, nx: 2, nz: 3, layers: 1.5 }],    // 2 * 3 * 1.5 = 9
+    ['heights that do not fit the grid', { ...GOOD_GROUND, heightsCm: encodeHeights(new Int16Array(8)) }],
+    ['heights that are not base64', { ...GOOD_GROUND, heightsCm: '***' }],
+    ['heights that are not a string', { ...GOOD_GROUND, heightsCm: [GOOD_GROUND.heightsCm] }],   // atob would coerce the array to its one string
+    ['a NaN origin', { ...GOOD_GROUND, originX: NaN }],
+    ['an origin sent as a string', { ...GOOD_GROUND, originZ: '0' }],
+    ['an origin past the coordinate limit', { ...GOOD_GROUND, originZ: WORLD_COORD_LIMIT + 1 }],
+    ['a zero step', { ...GOOD_GROUND, step: 0 }],
+    ['a negative step', { ...GOOD_GROUND, step: -10 }],
+    ['an infinite step', { ...GOOD_GROUND, step: Infinity }],
+    ['a step that rounds to zero at millimetre precision', { ...GOOD_GROUND, step: 0.0001 }],
+    ['not an object', 'ground'],
+    ['an array', []],
+    ['null', null],
+  ])('rejects %s', (_, input) => {
+    expect(validateGround(input)).toBeNull();
+  });
+
+  it('keeps a well-formed grid byte for byte, coordinates rounded to millimetres, nothing else carried over', () => {
+    expect(validateGround({ ...GOOD_GROUND, originX: 1.23456, extra: 'dropped' })).toEqual({ ...GOOD_GROUND, originX: 1.235 });
+  });
+});
+
+describe('validateLayout', () => {
+  it.each([
+    ['no bounds', { layoutSchema: 1, shapes: [] }],
+    ['bounds that are not an object', { layoutSchema: 1, bounds: 'wide' }],
+    ['bounds with min above max', { layoutSchema: 1, bounds: { min: BOUNDS.max, max: BOUNDS.min } }],
+    ['bounds with a NaN', { layoutSchema: 1, bounds: { min: { x: NaN, y: 0, z: 0 }, max: BOUNDS.max } }],
+    ['a schema this reader does not know', { ...GOOD_LAYOUT, layoutSchema: 2 }],
+    ['a schema sent as a string', { ...GOOD_LAYOUT, layoutSchema: '1' }],
+    ['no schema at all', { bounds: BOUNDS }],
+    ['garbage', 'layout'],
+    ['an array', []],
+    ['null', null],
+  ])('is null for %s', (_, input) => {
+    expect(validateLayout(input)).toBeNull();
+  });
+
+  it('accepts a full layout under either schema key; keeps bounds when the ground is missing or unusable', () => {
+    const a = validateLayout(GOOD_LAYOUT)!;
+    expect(validateLayout({ ...GOOD_LAYOUT, layoutSchema: undefined, schema: 1 })).toEqual(a);
+    expect(a).toMatchObject({ schema: 1, bounds: BOUNDS, shapes: GOOD_LAYOUT.shapes, ground: GOOD_GROUND });
+    expect(validateLayout({ ...GOOD_LAYOUT, ground: undefined })!.ground).toBeNull();
+    expect(validateLayout({ ...GOOD_LAYOUT, ground: { ...GOOD_GROUND, nx: 99 } })!.ground).toBeNull();
+    expect(validateLayout({ ...GOOD_LAYOUT, shapes: 'no' })!.shapes).toEqual([]);
+    const wide = validateLayout({ ...GOOD_LAYOUT, bounds: { min: { x: -50.0004, y: 0, z: -50 }, max: BOUNDS.max } })!;
+    expect(wide.bounds.min.x).toBe(-50);   // the overlay schema's millimetre rule
+  });
+
+  it('drops unknown kinds and bad coordinates, keeps numeric and string colours as sent, caps at MAX_SHAPES', () => {
+    const l = validateLayout({
+      ...GOOD_LAYOUT,
+      shapes: [
+        { kind: 'rect', x: 0, z: 0, w: 4, d: 4, fill: 0x224466, stroke: '#fff', width: 2, rotation: 0.5 },
+        { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)' },
+        { kind: 'path', points: [[0, 0], [1, 1], [NaN, 2]], closed: true },
+        { kind: 'triangle', x: 0, z: 0 },
+        { kind: 'rect', x: 1e9, z: 0, w: 1, d: 1 },
+        { kind: 'path', points: [[0, 0]] },
+        { kind: 'path', points: 'not an array' },
+        { kind: 'circle', x: 0, z: 0, r: 1, fill: 'x'.repeat(33), width: -1 },   // a 33-char colour and a negative width go; the circle stays
+        'not a shape',
+        null,
+      ],
+    })!;
+    expect(l.shapes).toEqual([
+      { kind: 'rect', x: 0, z: 0, w: 4, d: 4, rotation: 0.5, fill: 0x224466, stroke: '#fff', width: 2 },
+      { kind: 'circle', x: 1, z: 1, r: 3, fill: 'rgba(0,0,0,.5)' },
+      { kind: 'path', points: [[0, 0], [1, 1]], closed: true },
+      { kind: 'circle', x: 0, z: 0, r: 1 },
+    ]);
+    const many = Array.from({ length: MAX_SHAPES + 7 }, (_, i) => ({ kind: 'circle', x: i, z: 0, r: 1 }));
+    expect(validateLayout({ ...GOOD_LAYOUT, shapes: many })!.shapes).toHaveLength(MAX_SHAPES);
+    const long = validateLayout({ ...GOOD_LAYOUT, shapes: [{ kind: 'path', points: Array.from({ length: 4001 }, (_, i) => [i, 0]) }] })!.shapes[0];
+    expect(long.kind === 'path' ? long.points.length : -1).toBe(4000);   // a path is cut at 4000 vertices, not refused
   });
 });

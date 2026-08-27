@@ -55,7 +55,11 @@ export function encodeHeights(h: Int16Array): string {
   return btoa(binary);
 }
 
-/** Throws on a length mismatch or bad base64: a grid that does not fit its own header is not a grid. */
+/**
+ * Throws on a length mismatch or bad base64: a grid that does not fit its own header is not a grid.
+ * Header assumed validated (positive integers within MAX_GRID_AXIS / MAX_LAYERS); see `validateGround`
+ * (Task 3) — this only checks the byte count.
+ */
 export function decodeGround(g: LayoutGround): DecodedGround {
   const count = g.nx * g.nz * g.layers;
   const binary = atob(g.heightsCm);

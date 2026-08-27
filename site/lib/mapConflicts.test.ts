@@ -152,6 +152,20 @@ describe('out-of-bounds, the only error', () => {
     const m = move({ position: { x: 2, y: 2, z: 300 } });
     expect(conflictsFor(m, 0, [m], bounded())[0].detail).toMatch(/^z = 300 /);
   });
+
+  it('refuses a coordinate that is not a number at all: NaN is nowhere, and nowhere is outside', () => {
+    // The editor path hands over raw floats. `NaN < lo` and `NaN > hi` are both false, so a plain range test
+    // lets NaN through — and `placeable` already drops it from the occupancy, so it would carry NO conflict
+    // at all and save as an object nobody can find. The infinities are here for the same reason a fence has
+    // two ends: they are refused by the range test today, and this pins that they stay refused.
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      const m = move({ position: { x: bad, y: 2, z: 0 } });
+      const p = place({ position: { x: 0, y: 2, z: bad } });
+      const all = conflictsForDocument([m, p], bounded());
+      expect(all.map(codes), `at ${bad}`).toEqual([['out-of-bounds'], ['out-of-bounds']]);
+      expect(hasErrors(all), `at ${bad}`).toBe(true);
+    }
+  });
 });
 
 describe('the ground rules, through a real Int16 grid', () => {
@@ -324,6 +338,18 @@ describe('overlap, against the layout composed with the document', () => {
     expect(conflictsForDocument([p, m], withLayout())).toEqual([[], []]);
     const wide = { ...withLayout(), placeFootprint: () => ({ w: 4, d: 4, h: 1 }) };
     expect(codes(conflictsForDocument([p, m], wide)[1])).toEqual(['overlap']);
+  });
+
+  it('treats a zero footprint as the default: two placements on one point are still in the same spot', () => {
+    // A zero-sided rect is a degenerate rect that meets nothing — not a point half a metre away, and not a
+    // copy of itself on the very same point, since `rectsMeet` is strict. So a zero footprint is not "a very
+    // small item"; it is a footprint the rules cannot place, and it falls back like any other such side.
+    const zero = { ...withLayout(), placeFootprint: () => ({ w: 0, d: 0, h: 1 }) };
+    const p = place({ position: at(2, 2) });
+    const inside = move({ id: 'in', position: at(2.9, 2) });
+    expect(conflictsForDocument([p, inside], zero)).toEqual([[overlapWith('in')], [overlapWith('p1')]]);
+    const twin = place({ id: 'p2', position: at(2, 2) });
+    expect(conflictsForDocument([p, twin], zero)).toEqual([[overlapWith('p2')], [overlapWith('p1')]]);
   });
 
   it('intersects two placement rects, and never conflicts an entry with itself', () => {

@@ -182,8 +182,12 @@ const entryKey = (index: number): string => `entry:${index}`;
 /** Detail numbers to the millimetre, the schema's own rounding: on the editor path a drag hands over raw floats. */
 const fmt = (n: number): string => String(round(n, 3));
 
-/** A footprint side the callback can hand over raw: not finite, negative or wider than `FOOTPRINT_MAX` falls back. */
-const side = (n: number, fallback: number): number => (Number.isFinite(n) && n >= 0 && n <= FOOTPRINT_MAX ? n : fallback);
+/**
+ * A footprint side the callback can hand over raw: not finite, not positive or wider than `FOOTPRINT_MAX`
+ * falls back. Zero is not a very small item but a degenerate rect that meets nothing, not even a twin on the
+ * same point (`rectsMeet` is strict), so two zero-footprint placements would never overlap each other.
+ */
+const side = (n: number, fallback: number): number => (Number.isFinite(n) && n > 0 && n <= FOOTPRINT_MAX ? n : fallback);
 
 function footprintRect(entry: PlaceEntry, ctx: ConflictContext): Rect {
   const size = ctx.placeFootprint?.(entry) ?? DEFAULT_FOOTPRINT;
@@ -282,11 +286,16 @@ function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[],
   });
 }
 
-/** True when the position is refused. The caller stops there: a point outside the world has no ground to be under or over. */
+/**
+ * True when the position is refused. The caller stops there: a point outside the world has no ground to be
+ * under or over. A coordinate that is not a number is refused too — `NaN < lo` and `NaN > hi` are both false,
+ * so the range test alone would let it through, and `placeable` has already dropped it from the occupancy,
+ * so nothing else would speak: it would save with no conflict at all, as an object nobody can find.
+ */
 function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): boolean {
   const { min, max } = layout.bounds;
   for (const [axis, value, lo, hi] of [['x', pos.x, min.x, max.x], ['z', pos.z, min.z, max.z]] as const) {
-    if (value < lo - BOUNDS_MARGIN || value > hi + BOUNDS_MARGIN) {
+    if (!Number.isFinite(value) || value < lo - BOUNDS_MARGIN || value > hi + BOUNDS_MARGIN) {
       const detail = `${axis} = ${fmt(value)} is outside the world's bounds (${lo} to ${hi}, ±${BOUNDS_MARGIN} m)`;
       out.push({ level: 'error', code: 'out-of-bounds', detail });
       // First offending axis wins; one Conflict per entry.

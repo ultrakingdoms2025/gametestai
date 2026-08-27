@@ -109,7 +109,7 @@ export const MAX_CATALOGUE_OBJECTS = 2000;
 
 let ensured: Promise<void> | null = null;
 
-/** Create the two tables. Memoised as a promise — see the note above. */
+/** Create the two tables and add the layout columns to the reports table. Memoised as a promise — see the note above. */
 export function ensureMapOverlaySchema(db: Db): Promise<void> {
   if (!ensured) {
     ensured = (async () => {
@@ -327,7 +327,8 @@ function layoutPatch(report: ReportedLayoutFields): Partial<WorldLayout> {
   if (bounds) {
     patch.schema = LAYOUT_SCHEMA;
     patch.bounds = bounds;
-    patch.shapes = validateShapes(report.shapes);
+    // Present means replace, absent means keep — the same rule as `ground`, so a report of bounds alone cannot erase the shapes.
+    if (Array.isArray(report.shapes)) patch.shapes = validateShapes(report.shapes);
   }
   const ground = report.ground === undefined || report.ground === null ? null : validateGround(report.ground);
   if (ground) {
@@ -384,7 +385,16 @@ export async function recordWorldReport(
            objects         = EXCLUDED.objects,
            applied         = EXCLUDED.applied,
            unresolved      = EXCLUDED.unresolved,
-           layout          = map_world_reports.layout || EXCLUDED.layout,
+           -- A row is always ONE schema. A patch from a newer client replaces the row outright
+           -- (its ground is not a v1 ground with a v2 bounds merged over it); a patch from the
+           -- same schema merges; one from an older client is dropped rather than merged under a
+           -- newer row. Today only schema 1 exists, and a report with no layout is schema 0 with
+           -- an empty patch, which the ELSE keeps as it is.
+           layout          = CASE
+                               WHEN map_world_reports.layout_schema < EXCLUDED.layout_schema THEN EXCLUDED.layout
+                               WHEN map_world_reports.layout_schema = EXCLUDED.layout_schema THEN map_world_reports.layout || EXCLUDED.layout
+                               ELSE map_world_reports.layout
+                             END,
            layout_schema   = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema),
            reported_at     = NOW()`,
     [
@@ -414,6 +424,8 @@ export async function readWorldReport(db: Db, worldId: string): Promise<StoredWo
     applied: Array.isArray(row.applied) ? (row.applied as AppliedOutcome[]) : [],
     unresolved: Array.isArray(row.unresolved) ? (row.unresolved as UnresolvedOutcome[]) : [],
     // Validated again on the way out, like `rowEntries`: a row edited in psql reaches the editor as "no layout", not a canvas crash.
+    // `>=` and not `===`: the upsert's CASE guarantees a row holds ONE schema, so a row at a newer schema is that schema's
+    // layout whole, and `validateLayout` — which reads only the schema it knows — is the one that says whether this build can use it.
     layout: Number(row.layout_schema ?? 0) >= LAYOUT_SCHEMA ? validateLayout(row.layout) : null,
     reportedAt: new Date(row.reported_at).toISOString(),
   };

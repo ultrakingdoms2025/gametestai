@@ -332,6 +332,26 @@ suite('mapOverlay (integration)', () => {
     await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, ground: ground(300) });
     expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes, ground: ground(300) });
   });
+
+  it('keeps the stored shapes when a later report carries bounds but no shapes', async () => {
+    const shapes = [{ kind: 'circle', x: 1, z: 1, r: 2 }];
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes });
+    const moved = { min: { x: -30, y: 0, z: -30 }, max: { x: 30, y: 10, z: 30 } };
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: moved });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: moved, shapes, ground: null });
+  });
+
+  /**
+   * Only schema 1 exists, so the older row is staged by hand: a row at schema 0 whose `layout`
+   * holds a ground. With a plain `||` that ground would survive under a schema-1 bounds; the
+   * CASE replaces the row instead, so a row is never two grid formats at once.
+   */
+  it('replaces, rather than merges over, a layout left by an older schema', async () => {
+    await recordWorldReport(db, WORLD, PLAIN);
+    await db.query('UPDATE map_world_reports SET layout = $2::jsonb, layout_schema = 0 WHERE world_id = $1', [WORLD, JSON.stringify({ ground: ground(150) })]);
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes: [], ground: null });
+  });
 });
 
 /**
@@ -345,10 +365,21 @@ describe('recordWorldReport — the SQL it emits', () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
     const q = db.only('INSERT INTO map_world_reports');
-    expect(flat(q.sql)).toContain('layout = map_world_reports.layout || EXCLUDED.layout');
+    // Merge only at the SAME schema; a newer client's patch replaces the row and an older one's is dropped.
+    expect(flat(q.sql)).toContain(
+      'layout = CASE WHEN map_world_reports.layout_schema < EXCLUDED.layout_schema THEN EXCLUDED.layout' +
+        ' WHEN map_world_reports.layout_schema = EXCLUDED.layout_schema THEN map_world_reports.layout || EXCLUDED.layout' +
+        ' ELSE map_world_reports.layout END'
+    );
     expect(flat(q.sql)).toContain('layout_schema = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema)');
     expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });
     expect(q.params[6]).toBe(1);
+  });
+
+  it('leaves shapes out of the patch when the report did not carry them', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS });
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS });
   });
 
   it('sends an empty patch and schema 0 for a report with no layout, or one under a schema it does not read', async () => {

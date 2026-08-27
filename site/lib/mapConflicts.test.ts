@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { MoveEntry, PlaceEntry } from './mapOverlaySchema';
+import type { MoveEntry, OverlayEntry, PlaceEntry } from './mapOverlaySchema';
 import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround, type WorldLayout } from './mapLayout';
 import { conflictsFor, conflictsForDocument, hasErrors, type Conflict, type ConflictContext } from './mapConflicts';
 
@@ -81,9 +81,7 @@ describe('occupancy', () => {
   // The game's `_applyMove` clears `visible` on a hidden move and then relocates the object's colliders only
   // when the entry carries a position. A hidden object is therefore an invisible wall: at the new spot when the
   // move has one, at the reported spot when it does not. The rules compose occupancy that way on purpose, and
-  // these two fixtures pin it. Until the overlap rule exists nothing reads the occupants, so both pin today's
-  // output; Task 4 makes the first fixture report `overlap` with `other: 'm1'` on the place, and the second
-  // `overlap` with `other: 'crate'`.
+  // these two fixtures pin it through the overlap rule, the only reader of the occupants.
 
   it('lets a hidden move that still carries a position stand at that spot: its colliders go there', () => {
     const spot = { x: 50, y: 0, z: 50 };
@@ -91,15 +89,18 @@ describe('occupancy', () => {
     const stranger = move({ hidden: true, position: spot });
     const known = move({ hidden: true, position: spot, target: { name: 'crate' } });
     const world = () => ctx({ layout: layout(), objects: [crate] });
-    expect(conflictsForDocument([stranger, beside], world()).map(codes)).toEqual([['stale-name'], []]);
-    expect(conflictsForDocument([known, beside], world()).map(codes)).toEqual([[], []]);
+    const all = conflictsForDocument([stranger, beside], world());
+    expect(all.map(codes)).toEqual([['stale-name', 'overlap'], ['overlap']]);
+    expect(all[1][0].other).toBe('m1');
+    expect(conflictsForDocument([known, beside], world()).map(codes)).toEqual([['overlap'], ['overlap']]);
   });
 
   it('leaves the reported object standing where it was when a hidden move has no position', () => {
     const gone = move({ hidden: true, position: null, target: { name: 'crate' } });
     const onCrate = place({ position: crate.position });
     const all = conflictsForDocument([gone, onCrate], ctx({ layout: layout(), objects: [crate] }));
-    expect(all.map(codes)).toEqual([[], []]);
+    expect(all.map(codes)).toEqual([[], ['overlap']]);
+    expect(all[1][0].other).toBe('crate');
   });
 });
 
@@ -254,7 +255,8 @@ describe('the ground rules, through a real Int16 grid', () => {
 
   it('are all warnings, so hasErrors stays false and the route still saves', () => {
     const elsewhere = move({ id: 'm2', target: { name: 'well' }, position: { x: 50, y: 2, z: 2 } });
-    const all = conflictsForDocument([at(1.7), place({ position: { x: 2, y: 3.6, z: 2 } }), elsewhere], twoMetres());
+    // The place stands in the same ground cell as the move but clear of it, so only the ground rules speak.
+    const all = conflictsForDocument([at(1.7), place({ position: { x: 3.5, y: 3.6, z: 3.5 } }), elsewhere], twoMetres());
     expect(all.map(codes)).toEqual([['underground'], ['floating'], ['no-ground']]);
     expect(all.flat().every((c) => c.level === 'warn')).toBe(true);
     expect(hasErrors(all)).toBe(false);
@@ -264,5 +266,204 @@ describe('the ground rules, through a real Int16 grid', () => {
     // 2 − 1.7 is 0.30000000000000004 in a double; the row must not say so.
     expect(conflictsFor(at(1.7), 0, [at(1.7)], twoMetres())[0].detail).toMatch(/^bottom at y = 1\.7 is 0\.3 m under the ground at 2$/);
     expect(conflictsFor(at(3.6), 0, [at(3.6)], twoMetres())[0].detail).toMatch(/^bottom at y = 3\.6 is 1\.6 m above the ground at 2$/);
+  });
+});
+
+describe('overlap, against the layout composed with the document', () => {
+  const withLayout = (objects: ConflictContext['objects'] = []) => ctx({ layout: layout(), objects });
+  const at = (x: number, z: number) => ({ x, y: 2, z });
+  // A second move needs its own target, or duplicate-target fires as well and
+  // the exact-list assertions below would be testing two rules at once.
+  const silo = { name: 'silo' };
+  const overlapWith = (other: string) => expect.objectContaining({ level: 'warn', code: 'overlap', other });
+
+  it('warns two points closer than a metre, naming each other, and not at exactly a metre', () => {
+    const near = [move({ id: 'a', position: at(0, 0) }), move({ id: 'b', target: silo, position: at(0.5, 0) })];
+    expect(conflictsForDocument(near, withLayout())).toEqual([[overlapWith('b')], [overlapWith('a')]]);
+    const apart = [move({ id: 'a', position: at(0, 0) }), move({ id: 'b', target: silo, position: at(1, 0) })];
+    expect(conflictsForDocument(apart, withLayout())).toEqual([[], []]);
+  });
+
+  it('does not look for overlaps when there is no layout', () => {
+    const near = [move({ id: 'a', position: at(0, 0) }), move({ id: 'b', target: silo, position: at(0.5, 0) })];
+    expect(conflictsForDocument(near, ctx())).toEqual([[], []]);
+  });
+
+  it('warns a move that lands on a reported object, naming the object', () => {
+    const farCrate = { name: 'crate', position: { x: 10, y: 0, z: 10 } };
+    const roof = { name: 'barn.roof', position: { x: 0, y: 0, z: 0 } };
+    const m = move({ position: at(10.4, 10) });
+    expect(conflictsFor(m, 0, [m], withLayout([farCrate, roof]))).toEqual([overlapWith('crate')]);
+  });
+
+  it('does not overlap a moved object with its own old position', () => {
+    const roof = { name: 'barn.roof', position: { x: 2, y: 2, z: 2 } };
+    const m = move({ position: at(2.3, 2) });
+    expect(conflictsFor(m, 0, [m], withLayout([roof]))).toEqual([]);
+  });
+
+  it('keeps an object the document hides in place as an occupant: its colliders stay where the game put them', () => {
+    // The task text had this hide "occupying nothing"; the game's `_applyMove` disagrees (see the header and the
+    // `occupancy` cases), and a barrel placed on an invisible crate is a barrel nobody can walk up to.
+    const farCrate = { name: 'crate', position: { x: 10, y: 0, z: 10 } };
+    const hide = move({ id: 'h', target: { name: 'crate' }, position: null, hidden: true });
+    expect(conflictsForDocument([hide, place({ position: at(10, 10) })], withLayout([farCrate]))).toEqual([[], [overlapWith('crate')]]);
+  });
+
+  it('tests a placement as a footprint: a point within half a metre of its rect overlaps', () => {
+    const p = place({ position: at(2, 2) });
+    const inside = move({ id: 'in', position: at(2.9, 2) });
+    // 4 is past the grown rect (x < 3) and 1.1 m from `inside`, so the two points do not meet either.
+    const outside = move({ id: 'out', target: silo, position: at(4, 2) });
+    expect(conflictsForDocument([p, inside, outside], withLayout())).toEqual([[overlapWith('in')], [overlapWith('p1')], []]);
+  });
+
+  it('consults placeFootprint for the size', () => {
+    const p = place({ position: at(2, 2) });
+    const m = move({ position: at(4.4, 2) });
+    expect(conflictsForDocument([p, m], withLayout())).toEqual([[], []]);
+    const wide = { ...withLayout(), placeFootprint: () => ({ w: 4, d: 4, h: 1 }) };
+    expect(codes(conflictsForDocument([p, m], wide)[1])).toEqual(['overlap']);
+  });
+
+  it('intersects two placement rects, and never conflicts an entry with itself', () => {
+    const a = place({ id: 'a', position: at(2, 2) });
+    expect(conflictsForDocument([a], withLayout())).toEqual([[]]);
+    const touching = place({ id: 'b', position: at(2.8, 2) });
+    expect(codes(conflictsForDocument([a, touching], withLayout())[0])).toEqual(['overlap']);
+    const clear = place({ id: 'b', position: at(3.2, 2) });
+    expect(conflictsForDocument([a, clear], withLayout())).toEqual([[], []]);
+  });
+});
+
+describe('overlap: the last move wins, whole millimetres, and the bucket grid', () => {
+  const withLayout = (objects: ConflictContext['objects'] = []) => ctx({ layout: layout(), objects });
+  const at = (x: number, z: number) => ({ x, y: 2, z });
+  const silo = { name: 'silo' };
+  const overlapWith = (other: string) => expect.objectContaining({ level: 'warn', code: 'overlap', other });
+
+  it('lets only the last move of an object occupy: the game applies a document in order', () => {
+    const first = move({ id: 'first', target: { name: 'crate' }, position: at(0, 0) });
+    const last = move({ id: 'last', target: { name: 'crate' }, position: at(20, 20) });
+    const byFirst = place({ id: 'byFirst', position: at(0.3, 0) });
+    const byLast = place({ id: 'byLast', position: at(20.3, 20) });
+    const all = conflictsForDocument([first, last, byFirst, byLast], withLayout([crate]));
+    // `first` is superseded: it is not an occupant and stands nowhere, so it is not tested for overlap either.
+    expect(all.map(codes)).toEqual([['duplicate-target'], ['duplicate-target', 'overlap'], [], ['overlap']]);
+    expect(all[1][1].other).toBe('byLast');
+    expect(all[3][0].other).toBe('last');
+  });
+
+  it('measures in whole millimetres, so exactly a metre apart is not an overlap at any position', () => {
+    // In doubles 1.13 - 0.13 is 0.9999999999999999, and so is hypot(0.62 - 0.02, 0.82 - 0.02); a sweep of
+    // centimetre positions found 280 of 10 001 such false hits along an axis and 2 434 of 5 001 on a 3-4-5
+    // diagonal. The data never had more than millimetres in it.
+    const a = move({ id: 'a', position: at(0.13, 0) });
+    const b = move({ id: 'b', target: silo, position: at(1.13, 0) });
+    expect(conflictsForDocument([a, b], withLayout())).toEqual([[], []]);
+    const c = move({ id: 'c', position: at(0.02, 0.02) });
+    const d = move({ id: 'd', target: silo, position: at(0.62, 0.82) });
+    expect(conflictsForDocument([c, d], withLayout())).toEqual([[], []]);
+    // One millimetre closer on the diagonal and they meet.
+    const e = move({ id: 'e', target: silo, position: at(0.62, 0.819) });
+    expect(conflictsForDocument([c, e], withLayout()).map(codes)).toEqual([['overlap'], ['overlap']]);
+    // A footprint's grown edge exactly a metre from a point (0.14 + 0.5 + 0.5 is 1.1400000000000001 in a double)...
+    const p = place({ position: at(0.14, 0) });
+    const q = move({ id: 'q', position: at(1.14, 0) });
+    expect(conflictsForDocument([p, q], withLayout())).toEqual([[], []]);
+    // ...and two footprints whose edges exactly touch.
+    const r = place({ id: 'r', position: at(0.13, 0) });
+    const s = place({ id: 's', position: at(1.13, 0) });
+    expect(conflictsForDocument([r, s], withLayout())).toEqual([[], []]);
+  });
+
+  it('finds a neighbour across a cell boundary, and a footprint from any cell it covers', () => {
+    // Cells are 4 m wide: 3.9 and 4.1 sit in different cells, 0.2 m apart.
+    const a = move({ id: 'a', position: at(3.9, 0) });
+    const b = move({ id: 'b', target: silo, position: at(4.1, 0) });
+    expect(conflictsForDocument([a, b], withLayout())).toEqual([[overlapWith('b')], [overlapWith('a')]]);
+    // A footprint straddling the boundary (3.5 to 4.5) is met from either side of it.
+    const p = place({ position: at(4, 0) });
+    const left = move({ id: 'left', position: at(3.2, 0) });
+    const right = move({ id: 'right', target: silo, position: at(4.8, 0) });
+    expect(conflictsForDocument([p, left, right], withLayout())).toEqual([
+      [overlapWith('left'), overlapWith('right')], [overlapWith('p1')], [overlapWith('p1')],
+    ]);
+    // A 12 m footprint covers four cells; a point over its far edge, a cell away from its anchor, still meets it.
+    const wide = { ...withLayout(), placeFootprint: () => ({ w: 12, d: 12, h: 1 }) };
+    const big = place({ position: at(0, 0) });
+    const edge = move({ id: 'edge', position: at(6.4, 0) });
+    expect(conflictsForDocument([big, edge], wide)).toEqual([[overlapWith('edge')], [overlapWith('p1')]]);
+    // And a pair in cells that do not touch does not meet.
+    const far = move({ id: 'far', target: silo, position: at(40, 40) });
+    expect(conflictsForDocument([a, far], withLayout())).toEqual([[], []]);
+  });
+
+  it('is a warning, so hasErrors stays false and the route still saves', () => {
+    const roof = { name: 'barn.roof', position: { x: 50, y: 0, z: 50 } };
+    const all = conflictsForDocument([move({ position: at(0.2, 0) })], withLayout([crate, roof]));
+    expect(all.map(codes)).toEqual([['overlap']]);
+    expect(all[0][0].level).toBe('warn');
+    expect(hasErrors(all)).toBe(false);
+  });
+
+  it('agrees with a pairwise scan at the caps chunks 4-6 drag at, 2 000 objects and 500 entries, in a frame', () => {
+    // A deterministic scatter (mulberry32) over the whole world, positions to the millimetre like the schema's.
+    let seed = 0x9e3779b9;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const coord = () => Math.round((rand() * 200 - 100) * 1000) / 1000;
+    const objects = Array.from({ length: 2000 }, (_, i) => ({ name: `o${i}`, position: { x: coord(), y: 0, z: coord() } }));
+    const entries: OverlayEntry[] = Array.from({ length: 500 }, (_, i) =>
+      i % 2 === 0
+        ? move({ id: `e${i}`, target: { name: `o${i}` }, position: { x: coord(), y: 2, z: coord() } })
+        : place({ id: `e${i}`, position: { x: coord(), y: 2, z: coord() } }));
+    const sizes = [1, 2, 3, 5, 9];
+    const footprint = (e: PlaceEntry) => { const s = sizes[Number(e.id.slice(1)) % sizes.length]; return { w: s, d: s, h: 1 }; };
+    const c: ConflictContext = { ...withLayout(objects), placeFootprint: footprint };
+
+    const all = conflictsForDocument(entries, c);
+
+    // The reference: the same composition and the same millimetre geometry, every entry against every occupant.
+    type Occ = { label: string; x: number; z: number; rect: { minX: number; maxX: number; minZ: number; maxZ: number } | null };
+    const mm = (m: number) => Math.round(m * 1000);
+    const moved = new Set(entries.flatMap((e) => (e.kind === 'move' && e.position ? [e.target.name] : [])));
+    const occ: Occ[] = objects.filter((o) => !moved.has(o.name)).map((o) => ({ label: o.name, x: mm(o.position.x), z: mm(o.position.z), rect: null }));
+    const byEntry = new Map<number, Occ>();
+    entries.forEach((e, i) => {
+      if (!e.position) return;
+      const { x, z } = e.position;
+      let rect: Occ['rect'] = null;
+      if (e.kind === 'place') {
+        const { w, d } = footprint(e);
+        rect = { minX: mm(x - w / 2), maxX: mm(x + w / 2), minZ: mm(z - d / 2), maxZ: mm(z + d / 2) };
+      }
+      const o: Occ = { label: e.id, x: mm(x), z: mm(z), rect };
+      occ.push(o);
+      byEntry.set(i, o);
+    });
+    const inRect = (x: number, z: number, r: NonNullable<Occ['rect']>) => x > r.minX - 500 && x < r.maxX + 500 && z > r.minZ - 500 && z < r.maxZ + 500;
+    const meet = (a: Occ, b: Occ) => {
+      if (a.rect && b.rect) return a.rect.minX < b.rect.maxX && a.rect.maxX > b.rect.minX && a.rect.minZ < b.rect.maxZ && a.rect.maxZ > b.rect.minZ;
+      if (a.rect) return inRect(b.x, b.z, a.rect);
+      if (b.rect) return inRect(a.x, a.z, b.rect);
+      return (a.x - b.x) ** 2 + (a.z - b.z) ** 2 < 1_000_000;
+    };
+    const expected = entries.map((_, i) => { const self = byEntry.get(i)!; return occ.filter((o) => o !== self && meet(self, o)).map((o) => o.label); });
+    expect(all.map((cs) => cs.map((x) => x.other))).toEqual(expected);
+    // Not vacuous: the scatter is dense enough that hundreds of pairs meet.
+    expect(expected.flat().length).toBeGreaterThan(200);
+
+    // The whole document, grid and all, well inside a frame: a median of about 1 ms on the machine that wrote
+    // this, where the pairwise reference above takes about 6 ms. The bound is loose so a slow runner does not
+    // flake, and tight enough that a grid which degenerates to a scan of everything fails.
+    const times: number[] = [];
+    for (let i = 0; i < 10; i++) { const t0 = performance.now(); conflictsForDocument(entries, c); times.push(performance.now() - t0); }
+    times.sort((x, y) => x - y);
+    expect(times[5], `median ms over 10 runs: ${times[5].toFixed(2)}`).toBeLessThan(20);
   });
 });

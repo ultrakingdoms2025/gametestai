@@ -33,7 +33,11 @@ import type { CatalogueObject } from './mapOverlay';
  * the reported spot when it does not. These rules are deliberately NOT blind
  * to parked colliders: a barrel placed on a hidden crate is a barrel nobody
  * can walk up to. So a moved crate is tested where it now stands and can never
- * "overlap" its own old position. Every entry with a position stands at it.
+ * "overlap" its own old position. Every entry with a position stands at it,
+ * except a move superseded by a later move of the same object: the game
+ * applies a document in order and the last one wins, so the earlier move
+ * stands nowhere — it is not an occupant and is not tested for overlap (it
+ * already carries `duplicate-target`).
  *
  * ── Why `{name}` targets are points ─────────────────────────────────────────
  *
@@ -45,6 +49,27 @@ import type { CatalogueObject } from './mapOverlay';
  * rotated once a real per-item size table exists (stage 2+). The bounds rule
  * tests a placement's anchor, not its footprint: the 5 m margin covers half a
  * rect many times over.
+ *
+ * ── Whole millimetres, on a 4 m bucket grid ────────────────────────────────
+ *
+ * Positions carry three places (the schema rounds them) and the ground grid is
+ * in centimetres, so nothing here has more than millimetres in it — yet in
+ * doubles "exactly a metre apart" reads as closer than a metre for about half
+ * of all centimetre positions (see `mm`). Occupants are therefore stored as
+ * millimetre integers and every geometric test is integer arithmetic.
+ *
+ * Chunks 4–6 run `conflictsForDocument` on every drag frame, at up to 2 000
+ * reported objects and 500 entries; a pairwise scan is 1.25 M distance tests
+ * a frame. `prepare` buckets every occupant into the 4 m cells its reach
+ * touches (its rect or point, grown by half the clearance) and the rule reads
+ * only the cells its own reach touches. Insert and query grow by the same
+ * amount, so two things that can meet always share a cell; the cell is a
+ * candidate filter and `occupantsMeet` still decides. Measured at the caps
+ * on a desktop (2 000 objects, 500 entries, scattered over 200 m, medians):
+ * the whole document 1.4 ms with the grid against 5.8 ms pairwise; at 4 000
+ * objects 1.9 ms against 10.5 ms; crammed into 40 m, where a cell holds
+ * dozens, 5.4 ms against 6.7 ms. A modest win, and the headroom is the point:
+ * the pairwise cost grows with objects × entries, the grid's with density.
  *
  * Imports are pure code plus erased types, so this runs in the browser and
  * in a unit test without `pg`. Nothing throws: a rule that cannot decide says
@@ -90,11 +115,40 @@ export const POINT_CLEARANCE = 1;
 /** How far a footprint rect grows when tested against a point. */
 const POINT_HALF = POINT_CLEARANCE / 2;
 const DEFAULT_FOOTPRINT = { w: 1, d: 1, h: 1 };
+/** Width of an occupancy bucket, in millimetres: a few metres, so a cell holds a handful of neighbours. */
+const CELL_MM = 4000;
 
+/**
+ * Metres to whole millimetres, the unit the data has: the schema keeps three places and the grid is in
+ * centimetres. Every comparison goes through this, because `g - 0.25` over a ground of 0.08 m is
+ * −0.17000000000000004 in a double and a bottom at exactly −0.17 would read as underground; a sweep of
+ * integer-centimetre grounds across ±50 m found 77 such false undergrounds and 316 false floatings, and the
+ * same sweep over the overlap clearance found "exactly a metre apart" reading as closer for 280 of 10 001
+ * positions along an axis and 2 434 of 5 001 on a 3-4-5 diagonal. Only the round numbers the first tests used
+ * were exact.
+ */
+const mm = (metres: number): number => Math.round(metres * 1000);
+const POINT_HALF_MM = mm(POINT_HALF);
+const CLEARANCE_SQ_MM = mm(POINT_CLEARANCE) ** 2;
+
+/** An axis-aligned footprint, in whole millimetres. */
 interface Rect { minX: number; maxX: number; minZ: number; maxZ: number }
-/** Something standing in the world: a reported object (point) or an entry (point or rect). */
-interface Occupant { key: string; label: string; x: number; z: number; rect: Rect | null }
-interface Prepared { names: Set<string>; occupants: Occupant[] }
+/**
+ * Something standing in the world, in whole millimetres: a reported object (point) or an entry (point or
+ * rect). `order` is insertion order — reported objects first, then entries in document order — so a list of
+ * neighbours gathered from several cells can be put back into a stable order.
+ */
+interface Occupant { key: string; label: string; order: number; x: number; z: number; rect: Rect | null }
+/** Every occupant by key, and the cells each one's reach touches. */
+interface Occupancy { byKey: Map<string, Occupant>; cells: Map<number, Occupant[]> }
+interface Prepared { names: Set<string>; occupancy: Occupancy }
+
+/**
+ * A cell's Map key as one integer rather than a string: `prepare` runs every drag frame and a string per cell
+ * per occupant was a measurable share of its cost. Cell indices fit ±32 767 with room to spare — the
+ * normaliser caps a position at ±20 000 m, which is ±5 000 cells.
+ */
+const cellKey = (cx: number, cz: number): number => (cx + 0x8000) * 0x10000 + (cz + 0x8000);
 
 const warn = (code: ConflictCode, detail: string, other?: string): Conflict =>
   ({ level: 'warn', code, detail, ...(other !== undefined ? { other } : {}) });
@@ -104,19 +158,37 @@ const entryKey = (index: number): string => `entry:${index}`;
 /** Detail numbers to the millimetre, the schema's own rounding: on the editor path a drag hands over raw floats. */
 const fmt = (n: number): string => String(round(n, 3));
 
-/**
- * Metres to whole millimetres, the unit the data has: the schema keeps three places and the grid is in
- * centimetres. Every comparison against a tolerance goes through this, because `g - 0.25` over a ground of
- * 0.08 m is −0.17000000000000004 in a double and a bottom at exactly −0.17 would read as underground. A sweep
- * of integer-centimetre grounds across ±50 m found 77 such false undergrounds and 316 false floatings; only
- * the round grounds the first tests used were exact.
- */
-const mm = (metres: number): number => Math.round(metres * 1000);
-
 function footprintRect(entry: PlaceEntry, ctx: ConflictContext): Rect {
   const size = ctx.placeFootprint?.(entry) ?? DEFAULT_FOOTPRINT;
   const { x, z } = entry.position;
-  return { minX: x - size.w / 2, maxX: x + size.w / 2, minZ: z - size.d / 2, maxZ: z + size.d / 2 };
+  return { minX: mm(x - size.w / 2), maxX: mm(x + size.w / 2), minZ: mm(z - size.d / 2), maxZ: mm(z + size.d / 2) };
+}
+
+/**
+ * The cells an occupant's reach touches, as inclusive cell-index ranges: its rect or its point, grown by half
+ * the clearance. Inserting and querying by the same reach is what makes the grid sound — two points closer
+ * than the clearance have reaches that overlap, a point inside a grown rect has a reach that overlaps the
+ * rect's, and two rects that intersect still intersect grown — so anything that can meet shares a cell.
+ */
+function reach(o: Occupant): [number, number, number, number] {
+  const minX = (o.rect ? o.rect.minX : o.x) - POINT_HALF_MM;
+  const maxX = (o.rect ? o.rect.maxX : o.x) + POINT_HALF_MM;
+  const minZ = (o.rect ? o.rect.minZ : o.z) - POINT_HALF_MM;
+  const maxZ = (o.rect ? o.rect.maxZ : o.z) + POINT_HALF_MM;
+  return [Math.floor(minX / CELL_MM), Math.floor(maxX / CELL_MM), Math.floor(minZ / CELL_MM), Math.floor(maxZ / CELL_MM)];
+}
+
+function addOccupant(occupancy: Occupancy, o: Occupant): void {
+  occupancy.byKey.set(o.key, o);
+  const [x0, x1, z0, z1] = reach(o);
+  for (let cx = x0; cx <= x1; cx++) {
+    for (let cz = z0; cz <= z1; cz++) {
+      const key = cellKey(cx, cz);
+      const cell = occupancy.cells.get(key);
+      if (cell) cell.push(o);
+      else occupancy.cells.set(key, [o]);
+    }
+  }
 }
 
 /** The reported names, and the occupancy of layout ∘ document (see the header). */
@@ -124,22 +196,30 @@ function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
   const names = new Set(ctx.objects.map((o) => o.name));
   // Only a move WITH a position relocates the object and its colliders. A hidden move without one leaves the
   // reported object exactly where the game put it, so the reported object stays the occupant of that spot.
-  const touched = new Set<string>();
-  for (const entry of document) if (entry.kind === 'move' && entry.position) touched.add(entry.target.name);
+  // Two such moves on one name: the game applies the document in order, so the LAST is where the object ends
+  // up and the only one of them that occupies anything.
+  const lastMove = new Map<string, number>();
+  document.forEach((entry, index) => {
+    if (entry.kind === 'move' && entry.position) lastMove.set(entry.target.name, index);
+  });
 
-  const occupants: Occupant[] = [];
+  const occupancy: Occupancy = { byKey: new Map(), cells: new Map() };
+  let order = 0;
   for (const obj of ctx.objects) {
-    if (touched.has(obj.name)) continue;
-    occupants.push({ key: `object:${obj.name}`, label: obj.name, x: obj.position.x, z: obj.position.z, rect: null });
+    if (lastMove.has(obj.name)) continue;
+    const { x, z } = obj.position;
+    addOccupant(occupancy, { key: `object:${obj.name}`, label: obj.name, order: order++, x: mm(x), z: mm(z), rect: null });
   }
   document.forEach((entry, index) => {
     // A hidden move that carries a position still sends the object's colliders there (see the header), so it
     // occupies the new spot like any other move. Only an entry with no position stands nowhere new.
     if (!entry.position) return;
+    if (entry.kind === 'move' && lastMove.get(entry.target.name) !== index) return;
     const rect = entry.kind === 'place' ? footprintRect(entry, ctx) : null;
-    occupants.push({ key: entryKey(index), label: entry.id, x: entry.position.x, z: entry.position.z, rect });
+    const { x, z } = entry.position;
+    addOccupant(occupancy, { key: entryKey(index), label: entry.id, order: order++, x: mm(x), z: mm(z), rect });
   });
-  return { names, occupants };
+  return { names, occupancy };
 }
 
 function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[], prepared: Prepared, out: Conflict[]): void {
@@ -189,6 +269,52 @@ function groundRule(pos: Vec3, ground: DecodedGround, out: Conflict[]): void {
   }
 }
 
+function rectsMeet(a: Rect, b: Rect): boolean {
+  return a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
+}
+
+function pointInRect(x: number, z: number, r: Rect, grow: number): boolean {
+  return x > r.minX - grow && x < r.maxX + grow && z > r.minZ - grow && z < r.maxZ + grow;
+}
+
+/** Whole-millimetre integers throughout (see `mm`), so exactly a metre apart is exactly not an overlap. */
+function occupantsMeet(a: Occupant, b: Occupant): boolean {
+  if (a.rect && b.rect) return rectsMeet(a.rect, b.rect);
+  if (a.rect) return pointInRect(b.x, b.z, a.rect, POINT_HALF_MM);
+  if (b.rect) return pointInRect(a.x, a.z, b.rect, POINT_HALF_MM);
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return dx * dx + dz * dz < CLEARANCE_SQ_MM;
+}
+
+/**
+ * An entry never meets itself: it is skipped by key. A moved object's old position is not in the occupancy at
+ * all, and neither is a move superseded by a later move of the same object — that entry stands nowhere, so
+ * there is nothing to test it with. Neighbours are gathered from every cell the entry's reach touches, once
+ * each (a wide footprint sits in several cells), and reported in insertion order.
+ */
+function overlapRule(index: number, occupancy: Occupancy, out: Conflict[]): void {
+  const self = occupancy.byKey.get(entryKey(index));
+  if (!self) return;
+  const [x0, x1, z0, z1] = reach(self);
+  const seen = new Set<string>([self.key]);
+  const hits: Occupant[] = [];
+  for (let cx = x0; cx <= x1; cx++) {
+    for (let cz = z0; cz <= z1; cz++) {
+      for (const other of occupancy.cells.get(cellKey(cx, cz)) ?? []) {
+        if (seen.has(other.key)) continue;
+        seen.add(other.key);
+        if (occupantsMeet(self, other)) hits.push(other);
+      }
+    }
+  }
+  hits.sort((a, b) => a.order - b.order);
+  for (const other of hits) {
+    const how = self.rect || other.rect ? 'footprint meets' : `within ${POINT_CLEARANCE} m of`;
+    out.push(warn('overlap', `${how} "${other.label}"`, other.label));
+  }
+}
+
 function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext, prepared: Prepared): Conflict[] {
   const out: Conflict[] = [];
   nameRules(entry, index, document, prepared, out);
@@ -196,6 +322,7 @@ function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntr
   if (!pos || !ctx.layout) return out;
   if (boundsRule(pos, ctx.layout, out)) return out;
   if (ctx.ground) groundRule(pos, ctx.ground, out);
+  overlapRule(index, prepared.occupancy, out);
   return out;
 }
 

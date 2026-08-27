@@ -71,10 +71,21 @@ describe('the name rules, which need no layout', () => {
     expect(codes(found)).toEqual(['stale-name']);
   });
 
-  it('does not let a hidden move that still carries a position occupy that spot: a hidden object stands nowhere', () => {
-    // The game moves the object and then hides it, so the position is real data — but nothing can collide with
-    // a hidden object. Pinned now, before the overlap rule exists, so that rule inherits the guard rather than
-    // discovering it: without it the place at the same spot would report `overlap` with `other: 'm1'`.
+  it('lets a move a kilometre out through when there is no layout to measure against', () => {
+    const far = move({ position: { x: 1000, y: 0, z: 1000 } });
+    expect(conflictsFor(far, 0, [far], ctx())).toEqual([]);
+  });
+});
+
+describe('occupancy', () => {
+  // The game's `_applyMove` clears `visible` on a hidden move and then relocates the object's colliders only
+  // when the entry carries a position. A hidden object is therefore an invisible wall: at the new spot when the
+  // move has one, at the reported spot when it does not. The rules compose occupancy that way on purpose, and
+  // these two fixtures pin it. Until the overlap rule exists nothing reads the occupants, so both pin today's
+  // output; Task 4 makes the first fixture report `overlap` with `other: 'm1'` on the place, and the second
+  // `overlap` with `other: 'crate'`.
+
+  it('lets a hidden move that still carries a position stand at that spot: its colliders go there', () => {
     const spot = { x: 50, y: 0, z: 50 };
     const beside = place({ position: spot });
     const stranger = move({ hidden: true, position: spot });
@@ -84,9 +95,11 @@ describe('the name rules, which need no layout', () => {
     expect(conflictsForDocument([known, beside], world()).map(codes)).toEqual([[], []]);
   });
 
-  it('lets a move a kilometre out through when there is no layout to measure against', () => {
-    const far = move({ position: { x: 1000, y: 0, z: 1000 } });
-    expect(conflictsFor(far, 0, [far], ctx())).toEqual([]);
+  it('leaves the reported object standing where it was when a hidden move has no position', () => {
+    const gone = move({ hidden: true, position: null, target: { name: 'crate' } });
+    const onCrate = place({ position: crate.position });
+    const all = conflictsForDocument([gone, onCrate], ctx({ layout: layout(), objects: [crate] }));
+    expect(all.map(codes)).toEqual([[], []]);
   });
 });
 

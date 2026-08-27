@@ -1,4 +1,4 @@
-import type { OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
+import { round, type OverlayEntry, type PlaceEntry, type Vec3 } from './mapOverlaySchema';
 import type { WorldLayout, DecodedGround } from './mapLayout';
 import type { CatalogueObject } from './mapOverlay';
 
@@ -25,9 +25,15 @@ import type { CatalogueObject } from './mapOverlay';
  * ── Occupancy is the layout composed with the document ─────────────────────
  *
  * A named object stands where the game reported it UNLESS this document moves
- * it (then it stands at the new position only) or hides it (then nowhere). So
- * a moved crate is tested where it now stands and can never "overlap" its own
- * old position. Every entry stands at its own position.
+ * it (then it stands at the new position only) or hides it (then its colliders
+ * stay where they are). That last is the game's own apply path: `_applyMove`
+ * in `src/systems/MapOverlay.js` clears `visible` and then relocates the
+ * object's colliders only when the entry carries a position — so a hidden
+ * object is an invisible wall, at the new spot when the move has one and at
+ * the reported spot when it does not. These rules are deliberately NOT blind
+ * to parked colliders: a barrel placed on a hidden crate is a barrel nobody
+ * can walk up to. So a moved crate is tested where it now stands and can never
+ * "overlap" its own old position. Every entry with a position stands at it.
  *
  * ── Why `{name}` targets are points ─────────────────────────────────────────
  *
@@ -36,9 +42,11 @@ import type { CatalogueObject } from './mapOverlay';
  * a point for the ground rules (bottom = `position.y`) and a 1 m disc for
  * overlap. A placement has a footprint from `placeFootprint`, 1 × 1 × 1 m by
  * default — symmetric, so `rotationY` cannot change it in stage 1; the rect is
- * rotated once a real per-item size table exists (stage 2+).
+ * rotated once a real per-item size table exists (stage 2+). The bounds rule
+ * tests a placement's anchor, not its footprint: the 5 m margin covers half a
+ * rect many times over.
  *
- * Imports are pure code plus one erased type, so this runs in the browser and
+ * Imports are pure code plus erased types, so this runs in the browser and
  * in a unit test without `pg`. Nothing throws: a rule that cannot decide says
  * nothing.
  */
@@ -93,6 +101,9 @@ const warn = (code: ConflictCode, detail: string, other?: string): Conflict =>
 
 const entryKey = (index: number): string => `entry:${index}`;
 
+/** Detail numbers to the millimetre, the schema's own rounding: on the editor path a drag hands over raw floats. */
+const fmt = (n: number): string => String(round(n, 3));
+
 function footprintRect(entry: PlaceEntry, ctx: ConflictContext): Rect {
   const size = ctx.placeFootprint?.(entry) ?? DEFAULT_FOOTPRINT;
   const { x, z } = entry.position;
@@ -102,8 +113,10 @@ function footprintRect(entry: PlaceEntry, ctx: ConflictContext): Rect {
 /** The reported names, and the occupancy of layout ∘ document (see the header). */
 function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
   const names = new Set(ctx.objects.map((o) => o.name));
+  // Only a move WITH a position relocates the object and its colliders. A hidden move without one leaves the
+  // reported object exactly where the game put it, so the reported object stays the occupant of that spot.
   const touched = new Set<string>();
-  for (const entry of document) if (entry.kind === 'move') touched.add(entry.target.name);
+  for (const entry of document) if (entry.kind === 'move' && entry.position) touched.add(entry.target.name);
 
   const occupants: Occupant[] = [];
   for (const obj of ctx.objects) {
@@ -111,9 +124,9 @@ function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
     occupants.push({ key: `object:${obj.name}`, label: obj.name, x: obj.position.x, z: obj.position.z, rect: null });
   }
   document.forEach((entry, index) => {
-    // A hidden move may still carry a position (the game moves the object, then hides it), but a hidden
-    // object stands nowhere: nothing can collide with it, so it is not an occupant.
-    if (!entry.position || (entry.kind === 'move' && entry.hidden)) return;
+    // A hidden move that carries a position still sends the object's colliders there (see the header), so it
+    // occupies the new spot like any other move. Only an entry with no position stands nowhere new.
+    if (!entry.position) return;
     const rect = entry.kind === 'place' ? footprintRect(entry, ctx) : null;
     occupants.push({ key: entryKey(index), label: entry.id, x: entry.position.x, z: entry.position.z, rect });
   });
@@ -136,15 +149,18 @@ function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[],
   });
 }
 
-function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): void {
+/** True when the position is refused. The caller stops there: a point outside the world has no ground to be under or over. */
+function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): boolean {
   const { min, max } = layout.bounds;
   for (const [axis, value, lo, hi] of [['x', pos.x, min.x, max.x], ['z', pos.z, min.z, max.z]] as const) {
     if (value < lo - BOUNDS_MARGIN || value > hi + BOUNDS_MARGIN) {
-      const detail = `${axis} = ${value} is outside the world's bounds (${lo} to ${hi}, ±${BOUNDS_MARGIN} m)`;
+      const detail = `${axis} = ${fmt(value)} is outside the world's bounds (${lo} to ${hi}, ±${BOUNDS_MARGIN} m)`;
       out.push({ level: 'error', code: 'out-of-bounds', detail });
-      return;
+      // First offending axis wins; one Conflict per entry.
+      return true;
     }
   }
+  return false;
 }
 
 function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext, prepared: Prepared): Conflict[] {
@@ -152,7 +168,7 @@ function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntr
   nameRules(entry, index, document, prepared, out);
   const pos = entry.position;
   if (!pos || !ctx.layout) return out;
-  boundsRule(pos, ctx.layout, out);
+  if (boundsRule(pos, ctx.layout, out)) return out;
   return out;
 }
 

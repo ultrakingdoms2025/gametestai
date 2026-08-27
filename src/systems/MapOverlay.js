@@ -194,11 +194,22 @@ export class MapOverlay {
     this._world = world;
 
     const document = await this._read(id);
+    const admin = document?.admin === true;
     if (!document) {
       this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
-      return;
+    } else {
+      await this._applyDocument(id, world, document, admin);
     }
 
+    /* The ground is sampled AFTER the overlay is applied, so a moved building's
+     * colliders are where the editor will draw them. Admin, or the dev switch;
+     * and only if this is still the world we are in - both awaits above are
+     * places a portal can land. */
+    if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin);
+  }
+
+  /** Apply the entries, publish, and report. Unchanged from before the sampler. */
+  async _applyDocument(id, world, document, admin) {
     const entries = Array.isArray(document.entries) ? document.entries : [];
     const applied = [];
     const unresolved = [];
@@ -216,11 +227,11 @@ export class MapOverlay {
       }
     }
 
-    const objects = document.admin ? this._catalogue(world) : [];
+    const objects = admin ? this._catalogue(world) : [];
     const report = { world: id, version: Number(document.version) || 0, applied, unresolved, objects };
     this._publish(report);
 
-    if (document.admin) await this._reportBack(report, world);
+    if (admin) await this._reportBack(report, world);
   }
 
   /** Undo everything applied to the world this system last touched. */
@@ -242,6 +253,8 @@ export class MapOverlay {
       }
     }
     this._placed.length = 0;
+    this._cancelSampling();
+    this.layoutSampled = false;
     this._world = null;
   }
 
@@ -299,8 +312,11 @@ export class MapOverlay {
   /** `world.bounds` as plain JSON and `world.minimapShapes` as Minimap.js draws them. */
   _layoutFields(world) {
     const b = world?.bounds;
-    const bounds = b?.min && b?.max
-      ? { min: { x: b.min.x, y: b.min.y, z: b.min.z }, max: { x: b.max.x, y: b.max.y, z: b.max.z } }
+    const six = b?.min && b?.max ? [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z] : null;
+    // An empty Box3 is ±Infinity, which JSON writes as null - and to the server
+    // a present `bounds` means "replace". So it is omitted unless all six are numbers.
+    const bounds = six?.every(Number.isFinite)
+      ? { min: { x: six[0], y: six[1], z: six[2] }, max: { x: six[3], y: six[4], z: six[5] } }
       : null;
     return {
       layoutSchema: LAYOUT_SCHEMA,
@@ -309,8 +325,77 @@ export class MapOverlay {
     };
   }
 
-  /** Per rendered frame. Filled in by the next commit. */
-  update() {}
+  /* ------------------------------------------------------------------ */
+  /* The ground grid                                                     */
+  /* ------------------------------------------------------------------ */
+
+  /** Start a job for `world`; `post`: to the editor (admin) or only the bus (dev switch). */
+  _startSampling(id, world, post) {
+    this._cancelSampling();
+    const plan = this.physics ? planGrid(world.bounds) : null;
+    if (!plan) return;
+    const job = createJob(plan, (x, yTop, z, maxDrop) => this._castDown(x, yTop, z, maxDrop), {
+      layers: MAX_LAYERS,
+      // The dome and a 260 m planet are both above groundHeight's 200 m default.
+      topY: world.bounds.max.y + 10,
+      floorY: world.bounds.min.y - 20,
+    });
+    job.world = id;
+    job.post = post;
+    job.startedAt = this._now();
+    this.sampling = new Promise((resolve) => { job.resolve = resolve; });
+    this._job = job;
+  }
+
+  /** The one line that touches Physics: the first WORLD surface below (x, yTop, z). */
+  _castDown(x, yTop, z, maxDrop) {
+    const hit = this.physics.raycast(
+      _rayOrigin.set(x, yTop, z), _rayDown.set(0, -1, 0), maxDrop, COLLISION_LAYER.WORLD
+    );
+    return hit ? hit.point.y : null;
+  }
+
+  /**
+   * Per rendered frame. Idle unless a job is in flight; then 2 ms of it - or,
+   * on the frame AFTER the last cell, the finish. `result()` is a ~4 ms one-off
+   * at station size and the POST's stringify another few, so they take a frame
+   * of their own rather than landing on top of the sampling that completed.
+   */
+  update() {
+    const job = this._job;
+    if (!job) return;
+    try {
+      if (job.done) this._finishSampling(job);
+      else if (job.run(SAMPLE_BUDGET_MS, this._now)) job.finishedAt = this._now();
+    } catch (err) {
+      // A cast that throws leaves the job resumable, so without this it would
+      // throw again next frame, and every frame, one cell at a time, for ever.
+      // Dropped instead; the exception never reaches the engine's frame loop.
+      this._job = null;
+      console.warn('[map-overlay] ground sampling abandoned:', err?.message ?? err);
+      job.resolve?.(null);
+    }
+  }
+
+  _finishSampling(job) {
+    const ground = job.result();
+    this._job = null;
+    const summary = {
+      world: job.world, cells: job.cells, layers: job.layers, sampledMs: job.finishedAt - job.startedAt,
+    };
+    this.layoutSampled = true;
+    this.bus?.emit?.('map-overlay:layout', summary);
+    const posted = job.post ? this._reportBack(this.report, this._world, ground) : Promise.resolve();
+    posted.then(() => job.resolve?.(summary));
+  }
+
+  /** Drop the in-flight job, if any. Its promise resolves null; nothing is posted. */
+  _cancelSampling() {
+    const job = this._job;
+    if (!job) return;
+    this._job = null;
+    job.resolve?.(null);
+  }
 
   /* ------------------------------------------------------------------ */
   /* Moving                                                              */

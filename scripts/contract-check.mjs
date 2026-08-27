@@ -963,7 +963,7 @@ const CONTRACT_V2 = [
   {
     file: 'src/systems/MapOverlay.js',
     exports: ['MapOverlay', 'grantForPlacement'],
-    methods: ['dispose'],
+    methods: ['dispose', 'update'],
   },
   /* The editor's ground grid. Pure, reached only through MapOverlay, so a
    * renamed export would surface as "the editor never gets a layout" one admin

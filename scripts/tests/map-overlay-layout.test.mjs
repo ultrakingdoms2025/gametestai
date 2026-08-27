@@ -152,3 +152,144 @@ test('a world with no bounds still reports, without a bounds field', async () =>
   assert.equal('bounds' in body, false);
   assert.deepEqual(body.shapes, rig.world.minimapShapes);
 });
+
+test('an empty Box3 (±Infinity) sends no bounds field and starts no sampling', async () => {
+  const rig = setup(doc([], { admin: true }));
+  rig.world.bounds = new THREE.Box3(); // makeEmpty: min = +Infinity, max = -Infinity
+  await enter(rig);
+  const body = rig.fetchImpl.posts()[0].body;
+  assert.equal('bounds' in body, false, 'JSON writes Infinity as null, and a present bounds key is "replace" to the server');
+  for (let n = 0; n < 10; n++) rig.engine.tick();
+  assert.equal(rig.casts(), 0, 'no grid can be planned from an empty box');
+  assert.equal(await rig.system.sampling, null);
+});
+
+/* ---------------------------------------------------- the layout report -- */
+
+test('(b) after sampling, a second POST carries a grid with two layers under the roof and one elsewhere', async () => {
+  const rig = setup(doc([], { admin: true }));
+  await enter(rig);
+  const summary = await finish(rig);
+  const posts = rig.fetchImpl.posts();
+  assert.equal(posts.length, 2, 'immediate report, then the layout report');
+  const body = posts[1].body;
+  assert.equal(body.world, 'station');
+  assert.equal(body.appliedVersion, 1);
+  assert.equal(body.layoutSchema, 1);
+  assert.deepEqual(body.bounds, BOUNDS);
+  const g = body.ground;
+  assert.deepEqual([g.originX, g.originZ, g.step, g.nx, g.nz, g.layers], [-40, -40, 4, 21, 21, 4]);
+  const h = decode(g);
+  assert.equal(h.length, 21 * 21 * 4);
+  // x = 4, z = 0: roof top at 20 m, the floor at 0, then nothing. x = 0: the roof starts at 2.
+  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 11, 10, k)), [2000, 0, NO_SAMPLE, NO_SAMPLE]);
+  assert.deepEqual([0, 1].map((k) => at(g, h, 10, 10, k)), [0, NO_SAMPLE]);
+  assert.deepEqual([0, 1].map((k) => at(g, h, 0, 0, k)), [0, NO_SAMPLE]);
+  assert.equal(rig.system.layoutSampled, true);
+  assert.deepEqual([summary.world, summary.cells, summary.layers], ['station', 441, 4]);
+  const ev = rig.bus.emitted.find((e) => e.name === 'map-overlay:layout');
+  assert.ok(ev, 'map-overlay:layout was emitted');
+  assert.equal(ev.payload.cells, 441);
+  assert.equal(typeof ev.payload.sampledMs, 'number');
+});
+
+test('(c) one frame samples about one cell at 1 ms per cast, and the job resumes on the next', async () => {
+  const rig = setup(doc([], { admin: true }), { clockPerCast: 1 });
+  await enter(rig);
+  assert.equal(rig.casts(), 0, 'applying the overlay casts nothing');
+  rig.engine.tick(0.016);
+  assert.ok(rig.casts() >= 1 && rig.casts() <= 3, `one 2 ms frame cast ${rig.casts()} rays`);
+  assert.equal(rig.system.layoutSampled, false);
+  assert.equal(rig.fetchImpl.posts().length, 1, 'no layout POST mid-job');
+  await finish(rig);
+  assert.equal(rig.fetchImpl.posts().length, 2);
+  assert.ok(rig.casts() >= 441 * 2, `every cell cast at least twice, got ${rig.casts()}`);
+});
+
+test('(d) leaving the world mid-job posts no layout for it, and the promise resolves null', async () => {
+  const rig = setup(doc([], { admin: true }), { clockPerCast: 1 });
+  await enter(rig);
+  rig.engine.tick();
+  rig.engine.tick();
+  assert.equal(rig.system.layoutSampled, false, 'two frames is two cells of 441');
+  const first = rig.system.sampling;
+  // A portal (the GET answers the station document, not this world's: no new job), then enough frames
+  // to FINISH the old job if alive - ticked BEFORE the await, so a broken cancel is red, never a hang.
+  rig.bus.emit('world:changed', { id: 'elsewhere', world: makeWorld('elsewhere') });
+  await rig.system.applying;
+  for (let n = 0; n < 2000; n++) rig.engine.tick();
+  assert.equal(await first, null, 'the abandoned job resolves null');
+  assert.equal(rig.fetchImpl.posts().filter((p) => p.body.ground).length, 0, 'no layout POST for a world we left');
+  assert.equal(rig.system.layoutSampled, false);
+  assert.ok(rig.casts() < 441 * 2, 'the old job did not keep casting after we left');
+});
+
+test('(e) forceLayout samples without an admin, emits the event, and never posts', async () => {
+  const rig = setup(doc([], { admin: false }), { forceLayout: true });
+  await enter(rig);
+  const summary = await finish(rig);
+  assert.equal(rig.system.layoutSampled, true);
+  assert.equal(summary.cells, 441);
+  assert.ok(rig.bus.emitted.some((e) => e.name === 'map-overlay:layout'));
+  assert.equal(rig.fetchImpl.posts().length, 0, 'no admin session, so nothing to accept a POST');
+});
+
+test('a player who is neither admin nor forcing the switch never casts a ray', async () => {
+  const rig = setup(doc([], { admin: false }));
+  await enter(rig);
+  for (let n = 0; n < 50; n++) rig.engine.tick();
+  assert.equal(rig.casts(), 0);
+  assert.equal(await rig.system.sampling, null);
+});
+
+test('dispose drops the frame subscription and the job', async () => {
+  const rig = setup(doc([], { admin: true }), { clockPerCast: 1 });
+  await enter(rig);
+  rig.engine.tick();
+  assert.equal(rig.engine.updaters.size, 1);
+  const pending = rig.system.sampling;
+  rig.system.dispose();
+  assert.equal(rig.engine.updaters.size, 0);
+  assert.equal(await pending, null);
+});
+
+test('a cast that throws abandons the job on that frame: one warning, null, and no further casts', async () => {
+  const rig = setup(doc([], { admin: true }));
+  await enter(rig);
+  let threw = 0;
+  rig.physics.raycast = () => { threw++; throw new Error('broadphase on fire'); };
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    // The frame that throws, then four that must find no job. Were the exception to escape
+    // update(), tick() would throw here and the test would fail on it.
+    for (let n = 0; n < 5; n++) rig.engine.tick();
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(threw, 1, 'a job whose cast throws is dropped, not resumed one cell per frame forever');
+  assert.equal(warned.filter((w) => w.includes('ground sampling abandoned')).length, 1, `warned once: ${warned}`);
+  assert.equal(await rig.system.sampling, null);
+  assert.equal(rig.system.layoutSampled, false);
+  assert.equal(rig.fetchImpl.posts().length, 1, 'the immediate report only');
+});
+
+/* ------------------------------------------------------------ the peel -- */
+
+test('two surfaces 2 cm apart are two layers: the peel re-casts from below the last hit', async () => {
+  const rig = setup(doc([], { admin: true }));
+  // Two 1 cm slabs over x ∈ [-38, -22] with tops at 10.00 and 9.98 and 1 cm of air between
+  // them. The re-cast starts PEEL (1 cm) below the first top: on the first slab's underside
+  // (missed - a ray on a face has tmin 0) and above the second top. Note the boundary this
+  // pins from the outside: a top EXACTLY 1 cm down sits on the re-cast origin and is usually
+  // missed, so the game resolves surfaces MORE than 1 cm apart, while the site's grid is cm.
+  rig.physics.addBox(-30, 9.995, 0, 8, 0.005, 100);
+  rig.physics.addBox(-30, 9.975, 0, 8, 0.005, 100);
+  await enter(rig);
+  await finish(rig);
+  const g = rig.fetchImpl.posts()[1].body.ground;
+  const h = decode(g);
+  // cell (1, 10) is x = -36, z = 0.
+  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 1, 10, k)), [1000, 998, 0, NO_SAMPLE]);
+});

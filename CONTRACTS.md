@@ -82,6 +82,8 @@ Emit and listen only to these. Adding an event is fine — document it in your r
 | `world:changed` | `{id, world}` | WorldManager |
 | `world:ready` | `{id}` | main |
 | `worlds:all-ready` | — | main |
+| `map-overlay:applied` | `{world, version, applied, unresolved, objects}` | MapOverlay |
+| `map-overlay:layout` | `{world, cells, layers, sampledMs}` | MapOverlay |
 | `player:spawned` | `{position}` | Player |
 | `player:damaged` | `{amount, health, maxHealth, sourcePosition}` | Combat |
 | `player:healed` | `{amount, health, maxHealth}` | Player |

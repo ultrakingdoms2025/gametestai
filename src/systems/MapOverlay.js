@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { ITEMS } from './ItemDefs.js';
 import { consumableItemFor } from './Marketplace.js';
+import { COLLISION_LAYER } from '../physics/Physics.js';
+import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
 
 /**
  * The admin map editor's placement overlay, applied to a world the game built.
@@ -73,6 +75,17 @@ const _delta = new THREE.Vector3();
 const _box = new THREE.Box3();
 const _shift = new THREE.Matrix4();
 
+/** The sampler's ray. Two scratch vectors, reused for every cast of every cell. */
+const _rayOrigin = new THREE.Vector3();
+const _rayDown = new THREE.Vector3();
+
+/**
+ * How much of a frame the ground sampler may take (spec §7). A clock, not a
+ * ray count: a cell in a dense district costs more than one over open floor,
+ * and the frame does not care which it was.
+ */
+const SAMPLE_BUDGET_MS = 2;
+
 /**
  * Resolve a marketplace item to the inventory stack a placed pickup holds.
  *
@@ -109,22 +122,29 @@ export function grantForPlacement(item) {
 
 export class MapOverlay {
   /**
-   * @param {{
-   *   bus: import('../core/EventBus.js').EventBus,
-   *   physics?: import('../physics/Physics.js').Physics,
-   *   loot?: import('./Loot.js').LootSystem,
-   *   fetch?: typeof fetch,
-   *   endpoint?: string,
-   *   reportEndpoint?: string,
-   * }} ctx
+   * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
+   *   loot?: import('./Loot.js').LootSystem, engine?: { onFrameUpdate(fn: (dt:number) => void): () => void },
+   *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string }} ctx
+   *   `engine` ticks the ground sampler; `forceLayout` (the `?layout=sample`
+   *   dev switch) samples without an admin session and never posts; `now` is
+   *   the sampler's clock, injectable so a test can own the frame.
    */
-  constructor({ bus, physics, loot, fetch: fetchImpl, endpoint, reportEndpoint } = {}) {
+  constructor({ bus, physics, loot, engine, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.loot = loot ?? null;
+    this.forceLayout = forceLayout === true;
     this.endpoint = endpoint ?? READ_ENDPOINT;
     this.reportEndpoint = reportEndpoint ?? REPORT_ENDPOINT;
     this._fetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    this._now = typeof now === 'function' ? now : () => performance.now();
+
+    /** True once the CURRENT world's ground grid has been sampled; reset on `world:changed`. */
+    this.layoutSampled = false;
+    /** Resolves with the `map-overlay:layout` payload, or null if the world was left first. */
+    this.sampling = Promise.resolve(null);
+    /** The in-flight sampling job, or null. @see update */
+    this._job = null;
 
     /**
      * The promise for the world change currently being applied, or null.
@@ -154,6 +174,10 @@ export class MapOverlay {
         })
       );
     }
+    /* Once, for the life of the system - not per world. Idle when there is
+     * no job; frame-gaps attributes it as `u:mapOverlay` because it is named
+     * `update`. Not called while the engine is paused. */
+    if (engine?.onFrameUpdate) this._offs.push(engine.onFrameUpdate((dt) => this.update(dt)));
   }
 
   /* ------------------------------------------------------------------ */
@@ -196,7 +220,7 @@ export class MapOverlay {
     const report = { world: id, version: Number(document.version) || 0, applied, unresolved, objects };
     this._publish(report);
 
-    if (document.admin) await this._reportBack(report);
+    if (document.admin) await this._reportBack(report, world);
   }
 
   /** Undo everything applied to the world this system last touched. */
@@ -247,7 +271,7 @@ export class MapOverlay {
     this.bus?.emit?.('map-overlay:applied', report);
   }
 
-  async _reportBack(report) {
+  async _reportBack(report, world, ground = null) {
     if (!this._fetch) return;
     try {
       await this._fetch(this.reportEndpoint, {
@@ -259,6 +283,10 @@ export class MapOverlay {
           objects: report.objects,
           applied: report.applied,
           unresolved: report.unresolved,
+          // The layout fields every report carries, and - on the second
+          // report of a visit only - the sampled ground.
+          ...this._layoutFields(world),
+          ...(ground ? { ground } : {}),
         }),
       });
     } catch (err) {
@@ -267,6 +295,22 @@ export class MapOverlay {
       console.warn('[map-overlay] could not report to the editor:', err?.message ?? err);
     }
   }
+
+  /** `world.bounds` as plain JSON and `world.minimapShapes` as Minimap.js draws them. */
+  _layoutFields(world) {
+    const b = world?.bounds;
+    const bounds = b?.min && b?.max
+      ? { min: { x: b.min.x, y: b.min.y, z: b.min.z }, max: { x: b.max.x, y: b.max.y, z: b.max.z } }
+      : null;
+    return {
+      layoutSchema: LAYOUT_SCHEMA,
+      ...(bounds ? { bounds } : {}),
+      shapes: Array.isArray(world?.minimapShapes) ? world.minimapShapes : [],
+    };
+  }
+
+  /** Per rendered frame. Filled in by the next commit. */
+  update() {}
 
   /* ------------------------------------------------------------------ */
   /* Moving                                                              */

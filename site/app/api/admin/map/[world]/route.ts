@@ -10,6 +10,7 @@ import {
   readWorldReport,
   revertOverlayTo,
   saveOverlayVersion,
+  type WorldReport,
 } from '@/lib/mapOverlay';
 
 /**
@@ -63,12 +64,21 @@ export async function GET(request: Request, ctx: { params: Promise<{ world: stri
   const db = makeClient();
   await db.connect();
   try {
-    const [overlay, versions, report] = await Promise.all([
+    const [overlay, versions, stored] = await Promise.all([
       readCurrentOverlay(db, world),
       listOverlayVersions(db, world),
       readWorldReport(db, world),
     ]);
-    return NextResponse.json({ world, overlay, versions, report });
+    // One read serves both. `report` keeps its shape for the panel that already reads it; the layout
+    // rides BESIDE it (a 700 KB grid is not catalogue), and `reportedAt` is lifted so the editor can show the map's age.
+    // `reportedAt` is when the game last REPORTED — any report, including the immediate one that carries no
+    // ground yet — not when the layout last changed; the editor's banner says "reported N min ago", which is that.
+    // The annotation is load bearing: a sixth field on this literal is a type error, not a wider `report`.
+    const report: WorldReport | null = stored && {
+      appliedVersion: stored.appliedVersion, objects: stored.objects, applied: stored.applied,
+      unresolved: stored.unresolved, reportedAt: stored.reportedAt,
+    };
+    return NextResponse.json({ world, overlay, versions, report, layout: stored?.layout ?? null, reportedAt: stored?.reportedAt ?? null });
   } catch (err) {
     console.error('[admin/map] read failed:', err);
     return NextResponse.json({ error: 'Could not read the overlay.' }, { status: 500 });

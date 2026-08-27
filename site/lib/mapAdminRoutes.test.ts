@@ -195,6 +195,34 @@ describe('GET /api/admin/map/[world]', () => {
     expect(res.status).toBe(404);
     expect(store.readCurrentOverlay).not.toHaveBeenCalled();
   });
+
+  it('returns layout null and reportedAt null for a world nobody has visited', async () => {
+    signedInAs(ADMIN);
+    const body = await (await get()).json();
+    expect(body.report).toBeNull();
+    expect(body.layout).toBeNull();
+    expect(body.reportedAt).toBeNull();
+  });
+
+  /**
+   * `layout` is lifted BESIDE `report`, not left inside it: the panel that reads `report` today
+   * must see exactly the five fields it always did, so the test pins the absence as well as the presence.
+   */
+  it('returns the stored layout and its age from the one report read, beside an unchanged report', async () => {
+    signedInAs(ADMIN);
+    const layout = {
+      schema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [],
+      ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
+    };
+    const report = { appliedVersion: 2, objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
+    store.readWorldReport.mockResolvedValue({ ...report, layout });
+    const body = await (await get()).json();
+    expect(body.layout).toEqual(layout);
+    expect(body.reportedAt).toBe(report.reportedAt);
+    expect(body.report).toEqual(report);
+    expect(body.report.layout).toBeUndefined();
+    expect(store.readWorldReport).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /api/admin/map/[world]', () => {

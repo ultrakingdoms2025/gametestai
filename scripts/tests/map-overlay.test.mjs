@@ -6,7 +6,8 @@ import path from 'node:path';
 import * as THREE from 'three';
 
 import { Physics, COLLISION_LAYER } from '../../src/physics/Physics.js';
-import { MapOverlay } from '../../src/systems/MapOverlay.js';
+import { MapOverlay, grantForPlacement } from '../../src/systems/MapOverlay.js';
+import { MOUNT_STATS } from '../../src/mounts/Livery.js';
 
 /**
  * THE PLACEMENT OVERLAY, APPLIED TO A WORLD THE GAME ACTUALLY BUILT.
@@ -120,7 +121,19 @@ function doc(entries, { version = 1, admin = false, world = 'station' } = {}) {
   return { world, schema: 1, version, entries, admin };
 }
 
-function setup(overlay, { world = makeWorld(), fail = false } = {}) {
+/**
+ * The two MountManager reads a placed mount upgrade needs, over the REAL
+ * `MOUNT_STATS` table (Fire is a dragon's alone) and a hand-set ledger of
+ * what the rider already owns.
+ */
+function makeMounts(owned = {}) {
+  return {
+    sellsPower: (mount, power) => (MOUNT_STATS[mount] ?? []).includes(power),
+    getPowers: (mount) => ({ ...(owned[mount] ?? {}) }),
+  };
+}
+
+function setup(overlay, { world = makeWorld(), fail = false, mounts = null } = {}) {
   const bus = makeBus();
   const physics = new Physics(bus);
   const loot = makeLoot();
@@ -128,7 +141,7 @@ function setup(overlay, { world = makeWorld(), fail = false } = {}) {
   // document to stand for "the admin saved a new version": an admitted
   // document is frozen, so editing one in place is a TypeError, not a save.
   const fetchImpl = makeFetch(overlay, { fail });
-  const system = new MapOverlay({ bus, physics, loot, fetch: fetchImpl });
+  const system = new MapOverlay({ bus, physics, loot, mounts, fetch: fetchImpl });
   return { bus, physics, loot, fetchImpl, system, world, doc: overlay };
 }
 
@@ -1188,6 +1201,117 @@ test('credits are never placeable, however the catalogue is authored', async () 
   await enter(rig);
   assert.equal(rig.loot.spawned.length, 0);
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'p4', reason: 'item' }]);
+});
+
+/* ------------------------------------------------------------------ */
+/* Placing a mount upgrade                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The nine. An admin placed Bicycle Speed I-III, Bicycle Acceleration I-III
+ * and Hoverboard Speed I-III on station, and the game refused all nine with
+ * `item`: a mount power is not a bag item, and nothing could lay one on the
+ * ground. Now it can. A placed upgrade is a pickup whose contents carry the
+ * GRANT rather than an item id, and collecting it grants the tier the way a
+ * purchase does. Three owner decisions, each pinned below: once per account
+ * (the pickup does not spawn for a rider who already owns the tier or
+ * higher); a power the mount does not sell is refused with the existing
+ * reason `item`; and a tier is not a stack, so `quantity` is ignored.
+ */
+const bicycleSpeedIII = {
+  kind: 'place',
+  id: 'p5',
+  item: {
+    source_key: 'mount_bicycle_power_3:station',
+    name: 'Bicycle Speed III',
+    config: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3 },
+  },
+  position: { x: 12, y: 2, z: -4 },
+  quantity: 1,
+};
+
+test('grantForPlacement resolves a mount upgrade to a grant, through the parser a purchase uses, carrying the catalogue name', () => {
+  assert.deepEqual(grantForPlacement(bicycleSpeedIII.item), {
+    grant: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' },
+  });
+  // The parser's defaults are the purchase's: a missing mount is the car, a
+  // missing tier is I, and a missing power is no grant at all.
+  assert.deepEqual(grantForPlacement({ source_key: 'x', name: 'Mount Power', config: { effect: 'grant_mount_power', power: 'power' } }), {
+    grant: { effect: 'grant_mount_power', mount: 'car', power: 'power', tier: 1, name: 'Mount Power' },
+  });
+  assert.equal(grantForPlacement({ source_key: 'x', name: 'x', config: { effect: 'grant_mount_power', mount: 'horse' } }), null);
+});
+
+test('a placed mount upgrade spawns one persistent pickup whose contents carry the grant, not an item id', async () => {
+  const rig = setup(doc([bicycleSpeedIII]), { mounts: makeMounts() });
+  await enter(rig);
+
+  assert.deepEqual(rig.system.report.unresolved, []);
+  assert.deepEqual(rig.system.report.applied, [{ id: 'p5', ok: true, colliders: 0 }]);
+  assert.equal(rig.loot.spawned.length, 1);
+  const p = rig.loot.spawned[0];
+  assert.deepEqual(p.contents, [
+    { grant: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' }, qty: 1 },
+  ]);
+  assert.equal(p.opts.persistent, true);
+  assert.equal(p.opts.snap, false);
+  assert.equal(p.opts.tag, 'overlay:p5');
+  assert.deepEqual([p.position.x, p.position.y, p.position.z], [12, 2, -4]);
+});
+
+test('once per account: a rider who already owns the tier, or a higher one, finds no pickup - and the entry still reads as applied', async () => {
+  for (const owned of [3, 2 + 1, 5]) {
+    const rig = setup(doc([bicycleSpeedIII]), { mounts: makeMounts({ bicycle: { power: owned } }) });
+    await enter(rig);
+    assert.equal(rig.loot.spawned.length, 0, `owning tier ${owned} must not spawn a tier-3 pickup`);
+    assert.deepEqual(rig.system.report.unresolved, []);
+    assert.deepEqual(rig.system.report.applied, [{ id: 'p5', ok: true, colliders: 0 }]);
+  }
+  // A lower tier is still worth walking to.
+  const rig = setup(doc([bicycleSpeedIII]), { mounts: makeMounts({ bicycle: { power: 2 } }) });
+  await enter(rig);
+  assert.equal(rig.loot.spawned.length, 1);
+});
+
+test('a power the mount does not sell (Fire on a horse) is refused with the existing reason `item`, and nothing is spawned', async () => {
+  const rig = setup(
+    doc([
+      {
+        kind: 'place',
+        id: 'p6',
+        item: { source_key: 'mount_horse_fire_1:station', name: 'Horse Fire I', config: { effect: 'grant_mount_power', mount: 'horse', power: 'fire', tier: 1 } },
+        position: { x: 0, y: 0, z: 0 },
+        quantity: 1,
+      },
+    ]),
+    { mounts: makeMounts() }
+  );
+  await enter(rig);
+  assert.equal(rig.loot.spawned.length, 0);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'p6', reason: 'item' }]);
+});
+
+test('a game with no mounts to ask cannot vouch for a mount upgrade: refused `item`, as before', async () => {
+  const rig = setup(doc([bicycleSpeedIII]));
+  await enter(rig);
+  assert.equal(rig.loot.spawned.length, 0);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'p5', reason: 'item' }]);
+});
+
+test('a tier is not a stack: quantity 5 is still one pickup holding one grant', async () => {
+  const rig = setup(doc([{ ...bicycleSpeedIII, quantity: 5 }]), { mounts: makeMounts() });
+  await enter(rig);
+  assert.equal(rig.loot.spawned.length, 1);
+  assert.equal(rig.loot.spawned[0].contents.length, 1);
+  assert.equal(rig.loot.spawned[0].contents[0].qty, 1);
+});
+
+test('re-entering the world despawns and re-spawns a placed mount upgrade exactly as it does an ammo pack', async () => {
+  const rig = setup(doc([bicycleSpeedIII]), { mounts: makeMounts() });
+  await enter(rig);
+  await enter(rig);
+  assert.equal(rig.loot.despawned.length, 1);
+  assert.equal(rig.loot.spawned.filter((p) => p.active).length, 1);
 });
 
 /* ------------------------------------------------------------------ */

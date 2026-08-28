@@ -256,8 +256,10 @@ export function MapEditorPanel() {
   const objects = useMemo<CatalogueObject[]>(() => report?.objects ?? [], [report]);
 
   /* The Place list offers what the game's applier can spawn and nothing
-   * else (`placeableReason`): nine mount upgrades placed on station were all
-   * refused with `item`, and the list that had offered them was the defect.
+   * else (`placeableReason`): nine mount upgrades placed on station were once
+   * all refused with `item`, and the list that had offered them was the
+   * defect; the game now lays a mount upgrade down as a once-per-account
+   * pickup, so those are offered again, and cosmetics and heals are not.
    * The hidden rows are counted under the list, so a short list reads as a
    * rule and not as a catalogue that failed to load. */
   const { placeable, hidden } = useMemo(() => partitionPlaceable(catalogue), [catalogue]);

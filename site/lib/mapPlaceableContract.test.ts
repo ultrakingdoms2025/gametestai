@@ -74,6 +74,18 @@ describe('the placeable contract between the game and mapPlaceable.ts', () => {
     }
   });
 
+  it('the mount route: grantForPlacement resolves a mount upgrade through the parser a purchase uses, and that parser reads grant_mount_power', (ctx) => {
+    if (!existsSync(APPLIER) || !existsSync(MARKETPLACE)) return ctx.skip(NOT_MERGED);
+    const applier = /export function grantForPlacement\([\s\S]*?\n\}/.exec(readFileSync(APPLIER, 'utf8'))?.[0] ?? '';
+    expect(applier, 'MapOverlay.js holds no grantForPlacement to read').not.toBe('');
+    // ONE parser for a purchase and a placement, so the two cannot disagree about what a row grants.
+    expect(applier).toMatch(/mountPowerGrantFor\(/);
+    const parser = /export function mountPowerGrantFor\([\s\S]*?\n\}/.exec(readFileSync(MARKETPLACE, 'utf8'))?.[0] ?? '';
+    expect(parser, 'Marketplace.js exports no mountPowerGrantFor to read').not.toBe('');
+    expect(parser).toMatch(/effect !== ['"]grant_mount_power['"]/);
+    expect(placeableReason({ source_key: 'unmapped', config: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3 } })).toBeNull();
+  });
+
   it('reads the three shapes from a fixture, so a game-side rewrite into a shape this cannot read fails loud rather than passing empty', () => {
     const marketplace = [
       'const MARKETPLACE_CONSUMABLE_ITEMS = {',

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ITEMS } from './ItemDefs.js';
-import { consumableItemFor } from './Marketplace.js';
+import { consumableItemFor, mountPowerGrantFor } from './Marketplace.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
 import { versionOf } from './overlayVersion.js';
@@ -138,19 +138,33 @@ const _rayDown = new THREE.Vector3();
 const SAMPLE_BUDGET_MS = 2;
 
 /**
- * Resolve a marketplace item to the inventory stack a placed pickup holds.
+ * Resolve a marketplace item to what a placed pickup holds: the inventory
+ * stack it grants, or - for a mount upgrade - the GRANT itself.
  *
  * The precedence follows `Marketplace._purchaseGrant`, which is what a PURCHASE
  * of the same row grants — a placed item and a bought item must be the same
  * thing, or the editor is quietly authoring a second economy.
  *
- * @param {{source_key?:string, config?:Record<string,any>}} item
- * @returns {{itemId:string, qty:number}|null}
+ * A mount upgrade is not stock: it raises a power tier on the rider's mount.
+ * Nine of them - Bicycle Speed I-III, Bicycle Acceleration I-III, Hoverboard
+ * Speed I-III - were placed on station and refused, with nothing to say why
+ * beyond `item`. They resolve here to `{ grant }`, through the SAME parser a
+ * purchase uses (`mountPowerGrantFor`), carrying the catalogue's name so the
+ * pickup is labelled as the shop labels it; `_applyPlace` and `Loot` do the
+ * rest.
+ *
+ * @param {{source_key?:string, name?:string, config?:Record<string,any>}} item
+ * @returns {{itemId:string, qty:number}|{grant:{effect:'grant_mount_power', mount:string, power:string, tier:number, name:string}}|null}
  */
 export function grantForPlacement(item) {
   const config = item?.config ?? {};
   const key = String(item?.source_key ?? '');
 
+  const power = mountPowerGrantFor(config);
+  if (power) {
+    const name = typeof item?.name === 'string' ? item.name : '';
+    return { grant: { effect: 'grant_mount_power', ...power, name } };
+  }
   if (config.effect === 'grant_ammo' && typeof config.ammo_item === 'string') {
     return { itemId: config.ammo_item, qty: Math.max(1, Math.floor(Number(config.amount) || 1)) };
   }
@@ -202,15 +216,20 @@ export class MapOverlay {
   /**
    * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
    *   loot?: import('./Loot.js').LootSystem, engine?: { onFrameUpdate(fn: (dt:number) => void): () => void },
+   *   mounts?: { sellsPower(mount:string, power:string): boolean, getPowers(mount:string): Record<string, number> },
    *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string }} ctx
-   *   `engine` ticks the ground sampler; `forceLayout` (the `?layout=sample`
-   *   dev switch) samples without an admin session and never posts; `now` is
-   *   the sampler's clock, injectable so a test can own the frame.
+   *   `engine` ticks the ground sampler; `mounts` is read - never written - so
+   *   a placed mount upgrade can be refused for a power the mount does not
+   *   sell and withheld from a rider who already owns it; `forceLayout` (the
+   *   `?layout=sample` dev switch) samples without an admin session and never
+   *   posts; `now` is the sampler's clock, injectable so a test can own the
+   *   frame.
    */
-  constructor({ bus, physics, loot, engine, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint } = {}) {
+  constructor({ bus, physics, loot, engine, mounts, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.loot = loot ?? null;
+    this.mounts = mounts ?? null;
     this.forceLayout = forceLayout === true;
     this.endpoint = endpoint ?? READ_ENDPOINT;
     this.reportEndpoint = reportEndpoint ?? REPORT_ENDPOINT;
@@ -1071,7 +1090,16 @@ export class MapOverlay {
 
   _applyPlace(world, entry, applied, unresolved) {
     const grant = grantForPlacement(entry.item);
-    if (!grant || NEVER_PLACEABLE.has(grant.itemId) || !ITEMS[grant.itemId]) {
+    /* A mount upgrade is refused with the SAME reason as an unknown item when
+     * the mount does not sell the power (Fire on a horse): `MountManager.
+     * grantPower` would drop the grant silently, and a pickup that grants
+     * nothing is a lie on the ground. No `mounts` to ask is the same refusal -
+     * a game that cannot vouch for the grant does not spawn it. The reason
+     * set is pinned by site/lib/mapReasonsContract.test.ts; `item` is what
+     * these nine rows were always refused with, and the editor's row now
+     * says so beside the name. */
+    const power = grant?.grant ?? null;
+    if (!grant || (power ? !this.mounts?.sellsPower?.(power.mount, power.power) : NEVER_PLACEABLE.has(grant.itemId) || !ITEMS[grant.itemId])) {
       unresolved.push({ id: String(entry.id ?? ''), reason: 'item' });
       return;
     }
@@ -1086,8 +1114,27 @@ export class MapOverlay {
       return;
     }
 
+    /* ONCE PER ACCOUNT (owner decision). A rider who already holds the tier,
+     * or a higher one, finds no pickup: `grantPower` is max(existing, tier),
+     * so collecting it would change nothing, and a pickup that changes
+     * nothing is one the player walks to for nothing. The entry is reported
+     * APPLIED, not unresolved - the grant's whole effect is already in force
+     * on this account, which is what "applied" means for it; there is
+     * nothing for the admin to fix, and no new field goes on the wire. The
+     * pickup dies on collection (`Loot._collect`), so the next visit lands
+     * here rather than spawning it again. */
+    if (power) {
+      const owned = Number(this.mounts.getPowers?.(power.mount)?.[power.power] ?? 0);
+      if (owned >= power.tier) {
+        applied.push({ id: String(entry.id ?? ''), ok: true, colliders: 0 });
+        return;
+      }
+    }
+
+    /* A tier is not a stack: `quantity` multiplies an item's count and is
+     * ignored for a grant, which holds exactly one. */
     const count = Math.max(1, Math.floor(Number(entry.quantity) || 1));
-    const contents = [{ itemId: grant.itemId, qty: grant.qty * count }];
+    const contents = power ? [{ grant: power, qty: 1 }] : [{ itemId: grant.itemId, qty: grant.qty * count }];
 
     /* `persistent` exempts it from the fade timer and from pool recycling — a
      * placed item is a feature of the map, not litter from a firefight, and must

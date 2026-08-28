@@ -8,13 +8,18 @@
  * game refused all nine with `unresolved: [{ id, reason: 'item' }]`. The report card printed nine ids
  * beside "not a placeable item", with no item name, and the admin — who had also been fighting the ground
  * grid that week — read it as a Y problem. It was never a Y problem: a mount power is applied to the
- * rider, and nothing in the game can lay one on the ground.
+ * rider, and at the time nothing in the game could lay one on the ground. For one release this module
+ * hid the nine. Now the game CAN lay one down — `grantForPlacement` resolves a `grant_mount_power` row
+ * to a grant, `Loot` spawns a pickup that carries it, and collecting it emits the purchase's own
+ * `mount:power:buy` at cost 0, once per account — and the nine are offered again.
  *
  * ── The rule, mirrored from the game ──────────────────────────────────────────────────────────────
  *
- * `grantForPlacement` in `src/systems/MapOverlay.js` resolves a placed item to the inventory stack a
- * pickup holds, in this order, and `_applyPlace` refuses with `reason: 'item'` when it answers null:
+ * `grantForPlacement` in `src/systems/MapOverlay.js` resolves a placed item to what a pickup holds, in
+ * this order, and `_applyPlace` refuses with `reason: 'item'` when it answers null:
  *
+ *   0. `config.effect === 'grant_mount_power'` with a string `config.power` → the GRANT (mount, power,
+ *      tier), through the parser a purchase uses (`mountPowerGrantFor` in `Marketplace.js`).
  *   1. `config.effect === 'grant_ammo'` with a string `config.ammo_item`  → that ammo.
  *   2. `config.effect === 'grant_item'` with a string `config.item_id`    → that item.
  *   3. `consumableItemFor(source_key)`: the key, or the key with its trailing `:<world>` stamp cut, is
@@ -25,22 +30,29 @@
  *   4. `ITEMS[source_key]`, again with or without the world stamp → the key is itself an item id.
  *
  * Then `_applyPlace` refuses an item id in `NEVER_PLACEABLE` (`credits` — a balance, not a pickup) or
- * one `ITEMS` does not define.
+ * one `ITEMS` does not define, and refuses a mount grant — with the same `item` — when the mount does
+ * not SELL the power (`MountManager.sellsPower`: Fire is a dragon's alone).
  *
- * This module mirrors 1, 2, 3 and the `credits` refusal exactly, and the consumable key set and the
- * two effect/field pairs are held equal to the game's source text by `mapPlaceableContract.test.ts`, so
- * a key the game adds or drops fails a test here rather than hiding or offering the wrong row. It
- * cannot mirror 4 or the `ITEMS` check: the item table is game source the site does not see. So the
- * verdict here is the editor's, not the game's — a row this offers can still come back `item` if its
- * `item_id` names nothing the game defines, and the pending row then says so from the report
+ * This module mirrors 0, 1, 2, 3 and the `credits` refusal, and the consumable key set, the two
+ * effect/field pairs and the mount route are held equal to the game's source text by
+ * `mapPlaceableContract.test.ts`, so a key the game adds or drops fails a test here rather than hiding
+ * or offering the wrong row. It cannot mirror 4, the `ITEMS` check, or `sellsPower`: the item table and
+ * the mount stat table are game source the site does not see. So the verdict here is the editor's, not
+ * the game's — a row this offers can still come back `item` if its `item_id` names nothing the game
+ * defines or its mount does not sell the power, and the pending row then says so from the report
  * (`rowsWithVerdicts` in `mapEditorState.ts`). The game's `item` reason remains the final word.
+ *
+ * For a mount row this asks a little MORE than the game's parser does: a string `mount` (the game
+ * defaults a missing one to the car) and an integer `tier` of 1 to 3 (the game clamps to at least 1 and
+ * caps nothing). Every seeded row satisfies both; a row that does not is a hand-authored one, and
+ * offering it would place a grant the catalogue never sells.
  *
  * ── Why hide rather than grey out ─────────────────────────────────────────────────────────────────
  *
  * A greyed row still has to be explained on hover, one row at a time, and the list is 200 long. One
- * line under the list — "N items cannot be placed in a world (mount powers, cosmetics) — they are
- * granted by purchase" — says it once for all of them, and the admin who wants a mount power on a
- * player knows where it is sold.
+ * line under the list — "N items cannot be placed in a world (cosmetics, heals) — they are granted by
+ * purchase" — says it once for all of them, and the admin who wants a cosmetic on a player knows where
+ * it is sold.
  */
 
 /** The `MARKETPLACE_CONSUMABLE_ITEMS` keys of `src/systems/Marketplace.js` — pinned by `mapPlaceableContract.test.ts`. */
@@ -68,7 +80,8 @@ export const NEVER_PLACEABLE_ITEM_IDS: ReadonlySet<string> = new Set(['credits']
 /** The reason for everything that has no pickup form and no mapped key: a heal, a config-less row, an effect under an unmapped key. */
 export const NOT_A_PICKUP_TEXT = 'not a pickup the game can spawn';
 
-export const MOUNT_POWER_TEXT = 'mount powers are applied to the rider, not placed in a world';
+/** A `grant_mount_power` row this will not offer: the game would parse it, but not into any grant the catalogue sells. */
+export const MOUNT_POWER_TEXT = 'a mount upgrade must name its mount, its power and a tier of 1 to 3';
 export const COSMETIC_TEXT = 'cosmetics unlock in the wardrobe; they cannot lie on the ground';
 export const CREDITS_TEXT = 'credits are a balance, not a pickup';
 
@@ -85,13 +98,24 @@ function consumableKeyMapped(key: string): boolean {
   return cut > 0 && CONSUMABLE_SOURCE_KEYS.has(key.slice(0, cut));
 }
 
+/** A mount upgrade the catalogue could sell: a named mount and power, and a tier of I, II or III. */
+function wellFormedMountPower(config: Record<string, unknown>): boolean {
+  const tier = config.tier;
+  return (
+    typeof config.mount === 'string' && config.mount !== '' &&
+    typeof config.power === 'string' && config.power !== '' &&
+    typeof tier === 'number' && Number.isInteger(tier) && tier >= 1 && tier <= 3
+  );
+}
+
 /**
- * Null when the game's applier can turn the item into a pickup (routes 1–3 above, and not `credits`);
+ * Null when the game's applier can turn the item into a pickup (routes 0–3 above, and not `credits`);
  * otherwise a short reason in the admin's words. See the header for what this cannot see.
  */
 export function placeableReason(item: PlaceableInput): string | null {
   const config = item?.config ?? {};
   const effect = config.effect;
+  if (effect === 'grant_mount_power') return wellFormedMountPower(config) ? null : MOUNT_POWER_TEXT;
   if (effect === 'grant_ammo' && typeof config.ammo_item === 'string') {
     return NEVER_PLACEABLE_ITEM_IDS.has(config.ammo_item) ? CREDITS_TEXT : null;
   }
@@ -99,7 +123,6 @@ export function placeableReason(item: PlaceableInput): string | null {
     return NEVER_PLACEABLE_ITEM_IDS.has(config.item_id) ? CREDITS_TEXT : null;
   }
   if (typeof item?.source_key === 'string' && consumableKeyMapped(item.source_key)) return null;
-  if (effect === 'grant_mount_power') return MOUNT_POWER_TEXT;
   if (effect === 'unlock_cosmetic') return COSMETIC_TEXT;
   return NOT_A_PICKUP_TEXT;
 }
@@ -123,17 +146,19 @@ export function partitionPlaceable<T extends { source_key: string | null; action
   return { placeable, hidden };
 }
 
-/** The kinds the line under the list names, in the order it names them. An effect outside the table is "other items". */
+/**
+ * The kinds the line under the list names, in the order it names them. An effect outside the table is
+ * "other items" - which is where a malformed mount row lands, since a well-formed one is offered.
+ */
 const HIDDEN_KIND_WORDS: ReadonlyArray<readonly [effect: string, word: string]> = [
-  ['grant_mount_power', 'mount powers'],
   ['unlock_cosmetic', 'cosmetics'],
   ['restore_health', 'heals'],
   ['restore_health_full', 'heals'],
 ];
 
 /**
- * The one line under the Place list: how many rows are hidden and what kinds they are, so nine missing
- * mount rows read as a rule and not as a catalogue that failed to load. Empty when nothing is hidden.
+ * The one line under the Place list: how many rows are hidden and what kinds they are, so a short list
+ * reads as a rule and not as a catalogue that failed to load. Empty when nothing is hidden.
  */
 export function hiddenItemsText(hidden: ReadonlyArray<HiddenItem<{ action_config: Record<string, unknown> }>>): string {
   if (!hidden.length) return '';

@@ -272,7 +272,7 @@ export const APPLIER_REASON_TEXT: ReadonlyMap<string, string> = new Map([
   ['name', 'no object of that name in the world'],
   ['superseded', 'superseded by a later action on the same object'],
   ['error', 'the entry threw while being applied — see the game console'],
-  ['item', 'the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed'],
+  ['item', 'the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed'],
   ['no-loot', 'the game has no loot system to spawn a placement in'],
   ['position', "the placement's position is not a finite point"],
   ['pool', "no pickup free to spawn it — the world's loot pool is full"],

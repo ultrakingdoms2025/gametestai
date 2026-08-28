@@ -511,8 +511,8 @@ test('?layout=sample reaches applyUrlOverrides as layout: "sample" beside dev=1 
 
 test('main.js hands the engine and the switch to MapOverlay', async () => {
   const main = await readCode('src/main.js');
-  assert.match(main, /new MapOverlay\(\{ bus, physics, loot, engine, forceLayout: overrides\.layout === 'sample' \}\)/,
-    'MapOverlay is constructed without the engine or the ?layout=sample switch');
+  assert.match(main, /new MapOverlay\(\{ bus, physics, loot, engine, mounts, forceLayout: overrides\.layout === 'sample' \}\)/,
+    'MapOverlay is constructed without the engine, the mounts, or the ?layout=sample switch');
 });
 
 test('frame-gaps can switch the sampler on, waits for it, records whether it finished, and gates on that', async () => {

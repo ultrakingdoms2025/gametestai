@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ITEMS, itemDef, KIND_ACCENT } from './ItemDefs.js';
+import { STAT_META } from '../mounts/Livery.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -198,6 +199,112 @@ export const DROP_TABLES = {
 
 /** Ordered so the pickup takes its colour from the rarest thing in it. */
 const ACCENT_PRIORITY = ['skin', 'trinket', 'consumable', 'ammo', 'currency'];
+
+/* ------------------------------------------------------------------ */
+/* What a pickup holds, and what collecting one does                    */
+/*                                                                      */
+/* Module functions rather than methods because `Loot`'s constructor    */
+/* paints canvas textures and cannot be built under Node; the tests in  */
+/* scripts/tests/loot-grant.test.mjs reach these directly, and the      */
+/* methods below are one-line delegates.                                */
+/*                                                                      */
+/* A contents entry is `{ itemId, qty }` - stock for the bag - or, for  */
+/* a mount upgrade the map editor laid down, `{ grant, qty: 1 }` where   */
+/* `grant` is `{ effect:'grant_mount_power', mount, power, tier, name }` */
+/* (MapOverlay.grantForPlacement). A grant is not stock: collecting it  */
+/* raises a power tier on the rider's mount, exactly as buying the row  */
+/* would, and never touches the inventory.                              */
+/* ------------------------------------------------------------------ */
+
+const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+
+/**
+ * What a grant is called: the catalogue's own name when the placement
+ * carried one, else mount + stat + tier the way the shop spells its rows
+ * (`Bicycle Speed III` - the stat label from `STAT_META`, since `power`'s
+ * shop name is Speed and `strength`'s is Acceleration).
+ * @param {{mount?:string, power?:string, tier?:number, name?:string}} grant
+ */
+export function grantLabel(grant) {
+  if (typeof grant?.name === 'string' && grant.name.trim()) return grant.name;
+  const tier = Math.max(1, Math.floor(Number(grant?.tier) || 1));
+  const stat = STAT_META[grant?.power]?.label ?? cap(grant?.power);
+  return `${cap(grant?.mount)} ${stat} ${ROMAN[tier - 1] ?? tier}`.trim();
+}
+
+/** The accent kind one entry reads as: an item's catalogue kind, a grant the consumable's. */
+function kindOf(entry) {
+  return entry?.grant ? 'consumable' : ITEMS[entry?.itemId]?.kind;
+}
+
+/** The strongest accent among the contents, in `ACCENT_PRIORITY` order; currency when nothing matches. */
+export function accentFor(contents) {
+  for (const kind of ACCENT_PRIORITY) {
+    for (const c of contents) {
+      if (kindOf(c) === kind) return kind;
+    }
+  }
+  return 'currency';
+}
+
+/** The HUD label for a pickup: `60 RND · Bicycle Speed III`. A grant carries no count. */
+export function labelFor(contents) {
+  const parts = [];
+  for (const c of contents) {
+    if (c.grant) {
+      parts.push(grantLabel(c.grant));
+      continue;
+    }
+    const def = itemDef(c.itemId);
+    parts.push(`${c.qty} ${def?.short ?? c.itemId}`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * Collect ONE contents entry. Answers whether anything was taken and what,
+ * if anything, stays on the ground.
+ *
+ * `loot:collected` is the canonical pickup event - QuestSystem advances
+ * collect steps straight from it (_onCollect). Emitting quest:activity here
+ * as well made every real pickup count TWICE, because QuestSystem subscribes
+ * to both. Measured in-game: one pickup, +2 progress.
+ *
+ * A grant emits `mount:power:buy` with the payload a purchase sends - main.js
+ * routes that to `MountManager.grantPower` and schedules the local and
+ * remote persists - at `cost: 0` and with no catalogue row (`catalogId:
+ * null`), so nothing downstream can mistake it for a sale. Nothing new
+ * listens; the purchase path IS the grant path. A grant is always taken:
+ * there is no bag to be full.
+ *
+ * @param {{itemId?:string, grant?:object, qty:number}} entry
+ * @param {{bus?:object, economy?:object, inventory?:object, fromCache:boolean, pickup:object|null}} deps
+ * @returns {{taken:boolean, left:{itemId:string, qty:number}|null}}
+ */
+export function collectEntry(entry, { bus, economy, inventory, fromCache, pickup }) {
+  if (entry.grant) {
+    const g = entry.grant;
+    bus?.emit('mount:power:buy', { mount: g.mount, power: g.power, tier: g.tier, catalogId: null, cost: 0 });
+    bus?.emit('loot:collected', { itemId: null, grant: g, qty: 1, fromCache, pickup });
+    bus?.emit('hud:notify', { text: `+${grantLabel(g)}`, tone: 'info' });
+    return { taken: true, left: null };
+  }
+  if (entry.itemId === 'credits') {
+    economy?.add(entry.qty, 'loot');
+    bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty, fromCache, pickup });
+    return { taken: true, left: null };
+  }
+  const res = inventory?.acquire(entry.itemId, entry.qty) ?? { taken: 0, dropped: entry.qty };
+  if (res.taken > 0) {
+    bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken, fromCache, pickup });
+    bus?.emit('hud:notify', {
+      text: `+${res.taken} ${itemDef(entry.itemId)?.name ?? entry.itemId}${res.toStore > 0 ? ' (store)' : ''}`,
+      tone: 'info',
+    });
+  }
+  return { taken: res.taken > 0, left: res.dropped > 0 ? { itemId: entry.itemId, qty: res.dropped } : null };
+}
 
 /* ------------------------------------------------------------------ */
 /* Procedural textures (built once, shared by every pickup)            */
@@ -578,7 +685,8 @@ export class Loot {
    * Spawn a pickup. Public so a world event or a debug command can drop one.
    *
    * @param {THREE.Vector3} position roughly where it should land (feet height)
-   * @param {Array<{itemId:string, qty:number}>} contents
+   * @param {Array<{itemId?:string, grant?:object, qty:number}>} contents stock
+   *   entries, or a mount-upgrade `grant` (see `collectEntry`)
    * @param {{persistent?:boolean, snap?:boolean, tag?:string}} [opts]
    *   `persistent` exempts the pickup from the fade timer and from recycling -
    *   world caches are a feature of the map, not litter from a firefight, and
@@ -608,7 +716,7 @@ export class Loot {
     // items so they are not immediately re-picked up while the player stands on them.
     p.collectDelay = opts.collectDelay ?? 0;
 
-    p.contents = contents.map((c) => ({ itemId: c.itemId, qty: c.qty }));
+    p.contents = contents.map((c) => (c.grant ? { grant: c.grant, qty: c.qty } : { itemId: c.itemId, qty: c.qty }));
     p.active = true;
     p.age = 0;
     p.dying = 0;
@@ -643,21 +751,11 @@ export class Loot {
   }
 
   _accentFor(contents) {
-    for (const kind of ACCENT_PRIORITY) {
-      for (const c of contents) {
-        if (ITEMS[c.itemId]?.kind === kind) return kind;
-      }
-    }
-    return 'currency';
+    return accentFor(contents);
   }
 
   _labelFor(contents) {
-    const parts = [];
-    for (const c of contents) {
-      const def = itemDef(c.itemId);
-      parts.push(`${c.qty} ${def?.short ?? c.itemId}`);
-    }
-    return parts.join(' · ');
+    return labelFor(contents);
   }
 
   _applyAccent(p) {
@@ -850,28 +948,13 @@ export class Loot {
     // event from stripping a corpse, even though both arrive as pickups.
     const fromCache = typeof p.tag === 'string' && p.tag.startsWith('cache:');
 
+    const deps = { bus: this.bus, economy: this.economy, inventory: this.inventory, fromCache, pickup: p };
     for (const entry of p.contents) {
-      if (entry.itemId === 'credits') {
-        this.economy?.add(entry.qty, 'loot');
-        /* `loot:collected` is the canonical pickup event - QuestSystem advances
-         * collect steps straight from it (_onCollect). Emitting quest:activity
-         * here as well made every real pickup count TWICE, because QuestSystem
-         * subscribes to both. Measured in-game: one pickup, +2 progress. */
-        this.bus?.emit('loot:collected', { itemId: 'credits', qty: entry.qty, fromCache, pickup: p });
-        took++;
-        continue;
-      }
-      const res = this.inventory?.acquire(entry.itemId, entry.qty) ?? { taken: 0, dropped: entry.qty };
-      if (res.taken > 0) {
-        took++;
-        // See the note above: quest:activity here double-counted every pickup.
-        this.bus?.emit('loot:collected', { itemId: entry.itemId, qty: res.taken, fromCache, pickup: p });
-        this.bus?.emit('hud:notify', {
-          text: `+${res.taken} ${itemDef(entry.itemId)?.name ?? entry.itemId}${res.toStore > 0 ? ' (store)' : ''}`,
-          tone: 'info',
-        });
-      }
-      if (res.dropped > 0) left.push({ itemId: entry.itemId, qty: res.dropped });
+      // The per-entry rules (credits, stock, a mount-upgrade grant) and the
+      // events they emit live in `collectEntry`, at module level.
+      const res = collectEntry(entry, deps);
+      if (res.taken) took++;
+      if (res.left) left.push(res.left);
     }
 
     if (left.length === 0) {

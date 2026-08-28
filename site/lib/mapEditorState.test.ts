@@ -302,7 +302,7 @@ describe('unresolvedText', () => {
     expect(unresolvedText('name')).toBe('no object of that name in the world');
     expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
     expect(unresolvedText('error')).toBe('the entry threw while being applied — see the game console');
-    expect(unresolvedText('item')).toBe('the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed');
+    expect(unresolvedText('item')).toBe('the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed');
     expect(unresolvedText('no-loot')).toBe('the game has no loot system to spawn a placement in');
     expect(unresolvedText('position')).toBe("the placement's position is not a finite point");
     expect(unresolvedText('pool')).toBe("no pickup free to spawn it — the world's loot pool is full");
@@ -337,7 +337,7 @@ describe('rowsWithVerdicts', () => {
       { id: 'not-in-the-document', reason: 'error' },
     ]);
     expect(out.map((r) => r.verdict)).toEqual([
-      '⛔ not applied — the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed',
+      '⛔ not applied — the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed',
       null,
       '⛔ not applied — no object of that name in the world',
       '⛔ not applied — build-time target — nothing resolves ids until stage 3',
@@ -369,7 +369,7 @@ describe('unresolvedLines', () => {
 
   it("prints the entry's label — the item name, or the target — beside the id, and the applier's words", () => {
     expect(unresolvedLines([{ id: 'p1', reason: 'item' }, { id: 'm1', reason: 'name' }, { id: 'r1', reason: 'id' }], entries)).toEqual([
-      { id: 'p1', label: 'Bicycle Speed I', text: 'the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed' },
+      { id: 'p1', label: 'Bicycle Speed I', text: 'the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed' },
       { id: 'm1', label: 'station:crate', text: 'no object of that name in the world' },
       { id: 'r1', label: 'station:post@1.0,2.0', text: 'build-time target — nothing resolves ids until stage 3' },
     ]);

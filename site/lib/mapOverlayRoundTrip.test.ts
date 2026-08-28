@@ -148,6 +148,58 @@ describe('an overlay written by the editor applies in the game', () => {
     expect(spawned[0].contents).toEqual([{ itemId: 'bullet', qty: 60 }]);
   });
 
+  it('places a mount upgrade out of the catalogue: the pickup carries the GRANT and the catalogue name, and the game asks the mounts first', async () => {
+    // The shape `MapEditorPanel.addPlace` builds from a `grant_mount_power` seed row - the nine an admin
+    // placed on station were exactly this, and the game refused them until it could lay a grant down.
+    const document = served([
+      {
+        kind: 'place',
+        id: 'p2',
+        item: {
+          source_key: 'mount_bicycle_power_3:station',
+          name: 'Bicycle Speed III',
+          config: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3 },
+        },
+        position: { x: 5, y: 1, z: 5 },
+        quantity: 4,
+      },
+    ]);
+
+    const spawned: Array<{ contents: unknown; opts: unknown }> = [];
+    const asked: string[] = [];
+    const b = bus();
+    const system = new MapOverlay({
+      bus: b,
+      physics: new Physics(b),
+      loot: {
+        spawn: (_p: unknown, contents: unknown, opts: unknown) => {
+          spawned.push({ contents, opts });
+          return { active: true };
+        },
+        despawn: () => true,
+      },
+      mounts: {
+        sellsPower: (mount: string, power: string) => (asked.push(`${mount}.${power}`), mount === 'bicycle' && power === 'power'),
+        getPowers: () => ({ power: 2 }),
+      },
+      fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
+    });
+
+    const w = world();
+    b.emit('world:changed', { id: w.id, world: w });
+    await system.applying;
+
+    expect(asked).toEqual(['bicycle.power']);
+    expect(system.report.unresolved).toEqual([]);
+    expect(system.report.applied).toEqual([{ id: 'p2', ok: true, colliders: 0 }]);
+    expect(spawned).toHaveLength(1);
+    // One grant, whatever `quantity` said: a tier is not a stack.
+    expect(spawned[0].contents).toEqual([
+      { grant: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' }, qty: 1 },
+    ]);
+    expect(spawned[0].opts).toEqual({ persistent: true, snap: false, tag: 'overlay:p2' });
+  });
+
   it('a v1 hidden move reaches the game as a remove: the object is hidden AND its collider leaves the physics', async () => {
     const document = served([{ kind: 'move', id: 'h1', target: { name: 'crate.alpha' }, hidden: true }]);
     expect(document.entries).toEqual([{ kind: 'remove', id: 'h1', target: { name: 'crate.alpha' } }]);

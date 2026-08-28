@@ -86,6 +86,30 @@ export function consumableItemFor(key) {
   return has(bare) ? MARKETPLACE_CONSUMABLE_ITEMS[bare] : null;
 }
 
+/**
+ * What a `grant_mount_power` config grants: the mount (the car when unnamed -
+ * the original nine `mount_*` rows predate any other mount having a ladder),
+ * the power (required), and a tier clamped to at least I.
+ *
+ * A module function rather than a method because TWO callers read it and
+ * must never disagree: `Marketplace._mountPowerGrant` for a purchase, and
+ * `grantForPlacement` in `MapOverlay.js` for a mount upgrade the map editor
+ * laid down as a pickup. Collecting that pickup emits the same
+ * `mount:power:buy` a purchase does, so the grant it carries has to be the
+ * one a purchase would have carried.
+ *
+ * @param {any} config a row's `action_config` (or a place entry's copy of it)
+ * @returns {{mount:string, power:string, tier:number}|null}
+ */
+export function mountPowerGrantFor(config) {
+  if (config?.effect !== 'grant_mount_power') return null;
+  const mount = typeof config.mount === 'string' ? config.mount : 'car';
+  const power = typeof config.power === 'string' ? config.power : null;
+  if (!power) return null;
+  const tier = Math.max(1, Math.floor(Number(config.tier) || 1));
+  return { mount, power, tier };
+}
+
 export class Marketplace {
   /**
    * @param {{ bus?:any, economy?:any, inventory?:any, player?:any, npcManager?:any,
@@ -376,13 +400,7 @@ export class Marketplace {
    * @returns {{mount:string, power:string, tier:number}|null}
    */
   _mountPowerGrant(item) {
-    const config = item?.action_config ?? {};
-    if (config?.effect !== 'grant_mount_power') return null;
-    const mount = typeof config.mount === 'string' ? config.mount : 'car';
-    const power = typeof config.power === 'string' ? config.power : null;
-    if (!power) return null;
-    const tier = Math.max(1, Math.floor(Number(config.tier) || 1));
-    return { mount, power, tier };
+    return mountPowerGrantFor(item?.action_config ?? {});
   }
 
   /**

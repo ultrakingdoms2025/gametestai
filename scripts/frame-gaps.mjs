@@ -2596,17 +2596,21 @@ const BASELINES = {
   },
 
   /* Recorded 2026-08-26 from the cold gate's FIRST green run on the GitHub
-   * runner (run 32928309409), exactly as the run printed it. COLD, so no
-   * entry events and an empty dProg - the counter this platform actually
-   * gates is warmPrograms. 111 differs from win32's 143 because a cold run
-   * never links the entry-world programs the chain would have added; the two
-   * keys are different measurements and must never be compared to each
-   * other. The same run's watchdog counted five 10 s no-rAF stretches, so
-   * this runner starves too - one more reason the clock is printed and never
-   * asserted here. */
+   * runner (run 32928309409) as 111, and CORRECTED 2026-08-28 to 142. The 111
+   * was true of the boot that existed then: a cold run linked only the
+   * programs the entry world needed, and the chain would have linked the rest.
+   * b9c774e / b0fcd45 (the non-blocking boot warm) began linking the full
+   * program set during boot on every platform, so from run 33015236617
+   * onward this runner read 142 in every cold gate - the same number the RTX
+   * cold base reads (.probe/gaps/stage2-base, 142 x3) - and the gate was red
+   * for two days on a baseline that described a boot the game no longer had.
+   * The other facts stand: COLD, so no entry events and an empty dProg - the
+   * counter this platform actually gates is warmPrograms; the same runs'
+   * watchdog counted 5-6 ten-second no-rAF stretches, so this runner starves
+   * too - one more reason the clock is printed and never asserted here. */
   'linux-swiftshader': {
-    recorded: '2026-08-26',
-    warmPrograms: 111,
+    recorded: '2026-08-28',
+    warmPrograms: 142,
     dProg: {},
   },
 };

@@ -103,7 +103,12 @@ export class WorldManager {
      * so a build that begins during its fuse skips, and a probe that hangs
      * leaves it re-opened from that moment, so a dead server costs one
      * fuse a minute. A GATE timeout never opens it: the boot pays its own
-     * fuse once, and says nothing about the frames after.
+     * fuse once, and says nothing about the frames after. One more closer,
+     * unreachable in practice: a lookup's abandoned null landing INSIDE the
+     * fuse of a background build that joined that lookup is an in-fuse
+     * answer to that build and closes it through the else branch - which
+     * needs a lookup started outside the manager while the breaker is open,
+     * with its ceiling falling inside the probe's fuse.
      * @type {number|null}
      */
     this._overlayBrokenAt = null;

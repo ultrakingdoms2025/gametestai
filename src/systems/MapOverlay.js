@@ -265,6 +265,13 @@ export class MapOverlay {
      */
     this._lookupAbandoned = new Set();
     /**
+     * Worlds whose read the server refused (a 5xx) and was said so - the same
+     * discipline as `_lookupAbandoned`: once per world, forgotten when a
+     * document for the world is admitted, so the next refusal is news again.
+     * @type {Set<string>}
+     */
+    this._readRefused = new Set();
+    /**
      * The abort of the read the CURRENT visit started, pulled by `_restore`
      * the moment the player leaves. Its answer would be dropped by visit
      * number anyway; this closes the socket it would have waited on.
@@ -448,7 +455,8 @@ export class MapOverlay {
    * prefetch can reach it before the build's own fuse, and the null it then
    * answers is an ANSWER to the manager, which says nothing. A background
    * build that lost its fuse first is said twice, in different words - the
-   * second says its socket closed.
+   * second says the lookup was abandoned at its ceiling. A read the server
+   * REFUSED is said here, once per world, by the rule at the check below.
    * @param {string} worldId
    * @param {AbortSignal} [signal]
    */
@@ -458,7 +466,25 @@ export class MapOverlay {
       const init = { cache: 'no-store' };
       if (signal) init.signal = signal;
       const res = await this._fetch(`${this.endpoint}?world=${encodeURIComponent(worldId)}`, init);
-      if (!res?.ok) return null;
+      if (!res?.ok) {
+        // A 4xx is this client's own standing, not an outage. This read is
+        // issued for EVERY player on every world change (`_onWorldChanged`
+        // does not consult the session; only the build's provider in main.js
+        // is gated on it), and the route answers 401 to anyone signed out -
+        // so a 401 said here would be one line per world for every anonymous
+        // player, the harness's boot included. An admin whose session lapsed
+        // gets the same 401 and the same silence; the editor shows it, as a
+        // report that stops refreshing and version lines that read behind
+        // after the next save. A 404 is a host without the route (the
+        // frame-gaps static server). A 5xx is the server failing - the
+        // route's own 503, a platform 502 - and is said once per world, news
+        // again after a document for the world is admitted (`_admit`).
+        if (res?.status >= 500 && !this._readRefused.has(worldId)) {
+          this._readRefused.add(worldId);
+          console.warn(`[map-overlay] overlay unavailable for "${worldId}": HTTP ${res.status}`);
+        }
+        return null;
+      }
       return this._admit(worldId, await res.json());
     } catch (err) {
       if (err?.name === 'AbortError') return null;
@@ -510,8 +536,10 @@ export class MapOverlay {
     // revert writes a new, higher one), so higher is always newer.
     const have = this._cache.get(worldId);
     if (!(versionOf(have) > versionOf(data))) this._cache.set(worldId, data);
-    // The outage is over: the next lookup of this world to reach the ceiling is news again.
+    // The outage is over: the next lookup of this world to reach the ceiling,
+    // or the next read of it the server refuses, is news again.
     this._lookupAbandoned.delete(worldId);
+    this._readRefused.delete(worldId);
     return data;
   }
 
@@ -1075,6 +1103,7 @@ export class MapOverlay {
     for (const { abort } of this._inflight.values()) abort.abort();
     this._inflight.clear();
     this._lookupAbandoned.clear();
+    this._readRefused.clear();
     for (const off of this._offs) off?.();
     this._offs.length = 0;
   }

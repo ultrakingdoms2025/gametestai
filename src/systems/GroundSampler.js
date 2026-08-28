@@ -41,6 +41,8 @@ const PEEL = 0.01;
 const MAX_SKIPS = 4;
 
 /**
+ * Samples run to the first multiple of `step` at or past the far edge, so no
+ * strip of the world reads no-ground for want of a sample.
  * @param {{min:{x:number,z:number}, max:{x:number,z:number}}|null} bounds
  * @returns {{originX:number, originZ:number, step:number, nx:number, nz:number}|null}
  */
@@ -53,7 +55,7 @@ export function planGrid(bounds) {
   if (!(w > 0) || !(d > 0)) return null;
   if (!Number.isFinite(w) || !Number.isFinite(d)) return null;
   const step = Math.max(MIN_STEP, Math.ceil(Math.max(w, d) / TARGET_CELLS));
-  return { originX: min.x, originZ: min.z, step, nx: Math.floor(w / step) + 1, nz: Math.floor(d / step) + 1 };
+  return { originX: min.x, originZ: min.z, step, nx: Math.ceil(w / step) + 1, nz: Math.ceil(d / step) + 1 };
 }
 
 /**

@@ -34,15 +34,23 @@ test('the station (±744 m) plans a 6 m step and a 249×249 grid; a small world 
   assert.deepEqual(planGrid(box(-40, -5, -40, 40, 30, 40)),
     { originX: -40, originZ: -40, step: 4, nx: 21, nz: 21 });
   assert.equal(planGrid(box(-450, 0, -450, 450, 100, 450)).nx, 226); // 900/256 → 4 m
-  // 1300/256 = 5.08: the step is the CEILING (6), never the rounding (5).
+  // 1300/256 = 5.08: the step is the CEILING (6), never the rounding (5); and
+  // 1300/6 = 216.67 samples is 217 cells plus the origin, so the last sample
+  // sits at 652, past the edge, not at 646 with a 4 m strip unsampled.
   assert.deepEqual(planGrid(box(-650, 0, -650, 650, 100, 650)),
-    { originX: -650, originZ: -650, step: 6, nx: 217, nz: 217 });
+    { originX: -650, originZ: -650, step: 6, nx: 218, nz: 218 });
   // A rectangle: nx follows x and nz follows z; a swap would read 151×249.
   assert.deepEqual(planGrid(box(0, 0, 0, 1488, 100, 900)),
     { originX: 0, originZ: 0, step: 6, nx: 249, nz: 151 });
   assert.equal(planGrid(null), null);
   assert.equal(planGrid(box(0, 0, 0, 0, 10, 0)), null, 'a degenerate box plans nothing');
   assert.equal(planGrid(box(-Infinity, 0, -Infinity, Infinity, 10, Infinity)), null, 'an infinite extent plans nothing');
+});
+
+test('the far edge of the world is inside the last cell, never past it', () => {
+  // 10 m at a 4 m step is samples at 0, 4, 8, 12 (ceil), not 0, 4, 8 (floor), which left the strip from 8 to 10
+  // reading no-ground. Exact multiples do not change: 80/4 is still 21, the station's 1488/6 still 249.
+  assert.deepEqual(planGrid(box(0, 0, 0, 10, 5, 10)), { originX: 0, originZ: 0, step: 4, nx: 4, nz: 4 });
 });
 
 test('Int16 little-endian base64 round-trips a hand-built array, extremes included', () => {

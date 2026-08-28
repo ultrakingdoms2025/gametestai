@@ -272,6 +272,48 @@ test('a failed lookup answers null, caches nothing and says why - per call, so t
   assert.equal(rig.system._cache.size, 0, 'a failed lookup cached something');
 });
 
+test('a read the server refused is said once per world with its status, on the lookup and the entry alike; it caches nothing, is news again after a document is admitted or dispose, and a 4xx says nothing', async () => {
+  // `makeFetch` answers every GET 200; this one answers whatever `answer` holds, so one system sees a 500,
+  // then a document, then a 500 again. A 5xx is the server failing; a 401 (signed out - every anonymous
+  // player on every world, since the entry read is not gated on the session) and a 404 (a host without the
+  // route: the frame-gaps static server) are this client's own standing, silent before this line existed
+  // and silent still - the rule at `_read`'s check, measured on both sides here.
+  let answer = { ok: false, status: 500, body: { error: 'boom' } };
+  const refusing = async () => ({ ok: answer.ok, status: answer.status, json: async () => answer.body });
+  const bus = makeBus();
+  const system = new MapOverlay({ bus, physics: new Physics(bus), fetch: refusing });
+  const warned = await saying(async () => {
+    assert.equal(await system.lookup('station'), null);
+    assert.equal(await system.lookup('station'), null, 'the refusal was cached');
+    bus.emit('world:changed', { id: 'station', world: makeWorld('station') });
+    await system.applying; // the entry's own read: the same world, the same outage, not said again
+    assert.equal(system.report.world, 'station', 'a refused entry read published no report');
+    answer = { ok: false, status: 503, body: { error: 'Overlay unavailable.' } };
+    assert.equal(await system.lookup('station'), null, 'another status of one outage is still that outage');
+    assert.equal(system._cache.size, 0, 'a refused read cached something');
+    assert.equal(await system.lookup('medieval'), null); // another world is its own news, with its own status
+    answer = { ok: true, status: 200, body: doc([]) };
+    assert.equal((await system.lookup('station')).version, 1, 'the document was not admitted');
+    system._cache.delete('station'); // an admitted document answers every later lookup from the cache; the reset under test is the admit's
+    answer = { ok: false, status: 500, body: { error: 'boom' } };
+    assert.equal(await system.lookup('station'), null);
+    system.dispose(); // forgets what was said, as it forgets the documents
+    assert.equal(await system.lookup('station'), null);
+    for (const status of [401, 404]) {
+      answer = { ok: false, status, body: { error: 'no' } };
+      const quiet = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: refusing });
+      assert.equal(await quiet.lookup('station'), null);
+      quiet.dispose();
+    }
+  });
+  assert.deepEqual(warned, [
+    '[map-overlay] overlay unavailable for "station": HTTP 500',
+    '[map-overlay] overlay unavailable for "medieval": HTTP 503',
+    '[map-overlay] overlay unavailable for "station": HTTP 500',
+    '[map-overlay] overlay unavailable for "station": HTTP 500',
+  ], `said: ${JSON.stringify(warned)}`);
+});
+
 test('a late read answering an OLDER version than the cache holds does not overwrite it: the cache is version-monotonic', async () => {
   // 9b16768's race, seen from the cache: the station's FIRST GET (v1) is held; the player portals away and back;
   // the return visit's GET (v2) answers at once and is cached; then v1 lands. The applier drops it by visit number,

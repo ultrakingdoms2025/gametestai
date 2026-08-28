@@ -289,24 +289,45 @@ export class MapOverlay {
   async _reportBack(report, world, ground = null) {
     if (!this._fetch) return;
     try {
+      const body = {
+        world: report.world,
+        appliedVersion: report.version,
+        objects: report.objects,
+        applied: report.applied,
+        unresolved: report.unresolved,
+        // The layout fields every report carries, and - on the second
+        // report of a visit only - the sampled ground.
+        ...this._layoutFields(world),
+        ...(ground ? { ground } : {}),
+      };
       const res = await this._fetch(this.reportEndpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          world: report.world,
-          appliedVersion: report.version,
-          objects: report.objects,
-          applied: report.applied,
-          unresolved: report.unresolved,
-          // The layout fields every report carries, and - on the second
-          // report of a visit only - the sampled ground.
-          ...this._layoutFields(world),
-          ...(ground ? { ground } : {}),
-        }),
+        body: JSON.stringify(body),
       });
       // A 413 over the site's layout cap, or a 400, is a refusal, not a throw:
       // said once (spec §10), never retried - the next visit reports afresh.
-      if (!res?.ok) console.warn('[map-overlay] the editor refused the report:', res?.status);
+      if (!res?.ok) {
+        console.warn('[map-overlay] the editor refused the report:', res?.status);
+        return;
+      }
+      // A 200 stores the catalogue whatever became of the layout; the site
+      // answers `layout: 'stored' | 'kept-prior' | 'none'` with its reasons,
+      // and a map that did not land is said here, once per report, because
+      // this console is the one an admin is looking at. An older site with no
+      // `layout` field, or a body that does not parse, says nothing:
+      // compatibility, not a fault.
+      if (!('layoutSchema' in body)) return;
+      let answer = null;
+      try {
+        answer = typeof res.json === 'function' ? await res.json() : null;
+      } catch {
+        return;
+      }
+      if (answer && typeof answer === 'object' && 'layout' in answer && answer.layout !== 'stored') {
+        const reasons = Array.isArray(answer.warnings) ? answer.warnings : [];
+        console.warn('[map-overlay] layout ' + answer.layout + ': ' + reasons.join('; '));
+      }
     } catch (err) {
       // The editor loses one refresh of its object picker. Nothing in the game
       // depends on this landing.

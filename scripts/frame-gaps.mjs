@@ -153,7 +153,8 @@ const HELP = `frame-gaps - the Phase 1 frame-gap criterion, measured
   --warm-wait <ms>   with --cold: idle this long after boot before measuring
   --cold             do NOT wait for the background world chain to finish.
                      What a player who does not wait actually gets.
-  --layout-sample    boot with &layout=sample so the map editor's ground sampler
+  --layout-sample    boot with &layout=sample (honoured only beside the dev=1
+                     every URL here carries) so the map editor's ground sampler
                      runs on the entry world (admin-only otherwise; a harness has
                      no session). Waited for in its own "layout" phase; summary.json
                      records layoutSampled; with --gate an unfinished sampler fails.

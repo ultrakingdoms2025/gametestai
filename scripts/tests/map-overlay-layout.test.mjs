@@ -17,7 +17,8 @@ import { NO_SAMPLE } from '../../src/systems/GroundSampler.js';
  * at once, then samples the ground through the REAL Physics under a per-frame
  * budget and posts a second report whose layered grid has two surfaces under
  * a roof and one over open floor; leaving mid-sample sends nothing;
- * `?layout=sample` samples with no admin and never posts.
+ * `?layout=sample` samples with no admin and never posts, and only beside
+ * `dev=1`; a 200 in which the editor kept the prior layout is said once.
  *
  * Not a stub: the colliders are real `Physics.addBox` slabs and the cast is
  * `Physics.raycast`, so two-layers-under-the-roof is the real collider code's
@@ -68,7 +69,7 @@ function makeWorld(id = 'station') {
  * (or resolves) one. `refuseGround`: the site answers 413 to a layout report
  * over its cap - a refusal, never a throw.
  */
-function makeFetch(overlay, { refuseGround = false } = {}) {
+function makeFetch(overlay, { refuseGround = false, answer = { ok: true } } = {}) {
   const calls = [];
   const fn = async (url, init) => {
     const body = init?.body ? JSON.parse(init.body) : null;
@@ -79,7 +80,8 @@ function makeFetch(overlay, { refuseGround = false } = {}) {
       return { ok: true, status: 200, json: async () => answer };
     }
     if (refuseGround && body?.ground) return { ok: false, status: 413, json: async () => ({ error: 'too large' }) };
-    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    // `answer`: the site's 200 body for a POST (an Error: a body that does not parse).
+    return { ok: true, status: 200, json: async () => { if (answer instanceof Error) throw answer; return answer; } };
   };
   fn.calls = calls;
   fn.posts = () => calls.filter((c) => c.method === 'POST');
@@ -100,7 +102,7 @@ const doc = (entries, { version = 1, admin = false, world = 'station' } = {}) =>
  * x ∈ [2, 42], so grid cell x=4 is under it and x=0 is not. `clockPerCast`
  * advances the injected clock per REAL raycast: a deterministic frame.
  */
-function setup(overlay, { forceLayout = false, clockPerCast = 0, refuseGround = false } = {}) {
+function setup(overlay, { forceLayout = false, clockPerCast = 0, refuseGround = false, answer = { ok: true } } = {}) {
   const bus = makeBus();
   const physics = new Physics(bus);
   physics.addBox(0, -1, 0, 100, 1, 100);
@@ -110,7 +112,7 @@ function setup(overlay, { forceLayout = false, clockPerCast = 0, refuseGround = 
   const raycast = physics.raycast.bind(physics);
   physics.raycast = (...a) => { casts++; clock += clockPerCast; return raycast(...a); };
   const loot = { spawn: () => null, despawn: () => true };
-  const fetchImpl = makeFetch(overlay, { refuseGround });
+  const fetchImpl = makeFetch(overlay, { refuseGround, answer });
   const engine = makeEngine();
   const world = makeWorld();
   const system = new MapOverlay({ bus, physics, loot, engine, fetch: fetchImpl, forceLayout, now: () => clock });
@@ -349,6 +351,37 @@ test('a layout report the editor refuses is said so once, and sampling still res
   assert.match(warned[0], /\[map-overlay\] the editor refused the report.*413/);
 });
 
+test("the editor's 200 that kept the prior layout is said once, with its reasons", async () => {
+  const rig = setup(doc([], { admin: true }), { answer: { ok: true, layout: 'kept-prior', warnings: ['layoutSchema 2 is not 1'] } });
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await enter(rig);   // the immediate report: one POST, one answer
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(rig.fetchImpl.posts().length, 1);
+  assert.deepEqual(warned, ['[map-overlay] layout kept-prior: layoutSchema 2 is not 1']);
+});
+
+test('a 200 that stored the layout, an older site that says nothing about it, and a body that does not parse are all silent', async () => {
+  for (const answer of [{ ok: true, layout: 'stored' }, { ok: true }, new Error('not JSON')]) {
+    const rig = setup(doc([], { admin: true }), { answer });
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (...a) => warned.push(a.join(' '));
+    try {
+      await enter(rig);
+      await finish(rig);   // both reports of the visit
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(rig.fetchImpl.posts().length, 2);
+    assert.deepEqual(warned, [], `answer ${answer instanceof Error ? 'unparseable' : JSON.stringify(answer)}: ${warned}`);
+  }
+});
+
 test('a stale document for the world before lands after a portal, and the layout POST still names the world sampled', async () => {
   // The station GET is held until released; elsewhere answers at once, as admin.
   let release;
@@ -419,7 +452,7 @@ test('a top exactly 1 cm below the last hit never loses the floor beneath it: si
 
 /* ------------------------------------------------------ the dev switch -- */
 
-test('?layout=sample reaches applyUrlOverrides as layout: "sample", and its absence as null', async () => {
+test('?layout=sample reaches applyUrlOverrides as layout: "sample" beside dev=1 only; its absence, and a URL without dev=1, read null', async () => {
   const { applyUrlOverrides } = await import('../../src/core/Config.js');
   const saved = globalThis.location;
   try {
@@ -427,6 +460,11 @@ test('?layout=sample reaches applyUrlOverrides as layout: "sample", and its abse
     assert.equal(applyUrlOverrides().layout, 'sample');
     globalThis.location = { search: '?dev=1' };
     assert.equal(applyUrlOverrides().layout, null);
+    // The dev-switch family: a player's URL cannot start the sampler.
+    globalThis.location = { search: '?layout=sample' };
+    assert.equal(applyUrlOverrides().layout, null, 'honoured without dev=1');
+    globalThis.location = { search: '?dev=0&layout=sample' };
+    assert.equal(applyUrlOverrides().layout, null, 'honoured under dev=0');
   } finally {
     globalThis.location = saved;
   }
@@ -445,6 +483,7 @@ test('frame-gaps can switch the sampler on, waits for it, records whether it fin
   assert.match(fg, /Number\.isFinite\(args\.layoutTimeoutMs\)/,
     'a --layout-timeout left without a value is NaN - an instant timeout - and nothing refuses it');
   assert.match(fg, /args\.layoutSample \? '&layout=sample' : ''/, 'the flag never reaches the page URL');
+  assert.match(fg, /`\?dev=1&autostart=1/, 'the page URL does not carry dev=1, and layout=sample is honoured only beside it');
   assert.match(fg, /mapOverlay\?\.layoutSampled === true/, 'the run never asks the game whether sampling finished');
   assert.match(fg, /bus\.on\('map-overlay:layout'/, "the sampler's completion event is not latched on the page clock");
   assert.match(fg, /finished inside boot/, 'a layout row that measured nothing is never said so');

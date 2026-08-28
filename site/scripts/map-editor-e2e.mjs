@@ -337,18 +337,23 @@ async function main() {
    * both children are killed and the report is written. On macOS/Linux
    * `next dev` is its own process group, so a SIGINT to this process alone
    * would not reach it. */
-  let cleaned = false;
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
+  /* One promise, shared: the second caller (main's finally, after a signal
+   * started the first) waits for the SAME cleanup, rather than returning at
+   * once and letting its process.exit pre-empt the report write. */
+  let cleanupP = null;
+  const cleanup = () => (cleanupP ??= (async () => {
     client?.close();
     browser?.kill();
     if (server) killTree(server.child);
     if (!flag('--keep')) await rm(userDir, { recursive: true, force: true }).catch(() => {});
     await writeFile(reportFile, JSON.stringify(report, null, 2));
-  };
+  })());
   const onSignal = (sig) => {
-    report.failure ??= `interrupted by ${sig}`;
+    /* The reason first: waitFor exits on it at once, and the catch then
+     * reports the signal rather than the socket that closing the client is
+     * about to drop. */
+    abortReason ??= `interrupted by ${sig}`;
+    report.failure ??= abortReason;
     console.error(`\n${sig} — cleaning up`);
     cleanup().finally(() => process.exit(130));
   };
@@ -507,6 +512,9 @@ async function main() {
       await waitFor(() => evaluate(`!${q(worldSel)}.disabled`), { what: 'the initial load to finish before switching world' });
       await choose(worldSel, WORLD);
       await waitFor(() => evaluate(`(() => { const el = ${q(worldSel)}; return el.value === ${JSON.stringify(WORLD)} && !el.disabled; })()`), { what: `the ${WORLD} load to finish` });
+      /* Belt and braces against the commit window: the Save label reads
+       * `Saved (vN)` only once the switch's load has fully landed. */
+      await waitFor(async () => /^Saved \(v\d+\)$/.test((await textOf('[data-e2e="save"]')) ?? ''), { what: 'the Save button to settle after the world switch' });
     }
     await waitFor(async () => (await textOf('[data-e2e="layout-age"]'))?.startsWith('reported'), { what: 'the layout banner to read "reported …"' });
     const age = await textOf('[data-e2e="layout-age"]');
@@ -525,7 +533,9 @@ async function main() {
     let view = await evaluate('window.__mapView ?? null');
     if (!view) {
       /* Production strips __mapView. Reproduce createView(BOUNDS, w, h,
-       * VIEW_PAD_PX) for an UNTOUCHED view, from the same bounds we seeded. */
+       * VIEW_PAD_PX) for an UNTOUCHED view, from the same bounds we seeded.
+       * Its clampScale (0.02–400 px/m) is not reproduced: at ~2.4 px/m the
+       * clamp is nowhere near. */
       const ex = BOUNDS.max.x - BOUNDS.min.x;
       const ez = BOUNDS.max.z - BOUNDS.min.z;
       const scale = Math.min((canvas.w - 2 * VIEW_PAD_PX) / ex, (canvas.h - 2 * VIEW_PAD_PX) / ez);
@@ -591,11 +601,12 @@ async function main() {
     await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
     await clickSel('[data-e2e="save"]');
     /* A refused save (a 400, a missing HMAC_SECRET) puts its reason in the
-     * same live region: carry it, so a failure here names it. */
+     * same live region: abort with it, as the sign-in wait does, rather than
+     * poll out 60 s. */
     const msg = await waitFor(async () => {
       const m = await textOf('[data-e2e="message"]');
       if (m?.startsWith('Saved version')) return m;
-      if (m) throw new Error(`the page says: ${m}`);
+      if (m) { abortReason = `save refused: ${m}`; return false; }
       return null;
     }, { what: 'the save message', timeout: 60000 });
     const savedVersion = Number(/Saved version (\d+)/.exec(msg)[1]);
@@ -605,7 +616,7 @@ async function main() {
     await shot('07-saved');
     step('saved', msg);
   } catch (e) {
-    report.failure = abortReason ?? e.message;
+    report.failure ??= abortReason ?? e.message;
     report.pageConsole = pageLog;
     console.error(`\nFAILED: ${report.failure}\n--- page console ---\n${pageLog.join('\n') || '(silent)'}`);
   } finally {

@@ -410,7 +410,10 @@ export function MapEditorPanel() {
         }
         setRejectedKeys(keys);
         /* Refresh what the server sees — layout, report, versions — but NOT
-         * the entries (see the header). */
+         * the entries (see the header). Not under `loadSeq`: `busy` disables
+         * the world select for the whole of save(), so no load can overlap
+         * this re-GET, and it reads the closure's `world`, the one the save
+         * was for. */
         let refreshed = false;
         try {
           const fresh = await fetch(`/api/admin/map/${world}`, { cache: 'no-store' });

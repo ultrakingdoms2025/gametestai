@@ -5,6 +5,7 @@ import {
   type OverlayEntry,
   type RejectedEntry,
 } from './mapOverlaySchema';
+import { LAYOUT_SCHEMA, MAX_SHAPES, auditShapes, validateBounds, validateGround, validateLayout, type WorldLayout } from './mapLayout';
 
 /**
  * Where a world's placement overlay is kept.
@@ -26,8 +27,10 @@ import {
  *   - `(db: Db, ...)` signatures, so the ROUTE owns the connection. A module
  *     that opens its own connection cannot be made to share a transaction, and
  *     Postgres has no nested BEGIN to paper over it later.
- *   - Additive `CREATE TABLE IF NOT EXISTS` only. Whichever app runs first wins
- *     and the other is a no-op; no deployment is ever stranded mid-migration.
+ *   - Additive DDL only: `CREATE TABLE IF NOT EXISTS`, and — since the layout
+ *     columns — `ALTER TABLE … ADD COLUMN IF NOT EXISTS` with a DEFAULT, so a
+ *     row written before the column reads as "no layout", never as NULL.
+ *     Whichever app runs first wins and the other is a no-op.
  *   - The ensure is memoised as a **promise**, not a boolean. A boolean set
  *     before the awaited DDL finishes lets a second concurrent caller straight
  *     past a half-built schema — the bug is invisible until two requests land
@@ -89,6 +92,26 @@ export interface WorldReport {
   reportedAt?: string;
 }
 
+/** Layout fields a report may carry, typed `unknown` because they are validated HERE, not in the route; a failed layout still records the catalogue and keeps the prior layout. */
+export interface ReportedLayoutFields { layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown }
+
+export interface StoredWorldReport extends WorldReport { reportedAt: string; layout: WorldLayout | null }
+
+/**
+ * What became of the layout a report carried — the answer the report route hands back to the game.
+ *
+ *   `stored`      the report carried `layoutSchema` and every layout part it carried (bounds and shapes; ground when
+ *                 present) was stored. `warnings` may still name shapes that were dropped or cut: a thinner map, not a kept one.
+ *   `kept-prior`  the report carried `layoutSchema` but its schema is not this one, or a part it carried was unusable
+ *                 (bounds that do not read, a ground that does not decode, shapes with no bounds to hang them on). The
+ *                 prior stayed for that part; parts that passed were stored. Always said on the console too.
+ *   `none`        the report said nothing about the layout: no `layoutSchema`, or a schema with no bounds and no ground.
+ *
+ * `warnings` are the human reasons, world-agnostic, for the game's console: `layoutSchema 2 is not 1`, `unusable ground; prior kept`.
+ */
+export type LayoutOutcome = 'stored' | 'kept-prior' | 'none';
+export interface ReportOutcome { layout: LayoutOutcome; warnings: string[] }
+
 /**
  * How many named objects one world may report.
  *
@@ -101,7 +124,7 @@ export const MAX_CATALOGUE_OBJECTS = 2000;
 
 let ensured: Promise<void> | null = null;
 
-/** Create the two tables. Memoised as a promise — see the note above. */
+/** Create the two tables and add the layout columns to the reports table. Memoised as a promise — see the note above. */
 export function ensureMapOverlaySchema(db: Db): Promise<void> {
   if (!ensured) {
     ensured = (async () => {
@@ -134,6 +157,16 @@ export function ensureMapOverlaySchema(db: Db): Promise<void> {
           unresolved      JSONB NOT NULL DEFAULT '[]'::jsonb,
           reported_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+      `);
+      // These columns arrived after the table was live: ADD COLUMN IF NOT EXISTS
+      // is the additive form, and the DEFAULTs let an old row read as "no layout yet".
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS layout JSONB NOT NULL DEFAULT '{}'::jsonb
+      `);
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS layout_schema INTEGER NOT NULL DEFAULT 0
       `);
     })().catch((err) => {
       // A failed ensure must not be remembered as done, or every later request
@@ -298,17 +331,96 @@ function clampNumber(value: unknown): number {
 }
 
 /**
- * Record what the running game found and did.
+ * Only the keys that arrived AND passed. `bounds`/`shapes` travel on every report, `ground`
+ * only when sampling finished; jsonb `||` is shallow, so bounds without ground keeps
+ * yesterday's ground, and nothing keeps everything.
  *
- * One row per world, replaced each time: this is a cache of the last report,
- * not a history. The history that matters is `map_overlays`, and it is
- * append-only.
+ * Every way a layout comes back thinner, or not at all, is said on the console here, where it
+ * is first known, AND handed back as a `ReportOutcome` for the route to answer with. `saveOverlayVersion`
+ * hands `rejected` back for the editor to show; a report's only reader is the game that sent it, and
+ * until the outcome travelled back a quietly kept map — the schema mismatch was not even logged — hid
+ * a world file's bug, or a stale client, behind `{ ok: true }`. Absent is not unusable: a field that
+ * was not sent is the keep-the-prior rule working, and says nothing.
+ */
+function layoutPatch(worldId: string, report: ReportedLayoutFields): { patch: Partial<WorldLayout>; outcome: ReportOutcome } {
+  const patch: Partial<WorldLayout> = {};
+  const warnings: string[] = [];
+  // `== null`: undefined and null are both "not sent", the rule `bounds` and `ground` follow below.
+  if (report.layoutSchema == null) {
+    if (report.bounds != null || report.ground != null || (Array.isArray(report.shapes) && report.shapes.length > 0)) {
+      // An old or odd client: layout fields with no schema to read them under. Dropped, but not quietly.
+      warnings.push('layout fields sent without layoutSchema; ignored');
+      console.warn(`[map-report] layout fields sent without layoutSchema for ${worldId}; ignored`);
+    }
+    return { patch, outcome: { layout: 'none', warnings } };
+  }
+  if (report.layoutSchema !== LAYOUT_SCHEMA) {
+    // The one kept-prior that was silent before the whole-branch review: a newer client's report vanished into `{ ok: true }`.
+    const reason = `layoutSchema ${JSON.stringify(report.layoutSchema)} is not ${LAYOUT_SCHEMA}`;
+    console.warn(`[map-report] ${reason} for ${worldId}; prior layout kept`);
+    return { patch, outcome: { layout: 'kept-prior', warnings: [reason] } };
+  }
+  let keptPrior = false;
+  const bounds = validateBounds(report.bounds);
+  if (bounds) {
+    patch.schema = LAYOUT_SCHEMA;
+    patch.bounds = bounds;
+    // Present means replace, absent means keep — the same rule as `ground`, so a report of bounds alone cannot erase the shapes.
+    if (Array.isArray(report.shapes)) {
+      const audit = auditShapes(report.shapes);
+      patch.shapes = audit.shapes;
+      // Two lines from two counts, each only when it happened. Truncation is not unreadability: the cap keeps
+      // the first MAX_SHAPES readable and never reads the rest, and calling those "unreadable" would send
+      // someone hunting a bug a world file does not have — while the shape it really could not read went unsaid.
+      // Neither keeps the prior: the map is stored, thinner, so they are warnings under `stored`.
+      if (audit.truncated > 0) {
+        warnings.push(`kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes`);
+        console.warn(`[map-report] kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes for ${worldId}`);
+      }
+      if (audit.unreadable > 0) {
+        warnings.push(`dropped ${audit.unreadable} unreadable shapes`);
+        console.warn(`[map-report] dropped ${audit.unreadable} unreadable shapes for ${worldId}`);
+      }
+    }
+  } else if (report.bounds != null) {
+    // `!= null` as for `ground` below: null means not sent, for both, and says nothing.
+    keptPrior = true;
+    warnings.push('unusable bounds; prior bounds and shapes kept');
+    console.warn(`[map-report] unusable bounds for ${worldId}; prior bounds and shapes kept`);
+  } else if (Array.isArray(report.shapes) && report.shapes.length > 0) {
+    // Shapes are stored under bounds (the branch above), so shapes with no bounds have nowhere to go — the case of a
+    // world whose Box3 is empty: the game omits `bounds` and sends its floorplan anyway.
+    keptPrior = true;
+    warnings.push('shapes without bounds; not stored, prior kept');
+    console.warn(`[map-report] shapes without bounds for ${worldId}; not stored, prior kept`);
+  }
+  const ground = report.ground == null ? null : validateGround(report.ground);
+  if (ground) {
+    patch.schema = LAYOUT_SCHEMA;
+    patch.ground = ground;
+  } else if (report.ground != null) {
+    keptPrior = true;
+    warnings.push('unusable ground; prior kept');
+    console.warn(`[map-report] unusable ground for ${worldId}; prior kept`);
+  }
+  // A valid ground under invalid bounds stores { schema, ground }: readWorldReport answers `layout: null` until bounds arrive, and the ground is already there when they do. Self-healing, not a bug.
+  // `kept-prior` wins over a part stored beside it: the game's one console line is for what did NOT land.
+  const stored = patch.bounds !== undefined || patch.ground !== undefined;
+  const layout: LayoutOutcome = keptPrior ? 'kept-prior' : stored ? 'stored' : 'none';
+  return { patch, outcome: { layout, warnings } };
+}
+
+/**
+ * Record what the running game found and did: one row per world, a cache of the last report, not a history (that is
+ * `map_overlays`). The layout is the one part that MERGES — see `layoutPatch` — and the one part whose fate is
+ * answered: the objects, applied and unresolved lists are always stored, so the route answers 200 whatever the layout
+ * did, and the returned `ReportOutcome` is how the game learns that its map did not land.
  */
 export async function recordWorldReport(
   db: Db,
   worldId: string,
-  report: WorldReport
-): Promise<void> {
+  report: WorldReport & ReportedLayoutFields
+): Promise<ReportOutcome> {
   await ensureMapOverlaySchema(db);
 
   const objects = (Array.isArray(report.objects) ? report.objects : [])
@@ -338,14 +450,28 @@ export async function recordWorldReport(
       reason: String((u as UnresolvedOutcome)?.reason ?? '').slice(0, 64),
     }));
 
+  const { patch, outcome } = layoutPatch(worldId, report);
+
   await db.query(
-    `INSERT INTO map_world_reports (world_id, applied_version, objects, applied, unresolved, reported_at)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, NOW())
+    `INSERT INTO map_world_reports
+       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, reported_at)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, NOW())
      ON CONFLICT (world_id) DO UPDATE
        SET applied_version = EXCLUDED.applied_version,
            objects         = EXCLUDED.objects,
            applied         = EXCLUDED.applied,
            unresolved      = EXCLUDED.unresolved,
+           -- A row is always ONE schema. A patch from a newer client replaces the row outright
+           -- (its ground is not a v1 ground with a v2 bounds merged over it); a patch from the
+           -- same schema merges; one from an older client is dropped rather than merged under a
+           -- newer row. Today only schema 1 exists, and a report with no layout is schema 0 with
+           -- an empty patch, which the ELSE keeps as it is.
+           layout          = CASE
+                               WHEN map_world_reports.layout_schema < EXCLUDED.layout_schema THEN EXCLUDED.layout
+                               WHEN map_world_reports.layout_schema = EXCLUDED.layout_schema THEN map_world_reports.layout || EXCLUDED.layout
+                               ELSE map_world_reports.layout
+                             END,
+           layout_schema   = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema),
            reported_at     = NOW()`,
     [
       worldId,
@@ -353,14 +479,17 @@ export async function recordWorldReport(
       JSON.stringify(objects),
       JSON.stringify(applied),
       JSON.stringify(unresolved),
+      JSON.stringify(patch),
+      patch.schema === LAYOUT_SCHEMA ? LAYOUT_SCHEMA : 0,
     ]
   );
+  return outcome;
 }
 
-export async function readWorldReport(db: Db, worldId: string): Promise<WorldReport | null> {
+export async function readWorldReport(db: Db, worldId: string): Promise<StoredWorldReport | null> {
   await ensureMapOverlaySchema(db);
   const r = await db.query(
-    `SELECT applied_version, objects, applied, unresolved, reported_at
+    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, reported_at
        FROM map_world_reports WHERE world_id = $1`,
     [worldId]
   );
@@ -371,6 +500,10 @@ export async function readWorldReport(db: Db, worldId: string): Promise<WorldRep
     objects: Array.isArray(row.objects) ? (row.objects as CatalogueObject[]) : [],
     applied: Array.isArray(row.applied) ? (row.applied as AppliedOutcome[]) : [],
     unresolved: Array.isArray(row.unresolved) ? (row.unresolved as UnresolvedOutcome[]) : [],
-    reportedAt: row.reported_at ? new Date(row.reported_at).toISOString() : undefined,
+    // Validated again on the way out, like `rowEntries`: a row edited in psql reaches the editor as "no layout", not a canvas crash.
+    // `>=` and not `===`: the upsert's CASE guarantees a row holds ONE schema, so a row at a newer schema is that schema's
+    // layout whole, and `validateLayout` — which reads only the schema it knows — is the one that says whether this build can use it.
+    layout: Number(row.layout_schema ?? 0) >= LAYOUT_SCHEMA ? validateLayout(row.layout) : null,
+    reportedAt: new Date(row.reported_at).toISOString(),
   };
 }

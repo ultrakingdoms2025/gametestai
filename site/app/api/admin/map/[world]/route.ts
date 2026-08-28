@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { Client } from 'pg';
 import { requireMarketplaceAdmin } from '@/lib/adminAccess';
 import { appendAudit, ensureAuditSchema } from '@/lib/auditChain';
-import { isKnownOverlayWorld } from '@/lib/mapOverlaySchema';
+import { isKnownOverlayWorld, normaliseOverlayEntries, type NormalisedOverlay } from '@/lib/mapOverlaySchema';
 import {
   ensureMapOverlaySchema,
   listOverlayVersions,
@@ -10,7 +10,9 @@ import {
   readWorldReport,
   revertOverlayTo,
   saveOverlayVersion,
+  type WorldReport,
 } from '@/lib/mapOverlay';
+import { conflictContextFor, conflictsForDocument, hasErrors, type Conflict, type ConflictCode } from '@/lib/mapConflicts';
 
 /**
  * The map editor's read and write surface. Admin only.
@@ -51,6 +53,31 @@ function clientIp(request: Request): string | null {
   return fwd.split(',')[0]?.trim() || null;
 }
 
+type Rejection = { index: number; id: string; reason: ConflictCode };
+
+/**
+ * Error-level conflicts as `rejected[]` rows, indexed into the array the
+ * client SENT. The normaliser drops entries it cannot read, so position k in
+ * its output is not raw index k; its own `rejected[].index` is a raw index and
+ * the editor highlights rows by it, so these rows use the same coordinate and
+ * one response never carries two meanings of "index". Every raw index lands in
+ * exactly one of `entries` or `rejected`, which is what makes the walk sound.
+ */
+function conflictRejections(normalised: NormalisedOverlay, all: Conflict[][]): Rejection[] {
+  const dropped = new Set(normalised.rejected.map((r) => r.index));
+  const rawIndex: number[] = [];
+  const total = normalised.entries.length + normalised.rejected.length;
+  for (let i = 0; i < total; i++) if (!dropped.has(i)) rawIndex.push(i);
+
+  const out: Rejection[] = [];
+  all.forEach((conflicts, k) => {
+    for (const c of conflicts) {
+      if (c.level === 'error') out.push({ index: rawIndex[k], id: normalised.entries[k].id, reason: c.code });
+    }
+  });
+  return out;
+}
+
 export async function GET(request: Request, ctx: { params: Promise<{ world: string }> }) {
   const admin = await requireMarketplaceAdmin();
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -63,12 +90,21 @@ export async function GET(request: Request, ctx: { params: Promise<{ world: stri
   const db = makeClient();
   await db.connect();
   try {
-    const [overlay, versions, report] = await Promise.all([
+    const [overlay, versions, stored] = await Promise.all([
       readCurrentOverlay(db, world),
       listOverlayVersions(db, world),
       readWorldReport(db, world),
     ]);
-    return NextResponse.json({ world, overlay, versions, report });
+    // One read serves both. `report` keeps its shape for the panel that already reads it; the layout
+    // rides BESIDE it (a 700 KB grid is not catalogue), and `reportedAt` is lifted so the editor can show the map's age.
+    // `reportedAt` is when the game last REPORTED — any report, including the immediate one that carries no
+    // ground yet — not when the layout last changed; the editor's banner says "reported N min ago", which is that.
+    // The annotation is load bearing: a sixth field on this literal is a type error, not a wider `report`.
+    const report: WorldReport | null = stored && {
+      appliedVersion: stored.appliedVersion, objects: stored.objects, applied: stored.applied,
+      unresolved: stored.unresolved, reportedAt: stored.reportedAt,
+    };
+    return NextResponse.json({ world, overlay, versions, report, layout: stored?.layout ?? null, reportedAt: stored?.reportedAt ?? null });
   } catch (err) {
     console.error('[admin/map] read failed:', err);
     return NextResponse.json({ error: 'Could not read the overlay.' }, { status: 500 });
@@ -150,6 +186,35 @@ export async function POST(request: Request, ctx: { params: Promise<{ world: str
       });
       await db.query('COMMIT');
       return NextResponse.json({ world, overlay: saved, reverted: version });
+    }
+
+    /* The conflict gate. The editor runs the same rules live and shows the
+     * result before the admin clicks Save, but the editor is a courtesy: this
+     * is the boundary, and a client that skipped the check (or a replayed
+     * request) cannot write a document with an error-level conflict. Only
+     * errors refuse; warnings are the admin's call and are saved as they are.
+     * Refusing writes nothing — the audit row records saves, and there was no
+     * save. Reverts bypass this on purpose (above): a version accepted once
+     * stays reachable even after a later layout report would have refused it,
+     * or history becomes unreachable by accident. `saveOverlayVersion`
+     * normalises again below; the normaliser is a fixed point, and letting it
+     * keep doing so leaves its `rejected` reporting exactly as it was. The
+     * context comes from `conflictContextFor`, the helper the editor's panel
+     * uses too, so the two never disagree about a grid: a stored ground that
+     * will not decode is a warning in the log and no grid, and the bounds
+     * rule — the one that refuses — still refuses. */
+    const normalised = normaliseOverlayEntries(body.entries);
+    const report = await readWorldReport(db, world);
+    const conflicts = conflictsForDocument(
+      normalised.entries,
+      conflictContextFor(report?.layout ?? null, report?.objects ?? [])
+    );
+    if (hasErrors(conflicts)) {
+      await db.query('ROLLBACK').catch(() => {});
+      return NextResponse.json(
+        { error: 'conflicts', rejected: conflictRejections(normalised, conflicts) },
+        { status: 400 }
+      );
     }
 
     const saved = await saveOverlayVersion(db, {

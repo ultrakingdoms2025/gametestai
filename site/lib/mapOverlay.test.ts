@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +9,12 @@ import {
   readCurrentOverlay,
   readWorldReport,
   recordWorldReport,
+  resetMapOverlaySchemaMemo,
   revertOverlayTo,
   saveOverlayVersion,
 } from './mapOverlay';
+import { MAX_SHAPES, encodeHeights } from './mapLayout';
+import { flat, makeFakeDb } from './fakeDb';
 
 /**
  * The overlay store, against a real Postgres.
@@ -55,6 +58,12 @@ const suite = URL_ ? describe : describe.skip;
 
 const WORLD = 'test-overlay-alpha';
 const OTHER = 'test-overlay-beta';
+const PLAIN = { appliedVersion: 1, objects: [], applied: [], unresolved: [] };
+const BOUNDS = { min: { x: -20, y: 0, z: -20 }, max: { x: 20, y: 10, z: 20 } };
+/** A 3×3 single-layer grid at 20 m, every cell at `cm`. */
+function ground(cm: number) {
+  return { originX: -20, originZ: -20, step: 20, nx: 3, nz: 3, layers: 1, heightsCm: encodeHeights(new Int16Array(9).fill(cm)) };
+}
 
 function connect(): Client {
   return new Client({ connectionString: URL_!, ssl: { rejectUnauthorized: false } });
@@ -274,5 +283,259 @@ suite('mapOverlay (integration)', () => {
     });
     const report = await readWorldReport(db, WORLD);
     expect(report!.objects.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('adds the layout columns to a table that already existed, and again without complaint', async () => {
+    resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
+    resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
+    const cols = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'map_world_reports'`);
+    expect(cols.rows.map((r) => r.column_name)).toEqual(expect.arrayContaining(['layout', 'layout_schema']));
+  });
+
+  it('reads layout null, with a fresh reportedAt, for a world whose reports never carried one', async () => {
+    expect(await recordWorldReport(db, WORLD, PLAIN)).toEqual({ layout: 'none', warnings: [] });
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.layout).toBeNull();
+    expect(Date.now() - Date.parse(stored!.reportedAt)).toBeLessThan(60_000);
+  });
+
+  it('stores a layout and hands it back byte for byte', async () => {
+    const shapes = [{ kind: 'rect', x: 0, z: 0, w: 4, d: 4, fill: 0x224466 }];
+    expect(await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes, ground: ground(150) })).toEqual({ layout: 'stored', warnings: [] });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes, ground: ground(150) });
+  });
+
+  it('keeps the ground when a later report carries bounds and shapes but no ground', async () => {
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    const moved = { min: { x: -30, y: 0, z: -30 }, max: { x: 30, y: 10, z: 30 } };
+    await recordWorldReport(db, WORLD, { ...PLAIN, appliedVersion: 2, layoutSchema: 1, bounds: moved, shapes: [{ kind: 'circle', x: 1, z: 1, r: 2 }] });
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.appliedVersion).toBe(2);
+    expect(stored?.layout?.bounds).toEqual(moved);
+    expect(stored?.layout?.shapes).toHaveLength(1);
+    expect(stored?.layout?.ground).toEqual(ground(150));
+  });
+
+  it('leaves the layout alone for a report with no layout fields, and keeps the prior ground over one that does not decode', async () => {
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    await recordWorldReport(db, WORLD, { ...PLAIN, appliedVersion: 3 });
+    const stored = await readWorldReport(db, WORLD);
+    expect(stored?.appliedVersion).toBe(3);
+    expect(stored?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    // The answer says the prior was kept, and the row agrees: the same ground as before, not the one that did not decode.
+    expect(await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(999), nx: 4 } }))
+      .toEqual({ layout: 'kept-prior', warnings: ['unusable ground; prior kept'] });
+    expect((await readWorldReport(db, WORLD))?.layout?.ground).toEqual(ground(150));
+  });
+
+  it('replaces only the ground for a report that carries a ground and nothing else', async () => {
+    const shapes = [{ kind: 'circle', x: 1, z: 1, r: 2 }];
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes, ground: ground(150) });
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, ground: ground(300) });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes, ground: ground(300) });
+  });
+
+  it('keeps the stored shapes when a later report carries bounds but no shapes', async () => {
+    const shapes = [{ kind: 'circle', x: 1, z: 1, r: 2 }];
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes });
+    const moved = { min: { x: -30, y: 0, z: -30 }, max: { x: 30, y: 10, z: 30 } };
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: moved });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: moved, shapes, ground: null });
+  });
+
+  /**
+   * Only schema 1 exists, so the older row is staged by hand: a row at schema 0 whose `layout`
+   * holds a ground. With a plain `||` that ground would survive under a schema-1 bounds; the
+   * CASE replaces the row instead, so a row is never two grid formats at once.
+   */
+  it('replaces, rather than merges over, a layout left by an older schema', async () => {
+    await recordWorldReport(db, WORLD, PLAIN);
+    await db.query('UPDATE map_world_reports SET layout = $2::jsonb, layout_schema = 0 WHERE world_id = $1', [WORLD, JSON.stringify({ ground: ground(150) })]);
+    await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+    expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes: [], ground: null });
+  });
+});
+
+/**
+ * The merge rule as EMITTED SQL, on every machine: one shallow jsonb `||` with a patch of the
+ * keys that passed. The integration suite proves the consequence; this pins the statement where it cannot run.
+ */
+describe('recordWorldReport — the SQL it emits', () => {
+  const patchOf = (db: ReturnType<typeof makeFakeDb>) => JSON.parse(String(db.only('INSERT INTO map_world_reports').params[5]));
+
+  it('merges the patch over the stored layout rather than replacing it', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+    const q = db.only('INSERT INTO map_world_reports');
+    // Merge only at the SAME schema; a newer client's patch replaces the row and an older one's is dropped.
+    expect(flat(q.sql)).toContain(
+      'layout = CASE WHEN map_world_reports.layout_schema < EXCLUDED.layout_schema THEN EXCLUDED.layout' +
+        ' WHEN map_world_reports.layout_schema = EXCLUDED.layout_schema THEN map_world_reports.layout || EXCLUDED.layout' +
+        ' ELSE map_world_reports.layout END'
+    );
+    expect(flat(q.sql)).toContain('layout_schema = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema)');
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });
+    expect(q.params[6]).toBe(1);
+  });
+
+  it('leaves shapes out of the patch when the report did not carry them', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS });
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS });
+  });
+
+  /** A shape the validator cannot read is a bug in a world file, and a silently thinner map hides it; the log line is the only place the count goes. */
+  it('says on the console how many shapes it dropped and for which world, and nothing when it dropped none', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [rect, { kind: 'hexagon' }, 7] });
+      expect(patchOf(db).shapes).toEqual([rect]);
+      expect(warn).toHaveBeenCalledWith('[map-report] dropped 2 unreadable shapes for test-overlay-sql');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [rect] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Truncation is not unreadability, and the two are said apart, each only when it happened. The boundary:
+   * MAX_SHAPES readable out of MAX_SHAPES + 1 sent is one unreadable and NOTHING truncated — a check on the
+   * lengths alone calls that "kept the first 5000 of 5001" and never prints the line that names the bad shape.
+   */
+  it('says "kept the first" for what the cap left unread and "dropped" for what it could not read, each only when it happened', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      const rect = { kind: 'rect', x: 0, z: 0, w: 1, d: 1 };
+      const good = (n: number) => Array(n).fill(rect);
+      const kept = (sent: number) => `[map-report] kept the first ${MAX_SHAPES} of ${sent} shapes for test-overlay-sql`;
+      const dropped = '[map-report] dropped 1 unreadable shapes for test-overlay-sql';
+
+      // MAX_SHAPES + 1 readable: one truncated, none unreadable.
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: good(MAX_SHAPES + 1) });
+      expect(patchOf(db).shapes).toHaveLength(MAX_SHAPES);
+      expect(warn.mock.calls).toEqual([[kept(MAX_SHAPES + 1)]]);
+
+      // MAX_SHAPES + 1 with one unreadable: MAX_SHAPES readable, so NOTHING was truncated.
+      warn.mockClear(); db.clear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [{ kind: 'hexagon' }, ...good(MAX_SHAPES)] });
+      expect(patchOf(db).shapes).toHaveLength(MAX_SHAPES);
+      expect(warn.mock.calls).toEqual([[dropped]]);
+
+      // MAX_SHAPES + 2 with one unreadable: both happened, both are said.
+      warn.mockClear(); db.clear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [{ kind: 'hexagon' }, ...good(MAX_SHAPES + 1)] });
+      expect(patchOf(db).shapes).toHaveLength(MAX_SHAPES);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(kept(MAX_SHAPES + 2));
+      expect(warn).toHaveBeenCalledWith(dropped);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** A bounds or ground that arrived and failed leaves the editor with no map, or yesterday's; that must be said somewhere, and absent is not the same as unusable. */
+  it('says when bounds or ground it was sent could not be used, and nothing when they were simply not sent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: { min: 'no' }, shapes: [] });
+      expect(warn).toHaveBeenCalledWith('[map-report] unusable bounds for test-overlay-sql; prior bounds and shapes kept');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(1), nx: 4 } });
+      expect(warn).toHaveBeenCalledWith('[map-report] unusable ground for test-overlay-sql; prior kept');
+      warn.mockClear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: null });
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: null, shapes: [] });   // null is not sent, for bounds as for ground
+      await recordWorldReport(db, 'test-overlay-sql', PLAIN);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('sends an empty patch and schema 0 for a report with no layout, or one under a schema it does not read', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', PLAIN);
+    expect(patchOf(db)).toEqual({});
+    expect(db.only('INSERT INTO map_world_reports').params[6]).toBe(0);
+    db.clear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});   // the mismatch is said now; its line has its own test below
+    try {
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 7, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(patchOf(db)).toEqual({});
+  });
+
+  it('includes a ground only when it decodes, and keeps the bounds when it does not', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(1), nx: 4 } });
+    expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });
+    db.clear();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) });
+    expect(patchOf(db).ground).toEqual(ground(150));
+  });
+
+  /**
+   * The outcome the route answers with, one case per value. Pinned here, on the recording client, because the outcome
+   * is decided from the report alone — a layout that failed never reaches the database, so a database cannot show it.
+   */
+  it('answers none for a report that carried no layoutSchema, and warns of nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await recordWorldReport(makeFakeDb(), 'test-overlay-sql', PLAIN)).toEqual({ layout: 'none', warnings: [] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('answers stored when every layout part the report carried was stored: bounds, shapes and ground together, or a ground alone', async () => {
+    const db = makeFakeDb();
+    expect(await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(150) })).toEqual({ layout: 'stored', warnings: [] });
+    expect(await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, ground: ground(150) })).toEqual({ layout: 'stored', warnings: [] });
+  });
+
+  it('answers kept-prior, with the reason, when a part it carried was unusable, even beside a part that was stored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      expect(await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: { ...ground(1), nx: 4 } }))
+        .toEqual({ layout: 'kept-prior', warnings: ['unusable ground; prior kept'] });
+      expect(patchOf(db)).toEqual({ schema: 1, bounds: BOUNDS, shapes: [] });   // the bounds still landed
+      db.clear();
+      expect(await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: { min: 'no' }, shapes: [] }))
+        .toEqual({ layout: 'kept-prior', warnings: ['unusable bounds; prior bounds and shapes kept'] });
+      db.clear();
+      // The empty-Box3 case: the game omits `bounds` and sends its floorplan anyway, and shapes have nowhere to go without bounds.
+      expect(await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, shapes: [{ kind: 'rect', x: 0, z: 0, w: 1, d: 1 }] }))
+        .toEqual({ layout: 'kept-prior', warnings: ['shapes without bounds; not stored, prior kept'] });
+      expect(patchOf(db)).toEqual({});
+      expect(warn).toHaveBeenCalledWith('[map-report] shapes without bounds for test-overlay-sql; not stored, prior kept');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** The schema mismatch was the one kept-prior that was silent: `if (report.layoutSchema !== LAYOUT_SCHEMA) return patch;`, and no line at all. */
+  it('says on the console, and in its answer, that a layoutSchema it does not read kept the prior layout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const db = makeFakeDb();
+      const outcome = await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 2, bounds: BOUNDS, shapes: [], ground: ground(150) });
+      expect(outcome).toEqual({ layout: 'kept-prior', warnings: ['layoutSchema 2 is not 1'] });
+      expect(warn.mock.calls).toEqual([['[map-report] layoutSchema 2 is not 1 for test-overlay-sql; prior layout kept']]);
+      expect(patchOf(db)).toEqual({});
+      expect(db.only('INSERT INTO map_world_reports').params[6]).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MAX_LAYOUT_BYTES, encodeHeights, type WorldLayout } from '@/lib/mapLayout';
+import type { LayoutOutcome } from '@/lib/mapOverlay';
 
 /**
  * WHO CAN REACH THE MAP EDITOR.
@@ -114,6 +116,7 @@ beforeEach(() => {
   });
   store.listOverlayVersions.mockResolvedValue([]);
   store.readWorldReport.mockResolvedValue(null);
+  store.recordWorldReport.mockResolvedValue({ layout: 'none', warnings: [] });
   store.saveOverlayVersion.mockResolvedValue({
     worldId: 'station',
     version: 1,
@@ -193,6 +196,34 @@ describe('GET /api/admin/map/[world]', () => {
     const res = await get('not-a-world');
     expect(res.status).toBe(404);
     expect(store.readCurrentOverlay).not.toHaveBeenCalled();
+  });
+
+  it('returns layout null and reportedAt null for a world nobody has visited', async () => {
+    signedInAs(ADMIN);
+    const body = await (await get()).json();
+    expect(body.report).toBeNull();
+    expect(body.layout).toBeNull();
+    expect(body.reportedAt).toBeNull();
+  });
+
+  /**
+   * `layout` is lifted BESIDE `report`, not left inside it: the panel that reads `report` today
+   * must see exactly the five fields it always did, so the test pins the absence as well as the presence.
+   */
+  it('returns the stored layout and its age from the one report read, beside an unchanged report', async () => {
+    signedInAs(ADMIN);
+    const layout = {
+      schema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [],
+      ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
+    };
+    const report = { appliedVersion: 2, objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
+    store.readWorldReport.mockResolvedValue({ ...report, layout });
+    const body = await (await get()).json();
+    expect(body.layout).toEqual(layout);
+    expect(body.reportedAt).toBe(report.reportedAt);
+    expect(body.report).toEqual(report);
+    expect(body.report.layout).toBeUndefined();
+    expect(store.readWorldReport).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -314,6 +345,108 @@ describe('POST /api/admin/map/[world]', () => {
     expect(res.status).toBe(400);
     expect(store.saveOverlayVersion).not.toHaveBeenCalled();
   });
+
+  /**
+   * The conflict gate. The editor shows the same conflicts live, but the
+   * editor is a courtesy; this route is the boundary. Only error-level
+   * conflicts refuse, and a refusal writes nothing — no version, no audit row,
+   * because the audit row records saves and there was no save.
+   */
+  const TINY: WorldLayout = {
+    schema: 1,
+    bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 10, z: 10 } },
+    shapes: [],
+    ground: null,
+  };
+  /** Six by six samples 4 m apart from (−10, −10): a flat deck at y = 0 over the whole of TINY. */
+  const FLAT_DECK = { originX: -10, originZ: -10, step: 4, nx: 6, nz: 6, layers: 1, heightsCm: encodeHeights(new Int16Array(36)) };
+  function worldReports(layout: WorldLayout | null) {
+    const objects = [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }];
+    store.readWorldReport.mockResolvedValue({ appliedVersion: 1, objects, applied: [], unresolved: [], layout, reportedAt: '2026-08-27T00:00:00.000Z' });
+  }
+  const crateTo = (x: number, y = 0, z = 0) => ({ kind: 'move', id: 'e1', target: { name: 'crate' }, position: { x, y, z } });
+
+  it('refuses a move outside the world bounds and writes nothing, not even an audit row', async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ entries: [crateTo(500)] });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'conflicts', rejected: [{ index: 0, id: 'e1', reason: 'out-of-bounds' }] });
+    expect(store.saveOverlayVersion).not.toHaveBeenCalled();
+    expect(appendAudit).not.toHaveBeenCalled();
+    expect(connections[0].statements).toContain('ROLLBACK');
+    expect(connections[0].statements).not.toContain('COMMIT');
+  });
+
+  it("saves a document that only carries warnings: an underground move is the admin's call", async () => {
+    signedInAs(ADMIN);
+    worldReports({ ...TINY, ground: FLAT_DECK });
+    // A grid that fails to decode is warned about and skipped rather than refused, so
+    // the spy is what proves the warning came from a decoded grid, not a skipped one.
+    const warned = vi.spyOn(console, 'warn');
+    try {
+      const entries = [crateTo(0, -5, 0)];
+      const res = await post({ entries });
+      expect(res.status).toBe(200);
+      expect(warned).not.toHaveBeenCalled();
+      expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+      expect(store.saveOverlayVersion.mock.calls[0][1].entries).toEqual(entries);
+      expect(appendAudit).toHaveBeenCalledTimes(1);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  it('saves free-text moves exactly as before when the world has no layout yet', async () => {
+    signedInAs(ADMIN);
+    store.readWorldReport.mockResolvedValue(null);
+    const res = await post({ entries: [crateTo(500)] });
+    expect(res.status).toBe(200);
+    expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a rejected row by the index the client sent, not the normaliser's compacted one", async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ entries: [{ kind: 'delete', id: 'junk' }, crateTo(500)] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).rejected).toEqual([{ index: 1, id: 'e1', reason: 'out-of-bounds' }]);
+  });
+
+  it('does not run the gate on a revert: a version that was accepted once stays reachable', async () => {
+    signedInAs(ADMIN);
+    worldReports(TINY);
+    const res = await post({ revertTo: 1 });
+    expect(res.status).toBe(200);
+    expect(store.readWorldReport).not.toHaveBeenCalled();
+    expect(store.revertOverlayTo).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A stored grid that will not decode must not make the world unsaveable, and must not
+   * make it lawless either: the ground rules are skipped (they are warnings) with one
+   * warning in the log, and the bounds rule — the one that refuses — still refuses.
+   * The store validates on both sides today, so this is a row edited by hand.
+   */
+  it('degrades an undecodable stored grid to bounds-only: still refuses out-of-bounds, still saves the rest', async () => {
+    signedInAs(ADMIN);
+    const corrupt = { ...FLAT_DECK, heightsCm: encodeHeights(new Int16Array(3)) };
+    worldReports({ ...TINY, ground: corrupt });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refused = await post({ entries: [crateTo(500)] });
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).rejected).toEqual([{ index: 0, id: 'e1', reason: 'out-of-bounds' }]);
+      expect(store.saveOverlayVersion).not.toHaveBeenCalled();
+      const saved = await post({ entries: [crateTo(0, -5, 0)] });
+      expect(saved.status).toBe(200);
+      expect(store.saveOverlayVersion).toHaveBeenCalledTimes(1);
+      expect(warned).toHaveBeenCalledTimes(2);
+      expect(String(warned.mock.calls[0][0])).toMatch(/^\[map-conflicts\] stored ground did not decode/);
+    } finally {
+      warned.mockRestore();
+    }
+  });
 });
 
 describe('POST /api/admin/map/report', () => {
@@ -334,6 +467,11 @@ describe('POST /api/admin/map/report', () => {
     objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }],
     applied: [],
     unresolved: [],
+  };
+
+  const LAYOUT = {
+    layoutSchema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [{ kind: 'rect', x: 0, z: 0, w: 4, d: 4 }],
+    ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
   };
 
   it('refuses an anonymous game client', async () => {
@@ -362,6 +500,102 @@ describe('POST /api/admin/map/report', () => {
     const res = await post({ ...REPORT, world: '../../etc' });
     expect(res.status).toBe(404);
     expect(store.recordWorldReport).not.toHaveBeenCalled();
+  });
+
+  /** An array parses as JSON and is an object to `typeof`, but it is not a report; the answer is "malformed", not "no such world". */
+  it('refuses an array body as malformed, not as an unknown world, without reaching the store', async () => {
+    signedInAs(ADMIN);
+    const res = await post([REPORT]);
+    expect(res.status).toBe(400);
+    expect(store.recordWorldReport).not.toHaveBeenCalled();
+    expect(connections).toHaveLength(0);
+  });
+
+  it('hands the layout fields to the store untouched, for the store to validate', async () => {
+    signedInAs(ADMIN);
+    const res = await post({ ...REPORT, ...LAYOUT });
+    expect(res.status).toBe(200);
+    expect(store.recordWorldReport.mock.calls[0][2]).toMatchObject(LAYOUT);
+  });
+
+  /**
+   * The store's verdict on the layout travels back, whole, at 200. A 4xx for a kept layout would be wrong twice: the
+   * catalogue part of the report WAS stored, and the game reads a non-2xx as "refused" and says so with the status
+   * alone — the reason would be lost at the one console an admin is watching.
+   */
+  const OUTCOMES: Array<[LayoutOutcome, string[]]> = [
+    ['stored', []],
+    ['kept-prior', ['layoutSchema 2 is not 1']],
+    ['none', []],
+  ];
+  it.each(OUTCOMES)("answers 200 with the store's layout outcome %s and its warnings, so the game can say when the prior was kept", async (layout, warnings) => {
+    signedInAs(ADMIN);
+    store.recordWorldReport.mockResolvedValue({ layout, warnings: [...warnings] });
+    const res = await post({ ...REPORT, ...LAYOUT });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, world: 'station', layout, warnings });
+  });
+
+  it('refuses a report over the byte cap with 413 and never opens a connection; still 400 for non-JSON', async () => {
+    signedInAs(ADMIN);
+    const res = await post({ ...REPORT, ...LAYOUT, pad: 'x'.repeat(MAX_LAYOUT_BYTES) });
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: 'Report too large' });
+    const { POST } = await import('@/app/api/admin/map/report/route');
+    const bad = await POST(new Request('http://localhost/api/admin/map/report', { method: 'POST', body: 'not json' }));
+    expect(bad.status).toBe(400);
+    expect(store.recordWorldReport).not.toHaveBeenCalled();
+    expect(connections).toHaveLength(0);
+  });
+
+  /**
+   * A Request built in-process carries no content-length, so the test above reaches the 413
+   * only by measuring the bytes. This one sets the header by hand: the declared length alone
+   * must refuse the report, and the body — small, and honest JSON — must never be read for it.
+   */
+  it('refuses a declared oversize before reading the body at all', async () => {
+    signedInAs(ADMIN);
+    const text = vi.spyOn(Request.prototype, 'text');
+    try {
+      const { POST } = await import('@/app/api/admin/map/report/route');
+      const req = new Request('http://localhost/api/admin/map/report', {
+        method: 'POST',
+        body: JSON.stringify({ ...REPORT, ...LAYOUT }),
+        headers: { 'content-type': 'application/json', 'content-length': String(MAX_LAYOUT_BYTES + 1) },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(413);
+      expect(text).not.toHaveBeenCalled();
+      expect(req.bodyUsed).toBe(false);
+      expect(store.recordWorldReport).not.toHaveBeenCalled();
+      expect(connections).toHaveLength(0);
+    } finally {
+      text.mockRestore();
+    }
+  });
+
+  /**
+   * The spy proves `.text()` was not called; `bodyUsed` proves NO reader was — `.json()`,
+   * `.arrayBuffer()` and a stream all flip it — so the test holds however the route reads.
+   */
+  it('refuses an anonymous client before reading a byte of the body', async () => {
+    signedInAs(null);
+    const text = vi.spyOn(Request.prototype, 'text');
+    try {
+      const { POST } = await import('@/app/api/admin/map/report/route');
+      const req = new Request('http://localhost/api/admin/map/report', {
+        method: 'POST',
+        body: JSON.stringify({ ...REPORT, ...LAYOUT }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(403);
+      expect(text).not.toHaveBeenCalled();
+      expect(req.bodyUsed).toBe(false);
+      noDatabaseWasTouched();
+    } finally {
+      text.mockRestore();
+    }
   });
 });
 

@@ -6,7 +6,7 @@
  * Worlds in this game are procedural code, and one of them (`MedievalWorld.js`)
  * is 12,945 lines. An editor that rewrote world source would collide head-on
  * with the art passes that are editing those same files right now. So the
- * editor writes a SEPARATE document — a set of moved and placed instances — and
+ * editor writes a SEPARATE document — a set of moved, removed and placed instances — and
  * the game applies it after the world has finished building. The two surfaces
  * never touch, and every change is revertible because nothing was overwritten.
  *
@@ -218,9 +218,17 @@ export function readAngle(raw: unknown): number | undefined {
   return round(w, 6);
 }
 
+/**
+ * A trimmed name of at most `max` CODE POINTS, and a fixed point: the cut
+ * comes first and the trim second, so a name cut at a space does not shrink
+ * again on the next read; and the cut is by code point, so an emoji at the
+ * boundary is kept whole or dropped whole - a `slice` by UTF-16 unit left a
+ * lone high surrogate, which `JSON.stringify` writes as `\ud83d` and Postgres
+ * refuses, and the save 500ed.
+ */
 function readName(raw: unknown, max: number): string | null {
   if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().slice(0, max);
+  const trimmed = Array.from(raw.trim()).slice(0, max).join('').trim();
   if (!trimmed) return null;
   if (FORBIDDEN_NAMES.has(trimmed)) return null;
   return trimmed;

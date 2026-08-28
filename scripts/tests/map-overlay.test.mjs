@@ -191,19 +191,39 @@ test('a malformed document applies nothing rather than half of it', async () => 
   }
 });
 
-test('a document newer than this build reads is said once, and still applied', async () => {
-  const rig = setup({ ...doc([moveCrate]), schema: 3 });
-  const warned = [];
-  const warn = console.warn;
-  console.warn = (...a) => warned.push(a.join(' '));
-  try {
-    await enter(rig);
-    await enter(rig);
-  } finally {
-    console.warn = warn;
-  }
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
-  assert.equal(warned.filter((w) => /\[map-overlay\] document schema 3 is newer than 2/.test(w)).length, 1, `${warned}`);
+/**
+ * Both sides of the "newer than" gate are measured, on the SAME broad pattern:
+ * a schema-3 document warns exactly once over two enters, and a schema-1
+ * document (older than this build, the shape every other rig here serves)
+ * never warns. A filter on the exact "schema 3" text would pass with the
+ * comparison mutated to `!==`, which warns on the older side too.
+ */
+test('a document newer than this build reads is said once, and still applied; an older one is never said', async () => {
+  const SCHEMA_WARN = /\[map-overlay\] document schema/;
+  const capture = async (rig) => {
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (...a) => warned.push(a.join(' '));
+    try {
+      await enter(rig);
+      await enter(rig);
+    } finally {
+      console.warn = warn;
+    }
+    return warned.filter((w) => SCHEMA_WARN.test(w));
+  };
+
+  const newer = setup({ ...doc([moveCrate]), schema: 3 });
+  const said = await capture(newer);
+  assert.deepEqual(newer.world.crate.position.toArray(), [40, 3, -20]);
+  assert.equal(said.length, 1, `${said}`);
+  assert.match(said[0], /document schema 3 is newer than 2/);
+
+  const older = setup(doc([moveCrate]));
+  assert.equal(older.doc.schema, 1, 'precondition: the rig serves schema 1');
+  const unsaid = await capture(older);
+  assert.deepEqual(older.world.crate.position.toArray(), [40, 3, -20]);
+  assert.equal(unsaid.length, 0, `an older document warned: ${unsaid}`);
 });
 
 /* ------------------------------------------------------------------ */
@@ -528,12 +548,6 @@ test('leaving a world restores what the overlay moved in it', async () => {
 
 const removeBarn = { kind: 'remove', id: 'r1', target: { name: 'barn.main' } };
 
-test('a remove takes an object out of the world without touching world source', async () => {
-  const rig = setup(doc([{ kind: 'remove', id: 'r0', target: { name: 'barn.main' } }]));
-  await enter(rig);
-  assert.equal(rig.world.barn.visible, false);
-});
-
 test('a remove hides the object and drops the collider inside it; the broadphase no longer answers with it', async () => {
   const rig = setup(doc([removeBarn], { admin: true }));
   const own = rig.physics.addBoxFromObject(rig.world.barn);
@@ -699,9 +713,25 @@ test('two moves of one name: only the last applies; the first is superseded rath
   await enter(rig);
   assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
   assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20]);
-  assert.equal(rig.system.report.applied.length, 1, 'both moves applied');
-  assert.deepEqual(rig.system.report.applied, [{ id: 'm1', ok: true, colliders: 1 }]);
+  assert.deepEqual(rig.system.report.applied, [{ id: 'm1', ok: true, colliders: 1 }], 'both moves applied');
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'first', reason: 'superseded' }]);
+});
+
+test('a v1 hidden move then a move of one name: the move wins and the hidden one is superseded, not applied as a remove first', async () => {
+  // The v1 shape is dispatched as a remove (decision A), so it must be keyed
+  // into the last-wins pre-pass like one: were it exempt, it would hide the
+  // barn and drop its collider BEFORE the move ran, and the move would then
+  // find nothing to take along.
+  const hiddenBarn = { kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: { x: 40, y: 3, z: -20 }, hidden: true };
+  const rig = setup(doc([hiddenBarn, moveBarn], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, true, 'the superseded hidden move still hid the barn');
+  assert.deepEqual(rig.world.barn.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20], 'the collider did not move with the barn');
+  assert.equal(rig.physics.has(own), true, 'the superseded hidden move still dropped the collider');
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'h1', reason: 'superseded' }]);
+  assert.deepEqual(rig.system.report.applied, [{ id: 'm2', ok: true, colliders: 1 }]);
 });
 
 test('re-entering after the remove was dropped from the document registers the collider once, where it was built', async () => {

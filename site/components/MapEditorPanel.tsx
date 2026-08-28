@@ -31,8 +31,8 @@ import { card, coord, dim, input, label, statusColour, subtle, warnColour } from
  *
  * ── What it edits, and what it deliberately is not ─────────────────────────
  *
- * A map over a placement overlay — a versioned document of moved and placed
- * instances the game applies AFTER a world has finished building. The map is
+ * A map over a placement overlay — a versioned document of moved, removed and
+ * placed instances the game applies AFTER a world has finished building. The map is
  * a top-down drawing of what the admin's own game reported (bounds, floorplan
  * shapes, a physics-sampled ground grid), not a second copy of the world: a
  * 3D viewport here would need the whole procedural world built again in a

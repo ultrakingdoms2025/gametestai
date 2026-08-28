@@ -152,6 +152,26 @@ describe('normaliseOverlayEntries', () => {
     const second = normaliseOverlayEntries(first.entries);
     expect(second.rejected).toEqual([]);
     expect(second.entries).toEqual(first.entries);
+
+    // The name cut is a fixed point too. Cut BEFORE the trim, a 200-char name
+    // ending in a space re-normalised to 199 chars; cut by UTF-16 unit, one
+    // ending in an emoji kept a lone high surrogate, which JSON.stringify
+    // writes as `\ud83d` and Postgres refuses (the save 500s). The cut is
+    // by code point and the result is trimmed again: a code point at the
+    // boundary is kept whole or dropped whole, never split.
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    const nameOf = (raw: string) => {
+      const out = normaliseOverlayEntries([move({ target: { name: raw } })]);
+      expect(out.rejected).toEqual([]);
+      const name = (out.entries[0] as MoveEntry).target as { name: string };
+      expect(normaliseOverlayEntries(out.entries).entries).toEqual(out.entries);
+      return name.name;
+    };
+    expect(nameOf(`${'a'.repeat(199)} b`)).toBe('a'.repeat(199));
+    const emojiAtTheCut = nameOf(`${'a'.repeat(199)}😀tail`);
+    expect(emojiAtTheCut).toBe(`${'a'.repeat(199)}😀`);
+    expect(emojiAtTheCut).not.toMatch(lone);
+    expect(nameOf(`${'a'.repeat(200)}😀`)).toBe('a'.repeat(200));
   });
 
   it('rounds coordinates to millimetres so a drifting float cannot grow the document', () => {

@@ -1275,12 +1275,16 @@ test('a Mesh whose geometry is centred on its origin reports its base, one half-
   assert.deepEqual(catalogued(rig, 'crate.alpha').position, { x: 10, y: -1, z: 10 });
 });
 
+// A guard, not a red test: this passed under `getWorldPosition` too. It is
+// here so the anchor can never drift away from the origin of a based prop.
 test('a prop whose origin is at its base reports its origin: the anchor and the position agree', async () => {
   const rig = setup(doc([], { admin: true }), { world: makeBakedWorld() });
   await enter(rig);
   assert.deepEqual(catalogued(rig, 'pedestal.based').position, { x: 5, y: 0, z: 5 });
 });
 
+// A guard as well: an empty box has no bottom-centre, and the fallback must
+// stay the world position `getWorldPosition` always gave such a node.
 test('a named node with nothing to draw still reports its world position', async () => {
   const rig = setup(doc([], { admin: true }), { world: makeBakedWorld() });
   await enter(rig);
@@ -1305,6 +1309,68 @@ test('a move lands the anchor of a baked Group at the position given, takes its 
   await enter(rig);
   assert.deepEqual(rig.world.district.position.toArray(), [0, 0, 0], 'the undo did not restore the authored position');
   assert.deepEqual(own.center.toArray().map(r3), [10, 2, 10], 'the undo did not restore the collider');
+});
+
+/**
+ * Yaw turns an Object3D about its own origin, which for a baked Group is the
+ * world axis: a 10 degree turn at a radius of 100 m would carry the object
+ * 17 m while its collider stayed. The panel offers a yaw field for every
+ * selected object, so a yawed move must keep the anchor where the move said.
+ */
+test('a yawed move of a baked Group turns it about its anchor: the anchor lands at the position given, the collider translates only, and the undo restores both', async () => {
+  const move = { kind: 'move', id: 'my', target: { name: 'district.baked' }, position: { x: 20, y: 1, z: 10 }, rotationY: Math.PI / 2 };
+  let current = doc([move], { admin: true });
+  const rig = setup(() => current, { world: makeBakedWorld() });
+  const own = rig.physics.addBoxFromObject(rig.world.shell);
+
+  await enter(rig);
+  assert.ok(Math.abs(rig.world.district.rotation.y - Math.PI / 2) < 1e-9, 'the yaw was not applied');
+  assert.deepEqual(anchorOf(rig.world.district), [20, 1, 10], 'the yaw carried the anchor away from the position given');
+  assert.deepEqual(own.center.toArray().map(r3), [20, 2, 10], 'the collider did not translate by the anchor delta');
+  assert.deepEqual(rig.system.report.applied, [{ id: 'my', ok: true, colliders: 1 }]);
+
+  current = doc([], { admin: true, version: 2 });
+  await enter(rig);
+  assert.deepEqual(rig.world.district.position.toArray(), [0, 0, 0], 'the undo did not restore the authored position');
+  assert.equal(rig.world.district.rotation.y, 0, 'the undo did not restore the authored yaw');
+  assert.deepEqual(own.center.toArray().map(r3), [10, 2, 10], 'the undo did not restore the collider');
+});
+
+test('a yaw with no position leaves the anchor where it stood', async () => {
+  const rig = setup(doc([{ kind: 'move', id: 'ry', target: { name: 'district.baked' }, rotationY: Math.PI / 2 }], { admin: true }), { world: makeBakedWorld() });
+  await enter(rig);
+  assert.ok(Math.abs(rig.world.district.rotation.y - Math.PI / 2) < 1e-9, 'the yaw was not applied');
+  assert.deepEqual(anchorOf(rig.world.district), [10, 1, 10], 'a rotation-only entry moved the anchor');
+});
+
+/**
+ * The move's delta is a world-space vector and the target's position is in
+ * its parent's frame. A parent that is moved, turned and scaled unevenly is
+ * the case that tells the two apart.
+ */
+test('a move under a turned and unevenly scaled parent still lands the anchor at the position given, and the undo restores it', async () => {
+  const world = makeWorld();
+  const frame = new THREE.Group();
+  frame.position.set(5, 0, 5);
+  frame.rotation.y = Math.PI / 3;
+  frame.scale.set(2, 3, 0.5);
+  const prop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+  prop.name = 'prop.framed';
+  prop.position.set(1, 0, 1);
+  frame.add(prop);
+  world.group.add(frame);
+  world.group.updateMatrixWorld(true);
+  const authored = prop.position.clone();
+
+  const move = { kind: 'move', id: 'mf', target: { name: 'prop.framed' }, position: { x: 20, y: 1, z: -7 } };
+  let current = doc([move], { admin: true });
+  const rig = setup(() => current, { world });
+  await enter(rig);
+  assert.deepEqual(anchorOf(prop), [20, 1, -7], "the parent's frame bent the delta");
+
+  current = doc([], { admin: true, version: 2 });
+  await enter(rig);
+  assert.deepEqual(prop.position.toArray(), authored.toArray(), 'the undo did not restore the authored position');
 });
 
 test('a normal player never posts to an admin route', async () => {

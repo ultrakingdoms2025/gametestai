@@ -101,6 +101,9 @@ const NEVER_PLACEABLE = new Set(['credits']);
 const _before = new THREE.Vector3();
 const _after = new THREE.Vector3();
 const _delta = new THREE.Vector3();
+/** `_translateWorld`'s two: a world delta and the origin, each through the parent's frame. */
+const _p0 = new THREE.Vector3();
+const _p1 = new THREE.Vector3();
 const _box = new THREE.Box3();
 const _shift = new THREE.Matrix4();
 const _padded = new THREE.Box3();
@@ -810,32 +813,55 @@ export class MapOverlay {
     if (to && Number.isFinite(to.x) && Number.isFinite(to.y) && Number.isFinite(to.z)) {
       // The world AABB is taken BEFORE the move: it decides which colliders
       // belong to this object, and its bottom-centre is the anchor the move
-      // lands at `position`. `_anchor` leaves the box in `_box` for the
-      // collider sweep, so both read one measurement of the untouched object.
+      // lands at `position`. `_anchor` leaves the box in `_box`.
       this._anchor(target, _before);
       _delta.set(to.x, to.y, to.z).sub(_before);
 
-      // `_delta` is a world-space translation; `target.position` is in its
-      // parent's space. Carried through the parent's frame so a rotated or
-      // scaled ancestor cannot bend it - the same world delta then moves the
-      // colliders.
-      const parent = target.parent;
-      if (parent) {
-        parent.worldToLocal(_after.copy(_before).add(_delta));
-        parent.worldToLocal(_before);
-        target.position.add(_after.sub(_before));
-      } else {
-        target.position.add(_delta);
-      }
-      if (Number.isFinite(entry.rotationY)) target.rotation.y = entry.rotationY;
-      target.updateMatrixWorld(true);
+      // Sweep FIRST, on the untouched box: the second `_anchor` below
+      // overwrites `_box`. The sweep reads collider centres only, never the
+      // object, so it does not care that the object has not moved yet.
       colliders = this._moveColliders(_box, _delta);
+      this._translateWorld(target, _delta);
+
+      if (Number.isFinite(entry.rotationY)) {
+        target.rotation.y = entry.rotationY;
+        // Yaw turns the object about its own origin, which for a baked Group
+        // is the world axis, not its anchor: a 10 degree turn at a radius of
+        // 100 m would carry it 17 m. Measure where the anchor went and put it
+        // back at `to`. Colliders translate but never rotate, for any target.
+        this._anchor(target, _after);
+        this._translateWorld(target, _delta.set(to.x, to.y, to.z).sub(_after));
+      }
     } else if (Number.isFinite(entry.rotationY)) {
+      // Rotation only: the anchor stays where it was.
+      this._anchor(target, _before);
       target.rotation.y = entry.rotationY;
-      target.updateMatrixWorld(true);
+      this._anchor(target, _after);
+      this._translateWorld(target, _before.sub(_after));
     }
 
     applied.push({ id: String(entry.id ?? ''), ok: true, colliders });
+  }
+
+  /**
+   * Translate `target` by a WORLD-space vector, whatever its parent's frame.
+   * `target.position` is in its parent's space, so the delta is carried
+   * through the parent's inverse linear part - a moved, turned or unevenly
+   * scaled ancestor cannot bend it.
+   */
+  _translateWorld(target, delta) {
+    const parent = target.parent;
+    if (parent) {
+      parent.updateWorldMatrix(true, false);
+      // worldToLocal(delta) - worldToLocal(0) is the parent's inverse linear
+      // part applied to delta: the translation cancels.
+      parent.worldToLocal(_p0.copy(delta));
+      parent.worldToLocal(_p1.set(0, 0, 0));
+      target.position.add(_p0.sub(_p1));
+    } else {
+      target.position.add(delta);
+    }
+    target.updateMatrixWorld(true);
   }
 
   /**
@@ -1102,6 +1128,8 @@ export class MapOverlay {
    *
    * Leaves `_box` holding the node's world AABB, which `_applyMove` reuses
    * for its collider sweep: the anchor and the sweep read one measurement.
+   * Every later call overwrites `_box`, which is why `_applyMove` sweeps
+   * BEFORE it measures the anchor a second time after a yaw.
    */
   _anchor(node, out) {
     node.updateWorldMatrix(true, false);

@@ -760,7 +760,9 @@ async function main() {
     await typeInto('[data-e2e="sel-y"]', '0.4');
     await clickSel('[data-e2e="move-here"]');
     await waitFor(() => evaluate(`!(${q('[data-e2e="sel-conflicts"]')}?.textContent ?? '').includes('underground')`), { what: 'the warning to clear' });
-    await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
+    /* The LABEL, not `!disabled`: `Save new version` is the one label the button wears when every gate
+     * (busy, dirty, blocked, checking) is open, so a click on it cannot land on a `Checking…` frame. */
+    await waitFor(async () => (await textOf('[data-e2e="save"]')) === 'Save new version', { what: 'Save to read "Save new version" after the conflict pass' });
     await clickSel('[data-e2e="save"]');
     /* A refused save (a 400, a missing HMAC_SECRET) puts its reason in the
      * same live region: abort with it, as the sign-in wait does, rather than
@@ -784,7 +786,9 @@ async function main() {
     await clickSel('[data-e2e="remove"]');
     const removeRow = `[...document.querySelectorAll('[data-e2e="pending-row"]')].some(li => li.textContent.includes('e2e:post') && li.textContent.includes('REMOVE'))`;
     await waitFor(() => evaluate(removeRow), { what: 'a REMOVE row for e2e:post' });
-    await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
+    /* The LABEL, not `!disabled`: `Save new version` is the one label the button wears when every gate
+     * (busy, dirty, blocked, checking) is open, so a click on it cannot land on a `Checking…` frame. */
+    await waitFor(async () => (await textOf('[data-e2e="save"]')) === 'Save new version', { what: 'Save to read "Save new version" after the conflict pass' });
     await clickSel('[data-e2e="save"]');
     const msg2 = await waitFor(async () => {
       const m = await textOf('[data-e2e="message"]');
@@ -796,7 +800,7 @@ async function main() {
     assert(Number(/Saved version (\d+)/.exec(msg2)[1]) === savedVersion + 1, `second save: ${msg2}`);
     /* The game's side of the remove, staged through the real report route: the saved document's remove entry,
      * applied with `colliders: 0` ("hidden, but nothing dropped"), is what the report card must warn about; the
-     * applied and built versions are the one just saved, so both version lines read current after the reload. */
+     * applied and built versions are the one just saved, and the two version lines are read after the reload. */
     const current = await evaluate(`fetch('/api/admin/map/${WORLD}').then(r => r.json())`, true);
     const removeEntry = (current.overlay?.entries ?? []).find((e) => e.kind === 'remove' && e.target?.name === 'e2e:post');
     assert(removeEntry, `the saved document holds no remove of e2e:post: ${JSON.stringify(current.overlay?.entries ?? [])}`);
@@ -816,8 +820,14 @@ async function main() {
     await waitFor(async () => /^Saved \(v\d+\)$/.test((await textOf('[data-e2e="save"]')) ?? ''), { what: 'the Save button to settle after the reload' });
     await waitFor(() => evaluate(removeRow), { what: 'the REMOVE row after a reload' });
     await waitFor(async () => (await textOf('[data-e2e="report-remove-warnings"]'))?.includes('may still block'), { what: 'the colliders: 0 warning on the report card' });
+    /* Read off the card, not inferred from the POST's 200: the report carried applied = built = the version just
+     * saved, and the reload loaded that same version, so both lines must say current. */
+    const versionLine = (which) => textOf(`[data-e2e="version-${which}"]`);
+    await waitFor(async () => (await versionLine('applied')) === `Applied version ${savedVersion + 1} (current)`, { what: 'the applied-version line to read current' });
+    const builtLine = await versionLine('built');
+    assert(builtLine === `Built version ${savedVersion + 1} (current)`, `the built-version line reads ${JSON.stringify(builtLine)}`);
     await shot('08-removed');
-    step('removed', `e2e:post removed, saved as v${savedVersion + 1}, still removed after a reload, and the card warns it may still block`);
+    step('removed', `e2e:post removed, saved as v${savedVersion + 1}, still removed after a reload, both version lines current, and the card warns it may still block`);
   } catch (e) {
     report.failure ??= abortReason ?? e.message;
     report.pageConsole = pageLog;

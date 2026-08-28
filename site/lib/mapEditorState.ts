@@ -227,42 +227,48 @@ export function removeFor(entries: Draft[], name: string, mint: () => string): D
 }
 
 /**
- * What the report card says beside an unresolved id. The reasons are the
- * game's — the ten `reason:` sites in `src/systems/MapOverlay.js`, listed
- * under "Applier reasons" in `CONTRACTS.md` — and every one is labelled here;
- * an unknown one is printed as it came, so a reason the game grows before this
- * table does is still visible. `pending-rebuild` is hedged for stage 2: the
- * build saw an older document than the entry's, but nothing resolves an `{id}`
- * until stage 3, so a reload gets the build current without making the entry
- * apply.
+ * What the report card says beside an unresolved id, keyed by the game's
+ * reason. The keys ARE the applier's reasons — the `reason:` sites in
+ * `src/systems/MapOverlay.js`, listed under "Applier reasons" in
+ * `CONTRACTS.md` — and `mapReasonsContract.test.ts` reads that file and holds
+ * this key set equal to it, so a reason the game grows or drops fails a test
+ * here rather than printing raw on the card. `pending-rebuild` is hedged for
+ * stage 2: the build saw an older document than the entry's, but nothing
+ * resolves an `{id}` until stage 3, so a reload gets the build current without
+ * making the entry apply. `no-loot` is the game's, not the world's: `Loot` is
+ * injected once per session, so no world has it while another does.
  */
+export const APPLIER_REASON_TEXT: ReadonlyMap<string, string> = new Map([
+  ['pending-rebuild', "newer than the world's build — reload; ids resolve from stage 3"],
+  ['span', 'refused — would drop more than 200 colliders; nothing hidden'],
+  ['id', 'build-time target — nothing resolves ids until stage 3'],
+  ['name', 'no object of that name in the world'],
+  ['superseded', 'superseded by a later action on the same object'],
+  ['error', 'the entry threw while being applied — see the game console'],
+  ['item', 'not a placeable item — unknown to the game, or never placeable'],
+  ['no-loot', 'the game has no loot system to spawn a placement in'],
+  ['position', "the placement's position is not a finite point"],
+  ['pool', "no pickup free to spawn it — the world's loot pool is full"],
+]);
+
+/** The words for a reason; an unknown one is printed as it came, so a reason the game grows first is still visible. */
 export function unresolvedText(reason: string): string {
-  switch (reason) {
-    case 'pending-rebuild': return "newer than the world's build — reload; ids resolve from stage 3";
-    case 'span': return 'refused — would drop more than 200 colliders; nothing hidden';
-    case 'id': return 'build-time target — nothing resolves ids until stage 3';
-    case 'name': return 'no object of that name in the world';
-    case 'superseded': return 'superseded by a later action on the same object';
-    case 'error': return 'the entry threw while being applied — see the game console';
-    case 'item': return 'not a placeable item — unknown to the game, or never placeable';
-    case 'no-loot': return 'this world has no loot system to spawn a placement in';
-    case 'position': return "the placement's position is not a finite point";
-    case 'pool': return "no pickup free to spawn it — the world's loot pool is full";
-    default: return reason;
-  }
+  return APPLIER_REASON_TEXT.get(reason) ?? reason;
 }
 
 /**
  * The report card's two version lines. `applied` lags when the world was entered before the save (enter it again);
  * `built` lags when the world was BUILT before it - a cached world, which only a reload rebuilds (spec §7). A build
- * at 0 beside an applied version is a third thing, not "behind": the build reads 0 when it saw NO session (the
- * provider is gated on the signed-in signal), so the world was built without the overlay rather than against an
- * older one, and the line says so with the version a reload would build against.
+ * at 0 beside an applied version is a third thing, not "behind": no overlay reached that build. The game reads 0 on
+ * five paths - no session (the provider is gated on the signed-in signal), the build's fuse fired first, the
+ * background breaker was open, the read answered non-OK or threw, or the lookup landed a document with nothing saved
+ * yet (ordinary first use) - and the card cannot tell them apart, so the line says only that, with the version a
+ * reload would build against.
  */
 export function versionStatus(applied: number, built: number, saved: number): { applied: string; built: string } {
   const word = (n: number, behind: string) => (n === saved ? '(current)' : n < saved ? behind : '(ahead of this page — reload the editor)');
   const builtWord = built === 0 && applied > 0 && saved > 0
-    ? `(built without the overlay — not signed in at build; reload to build against v${saved})`
+    ? `(built with no overlay — reload to build against v${saved})`
     : word(built, '(behind — reload the world in game)');
   return { applied: word(applied, '(behind — enter the world in game)'), built: builtWord };
 }

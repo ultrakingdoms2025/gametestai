@@ -398,7 +398,7 @@ describe('recordWorldReport — the SQL it emits', () => {
    */
   it('clamps appliedVersion into the INTEGER column: 1e300 is stored as 2147483647, a negative or a word as 0', async () => {
     const db = makeFakeDb();
-    for (const [raw, clamped] of [[1e300, 2147483647], [2147483648, 2147483647], [-1, 0], ['x', 0], [2.9, 2], [7, 7]] as const) {
+    for (const [raw, clamped] of [[1e300, 2147483647], [2147483648, 2147483647], [-1, 0], ['x', 0], [null, 0], [NaN, 0], [2.9, 2], [7, 7]] as const) {
       db.clear();
       await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, appliedVersion: raw as unknown as number });
       expect(db.only('INSERT INTO map_world_reports').params[1], String(raw)).toBe(clamped);
@@ -591,7 +591,7 @@ describe('built_version', () => {
     expect(q.params[7]).toBe(3);
     expect(q.params[6]).toBe(0);
     // The same clamp as applied_version: floor 0, cap 2^31 - 1, never refuse (a forged 1e300 would refuse the whole row).
-    for (const [raw, clamped] of [[-1, 0], ['x', 0], [undefined, 0], [12, 12], [1e300, 2147483647], [2147483648, 2147483647]] as const) {
+    for (const [raw, clamped] of [[-1, 0], ['x', 0], [undefined, 0], [null, 0], [NaN, 0], [12, 12], [1e300, 2147483647], [2147483648, 2147483647]] as const) {
       db.clear();
       await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, builtVersion: raw as unknown as number });
       expect(db.only('INSERT INTO map_world_reports').params[7], String(raw)).toBe(clamped);
@@ -646,6 +646,9 @@ describe('what is cut is cut by code point, at every site', () => {
   /**
    * The same defect in JSON TEXT: `JSON.stringify` writes a lone surrogate as the six ASCII characters
    * `\ud83d`, so `lone` can never fire on a jsonb param — it would have to match a backslash. This does.
+   * Two false positives: a serializer that escapes astral PAIRS as well (`\ud83d\ude00` for 😀 — the self-check
+   * below pins that `JSON.stringify` does not), and a name literally holding the six ASCII characters (unguarded;
+   * no fixture here holds one).
    */
   const escaped = /\\ud[89a-f][0-9a-f]{2}/i;
   /** `n` ASCII characters, then an emoji straddling the cut at `n + 1`, then more. */

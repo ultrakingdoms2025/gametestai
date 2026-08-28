@@ -266,6 +266,8 @@ export function MapEditorPanel() {
    * the document on this page (`removeWarnings`). On the DEFERRED document,
    * like the conflicts pass: a drag frame must not re-walk the report. */
   const warnings = useMemo(() => removeWarnings(report?.applied ?? [], deferredEntries), [report, deferredEntries]);
+  /* Once per render, not once per line: the two version lines read one call. Meaningless without a report; unused then. */
+  const versionWords = versionStatus(report?.appliedVersion ?? 0, report?.builtVersion ?? 0, savedVersion);
   const conflictByKey = useMemo(
     () => new Map(deferredEntries.map((e, i) => [e._key, conflicts[i] ?? NO_CONFLICTS])),
     [deferredEntries, conflicts]
@@ -639,8 +641,8 @@ export function MapEditorPanel() {
             <h2 style={{ margin: '0 0 10px', fontSize: 15 }}>What the game reports</h2>
             {report ? (
               <div style={{ display: 'grid', gap: 6, fontSize: 13, color: '#cfe6f2' }}>
-                <div>Applied version <b>{report.appliedVersion}</b> {versionStatus(report.appliedVersion, report.builtVersion, savedVersion).applied}</div>
-                <div>Built version <b>{report.builtVersion}</b> {versionStatus(report.appliedVersion, report.builtVersion, savedVersion).built}</div>
+                <div data-e2e="version-applied">Applied version <b>{report.appliedVersion}</b> {versionWords.applied}</div>
+                <div data-e2e="version-built">Built version <b>{report.builtVersion}</b> {versionWords.built}</div>
                 <div>{report.objects.length} named objects seen in this world</div>
                 <div>{report.applied.length} entries applied, {report.unresolved.length} unresolved</div>
                 {report.reportedAt ? (

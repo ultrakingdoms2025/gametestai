@@ -35,6 +35,7 @@ import type { Conflict } from './mapConflicts';
 import { targetLabel, type MoveEntry } from './mapOverlaySchema';
 import { KIND_COLOUR, moveColour, placeColour, removeColour } from '@/components/mapEditorStyles';
 import {
+  APPLIER_REASON_TEXT,
   NO_LAYOUT_TEXT,
   WIDE_REMOVE_COLLIDERS,
   actionEntryFor,
@@ -280,10 +281,14 @@ describe('removeFor and actionEntryFor', () => {
 });
 
 describe('unresolvedText', () => {
-  /** The ten `reason:` strings in `src/systems/MapOverlay.js` (CONTRACTS.md, "Applier reasons"): every one has words, none is printed raw. */
-  const REASONS = ['name', 'span', 'pending-rebuild', 'id', 'superseded', 'error', 'item', 'no-loot', 'position', 'pool'];
+  /**
+   * The applier's reasons (CONTRACTS.md, "Applier reasons"): every one has words, none is printed raw. The key set
+   * itself is held equal to the game's `reason:` literals by `mapReasonsContract.test.ts`; this file pins the words.
+   */
+  const REASONS = [...APPLIER_REASON_TEXT.keys()];
 
   it('labels all ten reasons the applier can give, in words the admin can act on', () => {
+    expect(REASONS).toHaveLength(10);
     expect(unresolvedText('pending-rebuild')).toBe("newer than the world's build — reload; ids resolve from stage 3");
     expect(unresolvedText('span')).toBe('refused — would drop more than 200 colliders; nothing hidden');
     expect(unresolvedText('id')).toBe('build-time target — nothing resolves ids until stage 3');
@@ -291,7 +296,7 @@ describe('unresolvedText', () => {
     expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
     expect(unresolvedText('error')).toBe('the entry threw while being applied — see the game console');
     expect(unresolvedText('item')).toBe('not a placeable item — unknown to the game, or never placeable');
-    expect(unresolvedText('no-loot')).toBe('this world has no loot system to spawn a placement in');
+    expect(unresolvedText('no-loot')).toBe('the game has no loot system to spawn a placement in');
     expect(unresolvedText('position')).toBe("the placement's position is not a finite point");
     expect(unresolvedText('pool')).toBe("no pickup free to spawn it — the world's loot pool is full");
     for (const r of REASONS) expect(unresolvedText(r), r).not.toBe(r);
@@ -312,13 +317,13 @@ describe('versionStatus', () => {
   });
 
   /**
-   * 0 is not "stale": the build reads 0 when there was NO session at build time (the provider is gated on the
-   * signed-in signal), so a world that applied a version while its build saw nothing was built without the
-   * overlay, not against an older one. Said as such, with the version a reload would build against.
+   * 0 is not "stale": no overlay reached the build. The game reads 0 on five paths (no session, the fuse fired, the
+   * breaker was open, the read failed, nothing saved yet at lookup) and the card cannot tell which, so the line
+   * names no cause - only the fact, and the version a reload would build against.
    */
-  it('a build at 0 beside an applied version is "built without the overlay", not "behind"', () => {
-    expect(versionStatus(3, 0, 3)).toEqual({ applied: '(current)', built: '(built without the overlay — not signed in at build; reload to build against v3)' });
-    expect(versionStatus(2, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(built without the overlay — not signed in at build; reload to build against v3)' });
+  it('a build at 0 beside an applied version is "built with no overlay", not "behind", and names no cause', () => {
+    expect(versionStatus(3, 0, 3)).toEqual({ applied: '(current)', built: '(built with no overlay — reload to build against v3)' });
+    expect(versionStatus(2, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(built with no overlay — reload to build against v3)' });
     // Nothing applied either: the world was entered before any save, and both lines say behind.
     expect(versionStatus(0, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(behind — reload the world in game)' });
     // Nothing saved yet: 0 everywhere is current.

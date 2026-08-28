@@ -68,7 +68,7 @@ export default async function Home() {
           <div className="nav-logo" aria-hidden="true">AETHER<span>NEXUS</span></div>
           <div className="nav-links">
             <a href="#worlds-belt">Worlds</a>
-            <a href="#features-anchor">Features</a>
+            <a href="/features">Features</a>
             <a href="/store">Credits</a>
           </div>
           <div className="nav-cta">

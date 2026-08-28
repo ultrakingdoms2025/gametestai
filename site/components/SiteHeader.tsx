@@ -38,6 +38,7 @@ export default function SiteHeader() {
     <div className="site-header">
       <Link href="/" className="site-header-logo">AETHER NEXUS</Link>
       <nav className="site-header-nav">
+        <Link href="/features" className="site-header-link">Features</Link>
         <Link href="/store" className="site-header-link">Credits</Link>
         {status === 'authenticated' ? (
           <>

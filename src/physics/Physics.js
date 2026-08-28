@@ -537,19 +537,22 @@ export class Physics {
    *
    * Nothing on a collider carried one before this except `mesh.bounds`: a box
    * is an OBB - half-extents plus a matrix - with only a bounding SPHERE for
-   * the broadphase, and the |R|·h expansion that turns it into an axis box was
+   * the broadphase. The |R|·h expansion that turns it into an axis box is
    * inlined in full in Unstuck._solidIndex and PlanetWorld._solidIndex (the
    * pad-return walkability index), and as a yaw-only cos/sin variant in the
-   * citadel caves. MapOverlay's
-   * remove sweep needs the exact box: "this collider's own AABB lies inside
-   * that object's box" is the rule that stops a remove of a house taking the
-   * fence post beside it.
+   * citadel caves. Those two `_solidIndex` sites are LEFT IN PLACE: they
+   * build gridded records, not a Box3, and would gain nothing from a call
+   * here. MapOverlay's remove sweep needs the exact box: "this collider's
+   * own AABB lies inside that object's box" is the rule that stops a remove
+   * of a house taking the fence post beside it.
    *
    * @param {Collider} collider
    * @param {THREE.Box3} [out]
    * @returns {THREE.Box3} `out`; EMPTY for null or an unknown type - and a
    *   caller that tests containment must check `isEmpty()` first, because
-   *   three's `Box3.containsBox` holds an empty box inside every box
+   *   three's `Box3.containsBox` holds an empty box inside every box. A
+   *   non-finite collider yields a NaN box, which no `containsBox` accepts -
+   *   the safe direction.
    */
   colliderAabb(collider, out = new THREE.Box3()) {
     out.makeEmpty();

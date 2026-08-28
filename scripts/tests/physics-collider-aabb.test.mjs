@@ -14,7 +14,12 @@ import { Physics, Collider } from '../../src/physics/Physics.js';
  *
  * Not a stub: every collider is registered through the real add* path and
  * the rotated case is checked against √2, which a centre-only answer or an
- * unrotated half-extent answer both get wrong.
+ * unrotated half-extent answer both get wrong. A yaw-only rotation of a unit
+ * box is symmetric in |value|, so on its own it cannot tell |R|·h from a
+ * TRANSPOSED read of the matrix (rows as columns) or from swapped
+ * half-extents in one row: the two-axis, unequal-extent, scaled case is
+ * asserted against three's own `Box3.setFromObject`, which transforms the
+ * eight corners and is an oracle independent of this code.
  */
 
 const r3 = (a) => a.map((n) => Math.round(n * 1000) / 1000);
@@ -34,6 +39,19 @@ test('a unit box rotated 45° about Y widens to √2 on x and z and keeps y', ()
   assert.deepEqual(r3(b.max.toArray()), r3([Math.SQRT2, 1, Math.SQRT2]));
 });
 
+test('a box with a two-axis rotation and unequal half-extents matches three\'s own corner box', () => {
+  const p = new Physics(null);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 1));
+  mesh.position.set(1, 2, 3);
+  mesh.rotation.set(0.5, 0.9, 0.2);
+  mesh.scale.set(1.5, 1, 1);
+  mesh.updateMatrixWorld(true);
+  const b = p.colliderAabb(p.addBoxFromObject(mesh));
+  const want = new THREE.Box3().setFromObject(mesh);   // expandByObject transforms the 8 corners
+  assert.deepEqual(r3(b.min.toArray()), r3(want.min.toArray()));
+  assert.deepEqual(r3(b.max.toArray()), r3(want.max.toArray()));
+});
+
 test('a sphere is centre ± radius', () => {
   const p = new Physics(null);
   const b = p.colliderAabb(p.add(new Collider('sphere', { center: new THREE.Vector3(1, 2, 3), radius: 0.5 })));
@@ -46,9 +64,11 @@ test('a mesh chunk is its bounds; a heightfield is its footprint between minY an
   const mesh = p.colliderAabb(p.addTriangleSoup(new Float32Array([0, 0, 0, 2, 0, 0, 0, 3, 0])));
   assert.deepEqual(r3(mesh.min.toArray()), [0, 0, 0]);
   assert.deepEqual(r3(mesh.max.toArray()), [2, 3, 0]);
-  const field = p.colliderAabb(p.addHeightfield({ heights: new Float32Array(4).fill(1), nx: 2, nz: 2, originX: 5, originZ: 7, stepX: 3 }));
+  // stepZ differs from stepX so sizeX !== sizeZ: a footprint that read the
+  // wrong step on one axis would still pass a square field.
+  const field = p.colliderAabb(p.addHeightfield({ heights: new Float32Array(4).fill(1), nx: 2, nz: 2, originX: 5, originZ: 7, stepX: 3, stepZ: 2 }));
   assert.deepEqual(r3(field.min.toArray()), [5, 1, 7]);
-  assert.deepEqual(r3(field.max.toArray()), [8, 1, 10]);
+  assert.deepEqual(r3(field.max.toArray()), [8, 1, 9]);
 });
 
 test('writes into the box it is given and returns it; nothing gives an empty box', () => {
@@ -58,4 +78,6 @@ test('writes into the box it is given and returns it; nothing gives an empty box
   assert.equal(out.isEmpty(), false);
   assert.equal(p.colliderAabb(null, out), out);
   assert.equal(out.isEmpty(), true);
+  // A type it does not know is EMPTY too, never a stale or a zero box.
+  assert.equal(p.colliderAabb(new Collider('capsule', {}), out).isEmpty(), true);
 });

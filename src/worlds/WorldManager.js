@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Physics } from '../physics/Physics.js';
+import { versionOf } from '../systems/MapOverlay.js';
 
 /**
  * Owns the world registry, lazy generation and the world-swap sequence.
@@ -44,6 +45,16 @@ const OVERLAY_GATE_MS = 8000;
 const OVERLAY_BACKGROUND_MS = 1500;
 const OVERLAY_TIMED_OUT = Symbol('overlay timed out');
 
+/**
+ * How long the session breaker (`_overlayBrokenAt`) stays open before ONE
+ * background build asks again - a half-open probe. A breaker only a document
+ * could close would stay open for the rest of the session after one hang:
+ * nothing in the background asks, and the gate builds only at boot. A
+ * minute bounds a dead server's cost to one fuse a minute, and the time to
+ * notice a live one to the same.
+ */
+const OVERLAY_BREAKER_RETRY_MS = 60000;
+
 export class WorldManager {
   /**
    * @param {{ scene: THREE.Scene, engine: any, physics: import('../physics/Physics.js').Physics,
@@ -78,16 +89,24 @@ export class WorldManager {
      */
     this._overlayWarned = new Set();
     /**
-     * The session breaker. A provider that HANGS - not one that fails fast -
-     * would cost every background build its whole fuse: seventeen worlds on
-     * the prefetch chain at 1.5 s each, and a `--chain-timeout` under
-     * `?prefetch=all`. One background timeout opens this, and background
-     * builds skip the provider (built at 0, nothing said) until a lookup
-     * answers with a document - a gate build's, which always asks, or the
-     * late answer of the very lookup that was abandoned, which proves the
-     * server slow rather than dead.
+     * The session breaker: when the last BACKGROUND lookup timed out, on
+     * `this.now`'s clock, or null while closed. A provider that HANGS - not
+     * one that fails fast - would cost every background build its whole
+     * fuse: seventeen worlds on the prefetch chain at 1.5 s each, and a
+     * `--chain-timeout` under `?prefetch=all`. One background timeout opens
+     * this, and background builds skip the provider (built at 0, nothing
+     * said, no fuse) until it closes: a lookup answers with a document - a
+     * gate build's, which always asks, or the late answer of the very lookup
+     * that was abandoned, which proves the server slow rather than dead - or
+     * `OVERLAY_BREAKER_RETRY_MS` passes and ONE background build probes
+     * again. A probe that hangs re-opens it from THAT moment, so a dead
+     * server costs one fuse a minute. A GATE timeout never opens it: the
+     * boot pays its own fuse once, and says nothing about the frames after.
+     * @type {number|null}
      */
-    this._overlayBroken = false;
+    this._overlayBrokenAt = null;
+    /** The breaker's clock, on the instance so a test can own the minute. */
+    this.now = () => performance.now();
 
     /**
      * What the last crossing cost, step by step, in milliseconds.
@@ -375,7 +394,7 @@ export class WorldManager {
     const provider = this.ctx?.overlayProvider;
     if (typeof provider !== 'function') return 0;
     const background = this.engine?.running === true;
-    if (background && this._overlayBroken) return 0;
+    if (background && this._overlayBreakerOpen()) return 0;
     const limit = background ? this.overlayBackgroundMs : this.overlayGateMs;
     await report?.(0, `Reading the map for ${world.displayName}`);
     let timer = null;
@@ -383,20 +402,25 @@ export class WorldManager {
     try {
       const lookup = Promise.resolve().then(() => provider(world.id));
       // A document closes the breaker whenever it lands - inside the fuse or
-      // long after this build gave up on it. A null or a rejection does not:
-      // MapOverlay.lookup answers null for its own abandoned fetch too.
-      lookup.then((doc) => { if (doc && typeof doc === 'object') this._overlayBroken = false; }, () => {});
+      // long after this build gave up on it. So does ANY answer inside the
+      // fuse, null included (the else branch below): a provider that answered
+      // in time is not hanging. A late null does not - it is what
+      // MapOverlay.lookup answers for its own abandoned fetch - nor does a
+      // rejection.
+      lookup.then((doc) => { if (doc && typeof doc === 'object') this._overlayBrokenAt = null; }, () => {});
       const fuse = new Promise((resolve) => { timer = setTimeout(() => resolve(OVERLAY_TIMED_OUT), limit); });
       const doc = await Promise.race([lookup, fuse]);
       if (doc === OVERLAY_TIMED_OUT) {
-        if (background) this._overlayBroken = true;
+        // A background hang opens the breaker - or re-opens it from now, when
+        // this build was the probe. A gate hang does not: see the field.
+        if (background) this._overlayBrokenAt = this.now();
         this._overlayUnavailable(world.id, `no answer within ${limit} ms`);
       } else {
         // An answer ends the outage and closes the breaker: the next failure
         // of this world is news, and the next background build asks.
         this._overlayWarned.delete(world.id);
-        this._overlayBroken = false;
-        version = Math.max(0, Math.floor(Number(doc?.version) || 0));
+        this._overlayBrokenAt = null;
+        version = versionOf(doc);
       }
     } catch (err) {
       this._overlayUnavailable(world.id, err?.message ?? err);
@@ -405,6 +429,11 @@ export class WorldManager {
     }
     await report?.(0, `Generating ${world.displayName}`);
     return version;
+  }
+
+  /** Open: a background lookup hung within the last `OVERLAY_BREAKER_RETRY_MS`, on `this.now`'s clock. */
+  _overlayBreakerOpen() {
+    return this._overlayBrokenAt !== null && this.now() - this._overlayBrokenAt < OVERLAY_BREAKER_RETRY_MS;
   }
 
   _overlayUnavailable(id, why) {
@@ -632,7 +661,7 @@ export class WorldManager {
     this._instances.clear();
     this._building.clear();
     this._overlayWarned.clear();
-    this._overlayBroken = false;
+    this._overlayBrokenAt = null;
     this._active = null;
   }
 }

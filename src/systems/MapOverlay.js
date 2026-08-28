@@ -166,6 +166,19 @@ function actionName(entry) {
   return typeof name === 'string' && name ? name : null;
 }
 
+/**
+ * The version a document carries, as everything that compares two of them
+ * reads it: `max(0, floor(Number(v) || 0))`, so a missing, negative or
+ * fractional version is 0 and never a refusal. One clamp for the manager's
+ * `builtVersion`, the cache's monotonic write and (stage 3) the `{id}`
+ * gate, so no two of them can disagree about which document is newer.
+ * @param {unknown} doc
+ * @returns {number}
+ */
+export function versionOf(doc) {
+  return Math.max(0, Math.floor(Number(doc?.version) || 0));
+}
+
 export class MapOverlay {
   /**
    * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
@@ -227,10 +240,21 @@ export class MapOverlay {
      * @type {Map<string, object>}
      */
     this._cache = new Map();
-    /** Lookups in flight, so two callers for one world share one GET. @type {Map<string, Promise<object|null>>} */
+    /**
+     * Lookups in flight - the shared promise and its abort - so two callers
+     * for one world share one GET, and `dispose` can close one still open.
+     * @type {Map<string, { promise: Promise<object|null>, abort: AbortController }>}
+     */
     this._inflight = new Map();
     /** The abort ceiling, on the instance so a test can shorten it. */
     this.lookupAbortMs = LOOKUP_ABORT_MS;
+    /**
+     * The abort of the read the CURRENT visit started, pulled by `_restore`
+     * the moment the player leaves. Its answer would be dropped by visit
+     * number anyway; this closes the socket it would have waited on.
+     * @type {AbortController|null}
+     */
+    this._visitAbort = null;
 
     /** @type {Array<() => void>} */
     this._offs = [];
@@ -260,6 +284,8 @@ export class MapOverlay {
     if (!world?.group || !id) return;
     this._world = world;
     const visit = this._visit;
+    const abort = new AbortController();
+    this._visitAbort = abort;
 
     /* ONE rule for every await in this visit: a portal can land while the read
      * is in flight, and again while the admin report-back is. If it did,
@@ -270,7 +296,7 @@ export class MapOverlay {
      * visit (A -> B -> A) is the SAME object, and a first-visit document that
      * lands during it would otherwise apply on top of the return visit's -
      * a pickup placed twice, an older version republished over a newer one. */
-    const document = await this._read(id);
+    const document = await this._read(id, abort.signal);
     if (visit !== this._visit) return;
     const admin = document?.admin === true;
     const report = document
@@ -351,6 +377,11 @@ export class MapOverlay {
   /** Undo everything applied to the world this system last touched, and end its visit. */
   _restore() {
     this._visit++;
+    // The read this visit started is unwanted from here. During an outage a
+    // GET that nothing aborts stays open until the tab closes - one per
+    // crossing, against a browser's six connections per host.
+    this._visitAbort?.abort();
+    this._visitAbort = null;
     for (let i = this._undo.length - 1; i >= 0; i--) {
       try {
         this._undo[i]();
@@ -375,8 +406,11 @@ export class MapOverlay {
   }
 
   /**
-   * One GET for the world's document. `signal` is the abort a `lookup` owns;
-   * an entry's read has none - it is dropped by visit number instead.
+   * One GET for the world's document. `signal` is the abort its caller owns:
+   * a `lookup`'s ceiling, or the visit's, which `_restore` pulls when the
+   * player leaves. An abort is that caller's own decision and is not said -
+   * the manager has already said the outage once, and "This operation was
+   * aborted" ten seconds later would be the same outage twice.
    * @param {string} worldId
    * @param {AbortSignal} [signal]
    */
@@ -389,6 +423,7 @@ export class MapOverlay {
       if (!res?.ok) return null;
       return this._admit(worldId, await res.json());
     } catch (err) {
+      if (err?.name === 'AbortError') return null;
       // Offline, signed out, or the endpoint is down. A world with no overlay is
       // exactly the world every player had before this phase existed.
       console.warn('[map-overlay] overlay unavailable:', err?.message ?? err);
@@ -401,16 +436,24 @@ export class MapOverlay {
    * path fetched it - `lookup` for a build, `_read` on an entry - so a world
    * prefetched before the player ever enters it is held to the same rules,
    * and a newer schema is said once a session whichever path saw it first.
+   *
+   * Admitted means the route's shape - `world` is the world asked for and
+   * `entries` is an array - and nothing else: a 200 carrying `{error}` is
+   * not a document, and caching one would hand it to every build of the
+   * world. What is admitted is FROZEN, the document and its entries array:
+   * the build, the applier and every later lookup read one object, and
+   * nobody edits it under the others - "the admin saved" is a new document.
    * @param {string} worldId
    * @param {unknown} data
    * @returns {object|null}
    */
   _admit(worldId, data) {
     if (!data || typeof data !== 'object') return null;
-    // A document about a different world is not this world's document. The
-    // server answers the world it was asked about; anything else is a stale
-    // reply that arrived after a portal.
-    if (data.world && data.world !== worldId) return null;
+    // The server answers the world it was asked about; a document about a
+    // different world is a stale reply that arrived after a portal.
+    if (data.world !== worldId || !Array.isArray(data.entries)) return null;
+    Object.freeze(data.entries);
+    Object.freeze(data);
     // Newer than this build reads. Every kind it knows still applies and the
     // rest is skipped (spec §5, the v1-client rule); said once a session.
     if (Number(data.schema) > OVERLAY_SCHEMA && !this._schemaWarned) {
@@ -424,7 +467,7 @@ export class MapOverlay {
     // visit cached a newer one. Versions are append-only on the site (a
     // revert writes a new, higher one), so higher is always newer.
     const have = this._cache.get(worldId);
-    if (!(Number(have?.version) > (Number(data.version) || 0))) this._cache.set(worldId, data);
+    if (!(versionOf(have) > versionOf(data))) this._cache.set(worldId, data);
     return data;
   }
 
@@ -591,6 +634,10 @@ export class MapOverlay {
   /**
    * The world's document for `WorldManager._runBuild` (`ctx.overlayProvider`,
    * wired in main.js): the cached one, or one fetch shared by everyone asking.
+   * The cached one is the LAST document an entry of this world fetched (or
+   * this lookup's own, before any entry) - not whatever the site holds now:
+   * a volatile rebuild after an in-session save builds against the version
+   * the player's last entry read, and the entry after it refreshes this.
    * A failure answers null and caches nothing, so the next build asks again.
    * One fetch per build plus one per entry (`_read`, which refreshes this) -
    * spec §6.4's "one cached fetch per world per session" as built.
@@ -609,13 +656,14 @@ export class MapOverlay {
     if (!inflight) {
       const abort = new AbortController();
       const ceiling = setTimeout(() => abort.abort(), this.lookupAbortMs);
-      inflight = this._read(worldId, abort.signal).finally(() => {
+      const promise = this._read(worldId, abort.signal).finally(() => {
         clearTimeout(ceiling);
         this._inflight.delete(worldId);
       });
+      inflight = { promise, abort };
       this._inflight.set(worldId, inflight);
     }
-    return inflight;
+    return inflight.promise;
   }
 
   /** Start a lookup so the entry world's fetch overlaps the loading gate (main.js, before the entry build). */
@@ -954,6 +1002,7 @@ export class MapOverlay {
   dispose() {
     this._restore();
     this._cache.clear();
+    for (const { abort } of this._inflight.values()) abort.abort();
     this._inflight.clear();
     for (const off of this._offs) off?.();
     this._offs.length = 0;

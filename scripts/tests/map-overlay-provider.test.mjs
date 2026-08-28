@@ -17,9 +17,11 @@ import * as THREE from 'three';
  * once per outage - a volatile world that fails, answers, then fails again is
  * news twice - and the loader names the wait. One background timeout opens a
  * session breaker: later background builds skip the provider until a lookup
- * answers with a document, so a hanging server costs the prefetch chain one
- * fuse, not one per world. The provider is read from the MANAGER's ctx,
- * never the per-world copy. The cases that reach this seam
+ * answers with a document or a minute has passed - then ONE background build
+ * probes again, and a probe that hangs re-opens it from that moment - so a
+ * hanging server costs the prefetch chain one fuse a minute, not one per
+ * world; a gate timeout never opens it. The provider is read from the
+ * MANAGER's ctx, never the per-world copy. The cases that reach this seam
  * through a portal forcing its destination, a WorldPrefetch preparation and a
  * volatile rebuild land with Task 3.6 (`WorldPrefetch` is imported for them).
  *
@@ -258,4 +260,55 @@ test('a gate build always asks, whatever the breaker says, and its answer closes
     assert.equal((await wm.build('d')).builtVersion, 3, 'the gate answer did not close the breaker');
     assert.deepEqual(asked, ['a', 'c', 'd']);
   });
+});
+
+test('the breaker is half-open after a minute: one background build probes again, a probe that hangs re-opens it from THAT moment, and a document closes it', async () => {
+  const src = await readCode('src/worlds/WorldManager.js');
+  assert.match(src, /^const OVERLAY_BREAKER_RETRY_MS = 60000;/m, 'the probe interval is not one minute');
+  let clock = 0;
+  let hang = true;
+  const asked = [];
+  const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return hang ? never() : Promise.resolve({ version: 6 }); } });
+  wm.now = () => clock; // the breaker's clock, owned by the test
+  wm.overlayBackgroundMs = 100; // the same fuse, shortened
+  for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) wm.register(worldClass(id));
+  await quietly(async () => {
+    assert.equal((await wm.build('a')).builtVersion, 0); // hangs: the breaker opens at 0 on this clock
+    const t = performance.now();
+    await wm.build('b');
+    assert.ok(performance.now() - t < 100, 'an open breaker still waited on the fuse');
+    clock = 59_999;
+    await wm.build('c');
+    assert.deepEqual(asked, ['a'], 'the breaker probed before the minute was up');
+    clock = 60_000;
+    await wm.build('d'); // the probe: asked, hangs again, and the breaker re-opens at 60 000
+    assert.deepEqual(asked, ['a', 'd'], 'after a minute no background build probed');
+    clock = 60_050;
+    await wm.build('e');
+    assert.deepEqual(asked, ['a', 'd'], 'a probe that hung did not re-open the breaker from its own moment');
+    clock = 120_000;
+    hang = false;
+    assert.equal((await wm.build('f')).builtVersion, 6, 'the second probe did not ask, or its answer was dropped');
+    clock = 120_001;
+    assert.equal((await wm.build('g')).builtVersion, 6, 'a document did not close the breaker');
+    assert.deepEqual(asked, ['a', 'd', 'f', 'g']);
+  });
+});
+
+test('a gate timeout never opens the breaker: the boot pays its own fuse, and the first background build after it still asks', async () => {
+  const asked = [];
+  let took = 0;
+  const { wm, engine } = manager({ running: false, provider: (id) => { asked.push(id); return never(); } });
+  wm.overlayGateMs = 100; // the same fuses, shortened
+  wm.overlayBackgroundMs = 100;
+  for (const id of ['boot', 'bg']) wm.register(worldClass(id));
+  await quietly(async () => {
+    assert.equal((await wm.build('boot')).builtVersion, 0); // the gate fuse
+    engine.running = true;
+    const t = performance.now();
+    await wm.build('bg');
+    took = performance.now() - t;
+  });
+  assert.deepEqual(asked, ['boot', 'bg'], 'a gate timeout opened the breaker, so the background build never asked');
+  assert.ok(took >= 80, `the background build did not wait on its own fuse (${took} ms)`);
 });

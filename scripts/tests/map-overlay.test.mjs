@@ -124,9 +124,9 @@ function setup(overlay, { world = makeWorld(), fail = false } = {}) {
   const bus = makeBus();
   const physics = new Physics(bus);
   const loot = makeLoot();
-  // `overlay` is handed out by reference, so a test can edit it in place to
-  // stand for "the admin saved a new version" without the system needing a
-  // test-only setter on it.
+  // `overlay` may be a function of the world id, so a test can serve a NEW
+  // document to stand for "the admin saved a new version": an admitted
+  // document is frozen, so editing one in place is a TypeError, not a save.
   const fetchImpl = makeFetch(overlay, { fail });
   const system = new MapOverlay({ bus, physics, loot, fetch: fetchImpl });
   return { bus, physics, loot, fetchImpl, system, world, doc: overlay };
@@ -302,30 +302,51 @@ test('a late read answering an OLDER version than the cache holds does not overw
 });
 
 /**
+ * A fetch that never answers and settles only by being aborted - rejecting
+ * as the real one does, with an AbortError - recording every signal it was
+ * handed in `signals`.
+ */
+function heldFetch(signals) {
+  return (_url, init) => new Promise((_resolve, reject) => {
+    signals.push(init.signal);
+    init.signal.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')));
+  });
+}
+
+/** Run `fn` with console.warn captured; answers what was said. */
+async function saying(fn) {
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await fn();
+  } finally {
+    console.warn = warn;
+  }
+  return warned;
+}
+
+/**
  * The manager races a lookup against a fuse and walks away when the fuse
  * wins; the fetch it walked away from must not stay open on a dead
  * connection until the tab closes, one per world. Measured on the signal the
  * fetch was handed, with a fetch that only ever settles by being aborted.
+ * The abort is this system's own decision, so it is not said: the manager
+ * has already said the outage once, and a second line ten seconds later
+ * saying "This operation was aborted" would be the same outage twice.
  */
-test('a lookup whose fetch never answers is abandoned at its ceiling: the signal aborts, nothing is cached, the in-flight entry clears, and the next lookup asks again', async () => {
+test('a lookup whose fetch never answers is abandoned at its ceiling: the signal aborts, nothing is cached or said, the in-flight entry clears, and the next lookup asks again', async () => {
   const signals = [];
-  const fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
-    signals.push(init.signal);
-    init.signal.addEventListener('abort', () => reject(new Error('aborted')));
-  });
-  const system = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: fetchImpl });
+  const system = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: heldFetch(signals) });
   system.lookupAbortMs = 40; // the same ceiling, shortened
-  const warn = console.warn;
-  console.warn = () => {};
   let took = 0;
-  try {
+  const warned = await saying(async () => {
     const t = performance.now();
     assert.equal(await system.lookup('station'), null);
     took = performance.now() - t;
     assert.equal(await system.lookup('station'), null, 'the second lookup did not ask again');
-  } finally {
-    console.warn = warn;
-  }
+  });
+  assert.deepEqual(warned, [], `the abort was said: ${warned}`);
   assert.ok(took >= 30 && took < 1000, `abandoned after ${took} ms`);
   assert.equal(signals.length, 2, 'the in-flight entry did not clear, so the second lookup joined a dead fetch');
   assert.equal(signals[0].aborted, true, 'the race was lost but the fetch was never told');
@@ -338,6 +359,62 @@ test('a lookup whose fetch never answers is abandoned at its ceiling: the signal
   const abortMs = Number(code('src/systems/MapOverlay.js').match(/^const LOOKUP_ABORT_MS = (\d+);/m)?.[1]);
   const gateMs = Number(code('src/worlds/WorldManager.js').match(/^const OVERLAY_GATE_MS = (\d+);/m)?.[1]);
   assert.ok(abortMs > gateMs, `LOOKUP_ABORT_MS ${abortMs} does not exceed OVERLAY_GATE_MS ${gateMs}`);
+});
+
+test('a 200 whose body is not a document is admitted nowhere: lookup answers null and caches nothing, so no build ever consults nonsense', async () => {
+  // `_admit` is the one judge for both paths (the malformed-document case above is the entry's side of this).
+  // The route's shape is `{ world, entries }`; the wrong world is a stale reply that landed after a portal.
+  for (const body of [{ error: 'nonsense' }, { world: 'station' }, { world: 'station', entries: 'no' }, { world: 'elsewhere', entries: [] }, ['station'], 'station']) {
+    const rig = setup(body);
+    assert.equal(await rig.system.lookup('station'), null, `admitted: ${JSON.stringify(body)}`);
+    assert.equal(rig.system._cache.size, 0, `cached: ${JSON.stringify(body)}`);
+    assert.equal(rig.fetchImpl.calls.length, 1);
+  }
+  const rig = setup(doc([moveCrate]));
+  const admitted = await rig.system.lookup('station');
+  assert.equal(admitted?.version, 1, "precondition: a document of the route's shape is admitted");
+  // The build, the applier and every later lookup read ONE object; nobody may edit it under the others.
+  assert.ok(Object.isFrozen(admitted) && Object.isFrozen(admitted.entries), 'an admitted document is not frozen');
+});
+
+/**
+ * An entry's read carries the VISIT's abort. During an outage every portal
+ * crossing would otherwise leave a hung GET open until the tab closes - and
+ * a browser holds six connections per host, so the sixth crossing would
+ * starve every other fetch the game makes.
+ */
+test('leaving a world aborts the read its entry started, and the abort is not said: an outage does not leave one hung GET per crossing', async () => {
+  const signals = [];
+  const bus = makeBus();
+  const system = new MapOverlay({ bus, physics: new Physics(bus), fetch: heldFetch(signals) });
+  const warned = await saying(async () => {
+    bus.emit('world:changed', { id: 'station', world: makeWorld('station') });
+    const first = system.applying;
+    assert.equal(signals.length, 1, 'the entry did not read');
+    assert.equal(signals[0].aborted, false, 'the read was aborted before the player left');
+    bus.emit('world:changed', { id: 'medieval', world: makeWorld('medieval') });
+    assert.equal(signals[0].aborted, true, 'the crossing left the station read open');
+    assert.equal(signals[1].aborted, false, 'the crossing aborted its own read');
+    await first; // the abandoned visit ends: nothing applied, nothing published
+    assert.equal(system.report.world, null, 'an aborted read published a report');
+    system.dispose();
+    assert.equal(signals[1].aborted, true, 'dispose left the entry read open');
+    await system.applying;
+  });
+  assert.deepEqual(warned, [], `the abort was said: ${warned}`);
+});
+
+test('dispose aborts a lookup still in flight, which answers null without a word', async () => {
+  const signals = [];
+  const system = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: heldFetch(signals) });
+  const warned = await saying(async () => {
+    const pending = system.lookup('station');
+    assert.equal(signals[0].aborted, false);
+    system.dispose();
+    assert.equal(signals[0].aborted, true, 'dispose left the lookup open');
+    assert.equal(await pending, null);
+  });
+  assert.deepEqual(warned, [], `the abort was said: ${warned}`);
 });
 
 test('a newer document reached through lookup and then through an entry is said once in total: both paths judge a document in one place', async () => {
@@ -489,14 +566,14 @@ test('a rotation is applied about Y and nothing else', async () => {
 /* ------------------------------------------------------------------ */
 
 test('an entry dropped from the overlay puts its object back where the world built it', async () => {
-  const rig = setup(doc([moveCrate]));
+  let current = doc([moveCrate]);
+  const rig = setup(() => current);
   const original = rig.world.crate.position.clone();
   await enter(rig);
   assert.notDeepEqual(rig.world.crate.position.toArray(), original.toArray());
 
   // The admin removed that entry and saved again.
-  rig.doc.entries = [];
-  rig.doc.version = 2;
+  current = doc([], { version: 2 });
   await enter(rig);
   assert.deepEqual(rig.world.crate.position.toArray(), original.toArray());
 });
@@ -523,7 +600,8 @@ test('a move undone by leaving the world does not plant the collider in the worl
 });
 
 test('re-entering a world after its entry was dropped leaves each collider registered once, where it was built', async () => {
-  const rig = setup(doc([moveCrate]));
+  let current = doc([moveCrate]);
+  const rig = setup(() => current);
   const station = solid(rig.physics, rig.world);
   const medieval = solid(rig.physics, makeWorld('medieval'));
   const [crateCollider] = station.colliders;
@@ -533,8 +611,7 @@ test('re-entering a world after its entry was dropped leaves each collider regis
   await activate(rig, medieval);
 
   // The admin dropped the move; the player walks back.
-  rig.doc.entries = [];
-  rig.doc.version = 2;
+  current = doc([], { version: 2 });
   await activate(rig, station);
 
   assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
@@ -543,7 +620,8 @@ test('re-entering a world after its entry was dropped leaves each collider regis
 });
 
 test('a same-world re-entry after the entry was dropped leaves each collider registered once, where it was built', async () => {
-  const rig = setup(doc([moveCrate]));
+  let current = doc([moveCrate]);
+  const rig = setup(() => current);
   const station = solid(rig.physics, rig.world);
   const [crateCollider] = station.colliders;
   const authored = crateCollider.center.clone();
@@ -551,8 +629,7 @@ test('a same-world re-entry after the entry was dropped leaves each collider reg
   await activate(rig, station);
   assert.deepEqual(crateCollider.center.toArray(), [40, 3, -20], 'precondition: the move took the collider');
 
-  rig.doc.entries = [];
-  rig.doc.version = 2;
+  current = doc([], { version: 2 });
   await activate(rig, station);
 
   assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
@@ -866,14 +943,14 @@ test('a v1 hidden move then a move of one name: the move wins and the hidden one
 });
 
 test('re-entering after the remove was dropped from the document registers the collider once, where it was built', async () => {
-  const rig = setup(doc([removeBarn]));
+  let current = doc([removeBarn]);
+  const rig = setup(() => current);
   const station = solid(rig.physics, rig.world);
   const [, barnCollider] = station.colliders;
   await activate(rig, station);
   assert.equal(rig.physics.has(barnCollider), false, 'precondition: the remove dropped it');
 
-  rig.doc.entries = [];
-  rig.doc.version = 2;
+  current = doc([], { version: 2 });
   await activate(rig, station);
   assert.equal(rig.world.barn.visible, true);
   assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');

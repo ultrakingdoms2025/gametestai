@@ -1234,12 +1234,39 @@ async function hydrateAccountSession() {
 
 async function boot() {
   try {
+    const startWorld = overrides.startWorld || 'station';
+    /* The entry world's overlay document is asked for HERE, before the
+     * surface warm, so its GET overlaps the multi-second warm instead of
+     * extending the boot after it: by the time the entry build asks, the
+     * answer is cached or the same fetch is still in flight and joined - one
+     * GET either way, `lookup` shares by world. Gated on the session answer,
+     * the /api/game/session fetch started at module load, because the
+     * overlay GET is 401 for a player who is not signed in; and not awaited,
+     * the build's own await joins it. One trade, stated: the lookup's 10 s
+     * abort starts now while the build's 8 s gate fuse starts after the
+     * warm, so a warm longer than ~2 s narrows the window a slow server has
+     * to answer inside. Past it the build sees null and builds at 0 -
+     * bounded, never hung - and the entry's own read still applies the
+     * document live. */
+    accountStatePromise.then((account) => { if (account) mapOverlay.prefetch(startWorld); });
+
     loader.setStatus('Baking surfaces', 0.04);
     await materials.warmup((p, label) =>
       loader.setStatus(label ?? 'Baking surfaces', 0.04 + p * 0.26)
     );
 
-    const startWorld = overrides.startWorld || 'station';
+    /* The overlay reaches the build (spec §4.1). The provider goes on the
+     * manager's OWN ctx - the object the worlds were spread from, which is
+     * why _runBuild reads this.ctx and never world.ctx - and is gated on the
+     * session RESOLVING, not on admin: /api/game/map-overlay is 401 for a
+     * player who is not signed in, so an anonymous boot (the frame-gaps
+     * harness, a preview) answers null at once - no fuse, no breaker, built
+     * at 0 - after waiting only on the session answer, a fetch started at
+     * module load and, by the time materials.warmup has finished, long
+     * since resolved: the one new await in the boot is a settled promise.
+     * `accountStatePromise` is that answer; `hydrateAccountSession` runs
+     * AFTER the entry build and cannot be the gate. */
+    worldManager.ctx.overlayProvider = (id) => accountStatePromise.then((account) => (account ? mapOverlay.lookup(id) : null));
     loader.setStatus('Generating worlds', 0.3);
 
     // Build the entry world first so the player can move immediately, then

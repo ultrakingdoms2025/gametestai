@@ -312,3 +312,17 @@ test('a gate timeout never opens the breaker: the boot pays its own fuse, and th
   assert.deepEqual(asked, ['boot', 'bg'], 'a gate timeout opened the breaker, so the background build never asked');
   assert.ok(took >= 80, `the background build did not wait on its own fuse (${took} ms)`);
 });
+
+test("main.js sets the provider on the manager's ctx, gated on the session, before the entry build, and prefetches the entry world", async () => {
+  const src = await readCode('src/main.js');
+  const boot = src.slice(src.indexOf('async function boot()'));
+  const provider = boot.indexOf('worldManager.ctx.overlayProvider = (id) => accountStatePromise.then((account) => (account ? mapOverlay.lookup(id) : null));');
+  const prefetch = boot.indexOf('accountStatePromise.then((account) => { if (account) mapOverlay.prefetch(startWorld); });');
+  const build = boot.indexOf('await worldManager.build(startWorld');
+  assert.ok(provider > 0, "the provider is not set on worldManager.ctx inside boot(), or is not gated on accountStatePromise - an anonymous boot would wait on a 401");
+  assert.ok(prefetch > 0, 'the entry world is not prefetched, so its fetch no longer overlaps the loading gate');
+  assert.ok(build > 0 && provider < build && prefetch < build, 'the provider or the prefetch lands after the entry build, which then builds at version 0');
+  // Two lines other suites pin must not have moved with this edit.
+  assert.match(src, /new MapOverlay\(\{ bus, physics, loot, engine, forceLayout: overrides\.layout === 'sample' \}\)/, 'the MapOverlay constructor line changed');
+  assert.match(boot, /if \(overrides\.prefetch === 'all'\) scheduleBackgroundBuilds\(startWorld\);/, 'the eager-chain line changed');
+});

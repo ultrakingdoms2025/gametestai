@@ -16,6 +16,22 @@
  * Resolution: surfaces closer than ~2 cm may merge into one layer, because a
  * re-cast from 1 cm below a hit can start on, or inside, the next surface.
  *
+ * THE FLOOR IS ALWAYS KEPT: a cell stores the top L-1 surfaces AND THE LOWEST
+ * ("the top three and the floor" at L = 4). Casting keeps going after the cap
+ * and every further hit overwrites the last slot, so whatever is lowest ends
+ * there. Stopping at four hits, as this once did, dropped the fifth: under
+ * the station hub a column reads dome 171.42, canopy 62 / 61.5 / 59.3, deck 0,
+ * and the editor - whose `placementY` is the lowest stored layer - said "on
+ * surface" at 61.5 and the game spawned the item on the canopy beam above a
+ * player standing on the deck (2 084 of the hub's 3 505 cells, 59%, had four
+ * layers with the lowest above 1 m). The wire format is unchanged (same L,
+ * same LAYOUT_SCHEMA): only WHICH four heights are kept moved, so a world's
+ * grid carries its floors after its next visit re-samples it. The cost is
+ * bounded by the column: S surfaces cost S hits and one miss, so past the cap
+ * a cell pays S - L + 1 extra casts (the S - L hits below the cap, plus the
+ * miss the cap once spared); the peel still stops at `floorY`, and MAX_SKIPS
+ * still applies.
+ *
  * RESUMABLE, because 62 000 cells do not fit in a frame: `run(budgetMs, now)`
  * samples until the budget is spent; MapOverlay ticks it every frame.
  *
@@ -109,7 +125,11 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
     const base = (j * nx + i) * L;
     let y = topY;
     let skips = 0;
-    for (let k = 0; k < L; ) {
+    let k = 0;
+    // Not `k < L`: the cast goes on past the cap until it misses or reaches
+    // floorY, so the LAST slot holds the lowest surface - the floor under a
+    // roof - not merely the fourth from the top (see the header).
+    for (;;) {
       const drop = y - floorY;
       if (!(drop > 0)) break;
       const h = cast(x, y, z, drop);
@@ -124,8 +144,10 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
         y -= PEEL;
         continue;
       }
-      // Stored heights only ever fall: layer 0 is topmost by construction.
-      heights[base + k++] = toCm(h);
+      // Stored heights only ever fall: layer 0 is topmost by construction, and
+      // once the slots are full each lower hit replaces the last one.
+      heights[base + Math.min(k, L - 1)] = toCm(h);
+      k++;
       y = h - PEEL;
     }
   }

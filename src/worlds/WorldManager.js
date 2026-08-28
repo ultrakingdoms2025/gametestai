@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Physics } from '../physics/Physics.js';
-import { versionOf } from '../systems/MapOverlay.js';
+import { versionOf } from '../systems/overlayVersion.js';
 
 /**
  * Owns the world registry, lazy generation and the world-swap sequence.
@@ -99,9 +99,11 @@ export class WorldManager {
      * gate build's, which always asks, or the late answer of the very lookup
      * that was abandoned, which proves the server slow rather than dead - or
      * `OVERLAY_BREAKER_RETRY_MS` passes and ONE background build probes
-     * again. A probe that hangs re-opens it from THAT moment, so a dead
-     * server costs one fuse a minute. A GATE timeout never opens it: the
-     * boot pays its own fuse once, and says nothing about the frames after.
+     * again - literally one: the probe re-stamps this from its own start,
+     * so a build that begins during its fuse skips, and a probe that hangs
+     * leaves it re-opened from that moment, so a dead server costs one
+     * fuse a minute. A GATE timeout never opens it: the boot pays its own
+     * fuse once, and says nothing about the frames after.
      * @type {number|null}
      */
     this._overlayBrokenAt = null;
@@ -395,6 +397,15 @@ export class WorldManager {
     if (typeof provider !== 'function') return 0;
     const background = this.engine?.running === true;
     if (background && this._overlayBreakerOpen()) return 0;
+    // The probe: a background build past that check with the breaker still
+    // stamped is the one asking after the minute, and it re-opens the
+    // breaker from ITS OWN start, not from its timeout - or every background
+    // build that began during its fuse would ask too, and "one probe a
+    // minute" would be one probe plus the rest of the chain. Stamped HERE,
+    // in the same synchronous step as the check: the label's await below
+    // is exactly where the next build on the chain would otherwise slip
+    // past a check that had not yet been re-armed. Its answer closes it.
+    if (background && this._overlayBrokenAt !== null) this._overlayBrokenAt = this.now();
     const limit = background ? this.overlayBackgroundMs : this.overlayGateMs;
     await report?.(0, `Reading the map for ${world.displayName}`);
     let timer = null;

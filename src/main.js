@@ -1247,7 +1247,10 @@ async function boot() {
      * warm, so a warm longer than ~2 s narrows the window a slow server has
      * to answer inside. Past it the build sees null and builds at 0 -
      * bounded, never hung - and the entry's own read still applies the
-     * document live. */
+     * document live. A warm longer than the abort itself (LOOKUP_ABORT_MS,
+     * 10 s) aborts the prefetch before the build asks - silently, an abort
+     * is not said - and the build issues a second GET under its own 8 s
+     * fuse: never worse than no prefetch, one GET wasted. */
     accountStatePromise.then((account) => { if (account) mapOverlay.prefetch(startWorld); });
 
     loader.setStatus('Baking surfaces', 0.04);

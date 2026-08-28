@@ -985,6 +985,13 @@ const CONTRACT_V2 = [
      * `prefetch` is the entry world's lookup issued before the entry build. */
     methods: ['dispose', 'update', 'lookup', 'prefetch'],
   },
+  /* The one clamp every overlay version passes through - the manager's
+   * `builtVersion`, the cache's monotonic write, the applier's
+   * `appliedVersion` and its `{id}` gate - so no two can disagree about
+   * which document is newer. A leaf, so `WorldManager` can import it
+   * without the applier's whole graph (Marketplace, ItemDefs, ...) in every
+   * test that only needs the manager. Takes the count 132 -> 133. */
+  { file: 'src/systems/overlayVersion.js', exports: ['versionOf'] },
   /* The editor's ground grid. Pure, reached only through MapOverlay, so a
    * renamed export would surface as "the editor never gets a layout" one admin
    * visit later rather than as a failed check here. */

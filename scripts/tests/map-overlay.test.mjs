@@ -257,17 +257,19 @@ test('two lookups in flight share one GET, and prefetch is a lookup nobody await
   assert.equal(rig.fetchImpl.calls.length, 1);
 });
 
-test('a failed lookup answers null and caches nothing, so the next one asks again', async () => {
+test('a failed lookup answers null, caches nothing and says why - per call, so the next one asks again and is said again', async () => {
   const rig = setup(doc([]), { fail: true });
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
+  // Said, and said as the failure it was: the abort guard in `_read` sits one line above this warning, and a
+  // guard widened to every error (`if (err) return null`) would make an outage silent while every abort case
+  // here stayed green - so the words are asserted, not just that the lookup answered null.
+  const warned = await saying(async () => {
     assert.equal(await rig.system.lookup('station'), null);
-    assert.equal(await rig.system.lookup('station'), null);
-  } finally {
-    console.warn = warn;
-  }
+    assert.equal(await rig.system.lookup('station'), null, 'the failure was cached');
+  });
+  assert.deepEqual(warned, ['[map-overlay] overlay unavailable: offline', '[map-overlay] overlay unavailable: offline'],
+    `a failed read is said once per call; said: ${JSON.stringify(warned)}`);
   assert.equal(rig.fetchImpl.calls.length, 2);
+  assert.equal(rig.system._cache.size, 0, 'a failed lookup cached something');
 });
 
 test('a late read answering an OLDER version than the cache holds does not overwrite it: the cache is version-monotonic', async () => {

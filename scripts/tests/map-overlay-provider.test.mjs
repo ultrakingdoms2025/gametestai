@@ -18,7 +18,9 @@ import * as THREE from 'three';
  * news twice - and the loader names the wait. One background timeout opens a
  * session breaker: later background builds skip the provider until a lookup
  * answers with a document or a minute has passed - then ONE background build
- * probes again, and a probe that hangs re-opens it from that moment - so a
+ * probes again (a build started inside the probe's fuse skips: the probe
+ * re-opens it from its own start), and a probe that hangs leaves it
+ * re-opened from that moment - so a
  * hanging server costs the prefetch chain one fuse a minute, not one per
  * world; a gate timeout never opens it. The provider is read from the
  * MANAGER's ctx, never the per-world copy. The cases that reach this seam
@@ -262,7 +264,7 @@ test('a gate build always asks, whatever the breaker says, and its answer closes
   });
 });
 
-test('the breaker is half-open after a minute: one background build probes again, a probe that hangs re-opens it from THAT moment, and a document closes it', async () => {
+test('the breaker is half-open after a minute: ONE background build probes again (a build started inside the probe window skips), a probe that hangs re-opens it from THAT moment, and a document closes it', async () => {
   const src = await readCode('src/worlds/WorldManager.js');
   assert.match(src, /^const OVERLAY_BREAKER_RETRY_MS = 60000;/m, 'the probe interval is not one minute');
   let clock = 0;
@@ -271,7 +273,7 @@ test('the breaker is half-open after a minute: one background build probes again
   const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return hang ? never() : Promise.resolve({ version: 6 }); } });
   wm.now = () => clock; // the breaker's clock, owned by the test
   wm.overlayBackgroundMs = 100; // the same fuse, shortened
-  for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) wm.register(worldClass(id));
+  for (const id of ['a', 'b', 'c', 'd', 'd2', 'e', 'f', 'g']) wm.register(worldClass(id));
   await quietly(async () => {
     assert.equal((await wm.build('a')).builtVersion, 0); // hangs: the breaker opens at 0 on this clock
     const t = performance.now();
@@ -281,7 +283,12 @@ test('the breaker is half-open after a minute: one background build probes again
     await wm.build('c');
     assert.deepEqual(asked, ['a'], 'the breaker probed before the minute was up');
     clock = 60_000;
-    await wm.build('d'); // the probe: asked, hangs again, and the breaker re-opens at 60 000
+    // The probe, and a second background build started inside its fuse - the next world on the prefetch chain.
+    // The probe re-opens the breaker from its own START, so the second skips: one probe, not the chain's worth.
+    const probe = wm.build('d'); // the probe: asked, hangs again, and the breaker re-opens at 60 000
+    const beside = wm.build('d2');
+    await Promise.all([probe, beside]);
+    assert.equal(asked.includes('d2'), false, 'a build started inside the probe window asked too: the probe re-opened the breaker only at its timeout');
     assert.deepEqual(asked, ['a', 'd'], 'after a minute no background build probed');
     clock = 60_050;
     await wm.build('e');

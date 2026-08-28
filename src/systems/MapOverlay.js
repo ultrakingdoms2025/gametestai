@@ -3,6 +3,7 @@ import { ITEMS } from './ItemDefs.js';
 import { consumableItemFor } from './Marketplace.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
+import { versionOf } from './overlayVersion.js';
 
 /**
  * The admin map editor's placement overlay, applied to a world the game built.
@@ -164,19 +165,6 @@ function actionName(entry) {
   if (entry?.kind !== 'move' && entry?.kind !== 'remove') return null;
   const name = entry.target?.name;
   return typeof name === 'string' && name ? name : null;
-}
-
-/**
- * The version a document carries, as everything that compares two of them
- * reads it: `max(0, floor(Number(v) || 0))`, so a missing, negative or
- * fractional version is 0 and never a refusal. One clamp for the manager's
- * `builtVersion`, the cache's monotonic write and (stage 3) the `{id}`
- * gate, so no two of them can disagree about which document is newer.
- * @param {unknown} doc
- * @returns {number}
- */
-export function versionOf(doc) {
-  return Math.max(0, Math.floor(Number(doc?.version) || 0));
 }
 
 export class MapOverlay {
@@ -353,7 +341,10 @@ export class MapOverlay {
     }
 
     const objects = admin ? this._catalogue(world) : [];
-    const report = { world: id, version: Number(document.version) || 0, applied, unresolved, objects };
+    // `versionOf`, the one clamp: a fractional or negative version must read
+    // the same here as it does on `world.builtVersion`, or the two could
+    // disagree about which is newer by the width of a floor.
+    const report = { world: id, version: versionOf(document), applied, unresolved, objects };
     this._publish(report);
 
     if (admin) await this._reportBack(report, world);
@@ -443,6 +434,10 @@ export class MapOverlay {
    * world. What is admitted is FROZEN, the document and its entries array:
    * the build, the applier and every later lookup read one object, and
    * nobody edits it under the others - "the admin saved" is a new document.
+   * The freeze is shallow: an entry's own object is not frozen, and nothing
+   * on the apply path writes into one today - every report is built from
+   * new objects - so a write there would be a new kind of bug, not a
+   * guarded one.
    * @param {string} worldId
    * @param {unknown} data
    * @returns {object|null}

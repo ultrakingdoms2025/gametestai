@@ -310,7 +310,7 @@ test('a name nothing answers to is reported unresolved, and the rest still appli
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'gone', reason: 'name' }]);
 });
 
-test('hidden takes an object out of the world without touching world source', async () => {
+test('hidden takes an object out of the world via the remove route (one-release compatibility)', async () => {
   const rig = setup(doc([{ kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: null, hidden: true }]));
   await enter(rig);
   assert.equal(rig.world.barn.visible, false);
@@ -609,6 +609,18 @@ test('a remove that would drop more than 200 colliders is refused with reason sp
   assert.deepEqual(rig.system.report.applied, []);
 });
 
+test('exactly 200 colliders inside the box is within the cap: all dropped, nothing unresolved', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  for (let i = 0; i < 200; i++) {
+    rig.physics.addBox(-31.5 + (i % 20) * 0.15, -1 + Math.floor(i / 20) * 0.2, 0, 0.05, 0.05, 0.05);
+  }
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, false);
+  assert.equal(rig.physics.colliders.length, 0);
+  assert.deepEqual(rig.system.report.unresolved, []);
+  assert.equal(rig.system.report.applied[0].colliders, 200);
+});
+
 test('a v1 hidden move is applied as a remove for one release: hidden, colliders dropped, its position ignored', async () => {
   const rig = setup(doc([{ kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: { x: 40, y: 3, z: -20 }, hidden: true }], { admin: true }));
   const own = rig.physics.addBoxFromObject(rig.world.barn);
@@ -635,6 +647,7 @@ test('re-entering after the remove was dropped from the document registers the c
   assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
 });
 
+// SHAPE GUARD on the undo: passes red and green alike, and goes red only if the undo ever `physics.add`s.
 test('leaving for another world after a remove plants nothing of the removed object in the world entered', async () => {
   const rig = setup(doc([removeBarn]));
   const station = solid(rig.physics, rig.world);
@@ -645,6 +658,19 @@ test('leaving for another world after a remove plants nothing of the removed obj
   assert.equal(rig.world.barn.visible, true, 'the mesh is put back for the next visit');
   assert.deepEqual(registeredAs(rig.physics, medieval), [0, 1], 'the physics of the world entered holds something that is not its own');
   assert.equal(rig.physics.has(barnCollider), false);
+});
+
+test('returning to a world whose document still holds the remove drops the collider again, and only it', async () => {
+  const rig = setup(doc([removeBarn]));
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+  const [, barnCollider] = station.colliders;
+  await activate(rig, station);
+  await activate(rig, medieval);
+  await activate(rig, station);
+  assert.equal(rig.world.barn.visible, false, 'the return visit did not re-apply the remove');
+  assert.equal(rig.physics.has(barnCollider), false, "_activate's re-add outlived the second drop");
+  assert.deepEqual(registeredAs(rig.physics, station), [0], 'the station holds something other than its own crate');
 });
 
 /* ------------------------------------------------------------------ */

@@ -74,6 +74,8 @@ const _after = new THREE.Vector3();
 const _delta = new THREE.Vector3();
 const _box = new THREE.Box3();
 const _shift = new THREE.Matrix4();
+const _padded = new THREE.Box3();
+const _aabb = new THREE.Box3();
 
 /**
  * How far past a removed object's box a collider may reach and still be its
@@ -91,8 +93,6 @@ const REMOVE_TOLERANCE = 0.10;
  * and the floor with it until the next save.
  */
 const MAX_REMOVE_COLLIDERS = 200;
-const _padded = new THREE.Box3();
-const _aabb = new THREE.Box3();
 
 /** The sampler's ray. Two scratch vectors, reused for every cast of every cell. */
 const _rayOrigin = new THREE.Vector3();
@@ -256,7 +256,9 @@ export class MapOverlay {
         // `hidden: true` is v1's spelling of a remove. The site migrates it on
         // read (schema v2), but a client running this bundle against a v1
         // document - a rollback, or a page open across the deploy - must not
-        // let hidden objects reappear. Read as a remove for one release.
+        // let hidden objects reappear. Read as a remove for one release: the
+        // remove route DISCARDS the v1 move's `position` and `rotationY`
+        // (decision A), so a hidden object is never also moved.
         if (entry.kind === 'remove' || (entry.kind === 'move' && entry.hidden === true)) {
           this._applyRemove(world, entry, applied, unresolved);
         } else if (entry.kind === 'move') this._applyMove(world, entry, applied, unresolved);
@@ -494,11 +496,9 @@ export class MapOverlay {
 
     const originalPosition = target.position.clone();
     const originalRotationY = target.rotation.y;
-    const originalVisible = target.visible;
     this._undo.push(() => {
       target.position.copy(originalPosition);
       target.rotation.y = originalRotationY;
-      target.visible = originalVisible;
       target.updateMatrixWorld(true);
     });
 

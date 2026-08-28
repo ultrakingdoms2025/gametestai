@@ -71,7 +71,11 @@ export class WorldManager {
     /** The provider ceilings, on the instance so a test can shorten one. */
     this.overlayGateMs = OVERLAY_GATE_MS;
     this.overlayBackgroundMs = OVERLAY_BACKGROUND_MS;
-    /** Worlds whose overlay failure has been said. @type {Set<string>} */
+    /**
+     * Worlds whose overlay failure has been said, until the next answer: once
+     * per OUTAGE, not once for ever, so a volatile world that fails, answers,
+     * then fails again is news twice. @type {Set<string>}
+     */
     this._overlayWarned = new Set();
 
     /**
@@ -312,7 +316,7 @@ export class WorldManager {
       // the world builds and inside the scratch-physics window, because stage
       // 3's primitives will consult it as they build; today only its version
       // is kept, on the world, for the report.
-      world.builtVersion = await this._overlayVersion(world);
+      world.builtVersion = await this._overlayVersion(world, report);
       await world.ensureBuilt(report);
     } finally {
       world.physics = realPhysics;
@@ -343,32 +347,44 @@ export class WorldManager {
    * slicing test counts every frame a build hands back.
    *
    * A failure or a timeout is a world with no overlay, which is what every
-   * world was before this existed: said once per world, and MapOverlay still
+   * world was before this existed: said once per outage, and MapOverlay still
    * applies named-object entries live after the build.
    *
+   * The wait is named on the loader. Behind the gate a cold function can take
+   * seconds, and a bar that says "Generating" through them says the build is
+   * slow; it says "Generating" again once the answer is in, because a world
+   * that labels none of its own phases would otherwise sit on "Reading the
+   * map" for the whole build.
+   *
    * @param {import('./World.js').World} world
+   * @param {(p:number, label?:string) => Promise<void>} [report] the build's progress relay
    * @returns {Promise<number>}
    */
-  async _overlayVersion(world) {
+  async _overlayVersion(world, report) {
     const provider = this.ctx?.overlayProvider;
     if (typeof provider !== 'function') return 0;
     const limit = this.engine?.running ? this.overlayBackgroundMs : this.overlayGateMs;
+    await report?.(0, `Reading the map for ${world.displayName}`);
     let timer = null;
+    let version = 0;
     try {
       const lookup = Promise.resolve().then(() => provider(world.id));
       const fuse = new Promise((resolve) => { timer = setTimeout(() => resolve(OVERLAY_TIMED_OUT), limit); });
       const doc = await Promise.race([lookup, fuse]);
       if (doc === OVERLAY_TIMED_OUT) {
         this._overlayUnavailable(world.id, `no answer within ${limit} ms`);
-        return 0;
+      } else {
+        // An answer ends the outage: the next failure of this world is news.
+        this._overlayWarned.delete(world.id);
+        version = Math.max(0, Math.floor(Number(doc?.version) || 0));
       }
-      return Math.max(0, Math.floor(Number(doc?.version) || 0));
     } catch (err) {
       this._overlayUnavailable(world.id, err?.message ?? err);
-      return 0;
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
+    await report?.(0, `Generating ${world.displayName}`);
+    return version;
   }
 
   _overlayUnavailable(id, why) {
@@ -595,6 +611,7 @@ export class WorldManager {
     }
     this._instances.clear();
     this._building.clear();
+    this._overlayWarned.clear();
     this._active = null;
   }
 }

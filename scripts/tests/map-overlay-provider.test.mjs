@@ -14,9 +14,11 @@ import * as THREE from 'three';
  * `world.builtVersion`; with nothing on ctx it awaits nothing and starts no
  * timer; in the player's frames it waits at most 1500 ms, behind the loading
  * gate at most 8000 ms; a failure or a timeout is a world built at 0, said
- * once. A portal forcing its destination, a WorldPrefetch preparation and a
- * volatile rebuild all go through the same seam, and the provider is read from
- * the MANAGER's ctx, never the per-world copy.
+ * once per outage - a volatile world that fails, answers, then fails again is
+ * news twice - and the loader names the wait. The provider is read from the
+ * MANAGER's ctx, never the per-world copy. The cases that reach this seam
+ * through a portal forcing its destination, a WorldPrefetch preparation and a
+ * volatile rebuild land with Task 3.6 (`WorldPrefetch` is imported for them).
  *
  * Not a stub: every case builds a real World subclass through the real
  * WorldManager over a real Physics, and the timing cases wait on real timers
@@ -162,4 +164,50 @@ test("the provider is read from the manager's ctx, so one set after a world was 
   wm.getWorld('late'); // its ctx copy was spread before any provider existed
   ctx.overlayProvider = async () => ({ version: 3 });
   assert.equal((await wm.build('late')).builtVersion, 3);
+});
+
+test('a volatile world that fails, answers, then fails again is said twice: the warning is once per OUTAGE, not once for ever', async () => {
+  let n = 0;
+  const versions = [];
+  const warned = await quietly(async () => {
+    const { wm } = manager({ provider: async () => { n++; if (n === 2) return { version: 2 }; throw new Error(`outage ${n}`); } });
+    wm.register(worldClass('flaky', { volatile: true }));
+    for (let i = 0; i < 3; i++) versions.push((await wm.build('flaky')).builtVersion);
+  });
+  assert.deepEqual(versions, [0, 2, 0], 'a volatile world did not rebuild through the provider each time');
+  assert.deepEqual(warned, [
+    '[WorldManager] overlay unavailable for "flaky": outage 1; building without it',
+    '[WorldManager] overlay unavailable for "flaky": outage 3; building without it',
+  ]);
+});
+
+test('the loader names the wait: "Reading the map for <world>" while the provider is asked, "Generating" again after it answers, and never without a provider', async () => {
+  const labels = [];
+  const { wm } = manager({ provider: async () => ({ version: 1 }) });
+  wm.register(worldClass('named'));
+  await wm.build('named', (_p, label) => labels.push(label));
+  const at = labels.indexOf('Reading the map for named');
+  assert.ok(at >= 0, `the wait was never named: ${labels}`);
+  // A test world labels no phase of its own, so without this the bar would sit on "Reading the map" for the whole build.
+  assert.equal(labels[at + 1], 'Generating named', `after the answer: ${labels}`);
+  assert.equal(labels[labels.length - 1], 'named ready');
+
+  const seen = [];
+  const quiet = manager();
+  quiet.wm.register(worldClass('unnamed'));
+  await quiet.wm.build('unnamed', (_p, label) => seen.push(label));
+  assert.ok(!seen.some((l) => /Reading the map/.test(l)), `a build with no provider named a wait: ${seen}`);
+});
+
+test('dispose forgets the outage: after a teardown the same world is asked again, and a failure is said again', async () => {
+  const asked = [];
+  const warned = await quietly(async () => {
+    const { wm } = manager({ provider: async (id) => { asked.push(id); throw new Error('down'); } });
+    wm.register(worldClass('torn'));
+    await wm.build('torn');
+    wm.dispose();
+    await wm.build('torn');
+  });
+  assert.deepEqual(asked, ['torn', 'torn']);
+  assert.equal(warned.length, 2, `said ${warned.length} times: ${warned}`);
 });

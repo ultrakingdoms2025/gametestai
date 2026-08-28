@@ -252,11 +252,6 @@ export function MapEditorPanel() {
 
   const objects = useMemo<CatalogueObject[]>(() => report?.objects ?? [], [report]);
 
-  /* What the report card warns beside a remove the game applied — nothing
-   * dropped, or more than one prop owns (decision B) — matched by id against
-   * the document on this page (`removeWarnings`). */
-  const warnings = useMemo(() => removeWarnings(report?.applied ?? [], entries), [report, entries]);
-
   /* Built once per layout or report, not per document change: it decodes
    * the ground grid, and the same decoded grid drives snapping and the
    * canvas. */
@@ -265,6 +260,11 @@ export function MapEditorPanel() {
 
   const deferredEntries = useDeferredValue(entries);
   const conflicts = useMemo(() => conflictsForDocument(stripKeys(deferredEntries), ctx), [deferredEntries, ctx]);
+  /* What the report card warns beside a remove the game applied — nothing
+   * dropped, or more than one prop owns (decision B) — matched by id against
+   * the document on this page (`removeWarnings`). On the DEFERRED document,
+   * like the conflicts pass: a drag frame must not re-walk the report. */
+  const warnings = useMemo(() => removeWarnings(report?.applied ?? [], deferredEntries), [report, deferredEntries]);
   const conflictByKey = useMemo(
     () => new Map(deferredEntries.map((e, i) => [e._key, conflicts[i] ?? NO_CONFLICTS])),
     [deferredEntries, conflicts]

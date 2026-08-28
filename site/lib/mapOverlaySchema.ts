@@ -219,16 +219,38 @@ export function readAngle(raw: unknown): number | undefined {
 }
 
 /**
+ * The first `max` CODE POINTS of `s`. Every string this site cuts before it
+ * becomes JSON in Postgres goes through here — a target name, a copied config
+ * string, an author, a note, the report reader's names, ids and reasons —
+ * because `String.prototype.slice` counts UTF-16 units, and a cut through an
+ * astral character leaves a lone surrogate, which `JSON.stringify` writes as
+ * `\ud83d` and Postgres refuses: the save, or the game's own report, 500s.
+ *
+ * The pre-cut to `max * 2` units is an optimisation the result cannot see: a
+ * code point is one or two units, so the first `max` code points end within
+ * the first `max * 2` units; the pre-cut keeps them all whole, and the only
+ * thing it can split is a pair at unit `max * 2`, which is at code-point
+ * index ≥ `max` and is sliced off. So it is provably the same first `max`
+ * code points as `Array.from(s).slice(0, max)`, without spreading the whole
+ * string into an array of one-character strings first.
+ *
+ * A ZWJ sequence (a family emoji) cut between its code points stays valid
+ * UTF-16 and Postgres-safe — only the glyph changes, from one family to two
+ * people. The rule is about surrogates, not graphemes.
+ */
+export function cutCodePoints(s: string, max: number): string {
+  return Array.from(s.slice(0, max * 2)).slice(0, max).join('');
+}
+
+/**
  * A trimmed name of at most `max` CODE POINTS, and a fixed point: the cut
  * comes first and the trim second, so a name cut at a space does not shrink
- * again on the next read; and the cut is by code point, so an emoji at the
- * boundary is kept whole or dropped whole - a `slice` by UTF-16 unit left a
- * lone high surrogate, which `JSON.stringify` writes as `\ud83d` and Postgres
- * refuses, and the save 500ed.
+ * again on the next read; and the cut is `cutCodePoints`, so an emoji at the
+ * boundary is kept whole or dropped whole.
  */
 function readName(raw: unknown, max: number): string | null {
   if (typeof raw !== 'string') return null;
-  const trimmed = Array.from(raw.trim()).slice(0, max).join('').trim();
+  const trimmed = cutCodePoints(raw.trim(), max).trim();
   if (!trimmed) return null;
   if (FORBIDDEN_NAMES.has(trimmed)) return null;
   return trimmed;
@@ -270,7 +292,7 @@ function readConfig(raw: unknown): GrantConfig {
     if (kept >= MAX_CONFIG_KEYS) break;
     if (FORBIDDEN_NAMES.has(key) || key.length > 64) continue;
     const value = (raw as Record<string, unknown>)[key];
-    if (typeof value === 'string') out[key] = value.slice(0, 200);
+    if (typeof value === 'string') out[key] = cutCodePoints(value, 200);
     else if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
     else if (typeof value === 'boolean') out[key] = value;
     else continue;

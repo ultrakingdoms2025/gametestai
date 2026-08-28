@@ -321,6 +321,10 @@ describe('removeWarnings', () => {
     expect(removeWarnings([{ id: 'r', ok: true, colliders: 1 }], doc)).toEqual([]);
     expect(removeWarnings([], doc)).toEqual([]);
   });
+  it('a remove the game did NOT apply warns nothing: its zero is not "hidden but still blocking", it is "not hidden"', () => {
+    expect(removeWarnings([{ id: 'r', ok: false, colliders: 0 }], doc)).toEqual([]);
+    expect(removeWarnings([{ id: 'r', ok: false, colliders: 12 }], doc)).toEqual([]);
+  });
   it('one line per applied entry, in the report order', () => {
     const out = removeWarnings([{ id: 'q', ok: true, colliders: 12 }, { id: 'm', ok: true, colliders: 1 }, { id: 'r', ok: true, colliders: 0 }], doc);
     expect(out.map((w) => w.id)).toEqual(['q', 'r']);

@@ -565,3 +565,56 @@ describe('revertOverlayTo — writes the migrated document', () => {
     expect(saved?.note).toBe('revert to version 1');
   });
 });
+
+/**
+ * Every string this store cuts before it becomes JSON in Postgres is cut by
+ * CODE POINT. `String.prototype.slice` counts UTF-16 units, so a cut through
+ * an astral character leaves a lone surrogate, which `JSON.stringify` writes
+ * as `\ud83d` and Postgres refuses — the report route 500s on a name the game
+ * itself reported. Pinned on the recording client, per site, as the bytes
+ * handed to `db.query`.
+ */
+describe('what is cut is cut by code point, at every site', () => {
+  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  /** `n` ASCII characters, then an emoji straddling the cut at `n + 1`, then more. */
+  const straddle = (n: number) => `${'a'.repeat(n)}😀tail`;
+  const whole = (n: number) => `${'a'.repeat(n)}😀`;
+
+  it('author and note, on the save', async () => {
+    const db = makeFakeDb((sql, params) => {
+      if (sql.startsWith('INSERT INTO map_overlays')) {
+        return [{ version: 1, schema: params[1], entries: [], author: params[3], note: params[4], created_at: '2026-08-28T00:00:00.000Z' }];
+      }
+      return undefined;
+    });
+    await saveOverlayVersion(db, { worldId: 'test-overlay-sql', entries: [], author: straddle(199), note: straddle(499) });
+    const insert = db.only('INSERT INTO map_overlays');
+    expect(insert.params[3]).toBe(whole(199));
+    expect(insert.params[4]).toBe(whole(499));
+    expect(JSON.stringify([insert.params[3], insert.params[4]])).not.toMatch(lone);
+  });
+
+  it("a reported object's name", async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, objects: [{ name: straddle(199), position: { x: 1, y: 2, z: 3 } }] });
+    const objects = String(db.only('INSERT INTO map_world_reports').params[2]);
+    expect(objects).not.toMatch(lone);
+    expect(JSON.parse(objects)).toEqual([{ name: whole(199), position: { x: 1, y: 2, z: 3 } }]);
+  });
+
+  it("an applied entry's id", async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, applied: [{ id: straddle(63), ok: true, colliders: 2 }] });
+    const applied = String(db.only('INSERT INTO map_world_reports').params[3]);
+    expect(applied).not.toMatch(lone);
+    expect(JSON.parse(applied)).toEqual([{ id: whole(63), ok: true, colliders: 2 }]);
+  });
+
+  it("an unresolved entry's id and reason", async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, unresolved: [{ id: straddle(63), reason: straddle(63) }] });
+    const unresolved = String(db.only('INSERT INTO map_world_reports').params[4]);
+    expect(unresolved).not.toMatch(lone);
+    expect(JSON.parse(unresolved)).toEqual([{ id: whole(63), reason: whole(63) }]);
+  });
+});

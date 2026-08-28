@@ -1,6 +1,7 @@
 import type { Client, PoolClient } from 'pg';
 import {
   MAP_OVERLAY_SCHEMA,
+  cutCodePoints,
   normaliseOverlayEntries,
   type OverlayEntry,
   type RejectedEntry,
@@ -269,8 +270,9 @@ export async function saveOverlayVersion(
 ): Promise<SavedOverlay> {
   await ensureMapOverlaySchema(db);
   const { entries, rejected } = normaliseOverlayEntries(input.entries);
-  const author = String(input.author ?? '').slice(0, 200);
-  const note = input.note ? String(input.note).slice(0, 500) : null;
+  // Cut by code point, like every string on its way into a jsonb or text column (see `cutCodePoints`).
+  const author = cutCodePoints(String(input.author ?? ''), 200);
+  const note = input.note ? cutCodePoints(String(input.note), 500) : null;
 
   for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt++) {
     const r = await db.query(
@@ -426,7 +428,7 @@ export async function recordWorldReport(
   const objects = (Array.isArray(report.objects) ? report.objects : [])
     .slice(0, MAX_CATALOGUE_OBJECTS)
     .map((o) => ({
-      name: String((o as CatalogueObject)?.name ?? '').slice(0, 200),
+      name: cutCodePoints(String((o as CatalogueObject)?.name ?? ''), 200),
       position: {
         x: clampNumber((o as CatalogueObject)?.position?.x),
         y: clampNumber((o as CatalogueObject)?.position?.y),
@@ -438,7 +440,7 @@ export async function recordWorldReport(
   const applied = (Array.isArray(report.applied) ? report.applied : [])
     .slice(0, MAX_CATALOGUE_OBJECTS)
     .map((a) => ({
-      id: String((a as AppliedOutcome)?.id ?? '').slice(0, 64),
+      id: cutCodePoints(String((a as AppliedOutcome)?.id ?? ''), 64),
       ok: Boolean((a as AppliedOutcome)?.ok),
       colliders: Math.max(0, Math.floor(Number((a as AppliedOutcome)?.colliders ?? 0)) || 0),
     }));
@@ -446,8 +448,8 @@ export async function recordWorldReport(
   const unresolved = (Array.isArray(report.unresolved) ? report.unresolved : [])
     .slice(0, MAX_CATALOGUE_OBJECTS)
     .map((u) => ({
-      id: String((u as UnresolvedOutcome)?.id ?? '').slice(0, 64),
-      reason: String((u as UnresolvedOutcome)?.reason ?? '').slice(0, 64),
+      id: cutCodePoints(String((u as UnresolvedOutcome)?.id ?? ''), 64),
+      reason: cutCodePoints(String((u as UnresolvedOutcome)?.reason ?? ''), 64),
     }));
 
   const { patch, outcome } = layoutPatch(worldId, report);

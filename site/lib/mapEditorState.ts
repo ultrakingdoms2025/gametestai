@@ -245,6 +245,9 @@ export function unresolvedText(reason: string): string {
  * its box while staying under the applier's 200 cap, and the buildings stay
  * visible in their batches with nothing solid left in them (decision B, as
  * written; the applier does not refuse it, so the editor says so).
+ *
+ * Provenance: guessed. No per-prop collider maximum has been measured across
+ * the worlds; raise it when a real remove of one prop trips it.
  */
 export const WIDE_REMOVE_COLLIDERS = 8;
 
@@ -260,12 +263,20 @@ export interface RemoveWarning {
  * `colliders` count: 0 on a `{name}` remove means "hidden, but nothing dropped
  * — it may still block", the defect this stage exists to end; more than
  * `WIDE_REMOVE_COLLIDERS` means the box took other objects' colliders with it.
- * A report without the count reads as 0, as the store clamps it.
+ * A report without the count reads as 0, as the store clamps it. An entry the
+ * game did NOT apply (`ok: false`) warns nothing: its zero means "not hidden",
+ * and the unresolved list already says why.
+ *
+ * Indexed once per call: the panel runs this on the deferred document, but a
+ * report can list thousands of entries against a document of hundreds.
  */
 export function removeWarnings(applied: ReadonlyArray<AppliedOutcome>, entries: Draft[]): RemoveWarning[] {
   const out: RemoveWarning[] = [];
+  const byId = new Map<string, Draft>();
+  for (const d of entries) if (!byId.has(d.id)) byId.set(d.id, d);   // first wins, as `find` did
   for (const a of applied) {
-    const e = entries.find((d) => d.id === a.id);
+    if (!a.ok) continue;
+    const e = byId.get(a.id);
     if (!e || e.kind !== 'remove') continue;
     const n = a.colliders ?? 0;
     if (n > WIDE_REMOVE_COLLIDERS) out.push({ id: a.id, text: `removed ${n} colliders — more than one object has; check the map` });

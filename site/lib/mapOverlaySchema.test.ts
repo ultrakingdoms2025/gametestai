@@ -3,6 +3,7 @@ import {
   MAP_OVERLAY_SCHEMA,
   MAX_OVERLAY_ENTRIES,
   WORLD_COORD_LIMIT,
+  cutCodePoints,
   isKnownOverlayWorld,
   normaliseOverlayEntries,
   targetLabel,
@@ -257,6 +258,55 @@ describe('placement grant config', () => {
       place({ item: { source_key: 'k', name: 'n', config: { effect: 'grant_item', item_id: 'medkit', amount: 2 } } }),
     ]);
     expect(normaliseOverlayEntries(first.entries).entries).toEqual(first.entries);
+  });
+
+  it('cuts a config string by code point, so an emoji at the 200 boundary is kept whole or dropped whole', () => {
+    // The same defect `readName` had: a copied config string is cut at 200
+    // and stored as JSON, and a UTF-16 cut through an astral character left
+    // `\ud83d` for Postgres to refuse.
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    const configOf = (effect: string) => {
+      const { entries, rejected } = normaliseOverlayEntries([place({ item: { source_key: 'k', name: 'n', config: { effect } } })]);
+      expect(rejected).toEqual([]);
+      return (entries[0] as Extract<OverlayEntry, { kind: 'place' }>).item.config.effect as string;
+    };
+    const kept = configOf(`${'a'.repeat(199)}😀tail`);
+    expect(kept).toBe(`${'a'.repeat(199)}😀`);
+    expect(JSON.stringify(kept)).not.toMatch(lone);
+    expect(configOf(`${'a'.repeat(200)}😀`)).toBe('a'.repeat(200));
+  });
+});
+
+/**
+ * The one cut every site uses. Six places cut a string before it becomes
+ * JSON in Postgres — a target name, a config string, an author, a note, and
+ * the report reader's names, ids and reasons — and `String.prototype.slice`
+ * counts UTF-16 units, so any of them could split an astral character and
+ * hand Postgres a lone surrogate. They all go through this.
+ */
+describe('cutCodePoints', () => {
+  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  const plain = (s: string, max: number) => Array.from(s).slice(0, max).join('');
+
+  it('is the first `max` code points, whatever mix of BMP and astral characters precedes the boundary', () => {
+    const astral = '😀'.repeat(300);
+    for (const s of [astral, `a${astral}`, `${'a'.repeat(199)}${astral}`, `${'a'.repeat(200)}${astral}`, 'a'.repeat(50)]) {
+      // The pre-cut to `max * 2` units is an optimisation the result cannot see:
+      // this is the plain, un-pre-cut form, and the two agree byte for byte.
+      expect(cutCodePoints(s, 200)).toBe(plain(s, 200));
+      expect(JSON.stringify(cutCodePoints(s, 200))).not.toMatch(lone);
+    }
+    expect(cutCodePoints(`a${astral}`, 200)).toBe(`a${'😀'.repeat(199)}`);
+    expect(cutCodePoints('', 200)).toBe('');
+    expect(cutCodePoints('abc', 0)).toBe('');
+  });
+
+  it('may split a ZWJ sequence between code points: the glyph changes, the UTF-16 stays valid', () => {
+    const family = '👨‍👩‍👧'; // five code points, eight UTF-16 units
+    expect(Array.from(family)).toHaveLength(5);
+    const cut = cutCodePoints(family, 3);
+    expect(cut).toBe('👨‍👩');
+    expect(JSON.stringify(cut)).not.toMatch(lone);
   });
 });
 

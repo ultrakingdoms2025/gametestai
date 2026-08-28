@@ -64,6 +64,10 @@ const OVERLAY_SCHEMA = 2;
  * this only guarantees that a lost race closes its socket - an abort inside
  * the gate fuse would turn a slow answer the gate was still willing to take
  * into a failure. Pinned against the gate constant by map-overlay.test.mjs.
+ * Reaching it is said by `lookup`, once per world: behind the loading gate
+ * a prefetch can reach it BEFORE the build's own fuse (a warm longer than
+ * ~2 s), and the null it then answers the manager with is an answer - the
+ * manager says nothing.
  */
 const LOOKUP_ABORT_MS = 10000;
 
@@ -254,6 +258,13 @@ export class MapOverlay {
     /** The abort ceiling, on the instance so a test can shorten it. */
     this.lookupAbortMs = LOOKUP_ABORT_MS;
     /**
+     * Worlds whose lookup reached the ceiling and was said so - once per
+     * world, not per attempt. A document admitted for the world forgets it,
+     * so the next outage is news again.
+     * @type {Set<string>}
+     */
+    this._lookupAbandoned = new Set();
+    /**
      * The abort of the read the CURRENT visit started, pulled by `_restore`
      * the moment the player leaves. Its answer would be dropped by visit
      * number anyway; this closes the socket it would have waited on.
@@ -431,9 +442,13 @@ export class MapOverlay {
   /**
    * One GET for the world's document. `signal` is the abort its caller owns:
    * a `lookup`'s ceiling, or the visit's, which `_restore` pulls when the
-   * player leaves. An abort is that caller's own decision and is not said -
-   * the manager has already said the outage once, and "This operation was
-   * aborted" ten seconds later would be the same outage twice.
+   * player leaves. An abort is that caller's own decision and is not said
+   * here: the visit's is the player leaving, nothing to say; the ceiling's
+   * is said by `lookup`, once per world, because behind the loading gate a
+   * prefetch can reach it before the build's own fuse, and the null it then
+   * answers is an ANSWER to the manager, which says nothing. A background
+   * build that lost its fuse first is said twice, in different words - the
+   * second says its socket closed.
    * @param {string} worldId
    * @param {AbortSignal} [signal]
    */
@@ -495,6 +510,8 @@ export class MapOverlay {
     // revert writes a new, higher one), so higher is always newer.
     const have = this._cache.get(worldId);
     if (!(versionOf(have) > versionOf(data))) this._cache.set(worldId, data);
+    // The outage is over: the next lookup of this world to reach the ceiling is news again.
+    this._lookupAbandoned.delete(worldId);
     return data;
   }
 
@@ -688,8 +705,12 @@ export class MapOverlay {
    *
    * Each fetch owns an abort with a ceiling past the manager's longest fuse
    * (`LOOKUP_ABORT_MS`), so a race the manager lost still closes its
-   * connection and clears its in-flight entry; what it would have answered
-   * is never cached.
+   * connection and clears its in-flight entry. A document that lands
+   * between the manager's fuse and the ceiling IS cached - and closes the
+   * breaker; only what it would have answered past the ceiling is never
+   * cached. Reaching the ceiling is said once per world, not per attempt -
+   * the manager cannot say it, the null it is answered with is an answer -
+   * and is news again after a document for that world is admitted.
    * @param {string} worldId
    * @returns {Promise<object|null>}
    */
@@ -699,7 +720,12 @@ export class MapOverlay {
     let inflight = this._inflight.get(worldId);
     if (!inflight) {
       const abort = new AbortController();
-      const ceiling = setTimeout(() => abort.abort(), this.lookupAbortMs);
+      const ceiling = setTimeout(() => {
+        abort.abort();
+        if (this._lookupAbandoned.has(worldId)) return;
+        this._lookupAbandoned.add(worldId);
+        console.warn(`[map-overlay] lookup for "${worldId}" abandoned after ${this.lookupAbortMs / 1000} s`);
+      }, this.lookupAbortMs);
       const promise = this._read(worldId, abort.signal).finally(() => {
         clearTimeout(ceiling);
         this._inflight.delete(worldId);
@@ -1048,6 +1074,7 @@ export class MapOverlay {
     this._cache.clear();
     for (const { abort } of this._inflight.values()) abort.abort();
     this._inflight.clear();
+    this._lookupAbandoned.clear();
     for (const off of this._offs) off?.();
     this._offs.length = 0;
   }

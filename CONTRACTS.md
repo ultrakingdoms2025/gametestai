@@ -108,7 +108,9 @@ Emit and listen only to these. Adding an event is fine — document it in your r
 | `portal:entering` | `{from, to, duration}` | PortalSystem |
 | `hud:notify` | `{text, tone}` where tone ∈ `info \| warn \| kill \| lore` | anyone |
 
-**Overlay provider (map editor stage 2).** `main.js` sets `worldManager.ctx.overlayProvider = (worldId) => Promise<{version, entries, admin} | null>` on the manager's own ctx before the entry build, gated on a signed-in session (`accountStatePromise`). `WorldManager._runBuild` awaits it before `ensureBuilt` (no provider: no await; 8 s behind the loading gate, 1.5 s otherwise; after one background timeout, background builds skip the provider for a minute, then one probes) and stores `world.builtVersion` (0 when none). The report POST carries `builtVersion` beside `appliedVersion`; it carries no `schema`.
+**Overlay provider (map editor stage 2).** `main.js` sets `worldManager.ctx.overlayProvider = (worldId) => Promise<{version, entries, admin} | null>` on the manager's own ctx before the entry build, gated on a signed-in session (`accountStatePromise`). `WorldManager._runBuild` awaits it before `ensureBuilt` (no provider: no await; 8 s behind the loading gate, 1.5 s otherwise; after one background timeout, background builds skip the provider for a minute, then one probes) and stores `world.builtVersion` (0 when none). The provider is `MapOverlay.lookup` (contract-pinned, with `prefetch`): one cached document per world per session, shared by everyone asking, each fetch aborted at 10 s (`LOOKUP_ABORT_MS`, said once per world); `mapOverlay.prefetch(startWorld)` runs before `materials.warmup` so the entry world's GET overlaps the warm. The report POST carries `builtVersion` beside `appliedVersion`; it carries no `schema`.
+
+**Applier reasons (game → site).** `unresolved[].reason` on `map-overlay:applied` and on the report POST is one of `name | span | pending-rebuild | id | superseded | error | item | no-loot | position | pool` (`src/systems/MapOverlay.js`; the editor's `unresolvedText` labels them).
 
 ---
 

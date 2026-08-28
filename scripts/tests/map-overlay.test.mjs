@@ -333,11 +333,13 @@ async function saying(fn) {
  * wins; the fetch it walked away from must not stay open on a dead
  * connection until the tab closes, one per world. Measured on the signal the
  * fetch was handed, with a fetch that only ever settles by being aborted.
- * The abort is this system's own decision, so it is not said: the manager
- * has already said the outage once, and a second line ten seconds later
- * saying "This operation was aborted" would be the same outage twice.
+ * The abort is said ONCE PER WORLD, not per attempt: behind the loading
+ * gate a prefetch can reach the ceiling before the build's own fuse, and the
+ * null it then answers the manager with is an answer - the manager says
+ * nothing, so an outage on a normal cold boot would otherwise be silent.
+ * (The once-per-world reset by a later document is map-overlay-provider's.)
  */
-test('a lookup whose fetch never answers is abandoned at its ceiling: the signal aborts, nothing is cached or said, the in-flight entry clears, and the next lookup asks again', async () => {
+test('a lookup whose fetch never answers is abandoned at its ceiling: the signal aborts, nothing is cached, it is said once per world, the in-flight entry clears, and the next lookup asks again', async () => {
   const signals = [];
   const system = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: heldFetch(signals) });
   system.lookupAbortMs = 40; // the same ceiling, shortened
@@ -348,7 +350,7 @@ test('a lookup whose fetch never answers is abandoned at its ceiling: the signal
     took = performance.now() - t;
     assert.equal(await system.lookup('station'), null, 'the second lookup did not ask again');
   });
-  assert.deepEqual(warned, [], `the abort was said: ${warned}`);
+  assert.deepEqual(warned, ['[map-overlay] lookup for "station" abandoned after 0.04 s'], `two abandoned lookups of one world: ${warned}`);
   assert.ok(took >= 30 && took < 1000, `abandoned after ${took} ms`);
   assert.equal(signals.length, 2, 'the in-flight entry did not clear, so the second lookup joined a dead fetch');
   assert.equal(signals[0].aborted, true, 'the race was lost but the fetch was never told');

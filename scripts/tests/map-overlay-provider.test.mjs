@@ -30,9 +30,10 @@ import * as THREE from 'three';
  * crossing or a chain inside the minute after a hang is held for nothing and
  * asks nothing, and only the probe pays the fuse.
  *
- * Not a stub: every case builds a real World subclass through the real
- * WorldManager over a real Physics, and the timing cases wait on real timers
- * against a provider that really never answers. rAF is counted as
+ * Not a stub: every timing case builds a real World subclass through the real
+ * WorldManager over a real Physics and waits on real timers against a
+ * provider that really never answers; the two closing cases put the REAL
+ * MapOverlay.lookup on the seam and hang its fetch. rAF is counted as
  * station-build-slicing counts it, because a frame handed back is the one
  * thing a "no await" claim can be measured by.
  */
@@ -50,6 +51,7 @@ const { Physics } = await import('../../src/physics/Physics.js');
 const { World } = await import('../../src/worlds/World.js');
 const { WorldManager } = await import('../../src/worlds/WorldManager.js');
 const { WorldPrefetch } = await import('../../src/systems/WorldPrefetch.js');
+const { MapOverlay } = await import('../../src/systems/MapOverlay.js');
 
 /** A world of one floor box. `volatile` opts in to the maze's rebuild-on-every-request rule. */
 function worldClass(id, { volatile = false } = {}) {
@@ -236,7 +238,7 @@ test('one background timeout opens the session breaker: the next background buil
     const next = await wm.build('next');
     const took = performance.now() - t;
     assert.equal(next.builtVersion, 0);
-    assert.ok(took < 100, `a broken session still waited ${took} ms`);
+    assert.ok(took < 750, `a broken session still waited ${took} ms`); // against the real 1500 ms fuse
     assert.deepEqual(asked, ['slow'], 'the breaker did not skip the provider');
     assert.equal(said.length, 1, `a skipped build was said: ${said}`);
     release({ version: 2 }); // the server was slow, not dead
@@ -275,13 +277,13 @@ test('the breaker is half-open after a minute: ONE background build probes again
   const asked = [];
   const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return hang ? never() : Promise.resolve({ version: 6 }); } });
   wm.now = () => clock; // the breaker's clock, owned by the test
-  wm.overlayBackgroundMs = 100; // the same fuse, shortened
+  wm.overlayBackgroundMs = 300; // the same fuse, shortened
   for (const id of ['a', 'b', 'c', 'd', 'd2', 'e', 'f', 'g']) wm.register(worldClass(id));
   await quietly(async () => {
     assert.equal((await wm.build('a')).builtVersion, 0); // hangs: the breaker opens at 0 on this clock
     const t = performance.now();
     await wm.build('b');
-    assert.ok(performance.now() - t < 100, 'an open breaker still waited on the fuse');
+    assert.ok(performance.now() - t < 150, 'an open breaker still waited on the fuse');
     clock = 59_999;
     await wm.build('c');
     assert.deepEqual(asked, ['a'], 'the breaker probed before the minute was up');
@@ -377,7 +379,7 @@ test("a portal forcing an unbuilt destination in the player's frames gets the 15
     assert.deepEqual(asked, ['here', 'there'], 'a crossing inside the minute after a hang asked the provider');
   });
   assert.ok(took >= 1400 && took < 4000, `the crossing took ${took} ms`);
-  assert.ok(tookAfter < 100, `the crossing after the hang waited ${tookAfter} ms`);
+  assert.ok(tookAfter < 750, `the crossing after the hang waited ${tookAfter} ms`); // against the real 1500 ms fuse
   assert.deepEqual(warned, ['[WorldManager] overlay unavailable for "there": no answer within 1500 ms; building without it']);
 });
 
@@ -433,28 +435,123 @@ test("a chain of gateways against a hanging provider pays the fuse once a minute
   const asked = [];
   const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return never(); } });
   wm.now = () => clock; // the breaker's clock, owned by the test
-  wm.overlayBackgroundMs = 100; // the same fuse, shortened
+  wm.overlayBackgroundMs = 300; // the same fuse, shortened - and no shorter, so a loaded box cannot blur a held build into a fused one
   for (const id of ['first', 'second', 'third', 'beside']) wm.register(worldClass(id));
   const pf = new WorldPrefetch({ portals: gates('first', 'second', 'third'), player: { position: { x: 0, y: 0, z: 0 } }, prepare: (id) => wm.build(id).then(() => undefined) });
   const timed = async (id) => { const t = performance.now(); await pf.started.get(id); return performance.now() - t; };
   await quietly(async () => {
     pf.update(); // nearest first
     assert.equal(pf.isPrepared('first'), true);
-    assert.ok((await timed('first')) >= 80, 'the first preparation did not wait on the fuse');
+    assert.ok((await timed('first')) >= 280, 'the first preparation did not wait on the fuse');
     assert.deepEqual(asked, ['first']); // its hang opened the breaker, at 0 on this clock
     pf.update(); // the next gateway on the chain, inside the minute
     assert.equal(pf.isPrepared('second'), true, 'the poller did not move on once the first was prepared');
-    assert.ok((await timed('second')) < 50, 'inside the minute the chain still paid the fuse');
+    assert.ok((await timed('second')) < 150, 'inside the minute the chain still paid the fuse');
     assert.deepEqual(asked, ['first'], 'inside the minute a preparation asked');
     clock = 60_000;
     pf.update(); // the probe
     const beside = pf.request('beside'); // started inside the probe's fuse - a portal claim, say
     assert.equal(pf.isPrepared('third'), true);
-    assert.ok((await timed('beside')) < 50, "a preparation inside the probe's fuse waited on a fuse of its own");
-    assert.ok((await timed('third')) >= 80, 'the probe did not wait on the fuse');
+    assert.ok((await timed('beside')) < 150, "a preparation inside the probe's fuse waited on a fuse of its own");
+    assert.ok((await timed('third')) >= 280, 'the probe did not wait on the fuse');
     assert.deepEqual(asked, ['first', 'third'], 'the chain asked more than once a minute');
     assert.equal(wm.getWorld('third').builtVersion, 0);
     assert.equal(wm.getWorld('beside').builtVersion, 0);
     await beside;
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* The real provider on the seam: MapOverlay.lookup                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A fetch that hangs until it is aborted, or - when `answer()` says so -
+ * resolves a document for the world asked after `delay` ms. Records the
+ * world of every call and the signal each was handed.
+ */
+function overlayFetch({ version = 5, delay = 0 } = {}) {
+  const calls = [];
+  const signals = [];
+  let hang = true;
+  let landed = () => {};
+  const fn = (url, init) => new Promise((resolve, reject) => {
+    const world = new URL(url, 'http://game').searchParams.get('world');
+    calls.push(world);
+    signals.push(init.signal);
+    init.signal.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')));
+    if (hang) return;
+    setTimeout(() => {
+      resolve({ ok: true, status: 200, json: async () => ({ world, schema: 2, version, entries: [], admin: true }) });
+      landed();
+    }, delay);
+  });
+  fn.calls = calls;
+  fn.signals = signals;
+  fn.answer = (yes = true) => { hang = !yes; };
+  fn.landing = () => new Promise((r) => { landed = r; });
+  return fn;
+}
+
+test('a lookup abandoned at its ceiling is said once per world, not per attempt, and is news again after a document for that world was admitted', async () => {
+  const fetchImpl = overlayFetch({ version: 3 });
+  const bus = new EventBus();
+  const overlay = new MapOverlay({ bus, physics: new Physics(bus), fetch: fetchImpl });
+  overlay.lookupAbortMs = 40; // the same ceiling, shortened
+  const warned = await quietly(async (said) => {
+    assert.equal(await overlay.lookup('lost'), null);
+    assert.equal(await overlay.lookup('lost'), null);
+    assert.equal(fetchImpl.calls.length, 2, 'the second lookup did not ask again');
+    assert.deepEqual(said, ['[map-overlay] lookup for "lost" abandoned after 0.04 s'], `two abandoned lookups of one world: ${said}`);
+    fetchImpl.answer();
+    assert.equal((await overlay.lookup('lost')).version, 3, 'the server came back and the document was not admitted');
+    // An admitted document answers every later lookup of its world from the cache, and in the running game only
+    // dispose() empties that - which also forgets what was said. Emptied by hand here, so a FURTHER hang can reach
+    // the ceiling and the case proves the reset was the admit's own.
+    overlay._cache.delete('lost');
+    fetchImpl.answer(false);
+    assert.equal(await overlay.lookup('lost'), null);
+    assert.equal(said.length, 2, `after a document, a further hang of the same world was not news: ${said}`);
+    assert.match(said[1], /^\[map-overlay\] lookup for "lost" abandoned after 0\.04 s$/);
+  });
+  overlay.dispose();
+  assert.equal(warned.length, 2);
+  assert.equal(fetchImpl.signals.filter((s) => s.aborted).length, 3, 'an abandoned lookup left its socket open');
+});
+
+test('composed: WorldManager over the REAL MapOverlay.lookup - a document that lands after the fuse is cached and closes the breaker, and the next build of that world is answered from the cache: 0 ms, no fetch, builtVersion the document\'s', async () => {
+  const fetchImpl = overlayFetch({ version: 5, delay: 600 }); // past the fuse, inside the ceiling
+  fetchImpl.answer();
+  const landing = fetchImpl.landing();
+  const { wm, ctx, bus, physics } = manager({ running: true });
+  const overlay = new MapOverlay({ bus, physics, fetch: fetchImpl });
+  ctx.overlayProvider = (id) => overlay.lookup(id); // main.js's provider, minus the session gate
+  wm.overlayBackgroundMs = 300; // the same fuse, shortened
+  wm.register(worldClass('seam', { volatile: true })); // volatile, so a second build of it is a real rebuild through the seam
+  wm.register(worldClass('bystander'));
+  const warned = await quietly(async () => {
+    let t = performance.now();
+    const seam = await wm.build('seam');
+    const took = performance.now() - t;
+    assert.equal(seam.builtVersion, 0, 'the build did not lose its fuse');
+    assert.ok(took >= 280 && took < 1500, `the first build took ${took} ms`);
+    assert.deepEqual(fetchImpl.calls, ['seam']);
+    // The lost fuse opened the breaker: a background build of another world asks nothing and is held for nothing.
+    t = performance.now();
+    assert.equal((await wm.build('bystander')).builtVersion, 0);
+    assert.ok(performance.now() - t < 150, 'an open breaker still waited on the fuse');
+    assert.deepEqual(fetchImpl.calls, ['seam'], 'an open breaker asked the overlay');
+
+    await landing; // ~600 ms after the first ask: the fetch the manager walked away from answers
+    await sleep(0); // _read -> _admit -> the lookup promise -> the manager's late-document .then
+    t = performance.now();
+    const again = await wm.build('seam');
+    const tookAgain = performance.now() - t;
+    assert.equal(again, seam, 'a volatile rebuild is the same world object');
+    assert.equal(again.builtVersion, 5, 'the rebuild was not answered with the late document (breaker still open, or nothing cached)');
+    assert.ok(tookAgain < 150, `a cached document still cost ${tookAgain} ms`);
+    assert.deepEqual(fetchImpl.calls, ['seam'], 'the cached document was fetched again');
+  });
+  overlay.dispose();
+  assert.deepEqual(warned, ['[WorldManager] overlay unavailable for "seam": no answer within 300 ms; building without it']);
 });

@@ -160,6 +160,14 @@ export class MapOverlay {
 
     /** The world currently carrying overlay changes. */
     this._world = null;
+    /**
+     * The visit currently being applied. Bumped by every `_restore`, so an
+     * `await` that outlives its visit can tell: compare the number it captured
+     * with this one. The WORLD cannot be the token - WorldManager hands out the
+     * same cached object on every visit to a non-volatile world, so after
+     * A -> B -> A the object is the same and only the visit differs.
+     */
+    this._visit = 0;
     /** Undo records for `_world`. @type {Array<() => void>} */
     this._undo = [];
     /** Pickups this system spawned into `_world`. */
@@ -192,14 +200,19 @@ export class MapOverlay {
 
     if (!world?.group || !id) return;
     this._world = world;
+    const visit = this._visit;
 
+    /* ONE rule for every await in this visit: a portal can land while the read
+     * is in flight, and again while the admin report-back is. If it did,
+     * `_restore` has bumped `_visit` - undone this world, handed physics to the
+     * world the player is in now - and this continuation belongs to a visit
+     * that is over. It is dropped whole: not applied, not published, not
+     * sampled. The test is the visit number, never the world object: a return
+     * visit (A -> B -> A) is the SAME object, and a first-visit document that
+     * lands during it would otherwise apply on top of the return visit's -
+     * a pickup placed twice, an older version republished over a newer one. */
     const document = await this._read(id);
-    // A portal can land while the document is in flight. If it did, `_restore`
-    // has already undone this world and the physics belongs to the world the
-    // player is in now: applying this document would move the world they left
-    // and drag colliders in the wrong physics, and its report would overwrite
-    // the world they are in. It is dropped whole.
-    if (this._world !== world) return;
+    if (visit !== this._visit) return;
     const admin = document?.admin === true;
     const report = document
       ? await this._applyDocument(id, world, document, admin)
@@ -207,9 +220,9 @@ export class MapOverlay {
 
     /* The ground is sampled AFTER the overlay is applied, so a moved building's
      * colliders are where the editor will draw them. Admin, or the dev switch;
-     * and only if this is still the world we are in - the admin report-back
-     * above is another place a portal can land. The job carries THIS report. */
-    if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin, report);
+     * and only for the visit that asked - the rule above. The job carries
+     * THIS report. */
+    if ((admin || this.forceLayout) && visit === this._visit) this._startSampling(id, world, admin, report);
   }
 
   /** Apply the entries, publish, and report; returns the report. */
@@ -239,8 +252,9 @@ export class MapOverlay {
     return report;
   }
 
-  /** Undo everything applied to the world this system last touched. */
+  /** Undo everything applied to the world this system last touched, and end its visit. */
   _restore() {
+    this._visit++;
     for (let i = this._undo.length - 1; i >= 0; i--) {
       try {
         this._undo[i]();

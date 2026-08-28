@@ -153,11 +153,11 @@ function solid(physics, world) {
  * solid, and the entered world's own colliders are re-added. `enter` skips
  * this, which is exactly why the tests below could not be written with it.
  */
-async function activate({ bus, physics, system }, world) {
+async function activate({ bus, physics, system }, world, { settle = true } = {}) {
   physics.clear();
   for (const c of world.colliders) physics.add(c);
   bus.emit('world:changed', { id: world.id, world });
-  await system.applying;
+  if (settle) await system.applying;   // `settle: false` when the read is being held
 }
 
 /** Where each registered collider sits in `world.colliders` (-1: not this world's). */
@@ -419,6 +419,67 @@ test('a document that arrives after the player has portalled on is dropped, not 
 
   assert.deepEqual(station.crate.position.toArray(), authored.toArray(), 'the stale document moved the crate in the world the player left');
   assert.equal(rig.system.report.world, 'medieval', 'the stale document republished over the world the player is in');
+});
+
+test('a document from a FIRST visit that lands during a return visit is dropped: the visit, not the world object, is what it belongs to', async () => {
+  // WorldManager.build hands out the same cached world object on every visit,
+  // so "is this still the world I was asked about" cannot tell a return visit
+  // from the visit that asked. The station's FIRST GET is held; the player
+  // portals to the medieval world and straight back, the second GET answers
+  // at once, and then the first lands.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let stationGets = 0;
+  const overlays = { station: doc([moveCrate, placeAmmo]), medieval: doc([], { world: 'medieval' }) };
+  const rig = setup(async (worldId) => {
+    if (worldId === 'station' && ++stationGets === 1) await held;
+    return overlays[worldId];
+  });
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+
+  await activate(rig, station, { settle: false });   // GET #1 is held in flight
+  await activate(rig, medieval);
+  await activate(rig, station);   // GET #2 answers at once: the move and the pickup are in
+  const applied = () => rig.bus.emitted.filter((e) => e.name === 'map-overlay:applied' && e.payload.world === 'station').length;
+  assert.equal(applied(), 1, 'precondition: the return visit applied once');
+
+  release();
+  await new Promise((r) => setTimeout(r, 0)); // GET #1's continuation runs to its end
+
+  assert.equal(rig.loot.spawned.filter((p) => p.active).length, 1, 'the stale document placed the pickup a second time');
+  assert.equal(applied(), 1, 'the stale document applied and published on top of the return visit');
+  assert.deepEqual(registeredAs(rig.physics, station), [0, 1]);
+});
+
+test('a slow first read that answers an OLDER version than the return visit applied does not win', async () => {
+  // The admin saved v2 between the two reads: v1 (crate to 40,3,-20) answers
+  // late, v2 (crate to -50,1,8) answered the return visit at once.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let stationGets = 0;
+  const v1 = doc([moveCrate], { version: 1 });
+  const v2 = doc([{ ...moveCrate, position: { x: -50, y: 1, z: 8 } }], { version: 2 });
+  const rig = setup(async (worldId) => {
+    if (worldId !== 'station') return doc([], { world: worldId });
+    if (++stationGets === 1) { await held; return v1; }
+    return v2;
+  });
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+  const [crateCollider] = station.colliders;
+
+  await activate(rig, station, { settle: false });   // GET #1 is held in flight
+  await activate(rig, medieval);
+  await activate(rig, station);
+  assert.equal(rig.system.report.version, 2, 'precondition: the return visit applied v2');
+
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(rig.system.report.version, 2, 'the stale v1 republished over v2');
+  assert.deepEqual(station.crate.position.toArray(), [-50, 1, 8]);
+  assert.deepEqual(crateCollider.center.toArray().map((n) => Math.round(n * 1000) / 1000), [-50, 1, 8]);
 });
 
 test('leaving a world restores what the overlay moved in it', async () => {

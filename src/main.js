@@ -311,7 +311,7 @@ const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
  * needs nothing else, exactly as WaterVolumes does; a world with no overlay, or
  * a player who is not signed in, is the world every player had before it
  * existed. It never writes world source -- see src/systems/MapOverlay.js. */
-const mapOverlay = new MapOverlay({ bus, physics, loot });
+const mapOverlay = new MapOverlay({ bus, physics, loot, engine, forceLayout: overrides.layout === 'sample' });
 // Permanent purchasable skins. Bought at a merchant, worn from the F2 (character)
 // or F10 (mount) menu, and round-tripped through both save paths so a
 // limited-edition unlock sticks.

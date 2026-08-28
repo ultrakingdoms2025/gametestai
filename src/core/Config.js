@@ -289,5 +289,12 @@ export function applyUrlOverrides() {
      * instruments, whose baselines were recorded at one tier and must not move
      * when the runner's GPU string changes what detection would pick. */
     quality: params.get('quality') || null,
+    /* `sample`: run the map editor's ground sampler without an admin session
+     * and discard the report. For frame-gaps, which has no session and would
+     * otherwise measure a run in which the sampler never starts
+     * (systems/MapOverlay.js). One of the dev-switch family: honoured only
+     * beside `dev=1`, so a player's URL cannot start the sampler. frame-gaps
+     * carries `dev=1` on every URL it builds. */
+    layout: params.get('dev') === '1' ? params.get('layout') || null : null,
   };
 }

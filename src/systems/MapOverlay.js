@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { ITEMS } from './ItemDefs.js';
 import { consumableItemFor } from './Marketplace.js';
+import { COLLISION_LAYER } from '../physics/Physics.js';
+import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
 
 /**
  * The admin map editor's placement overlay, applied to a world the game built.
@@ -73,6 +75,17 @@ const _delta = new THREE.Vector3();
 const _box = new THREE.Box3();
 const _shift = new THREE.Matrix4();
 
+/** The sampler's ray. Two scratch vectors, reused for every cast of every cell. */
+const _rayOrigin = new THREE.Vector3();
+const _rayDown = new THREE.Vector3();
+
+/**
+ * How much of a frame the ground sampler may take (spec §7). A clock, not a
+ * ray count: a cell in a dense district costs more than one over open floor,
+ * and the frame does not care which it was.
+ */
+const SAMPLE_BUDGET_MS = 2;
+
 /**
  * Resolve a marketplace item to the inventory stack a placed pickup holds.
  *
@@ -109,22 +122,29 @@ export function grantForPlacement(item) {
 
 export class MapOverlay {
   /**
-   * @param {{
-   *   bus: import('../core/EventBus.js').EventBus,
-   *   physics?: import('../physics/Physics.js').Physics,
-   *   loot?: import('./Loot.js').LootSystem,
-   *   fetch?: typeof fetch,
-   *   endpoint?: string,
-   *   reportEndpoint?: string,
-   * }} ctx
+   * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
+   *   loot?: import('./Loot.js').LootSystem, engine?: { onFrameUpdate(fn: (dt:number) => void): () => void },
+   *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string }} ctx
+   *   `engine` ticks the ground sampler; `forceLayout` (the `?layout=sample`
+   *   dev switch) samples without an admin session and never posts; `now` is
+   *   the sampler's clock, injectable so a test can own the frame.
    */
-  constructor({ bus, physics, loot, fetch: fetchImpl, endpoint, reportEndpoint } = {}) {
+  constructor({ bus, physics, loot, engine, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.loot = loot ?? null;
+    this.forceLayout = forceLayout === true;
     this.endpoint = endpoint ?? READ_ENDPOINT;
     this.reportEndpoint = reportEndpoint ?? REPORT_ENDPOINT;
     this._fetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    this._now = typeof now === 'function' ? now : () => performance.now();
+
+    /** True once the CURRENT world's ground grid has been sampled; reset on `world:changed`. */
+    this.layoutSampled = false;
+    /** Resolves with the `map-overlay:layout` payload, or null if the world was left first. */
+    this.sampling = Promise.resolve(null);
+    /** The in-flight sampling job, or null. @see update */
+    this._job = null;
 
     /**
      * The promise for the world change currently being applied, or null.
@@ -154,6 +174,10 @@ export class MapOverlay {
         })
       );
     }
+    /* Once, for the life of the system - not per world. Idle when there is
+     * no job; frame-gaps attributes it as `u:mapOverlay` because it is named
+     * `update`. Not called while the engine is paused. */
+    if (engine?.onFrameUpdate) this._offs.push(engine.onFrameUpdate((dt) => this.update(dt)));
   }
 
   /* ------------------------------------------------------------------ */
@@ -170,11 +194,21 @@ export class MapOverlay {
     this._world = world;
 
     const document = await this._read(id);
-    if (!document) {
-      this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
-      return;
-    }
+    const admin = document?.admin === true;
+    const report = document
+      ? await this._applyDocument(id, world, document, admin)
+      : this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
 
+    /* The ground is sampled AFTER the overlay is applied, so a moved building's
+     * colliders are where the editor will draw them. Admin, or the dev switch;
+     * and only if this is still the world we are in - both awaits above are
+     * places a portal can land. The job carries THIS report: a document for the
+     * world before can land after a portal and republish over `this.report`. */
+    if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin, report);
+  }
+
+  /** Apply the entries, publish, and report; returns the report. */
+  async _applyDocument(id, world, document, admin) {
     const entries = Array.isArray(document.entries) ? document.entries : [];
     const applied = [];
     const unresolved = [];
@@ -192,11 +226,12 @@ export class MapOverlay {
       }
     }
 
-    const objects = document.admin ? this._catalogue(world) : [];
+    const objects = admin ? this._catalogue(world) : [];
     const report = { world: id, version: Number(document.version) || 0, applied, unresolved, objects };
     this._publish(report);
 
-    if (document.admin) await this._reportBack(report);
+    if (admin) await this._reportBack(report, world);
+    return report;
   }
 
   /** Undo everything applied to the world this system last touched. */
@@ -218,6 +253,9 @@ export class MapOverlay {
       }
     }
     this._placed.length = 0;
+    this._cancelSampling();
+    this.layoutSampled = false;
+    this.sampling = Promise.resolve(null);
     this._world = null;
   }
 
@@ -245,27 +283,157 @@ export class MapOverlay {
   _publish(report) {
     this.report = report;
     this.bus?.emit?.('map-overlay:applied', report);
+    return report;
   }
 
-  async _reportBack(report) {
+  async _reportBack(report, world, ground = null) {
     if (!this._fetch) return;
     try {
-      await this._fetch(this.reportEndpoint, {
+      const body = {
+        world: report.world,
+        appliedVersion: report.version,
+        objects: report.objects,
+        applied: report.applied,
+        unresolved: report.unresolved,
+        // The layout fields every report carries, and - on the second
+        // report of a visit only - the sampled ground.
+        ...this._layoutFields(world),
+        ...(ground ? { ground } : {}),
+      };
+      const res = await this._fetch(this.reportEndpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          world: report.world,
-          appliedVersion: report.version,
-          objects: report.objects,
-          applied: report.applied,
-          unresolved: report.unresolved,
-        }),
+        body: JSON.stringify(body),
       });
+      // A 413 over the site's layout cap, or a 400, is a refusal, not a throw:
+      // said once (spec §10), never retried - the next visit reports afresh.
+      if (!res?.ok) {
+        console.warn('[map-overlay] the editor refused the report:', res?.status);
+        return;
+      }
+      // A 200 stores the catalogue whatever became of the layout; the site
+      // answers `layout: 'stored' | 'kept-prior' | 'none'` with its reasons,
+      // and a map that did not land is said here, once per report, because
+      // this console is the one an admin is looking at. An older site with no
+      // `layout` field, or a body that does not parse, says nothing:
+      // compatibility, not a fault.
+      if (!('layoutSchema' in body)) return;
+      let answer = null;
+      try {
+        answer = typeof res.json === 'function' ? await res.json() : null;
+      } catch {
+        return;
+      }
+      if (answer && typeof answer === 'object' && 'layout' in answer && answer.layout !== 'stored') {
+        const reasons = Array.isArray(answer.warnings) ? answer.warnings : [];
+        console.warn('[map-overlay] layout ' + answer.layout + ': ' + reasons.join('; '));
+      }
     } catch (err) {
       // The editor loses one refresh of its object picker. Nothing in the game
       // depends on this landing.
       console.warn('[map-overlay] could not report to the editor:', err?.message ?? err);
     }
+  }
+
+  /** `world.bounds` as plain JSON and `world.minimapShapes` as Minimap.js draws them. */
+  _layoutFields(world) {
+    const b = world?.bounds;
+    const six = b?.min && b?.max ? [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z] : null;
+    // An empty Box3 is ±Infinity, which JSON writes as null - and to the server
+    // a present `bounds` means "replace". So it is omitted unless all six are numbers.
+    const bounds = six?.every(Number.isFinite)
+      ? { min: { x: six[0], y: six[1], z: six[2] }, max: { x: six[3], y: six[4], z: six[5] } }
+      : null;
+    return {
+      layoutSchema: LAYOUT_SCHEMA,
+      ...(bounds ? { bounds } : {}),
+      shapes: Array.isArray(world?.minimapShapes) ? world.minimapShapes : [],
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The ground grid                                                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Start a job for `world`; `post`: to the editor (admin) or only the bus
+   * (dev switch); `report`: what the layout report will carry alongside the
+   * grid - the one published for THIS world, whatever is published meanwhile.
+   */
+  _startSampling(id, world, post, report) {
+    this._cancelSampling();
+    // The same bounds the report carries, so a world whose bounds the report
+    // omits (a NaN height, an empty Box3) samples nothing: every cell would be
+    // NO_SAMPLE, and posting that would replace the last good grid.
+    const { bounds } = this._layoutFields(world);
+    const plan = this.physics && bounds ? planGrid(bounds) : null;
+    if (!plan) {
+      console.warn(`[map-overlay] ground not sampled for ${id}: ${this.physics ? 'bounds are not usable' : 'no physics'}`);
+      return;
+    }
+    const job = createJob(plan, (x, yTop, z, maxDrop) => this._castDown(x, yTop, z, maxDrop), {
+      layers: MAX_LAYERS,
+      // The dome and a 260 m planet are both above groundHeight's 200 m default.
+      topY: bounds.max.y + 10,
+      floorY: bounds.min.y - 20,
+    });
+    job.world = id;
+    job.target = world;
+    job.report = report;
+    job.post = post;
+    job.startedAt = this._now();
+    this.sampling = new Promise((resolve) => { job.resolve = resolve; });
+    this._job = job;
+  }
+
+  /** The one line that touches Physics: the first WORLD surface below (x, yTop, z). */
+  _castDown(x, yTop, z, maxDrop) {
+    const hit = this.physics.raycast(
+      _rayOrigin.set(x, yTop, z), _rayDown.set(0, -1, 0), maxDrop, COLLISION_LAYER.WORLD
+    );
+    return hit ? hit.point.y : null;
+  }
+
+  /**
+   * Per rendered frame. Idle unless a job is in flight; then 2 ms of it - or,
+   * on the frame AFTER the last cell, the finish. `result()` is a ~4 ms one-off
+   * at station size and the POST's stringify another few, so they take a frame
+   * of their own rather than landing on top of the sampling that completed.
+   */
+  update() {
+    const job = this._job;
+    if (!job) return;
+    try {
+      if (job.done) this._finishSampling(job);
+      else if (job.run(SAMPLE_BUDGET_MS, this._now)) job.finishedAt = this._now();
+    } catch (err) {
+      // A cast that throws leaves the job resumable, so without this it would
+      // throw again next frame, and every frame, one cell at a time, for ever.
+      // Dropped instead; the exception never reaches the engine's frame loop.
+      this._job = null;
+      console.warn('[map-overlay] ground sampling abandoned:', err?.message ?? err);
+      job.resolve?.(null);
+    }
+  }
+
+  _finishSampling(job) {
+    const ground = job.result();
+    this._job = null;
+    const summary = {
+      world: job.world, cells: job.cells, layers: job.layers, sampledMs: job.finishedAt - job.startedAt,
+    };
+    this.layoutSampled = true;
+    this.bus?.emit?.('map-overlay:layout', summary);
+    const posted = job.post ? this._reportBack(job.report, job.target, ground) : Promise.resolve();
+    posted.then(() => job.resolve?.(summary));
+  }
+
+  /** Drop the in-flight job, if any. Its promise resolves null; nothing is posted. */
+  _cancelSampling() {
+    const job = this._job;
+    if (!job) return;
+    this._job = null;
+    job.resolve?.(null);
   }
 
   /* ------------------------------------------------------------------ */

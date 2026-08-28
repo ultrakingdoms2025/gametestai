@@ -178,7 +178,7 @@ function drawMark(ctx: CanvasRenderingContext2D, view: MapView, m: MapMark, isSe
 
 type Gesture =
   | { mode: 'pan'; lastX: number; lastY: number }
-  | { mode: 'drag'; target: NonNullable<Selected>; startX: number; startY: number; moved: boolean }
+  | { mode: 'drag'; target: NonNullable<Selected>; startX: number; startY: number; lastX: number; lastY: number; moved: boolean }
   | { mode: 'click'; hit: HitCandidate | null; startX: number; startY: number; lastX: number; lastY: number; moved: boolean };
 
 /** The CSS box and DPR the canvas bitmap was last fitted to. */
@@ -446,7 +446,7 @@ export default function MapCanvas(props: MapCanvasProps) {
     }
     const hit = hitTest(view, marks, sx, sy, HIT_TOL_PX);
     if (hit && hit.key === selectionKey(selected)) {
-      gestureRef.current = { mode: 'drag', target: selectionFromKey(hit.key), startX: sx, startY: sy, moved: false };
+      gestureRef.current = { mode: 'drag', target: selectionFromKey(hit.key), startX: sx, startY: sy, lastX: sx, lastY: sy, moved: false };
       return;
     }
     gestureRef.current = { mode: 'click', hit, startX: sx, startY: sy, lastX: sx, lastY: sy, moved: false };
@@ -476,6 +476,8 @@ export default function MapCanvas(props: MapCanvasProps) {
     if (g.mode === 'drag') {
       if (!g.moved && Math.hypot(sx - g.startX, sy - g.startY) < DRAG_THRESHOLD_PX) return;
       g.moved = true;
+      g.lastX = sx;
+      g.lastY = sy;
       const p = toWorld(view, sx, sy);
       onDrag(g.target, p.x, p.z, 'move');
       return;
@@ -515,17 +517,19 @@ export default function MapCanvas(props: MapCanvasProps) {
 
   /* The browser took the pointer away (a touch became a scroll, a window
    * lost focus mid-press). That is not a click: nothing is selected, nothing
-   * is placed. A drag in progress is ended where the pointer last was, so
-   * the parent's drag bookkeeping is released. */
-  function onPointerCancel(e: ReactPointerEvent<HTMLCanvasElement>) {
+   * is placed. A drag in progress is ended where it was LAST REPORTED, so
+   * the parent's drag bookkeeping is released at the point it already
+   * applied: a cancel event's own coordinates are not a place the admin
+   * chose — a touch that turned into a scroll carries wherever the scroll
+   * reached. */
+  function onPointerCancel() {
     const view = viewRef.current;
     const g = gestureRef.current;
     gestureRef.current = null;
     setPanning(false);
     if (!view || !g) return;
     if (g.mode === 'drag' && g.moved) {
-      const { sx, sy } = local(e);
-      const p = toWorld(view, sx, sy);
+      const p = toWorld(view, g.lastX, g.lastY);
       onDrag(g.target, p.x, p.z, 'end');
     }
   }

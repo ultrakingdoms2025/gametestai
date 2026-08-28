@@ -305,6 +305,28 @@ function boundsRule(pos: Vec3, layout: WorldLayout, out: Conflict[]): boolean {
   return false;
 }
 
+/** The three things the ground rule can say about a position. */
+export type GroundVerdict = Extract<ConflictCode, 'underground' | 'floating' | 'no-ground'>;
+
+/** The one comparison of a bottom against a ground, in whole millimetres (see `mm`); null when it rests on it. */
+function groundCompare(g: number, y: number): Exclude<GroundVerdict, 'no-ground'> | null {
+  if (mm(g - y) > UNDERGROUND_MM) return 'underground';
+  if (mm(y - g) > FLOATING_MM) return 'floating';
+  return null;
+}
+
+/**
+ * The ground rule's verdict for a position, or null when nothing is wrong — exported so the editor's panel
+ * can say what the save route WOULD say about a typed Y before it is committed. It is the same
+ * `groundCompare` the rule itself makes, not a second copy: the panel's first version re-derived the rule
+ * as `y < g − 0.25` in floats, and over a ground of 0.08 m that is −0.17000000000000004, so a typed −0.17
+ * read as underground in the panel while the route saved it with no conflict at all.
+ */
+export function groundVerdict(pos: Vec3, ground: DecodedGround): GroundVerdict | null {
+  const g = groundAt(ground, pos.x, pos.z, pos.y);
+  return g === null ? 'no-ground' : groundCompare(g, pos.y);
+}
+
 /**
  * The bottom of a point entry is its `position.y`, for a move and a place alike (stage 1 has no per-item
  * height). `groundAt` picks the layer at or below that y per corner, so under a dome this measures against
@@ -315,9 +337,12 @@ function groundRule(pos: Vec3, ground: DecodedGround, out: Conflict[]): void {
   const g = groundAt(ground, pos.x, pos.z, pos.y);
   if (g === null) {
     out.push(warn('no-ground', `no surface under (${fmt(pos.x)}, ${fmt(pos.z)}) — water, a hole, or off the sampled grid`));
-  } else if (mm(g - pos.y) > UNDERGROUND_MM) {
+    return;
+  }
+  const verdict = groundCompare(g, pos.y);
+  if (verdict === 'underground') {
     out.push(warn('underground', `bottom at y = ${fmt(pos.y)} is ${fmt(g - pos.y)} m under the ground at ${fmt(g)}`));
-  } else if (mm(pos.y - g) > FLOATING_MM) {
+  } else if (verdict === 'floating') {
     out.push(warn('floating', `bottom at y = ${fmt(pos.y)} is ${fmt(pos.y - g)} m above the ground at ${fmt(g)}`));
   }
 }

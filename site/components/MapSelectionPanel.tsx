@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react';
 import { groundAt, layersAt, type DecodedGround } from '@/lib/mapLayout';
-import { FLOATING_TOLERANCE, UNDERGROUND_TOLERANCE, type Conflict } from '@/lib/mapConflicts';
+import type { Conflict } from '@/lib/mapConflicts';
 import type { CatalogueObject } from '@/lib/mapOverlay';
-import type { PlaceEntry, Vec3 } from '@/lib/mapOverlaySchema';
+import { round, type PlaceEntry, type Vec3 } from '@/lib/mapOverlaySchema';
 import {
   degToRad,
   fmt,
+  groundStatus,
   radToDeg,
   selectedEntry,
   selectedPosition,
@@ -21,7 +22,7 @@ import { coord, dim, errorColour, input, label, okColour, subtle, warnColour } f
 
 /**
  * The selection panel: the keyboard path into the map, and the typed path
- * for a move.
+ * for a move. It renders; it decides nothing.
  *
  * ── Why a `<select>` and not only the canvas ───────────────────────────────
  *
@@ -35,7 +36,18 @@ import { coord, dim, errorColour, input, label, okColour, subtle, warnColour } f
  * A drag on the map changes the entry underneath this panel; the fields
  * follow it so what is typed and what is drawn never disagree. The sync key
  * includes the position so a drag updates the boxes, and the selection so
- * picking another object clears them.
+ * picking another object clears them. The numbers are rounded to the three
+ * places the schema keeps on save, so a drag's raw float never shows digits
+ * that will not be written.
+ *
+ * ── The ground readout is the route's verdict ──────────────────────────────
+ *
+ * `✓ on surface` / `⚠ underground|floating|no-ground` comes from
+ * `groundStatus`, which is `mapConflicts`' own millimetre comparison. This
+ * panel's first version re-derived the rule in floats and disagreed with the
+ * save route at the boundary. A blank or non-numeric coordinate has no
+ * verdict (`—`) and cannot be committed: `Number('')` is 0, and a blank Y
+ * used to move an object to the origin plane.
  */
 
 export interface MapSelectionPanelProps {
@@ -64,10 +76,14 @@ function groupOf(name: string): string {
   return i > 0 ? name.slice(0, i) : 'other';
 }
 
-type GroundStatus = 'ok' | 'underground' | 'floating' | 'no-ground';
+/** A coordinate field that can be committed: not blank (`Number('')` is 0) and a finite number. */
+function isCoord(v: string): boolean {
+  return v.trim() !== '' && Number.isFinite(Number(v));
+}
 
 export default function MapSelectionPanel(props: MapSelectionPanelProps) {
   const { objects, entries, selected, ground, conflicts, disabled, onSelect, onCommit, onReset, onRemoveEntry } = props;
+  const listId = useId();
 
   const objectNames = useMemo(() => new Set(objects.map((o) => o.name)), [objects]);
   const groups = useMemo(() => {
@@ -99,46 +115,57 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
   const syncKey = `${selectionKey(selected) ?? ''}|${current?.x}|${current?.y}|${current?.z}|${rotation}`;
   useEffect(() => {
     setForm({
-      x: current ? String(current.x) : '0',
-      y: current ? String(current.y) : '0',
-      z: current ? String(current.z) : '0',
+      x: current ? String(round(current.x, 3)) : '0',
+      y: current ? String(round(current.y, 3)) : '0',
+      z: current ? String(round(current.z, 3)) : '0',
       yaw: rotation !== undefined ? String(Math.round(radToDeg(rotation) * 10) / 10) : '',
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncKey]);
 
+  /* A typed name the game has not reported becomes an entry the moment it
+   * has a move: the dropdown lists such moves under "moves by name" as
+   * `e:<key>`, so an `o:<name>` selection would show as nothing chosen. This
+   * is the mirror of the pending list's `selectRow`, which normalises a move
+   * of a REPORTED target to the object. */
+  useEffect(() => {
+    if (selected?.kind === 'object' && entry && !objectNames.has(selected.name)) onSelect({ kind: 'entry', key: entry._key });
+  }, [selected, entry, objectNames, onSelect]);
+
   function setAxis(axis: 'x' | 'z', value: string) {
     setForm((f) => {
       const next = { ...f, [axis]: value };
-      if (snap && current) {
+      if (snap && current && isCoord(next.x) && isCoord(next.z)) {
         const y = snappedY(ground, current, num(next.x), num(next.z));
-        if (y !== null) next.y = String(Math.round(y * 1000) / 1000);
+        if (y !== null) next.y = String(round(y, 3));
       }
       return next;
     });
   }
 
+  /* An object keeps its authored sink or lift on the chosen surface, as a
+   * drag does through `snappedY`; a placement or a free move sits on it. */
+  function pickLayer(h: number) {
+    let y = h;
+    if (selected?.kind === 'object' && current) {
+      const here = groundAt(ground, current.x, current.z, current.y);
+      if (here !== null) y = h + (current.y - here);
+    }
+    setForm((f) => ({ ...f, y: String(round(y, 3)) }));
+  }
+
+  const valid = [form.x, form.y, form.z].every(isCoord);
   const fx = num(form.x);
   const fy = num(form.y);
   const fz = num(form.z);
-  const groundHere = selected ? groundAt(ground, fx, fz, fy) : null;
-  const layers = selected ? layersAt(ground, fx, fz) : [];
+  const groundHere = selected && valid ? groundAt(ground, fx, fz, fy) : null;
+  const layers = selected && valid ? layersAt(ground, fx, fz) : [];
   /* From the TYPED Y, not the committed entry, so the warning shows before
-   * Move here; the tolerances are chunk 3's, so this line and the save route
-   * cannot disagree about where "on surface" ends. */
-  const typedStatus: GroundStatus | null =
-    !selected || !ground
-      ? null
-      : groundHere === null
-        ? 'no-ground'
-        : fy < groundHere - UNDERGROUND_TOLERANCE
-          ? 'underground'
-          : fy > groundHere + FLOATING_TOLERANCE
-            ? 'floating'
-            : 'ok';
+   * Move here; `groundStatus` is the save route's own verdict (see the header). */
+  const typedStatus = selected && valid ? groundStatus(ground, fx, fz, fy) : null;
 
   function commit() {
-    if (!selected) return;
+    if (!selected || !valid) return;
     const yaw = form.yaw.trim() === '' ? undefined : degToRad(num(form.yaw));
     onCommit(selected, { x: fx, y: fy, z: fz }, yaw);
   }
@@ -192,7 +219,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
         <input
           style={input}
           data-e2e="object-typed"
-          list="map-editor-objects"
+          list={listId}
           value={typed}
           disabled={disabled}
           placeholder="e.g. barn.main"
@@ -200,7 +227,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
           onKeyDown={onTypedKey}
         />
       </label>
-      <datalist id="map-editor-objects">
+      <datalist id={listId}>
         {objects.map((o) => (
           <option key={o.name} value={o.name} />
         ))}
@@ -233,7 +260,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
       </div>
 
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#cfe6f2' }}>
-        <input type="checkbox" data-e2e="snap" checked={snap} onChange={(e) => setSnap(e.target.checked)} />
+        <input type="checkbox" data-e2e="snap" checked={snap} disabled={disabled} onChange={(e) => setSnap(e.target.checked)} />
         snap Y to ground (keeps the object's authored sink or lift)
       </label>
 
@@ -247,7 +274,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
             disabled={disabled}
             onChange={(e) => {
               const h = Number(e.target.value);
-              if (Number.isFinite(h)) setForm((f) => ({ ...f, y: String(h) }));
+              if (Number.isFinite(h)) pickLayer(h);
             }}
           >
             <option value="">— choose a surface for Y —</option>
@@ -263,10 +290,14 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
           ? 'Pick an object on the map or in the list.'
           : !ground
             ? 'No ground grid for this world yet.'
-            : groundHere === null
-              ? 'No ground sample here.'
-              : `Ground here: ${fmt(groundHere)} m`}
-        {typedStatus ? (
+            : !valid
+              ? 'Ground here:'
+              : groundHere === null
+                ? 'No ground sample here.'
+                : `Ground here: ${fmt(groundHere)} m`}
+        {selected && ground && !valid ? (
+          <span data-e2e="sel-ground-status">  —</span>
+        ) : typedStatus ? (
           <span data-e2e="sel-ground-status" style={{ color: typedStatus === 'ok' ? okColour : warnColour }}>
             {typedStatus === 'ok' ? '  ✓ on surface' : `  ⚠ ${typedStatus}`}
           </span>
@@ -274,17 +305,20 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
       </div>
 
       {conflicts.length ? (
-        <ul data-e2e="sel-conflicts" style={{ margin: 0, paddingLeft: 18, fontSize: 12, display: 'grid', gap: 3 }}>
-          {conflicts.map((c, i) => (
-            <li key={`${c.code}-${i}`} style={{ color: c.level === 'error' ? errorColour : warnColour }}>
-              {c.level === 'error' ? '⛔' : '⚠'} {c.code} — {c.detail}{c.other ? ` (${c.other})` : ''}
-            </li>
-          ))}
-        </ul>
+        <div style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 11, color: subtle }}>Pending entry:</span>
+          <ul data-e2e="sel-conflicts" style={{ margin: 0, paddingLeft: 18, fontSize: 12, display: 'grid', gap: 3 }}>
+            {conflicts.map((c, i) => (
+              <li key={`${c.code}-${i}`} style={{ color: c.level === 'error' ? errorColour : warnColour }}>
+                {c.level === 'error' ? '⛔' : '⚠'} {c.code} — {c.detail}{c.other ? ` (${c.other})` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn btn-primary btn-sm" type="button" data-e2e="move-here" disabled={!selected || disabled} onClick={commit}>
+        <button className="btn btn-primary btn-sm" type="button" data-e2e="move-here" disabled={!selected || disabled || !valid} onClick={commit}>
           Move here
         </button>
         {selected?.kind === 'object' && entry ? (

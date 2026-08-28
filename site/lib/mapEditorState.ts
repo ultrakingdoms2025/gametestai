@@ -1,5 +1,5 @@
 import { groundAt, type DecodedGround } from './mapLayout';
-import type { Conflict } from './mapConflicts';
+import { groundVerdict, type Conflict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
 import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
 
@@ -23,6 +23,23 @@ import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './m
  * sink or lift. A crate dragged across the station hub stays on the deck
  * rather than jumping onto the dome, and a rock authored half-buried stays
  * half-buried instead of popping up and then tripping `underground`.
+ *
+ * ── The last move wins ─────────────────────────────────────────────────────
+ *
+ * A saved document can carry two moves of one object (the normaliser
+ * de-duplicates ids, not targets). The game applies a document in order, so
+ * the LAST is where the object ends up, and `mapConflicts.prepare` already
+ * treats it as the occupant. Everything here that resolves a name to its
+ * move — `moveEntryFor`, and through it the selection, the panel's fields, a
+ * drag's upsert and the `moved` mark — reads the last one too, so the map
+ * never draws a position the panel would not edit.
+ *
+ * ── The ground readout is the route's verdict ──────────────────────────────
+ *
+ * `groundStatus` is `mapConflicts.groundVerdict` with `null` for "nothing
+ * wrong", so what the panel says about a typed Y before Move here is what the
+ * save route will say after it — the same millimetre comparison, not a float
+ * re-derivation that disagreed with it at the boundary.
  */
 
 export type Selected = { kind: 'object'; name: string } | { kind: 'entry'; key: string } | null;
@@ -46,6 +63,18 @@ export function snappedY(ground: DecodedGround | null, from: Vec3, toX: number, 
   const here = groundAt(ground, from.x, from.z, from.y);
   if (there === null || here === null) return null;
   return there + (from.y - here);
+}
+
+export type GroundStatus = 'ok' | 'underground' | 'floating' | 'no-ground';
+
+/**
+ * What the save route's ground rule would say about a bottom at `y` over
+ * (x, z) — for the panel's readout of a TYPED position before it is
+ * committed. Null with no grid: there is nothing to say.
+ */
+export function groundStatus(ground: DecodedGround | null, x: number, z: number, y: number): GroundStatus | null {
+  if (!ground) return null;
+  return groundVerdict({ x, y, z }, ground) ?? 'ok';
 }
 
 export function layoutAgeText(reportedAt: string | null, now: Date): string {
@@ -103,14 +132,20 @@ export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingR
   });
 }
 
+/** The move that WINS for a name: the last in the document (see the header). */
 export function moveEntryFor(entries: Draft[], name: string): (Draft & MoveEntry) | undefined {
-  return entries.find((e): e is Draft & MoveEntry => e.kind === 'move' && e.target.name === name);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.kind === 'move' && e.target.name === name) return e;
+  }
+  return undefined;
 }
 
 /**
- * One move entry per target name. Editing an existing one updates it in
- * place (same `_key`, same `id`, same position in the document); a new one
- * is appended. `mint` supplies the key/id so the function stays pure.
+ * One move entry per target name. Editing an existing one — the last for
+ * that name, the one that wins — updates it in place (same `_key`, same
+ * `id`, same position in the document); a new one is appended. `mint`
+ * supplies the key/id so the function stays pure.
  *
  * `rotationY: undefined` CLEARS an existing rotation — the argument is the
  * whole new transform, not a patch. A caller that means "keep it" passes

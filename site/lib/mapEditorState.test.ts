@@ -10,7 +10,12 @@
  * `groundAt`. Row text is asserted character-for-character because the e2e
  * harness in chunk 7 greps for it. The canvas's marks (`hitCandidates`) and
  * hover text (`hoverInfoFor`) are asserted as whole values, so which marks a
- * click can reach is pinned here and not in an untestable component.
+ * click can reach is pinned here and not in an untestable component. The
+ * panel's ground readout (`groundStatus`) is pinned at the millimetre on the
+ * 0.08 m ground that exposed a float comparison, and the last-move rule is
+ * asserted across `moveEntryFor`, `selectedEntry`, `selectedPosition`,
+ * `hitCandidates` and `upsertMoveFor` together, so the map, the panel and a
+ * drag cannot disagree about which of two moves for one name is the one.
  */
 import { describe, expect, it } from 'vitest';
 import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround } from './mapLayout';
@@ -19,6 +24,7 @@ import {
   NO_LAYOUT_TEXT,
   degToRad,
   fmt,
+  groundStatus,
   hitCandidates,
   hoverInfoFor,
   layoutAgeText,
@@ -218,6 +224,48 @@ describe('selection helpers', () => {
     expect(selectedPosition(objects, [], { kind: 'object', name: 'o1' })).toEqual({ x: 1, y: 2, z: 3 });
     expect(selectedPosition(objects, entries, { kind: 'entry', key: 'p' })).toEqual({ x: 4, y: 5, z: 6 });
     expect(selectedPosition(objects, entries, { kind: 'object', name: 'unknown' })).toBeNull();
+  });
+  it('two moves for one name: the LAST is the one, everywhere — the game applies a document in order', () => {
+    // A saved document can carry two moves of one object (the normaliser de-duplicates ids, not targets).
+    // `mapConflicts.prepare` already treats the last as the occupant; the editor must agree, or the map
+    // would draw one position, the panel edit another, and a drag move a third.
+    const twice: Draft[] = [
+      { _key: 'first', kind: 'move', id: 'first', target: { name: 'o1' }, position: { x: 10, y: 2, z: 30 } },
+      entries[1],
+      { _key: 'last', kind: 'move', id: 'last', target: { name: 'o1' }, position: { x: 50, y: 2, z: 60 } },
+    ];
+    expect(moveEntryFor(twice, 'o1')?._key).toBe('last');
+    expect(selectedEntry(twice, { kind: 'object', name: 'o1' })?._key).toBe('last');
+    const at = selectedPosition(objects, twice, { kind: 'object', name: 'o1' });
+    expect(at).toEqual({ x: 50, y: 2, z: 60 });
+    const moved = hitCandidates(objects, twice).find((m) => m.mark === 'moved');
+    expect(moved).toMatchObject({ key: 'o:o1', x: at!.x, z: at!.z });
+    // and editing the object edits the move that wins, leaving the superseded one exactly as it was
+    const out = upsertMoveFor(twice, 'o1', { x: 1, y: 1, z: 1 }, undefined, mint);
+    expect(out).toHaveLength(3);
+    expect(out[2]).toMatchObject({ _key: 'last', position: { x: 1, y: 1, z: 1 } });
+    expect(out[0]).toBe(twice[0]);
+  });
+});
+
+describe('groundStatus', () => {
+  /** One flat cell over [0, 4]² at 0.08 m — the ground whose `g − 0.25` is −0.17000000000000004 in a double. */
+  function eightCm(): DecodedGround {
+    return decodeGround({ originX: 0, originZ: 0, step: 4, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(Int16Array.from([8, 8, 8, 8])) });
+  }
+  it('draws both lines where the save route draws them, to the millimetre', () => {
+    const g = eightCm();
+    expect(groundStatus(g, 2, 2, 0.08)).toBe('ok');
+    // g − 0.25: the panel's first version compared floats and called this underground while the route said nothing
+    expect(groundStatus(g, 2, 2, -0.17)).toBe('ok');
+    expect(groundStatus(g, 2, 2, -0.171)).toBe('underground');
+    // g + 1.5
+    expect(groundStatus(g, 2, 2, 1.58)).toBe('ok');
+    expect(groundStatus(g, 2, 2, 1.581)).toBe('floating');
+  });
+  it('is no-ground off the sampled grid, and null with no grid at all — there is nothing to say', () => {
+    expect(groundStatus(eightCm(), 50, 2, 0)).toBe('no-ground');
+    expect(groundStatus(null, 2, 2, 0)).toBeNull();
   });
 });
 

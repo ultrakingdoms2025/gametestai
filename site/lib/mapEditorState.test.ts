@@ -8,7 +8,9 @@
  * authored 0.5 m ABOVE its ground stays 0.5 m above the ground it is dragged
  * to. Null handling is asserted on a NO_SAMPLE grid, not on a mocked
  * `groundAt`. Row text is asserted character-for-character because the e2e
- * harness in chunk 7 greps for it.
+ * harness in chunk 7 greps for it. The canvas's marks (`hitCandidates`) and
+ * hover text (`hoverInfoFor`) are asserted as whole values, so which marks a
+ * click can reach is pinned here and not in an untestable component.
  */
 import { describe, expect, it } from 'vitest';
 import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround } from './mapLayout';
@@ -17,6 +19,8 @@ import {
   NO_LAYOUT_TEXT,
   degToRad,
   fmt,
+  hitCandidates,
+  hoverInfoFor,
   layoutAgeText,
   moveEntryFor,
   pendingRows,
@@ -214,6 +218,56 @@ describe('selection helpers', () => {
     expect(selectedPosition(objects, [], { kind: 'object', name: 'o1' })).toEqual({ x: 1, y: 2, z: 3 });
     expect(selectedPosition(objects, entries, { kind: 'entry', key: 'p' })).toEqual({ x: 4, y: 5, z: 6 });
     expect(selectedPosition(objects, entries, { kind: 'object', name: 'unknown' })).toBeNull();
+  });
+});
+
+describe('hitCandidates and hoverInfoFor', () => {
+  const objects = [
+    { name: 'o1', position: { x: 1, y: 2, z: 3 } },
+    { name: 'o2', position: { x: 7, y: 0, z: 8 } },
+    { name: 'o3', position: { x: 9, y: 0, z: 9 } },
+  ];
+  const entries: Draft[] = [
+    { _key: 'm', kind: 'move', id: 'm', target: { name: 'o1' }, position: { x: 10, y: 2, z: 30 } },
+    { _key: 'p', kind: 'place', id: 'p', item: { source_key: 's', name: 'S', config: {} }, position: { x: 4, y: 5, z: 6 }, quantity: 1 },
+    { _key: 'f', kind: 'move', id: 'f', target: { name: 'ghost' }, position: { x: 20, y: 1, z: 21 } },
+    { _key: 'h', kind: 'move', id: 'h', target: { name: 'o3' }, position: null, hidden: true },
+    { _key: 'n', kind: 'move', id: 'n', target: { name: 'nowhere' }, position: null, hidden: true },
+  ];
+  const marks = hitCandidates(objects, entries);
+
+  it('a moved object is under ONE key at its reported and its pending position', () => {
+    const o1 = marks.filter((m) => m.key === 'o:o1');
+    expect(o1).toEqual([
+      { key: 'o:o1', x: 1, z: 3, r: 0, mark: 'origin' },
+      { key: 'o:o1', x: 10, z: 30, r: 0, mark: 'moved', from: { x: 1, z: 3 } },
+    ]);
+    // the reported target's move does NOT also appear as an entry mark
+    expect(marks.find((m) => m.key === 'e:m')).toBeUndefined();
+  });
+  it('an unmoved object is one mark; a hide-only move keeps it there, faint', () => {
+    expect(marks.filter((m) => m.key === 'o:o2')).toEqual([{ key: 'o:o2', x: 7, z: 8, r: 0, mark: 'object', hidden: false }]);
+    expect(marks.filter((m) => m.key === 'o:o3')).toEqual([{ key: 'o:o3', x: 9, z: 9, r: 0, mark: 'object', hidden: true }]);
+  });
+  it('a placement and a free-text move are entry marks; a positionless move is not', () => {
+    expect(marks.find((m) => m.key === 'e:p')).toEqual({ key: 'e:p', x: 4, z: 6, r: 0, mark: 'place' });
+    expect(marks.find((m) => m.key === 'e:f')).toEqual({ key: 'e:f', x: 20, z: 21, r: 0, mark: 'free' });
+    expect(marks.find((m) => m.key === 'e:n')).toBeUndefined();
+    expect(marks.find((m) => m.key === 'e:h')).toBeUndefined();
+  });
+  it('every mark has r: 0 so the hit reach never grows with zoom', () => {
+    expect(marks.length).toBe(6);
+    expect(marks.every((m) => m.r === 0)).toBe(true);
+  });
+  it('hoverInfoFor an object reads its name and where it currently is', () => {
+    expect(hoverInfoFor(objects, entries, 'o:o1')).toEqual({ label: 'o1', x: 10, y: 2, z: 30 });
+    expect(hoverInfoFor(objects, entries, 'o:o2')).toEqual({ label: 'o2', x: 7, y: 0, z: 8 });
+  });
+  it('hoverInfoFor an entry reads item ×qty or the target name, and null for an unknown key', () => {
+    expect(hoverInfoFor(objects, entries, 'e:p')).toEqual({ label: 'S ×1', x: 4, y: 5, z: 6 });
+    expect(hoverInfoFor(objects, entries, 'e:f')).toEqual({ label: 'ghost', x: 20, y: 1, z: 21 });
+    expect(hoverInfoFor(objects, entries, 'e:zzz')).toBeNull();
+    expect(hoverInfoFor(objects, entries, 'o:unknown')).toBeNull();
   });
 });
 

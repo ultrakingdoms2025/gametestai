@@ -1,5 +1,6 @@
 import { groundAt, type DecodedGround } from './mapLayout';
 import type { Conflict } from './mapConflicts';
+import type { HitCandidate } from './mapProjection';
 import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
 
 /**
@@ -190,4 +191,86 @@ export function selectionKey(sel: Selected): string | null {
 /** Inverse of `selectionKey` for a non-empty key; a caller maps `''` to `null` itself. */
 export function selectionFromKey(key: string): NonNullable<Selected> {
   return key.startsWith('o:') ? { kind: 'object', name: key.slice(2) } : { kind: 'entry', key: key.slice(2) };
+}
+
+/* ── What the canvas draws and hit-tests ──────────────────────────────────── */
+
+export type MarkKind =
+  /** A reported object where the game reported it (no pending move, or a hide-only move). */
+  | 'object'
+  /** The faint dot at a moved object's reported position. */
+  | 'origin'
+  /** The ring at a moved object's pending position; `from` is its origin, for the dashed link. */
+  | 'moved'
+  /** A placement. */
+  | 'place'
+  /** A move whose target the game did not report — a free-text move. */
+  | 'free';
+
+/**
+ * One mark on the map: a `HitCandidate` (so `hitTest` reads it as-is) plus
+ * what to draw there. `r` is 0 on every mark because marks are drawn at a
+ * fixed PIXEL radius, so their hit reach must not grow with zoom (`hitTest`
+ * adds `r·scale`; at the maximum scale a 0.5 m radius would reach 200 px).
+ */
+export interface MapMark extends HitCandidate {
+  r: 0;
+  mark: MarkKind;
+  hidden?: boolean;
+  from?: { x: number; z: number };
+}
+
+/** What the hover label says for a mark. */
+export interface HoverInfo {
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Every selectable mark and where it is. A reported object appears under ONE
+ * key at its reported AND its pending position, both selecting the object; a
+ * placement at its position; a move only when its target is unreported (a
+ * reported target's move is already the object's `moved` mark).
+ */
+export function hitCandidates(objects: Array<{ name: string; position: Vec3 }>, entries: Draft[]): MapMark[] {
+  const moveByName = new Map<string, Draft & MoveEntry>();
+  for (const e of entries) if (e.kind === 'move') moveByName.set(e.target.name, e);
+  const out: MapMark[] = [];
+  for (const o of objects) {
+    const key = `o:${o.name}`;
+    const mv = moveByName.get(o.name);
+    if (mv?.position) {
+      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'origin' });
+      out.push({ key, x: mv.position.x, z: mv.position.z, r: 0, mark: 'moved', from: { x: o.position.x, z: o.position.z } });
+    } else {
+      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'object', hidden: mv?.hidden === true });
+    }
+  }
+  const reported = new Set(objects.map((o) => o.name));
+  for (const e of entries) {
+    if (e.kind === 'place') out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0, mark: 'place' });
+    else if (e.position && !reported.has(e.target.name)) {
+      out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0, mark: 'free' });
+    }
+  }
+  return out;
+}
+
+/**
+ * The hover label for a mark's key: an object's name, `item ×qty` for a
+ * placement, the target name for a free move. The position is where the
+ * selection currently IS (`selectedPosition`), so hovering a moved object's
+ * origin dot reads its pending coordinates — the same numbers the panel shows.
+ */
+export function hoverInfoFor(objects: Array<{ name: string; position: Vec3 }>, entries: Draft[], key: string): HoverInfo | null {
+  const sel = selectionFromKey(key);
+  const p = selectedPosition(objects, entries, sel);
+  if (!p) return null;
+  if (sel.kind === 'object') return { label: sel.name, x: p.x, y: p.y, z: p.z };
+  const e = entries.find((d) => d._key === sel.key);
+  if (!e) return null;
+  const label = e.kind === 'place' ? `${e.item.name} ×${e.quantity}` : e.target.name;
+  return { label, x: p.x, y: p.y, z: p.z };
 }

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { fit } from '@/lib/painters';
 import { NO_SAMPLE, type DecodedGround, type WorldLayout } from '@/lib/mapLayout';
 import type { CatalogueObject } from '@/lib/mapOverlay';
-import type { MoveEntry } from '@/lib/mapOverlaySchema';
 import {
   createView,
   cssColour,
@@ -18,8 +17,21 @@ import {
   type HitCandidate,
   type MapView,
 } from '@/lib/mapProjection';
-import { fmt, selectedPosition, selectionFromKey, selectionKey, type Draft, type Selected } from '@/lib/mapEditorState';
+import {
+  fmt,
+  hitCandidates,
+  hoverInfoFor,
+  selectedPosition,
+  selectionFromKey,
+  selectionKey,
+  type Draft,
+  type HoverInfo,
+  type MapMark,
+  type Selected,
+} from '@/lib/mapEditorState';
 import { moveColour, okColour, placeColour } from './mapEditorStyles';
+
+export type { HoverInfo } from '@/lib/mapEditorState';
 
 /**
  * The top-down map. Draws, and forwards pointer events. Decides nothing.
@@ -29,10 +41,13 @@ import { moveColour, okColour, placeColour } from './mapEditorStyles';
  * The floorplan is the world's `minimapShapes` as the game reported them,
  * projected through `mapProjection.ts` with the minimap's own rect-corner
  * formula, so this map and the in-game minimap agree on every wall. The
- * ground grid is drawn lightly under the marks so a dome, a deck and a hole
- * read as different tones; it is skipped above `GROUND_CELL_CAP` cells
- * because a 160 000-rect frame stuttered under drag, and the grid still
- * drives snapping whether or not it is drawn.
+ * marks — which objects and entries are drawn where, and which a click can
+ * reach — are `hitCandidates` from `mapEditorState.ts`, one list for both
+ * drawing and hit-testing, so what is painted and what is selectable cannot
+ * drift apart. The ground grid is drawn lightly under the marks so a dome, a
+ * deck and a hole read as different tones; it is skipped above
+ * `GROUND_CELL_CAP` cells because a 160 000-rect frame stuttered under drag,
+ * and the grid still drives snapping whether or not it is drawn.
  *
  * ── Why the view lives in a ref ────────────────────────────────────────────
  *
@@ -55,15 +70,11 @@ import { moveColour, okColour, placeColour } from './mapEditorStyles';
  *
  * `fit()` sets the bitmap to the CSS box × DPR and applies the DPR as the
  * transform, so drawing and hit-testing both use `getBoundingClientRect`
- * coordinates and never see the device pixel ratio.
+ * coordinates and never see the device pixel ratio. It runs only when the
+ * CSS box or the DPR has changed since the last draw: setting `canvas.width`
+ * discards the backing store and its context state, and doing that on every
+ * hover and drag frame was the cost of the whole draw again.
  */
-
-export interface HoverInfo {
-  label: string;
-  x: number;
-  y: number | null;
-  z: number;
-}
 
 export interface MapCanvasProps {
   layout: WorldLayout | null;
@@ -97,7 +108,10 @@ const C = {
   text: '#cfe6f2',
 };
 
-const EDITABLE = 'input, textarea, select, [contenteditable="true"]';
+/* Ground tones from lowest to highest sample, precomputed once: a template
+ * string per cell was a 70 000-string allocation per frame. */
+const GROUND_STEPS = 32;
+const GROUND_PALETTE = Array.from({ length: GROUND_STEPS }, (_, k) => `rgba(120, 170, 200, ${(0.05 + (0.25 * k) / (GROUND_STEPS - 1)).toFixed(3)})`);
 
 function dot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, colour: string) {
   ctx.fillStyle = colour;
@@ -125,54 +139,73 @@ function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number,
   ctx.fill();
 }
 
+function drawMark(ctx: CanvasRenderingContext2D, view: MapView, m: MapMark, isSel: boolean) {
+  const p = toScreen(view, m.x, m.z);
+  switch (m.mark) {
+    case 'origin':
+      dot(ctx, p.sx, p.sy, 2.5, C.objectFaint);
+      return;
+    case 'moved': {
+      if (m.from) {
+        const o = toScreen(view, m.from.x, m.from.z);
+        ctx.strokeStyle = C.pending;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(o.sx, o.sy);
+        ctx.lineTo(p.sx, p.sy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ring(ctx, p.sx, p.sy, isSel ? 7 : 5, C.pending);
+      if (isSel) ring(ctx, p.sx, p.sy, 10, C.selected);
+      return;
+    }
+    case 'object':
+      dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, m.hidden ? C.objectFaint : C.object);
+      if (isSel) ring(ctx, p.sx, p.sy, 9, C.selected);
+      return;
+    case 'place':
+      diamond(ctx, p.sx, p.sy, isSel ? 7 : 5, C.place);
+      if (isSel) ring(ctx, p.sx, p.sy, 11, C.selected);
+      return;
+    case 'free':
+      ring(ctx, p.sx, p.sy, isSel ? 7 : 5, C.pending);
+      if (isSel) ring(ctx, p.sx, p.sy, 10, C.selected);
+      return;
+  }
+}
+
 type Gesture =
   | { mode: 'pan'; lastX: number; lastY: number }
   | { mode: 'drag'; target: NonNullable<Selected>; startX: number; startY: number; moved: boolean }
   | { mode: 'click'; hit: HitCandidate | null; startX: number; startY: number; lastX: number; lastY: number; moved: boolean };
 
+/** The CSS box and DPR the canvas bitmap was last fitted to. */
+type Fitted = { w: number; h: number; dpr: number };
+
+/** Space arms a pan only when the key would otherwise reach the page itself, never a control. */
+function spaceIsOurs(cv: HTMLCanvasElement): boolean {
+  const a = document.activeElement;
+  return a === null || a === document.body || a === cv;
+}
+
 export default function MapCanvas(props: MapCanvasProps) {
   const { layout, ground, objects, entries, selected, placeMode, onSelect, onDrag, onPlaceAt, onHover } = props;
   const ref = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<MapView | null>(null);
+  const fittedRef = useRef<Fitted | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const spaceRef = useRef(false);
   /* Whether the pointer is over the canvas: Space is only swallowed then. */
   const hoveredRef = useRef(false);
   const [tick, setTick] = useState(0);
   const [hover, setHover] = useState<{ sx: number; sy: number; info: HoverInfo } | null>(null);
+  /* Only the cursor reads this; the gesture itself lives in the ref. */
+  const [panning, setPanning] = useState(false);
   const redraw = useCallback(() => setTick((t) => t + 1), []);
 
-  const objectByName = useMemo(() => new Map(objects.map((o) => [o.name, o])), [objects]);
-
-  /* One name → pending-move lookup per `entries` change, shared by the hit
-   * candidates and the draw. A per-object `find` over the document, twice a
-   * frame, is a million steps per drag frame at 2 000 objects × 500 entries. */
-  const moveByName = useMemo(() => {
-    const m = new Map<string, Draft & MoveEntry>();
-    for (const e of entries) if (e.kind === 'move') m.set(e.target.name, e);
-    return m;
-  }, [entries]);
-
-  /* Hit candidates: every reported object (at its reported AND pending
-   * position, both selecting the object), every placement, and every move
-   * whose target the game did not report (a free-text move). */
-  const candidates = useMemo<HitCandidate[]>(() => {
-    const out: HitCandidate[] = [];
-    for (const o of objects) {
-      // r: 0 — these marks are drawn at a fixed PIXEL radius, so their hit reach must not grow with zoom
-      // (hitTest adds r·scale; at MAX_SCALE a 0.5 m radius would reach 200 px). Reserve r for footprint rects.
-      out.push({ key: `o:${o.name}`, x: o.position.x, z: o.position.z, r: 0 });
-      const mv = moveByName.get(o.name);
-      if (mv?.position) out.push({ key: `o:${o.name}`, x: mv.position.x, z: mv.position.z, r: 0 });
-    }
-    for (const e of entries) {
-      if (e.kind === 'place') out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0 });
-      else if (e.position && !objectByName.has(e.target.name)) {
-        out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0 });
-      }
-    }
-    return out;
-  }, [objects, entries, objectByName, moveByName]);
+  const marks = useMemo(() => hitCandidates(objects, entries), [objects, entries]);
 
   const groundRange = useMemo(() => {
     if (!ground || ground.nx * ground.nz > GROUND_CELL_CAP) return null;
@@ -187,25 +220,11 @@ export default function MapCanvas(props: MapCanvasProps) {
     return min === Infinity ? null : { min, max: Math.max(max, min + 1) };
   }, [ground]);
 
-  const describe = useCallback(
-    (hit: HitCandidate): HoverInfo => {
-      if (hit.key.startsWith('o:')) {
-        const name = hit.key.slice(2);
-        const p = selectedPosition(objects, entries, { kind: 'object', name });
-        return { label: name, x: hit.x, y: p?.y ?? null, z: hit.z };
-      }
-      const e = entries.find((d) => d._key === hit.key.slice(2));
-      const labelText = e ? (e.kind === 'place' ? `${e.item.name} ×${e.quantity}` : e.target.name) : 'entry';
-      return { label: labelText, x: hit.x, y: e?.position?.y ?? null, z: hit.z };
-    },
-    [objects, entries]
-  );
-
-  /* A new layout is a new world or fresh bounds: refit. */
+  /* A new layout is a new world or fresh bounds: refit. Nulling the ref is
+   * enough — the draw effect below runs later in the same commit. */
   useEffect(() => {
     viewRef.current = null;
-    redraw();
-  }, [layout, redraw]);
+  }, [layout]);
 
   /* The map pans to a selection that is off-canvas — once per selection
    * change, never per drag frame (a drag keeps the selection). */
@@ -224,9 +243,12 @@ export default function MapCanvas(props: MapCanvasProps) {
   }, [selectedKey]);
 
   /* Wheel must preventDefault, and React registers `onWheel` passive, so it
-   * is a native listener. Space is tracked for space-drag panning and is
-   * swallowed only while the pointer is over the canvas and the key did not
-   * land in a text field, so the page neither scrolls nor loses a typed space. */
+   * is a native listener. Space is tracked for space-drag panning: it is
+   * armed and swallowed only when nothing but the page (or this canvas)
+   * has focus — a focused Save button keeps its Space activation and a
+   * space typed into a field stays typed — and only while the pointer is
+   * over the canvas does the page stop scrolling. A blur disarms it, because
+   * the keyup after an alt-tab never arrives. */
   useEffect(() => {
     const cv = ref.current;
     if (!cv) return;
@@ -234,15 +256,21 @@ export default function MapCanvas(props: MapCanvasProps) {
       const v = viewRef.current;
       if (!v) return;
       e.preventDefault();
+      if (e.deltaY === 0) return;
       const r = cv.getBoundingClientRect();
       viewRef.current = zoomAt(v, e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
       redraw();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      spaceRef.current = e.type === 'keydown';
-      const target = e.target as HTMLElement | null;
-      if (hoveredRef.current && !target?.closest(EDITABLE)) e.preventDefault();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !spaceIsOurs(cv)) return;
+      spaceRef.current = true;
+      if (hoveredRef.current) e.preventDefault();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') spaceRef.current = false;
+    };
+    const onBlur = () => {
+      spaceRef.current = false;
     };
     let timer: ReturnType<typeof setTimeout>;
     const onResize = () => {
@@ -250,14 +278,16 @@ export default function MapCanvas(props: MapCanvasProps) {
       timer = setTimeout(redraw, 160);
     };
     cv.addEventListener('wheel', onWheel, { passive: false });
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('keyup', onKey);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     window.addEventListener('resize', onResize);
     return () => {
       clearTimeout(timer);
       cv.removeEventListener('wheel', onWheel);
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('keyup', onKey);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       window.removeEventListener('resize', onResize);
     };
   }, [redraw]);
@@ -266,9 +296,26 @@ export default function MapCanvas(props: MapCanvasProps) {
   useEffect(() => {
     const cv = ref.current;
     if (!cv) return;
-    const size = fit(cv);
-    if (!size) return;
-    const { ctx, w, h } = size;
+    const rect = cv.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const fitted = fittedRef.current;
+    let ctx: CanvasRenderingContext2D | null;
+    let w: number;
+    let h: number;
+    if (!fitted || fitted.w !== rect.width || fitted.h !== rect.height || fitted.dpr !== dpr) {
+      const size = fit(cv);
+      if (!size) return;
+      ({ ctx, w, h } = size);
+      fittedRef.current = { w, h, dpr };
+    } else {
+      ctx = cv.getContext('2d');
+      if (!ctx) return;
+      ({ w, h } = fitted);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+    }
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     let view = viewRef.current;
     if (!view) view = createView(layout?.bounds ?? null, w, h);
     else if (view.w !== w || view.h !== h) view = resizeView(view, w, h);
@@ -281,20 +328,24 @@ export default function MapCanvas(props: MapCanvasProps) {
     ctx.fillRect(0, 0, w, h);
 
     /* Ground first, under the floorplan: a filled shape must not be tinted
-     * by the grid, and the bounds dashes must stay visible over both. */
+     * by the grid, and the bounds dashes must stay visible over both. Each
+     * cell is centred on its sample, which is where `groundAt` reads it. */
     if (ground && groundRange) {
       const { originX, originZ, step, nx, nz, layers, heights } = ground;
       const cell = step * view.scale + 0.5;
+      const half = cell / 2;
       const span = groundRange.max - groundRange.min;
       for (let j = 0; j < nz; j++) {
         for (let i = 0; i < nx; i++) {
           const hcm = heights[(j * nx + i) * layers];
           if (hcm === NO_SAMPLE) continue;
           const s = toScreen(view, originX + i * step, originZ + j * step);
-          if (s.sx > w || s.sy > h || s.sx + cell < 0 || s.sy + cell < 0) continue;
+          const x0 = s.sx - half;
+          const y0 = s.sy - half;
+          if (x0 > w || y0 > h || x0 + cell < 0 || y0 + cell < 0) continue;
           const t = (hcm - groundRange.min) / span;
-          ctx.fillStyle = `rgba(120, 170, 200, ${(0.05 + 0.25 * t).toFixed(3)})`;
-          ctx.fillRect(s.sx, s.sy, cell, cell);
+          ctx.fillStyle = GROUND_PALETTE[Math.round(t * (GROUND_STEPS - 1))];
+          ctx.fillRect(x0, y0, cell, cell);
         }
       }
     }
@@ -348,49 +399,20 @@ export default function MapCanvas(props: MapCanvasProps) {
     }
 
     const sKey = selectionKey(selected);
-    for (const o of objects) {
-      const mv = moveByName.get(o.name);
-      const isSel = sKey === `o:${o.name}`;
-      const p = toScreen(view, o.position.x, o.position.z);
-      if (mv?.position) {
-        const q = toScreen(view, mv.position.x, mv.position.z);
-        ctx.strokeStyle = C.pending;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(p.sx, p.sy);
-        ctx.lineTo(q.sx, q.sy);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        dot(ctx, p.sx, p.sy, 2.5, C.objectFaint);
-        ring(ctx, q.sx, q.sy, isSel ? 7 : 5, C.pending);
-        if (isSel) ring(ctx, q.sx, q.sy, 10, C.selected);
-      } else {
-        dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, mv?.hidden ? C.objectFaint : C.object);
-        if (isSel) ring(ctx, p.sx, p.sy, 9, C.selected);
-      }
-    }
-    for (const e of entries) {
-      const isSel = sKey === `e:${e._key}`;
-      if (e.kind === 'place') {
-        const p = toScreen(view, e.position.x, e.position.z);
-        diamond(ctx, p.sx, p.sy, isSel ? 7 : 5, C.place);
-        if (isSel) ring(ctx, p.sx, p.sy, 11, C.selected);
-      } else if (e.position && !objectByName.has(e.target.name)) {
-        const p = toScreen(view, e.position.x, e.position.z);
-        ring(ctx, p.sx, p.sy, isSel ? 7 : 5, C.pending);
-        if (isSel) ring(ctx, p.sx, p.sy, 10, C.selected);
-      }
-    }
+    for (const m of marks) drawMark(ctx, view, m, sKey === m.key);
 
     ctx.fillStyle = C.text;
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillText('N ↑ (−Z)', 8, 14);
     ctx.fillText(`${view.scale >= 1 ? fmt(view.scale) + ' px/m' : fmt(1 / view.scale) + ' m/px'}`, 8, h - 8);
     if (placeMode) ctx.fillText('click empty ground to place', 8, 30);
+    if (ground && !groundRange && ground.nx * ground.nz > GROUND_CELL_CAP) {
+      const notice = `ground ${ground.nx}×${ground.nz} not painted`;
+      ctx.fillText(notice, w - ctx.measureText(notice).width - 8, h - 8);
+    }
 
     if (hover) {
-      const text = `${hover.info.label}  (${fmt(hover.info.x)}, ${hover.info.y === null ? '?' : fmt(hover.info.y)}, ${fmt(hover.info.z)})`;
+      const text = `${hover.info.label}  (${fmt(hover.info.x)}, ${fmt(hover.info.y)}, ${fmt(hover.info.z)})`;
       const tw = ctx.measureText(text).width + 10;
       const tx = Math.min(hover.sx + 12, w - tw - 4);
       const ty = Math.max(hover.sy - 22, 4);
@@ -399,7 +421,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       ctx.fillStyle = C.text;
       ctx.fillText(text, tx + 5, ty + 13);
     }
-  }, [layout, ground, groundRange, objects, entries, selected, placeMode, hover, tick, objectByName, moveByName]);
+  }, [layout, ground, groundRange, marks, selected, placeMode, hover, tick]);
 
   const local = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -419,14 +441,17 @@ export default function MapCanvas(props: MapCanvasProps) {
     onHover?.(null);
     if (e.button === 1 || spaceRef.current) {
       gestureRef.current = { mode: 'pan', lastX: sx, lastY: sy };
+      setPanning(true);
       return;
     }
-    const hit = hitTest(view, candidates, sx, sy, HIT_TOL_PX);
+    const hit = hitTest(view, marks, sx, sy, HIT_TOL_PX);
     if (hit && hit.key === selectionKey(selected)) {
       gestureRef.current = { mode: 'drag', target: selectionFromKey(hit.key), startX: sx, startY: sy, moved: false };
       return;
     }
     gestureRef.current = { mode: 'click', hit, startX: sx, startY: sy, lastX: sx, lastY: sy, moved: false };
+    /* A press on empty ground pans if it moves; show that from the press. */
+    if (!hit) setPanning(true);
   }
 
   function onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>) {
@@ -435,8 +460,8 @@ export default function MapCanvas(props: MapCanvasProps) {
     const { sx, sy } = local(e);
     const g = gestureRef.current;
     if (!g) {
-      const hit = hitTest(view, candidates, sx, sy, HIT_TOL_PX);
-      const info = hit ? describe(hit) : null;
+      const hit = hitTest(view, marks, sx, sy, HIT_TOL_PX);
+      const info = hit ? hoverInfoFor(objects, entries, hit.key) : null;
       setHover(info ? { sx, sy, info } : null);
       onHover?.(info);
       return;
@@ -469,6 +494,7 @@ export default function MapCanvas(props: MapCanvasProps) {
     const view = viewRef.current;
     const g = gestureRef.current;
     gestureRef.current = null;
+    setPanning(false);
     if (!view || !g) return;
     const { sx, sy } = local(e);
     if (g.mode === 'drag') {
@@ -487,6 +513,23 @@ export default function MapCanvas(props: MapCanvasProps) {
     }
   }
 
+  /* The browser took the pointer away (a touch became a scroll, a window
+   * lost focus mid-press). That is not a click: nothing is selected, nothing
+   * is placed. A drag in progress is ended where the pointer last was, so
+   * the parent's drag bookkeeping is released. */
+  function onPointerCancel(e: ReactPointerEvent<HTMLCanvasElement>) {
+    const view = viewRef.current;
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    setPanning(false);
+    if (!view || !g) return;
+    if (g.mode === 'drag' && g.moved) {
+      const { sx, sy } = local(e);
+      const p = toWorld(view, sx, sy);
+      onDrag(g.target, p.x, p.z, 'end');
+    }
+  }
+
   function onPointerEnter() {
     hoveredRef.current = true;
   }
@@ -496,6 +539,8 @@ export default function MapCanvas(props: MapCanvasProps) {
     setHover(null);
     onHover?.(null);
   }
+
+  const cursor = panning ? 'grabbing' : hover ? 'pointer' : placeMode ? 'crosshair' : 'grab';
 
   return (
     <canvas
@@ -510,12 +555,12 @@ export default function MapCanvas(props: MapCanvasProps) {
         borderRadius: 12,
         background: C.bg,
         touchAction: 'none',
-        cursor: placeMode ? 'crosshair' : 'grab',
+        cursor,
       }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       /* Windows Chrome/Edge start autoscroll on a middle MOUSE down unless

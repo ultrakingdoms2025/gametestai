@@ -23,9 +23,12 @@ import * as THREE from 'three';
  * re-opened from that moment - so a
  * hanging server costs the prefetch chain one fuse a minute, not one per
  * world; a gate timeout never opens it. The provider is read from the
- * MANAGER's ctx, never the per-world copy. The cases that reach this seam
- * through a portal forcing its destination, a WorldPrefetch preparation and a
- * volatile rebuild land with Task 3.6 (`WorldPrefetch` is imported for them).
+ * MANAGER's ctx, never the per-world copy. Every other way a world gets built
+ * reaches the same seam: a portal forcing its destination (through the real
+ * `activate()`), a WorldPrefetch preparation (through the real poller) and a
+ * volatile rebuild all take the 1.5 s rule and the breaker with it - so a
+ * crossing or a chain inside the minute after a hang is held for nothing and
+ * asks nothing, and only the probe pays the fuse.
  *
  * Not a stub: every case builds a real World subclass through the real
  * WorldManager over a real Physics, and the timing cases wait on real timers
@@ -332,4 +335,126 @@ test("main.js sets the provider on the manager's ctx, gated on the session, befo
   // Two lines other suites pin must not have moved with this edit.
   assert.match(src, /new MapOverlay\(\{ bus, physics, loot, engine, forceLayout: overrides\.layout === 'sample' \}\)/, 'the MapOverlay constructor line changed');
   assert.match(boot, /if \(overrides\.prefetch === 'all'\) scheduleBackgroundBuilds\(startWorld\);/, 'the eager-chain line changed');
+});
+
+/* ------------------------------------------------------------------ */
+/* The other callers of a build: a portal, a volatile rebuild, WorldPrefetch */
+/* ------------------------------------------------------------------ */
+
+/** A portal list the poller can walk: one gateway per target, 5 m apart, all inside PREFETCH_RANGE. */
+const gates = (...targets) => ({
+  portals: targets.map((target, i) => ({ target, position: { x: 5 + 5 * i, y: 0, z: 0 } })),
+  holdPreviews() {},
+});
+
+test("a portal forcing an unbuilt destination in the player's frames gets the 1500 ms rule and the crossing still completes; a crossing inside the minute after the hang is held for nothing and asks nothing", async () => {
+  const asked = [];
+  let took = 0;
+  let tookAfter = 0;
+  const warned = await quietly(async () => {
+    // The entry world is built behind the loading gate, where the provider answers; then the engine starts, and
+    // every build after it is a portal's - in the player's frames.
+    const { wm, engine } = manager({ running: false, provider: (id) => { asked.push(id); return id === 'here' ? Promise.resolve({ version: 2 }) : never(); } });
+    for (const id of ['here', 'there', 'beyond']) wm.register(worldClass(id));
+    const here = await wm.activate('here');
+    assert.equal(here.builtVersion, 2);
+    engine.running = true;
+    let t = performance.now();
+    const there = await wm.activate('there'); // _activate -> build('there') -> _runBuild, engine.running true
+    took = performance.now() - t;
+    assert.equal(there.builtVersion, 0);
+    assert.equal(there.active, true, 'the crossing did not complete');
+    assert.equal(here.active, false);
+    assert.deepEqual(asked, ['here', 'there']);
+    // That hang opened the session breaker: the next gateway inside the minute is crossed at once and asks
+    // nothing - the designed cost of one probe a minute, so a hanging server costs a player one fuse, not one
+    // per gateway. (A world already looked up costs nothing either way: MapOverlay's cache answers it.)
+    t = performance.now();
+    const beyond = await wm.activate('beyond');
+    tookAfter = performance.now() - t;
+    assert.equal(beyond.builtVersion, 0);
+    assert.equal(beyond.active, true);
+    assert.deepEqual(asked, ['here', 'there'], 'a crossing inside the minute after a hang asked the provider');
+  });
+  assert.ok(took >= 1400 && took < 4000, `the crossing took ${took} ms`);
+  assert.ok(tookAfter < 100, `the crossing after the hang waited ${tookAfter} ms`);
+  assert.deepEqual(warned, ['[WorldManager] overlay unavailable for "there": no answer within 1500 ms; building without it']);
+});
+
+test('a volatile world re-reads the provider on every request, and its builtVersion follows the answer', async () => {
+  let version = 1;
+  let hold = null;
+  const asked = [];
+  const { wm } = manager({ provider: async (id) => { asked.push(id); if (hold) await hold; return { version }; } });
+  wm.register(worldClass('mazelike', { volatile: true }));
+  const maze = await wm.build('mazelike');
+  assert.equal(maze.builtVersion, 1);
+  version = 2;
+  // A rebuild in flight has thrown the last build away - dispose() reset the version with it - and nothing reads
+  // it there: MapOverlay reads builtVersion at apply time, after world:changed, which is after the build.
+  let release;
+  hold = new Promise((r) => { release = r; });
+  const rebuilding = wm.build('mazelike');
+  await sleep(0);
+  assert.equal(maze.builtVersion, 0, 'a rebuild in flight still carried the version of the build it threw away');
+  release();
+  assert.equal((await rebuilding).builtVersion, 2, 'the rebuilt world kept the version of the build it threw away');
+  assert.equal(await rebuilding, maze, 'a volatile rebuild is the same world object');
+  assert.deepEqual(asked, ['mazelike', 'mazelike']);
+});
+
+test('a preparation started by WorldPrefetch waits on the provider like any background build, and no longer than the fuse', async () => {
+  await quietly(async () => {
+    let answer;
+    const { wm } = manager({ running: true, provider: () => new Promise((r) => { answer = r; }) });
+    wm.register(worldClass('near'));
+    const pf = new WorldPrefetch({ portals: gates('near'), player: { position: { x: 0, y: 0, z: 0 } }, prepare: (id) => wm.build(id).then(() => undefined), isVolatile: (id) => wm.isVolatile(id) });
+    pf.update();
+    assert.equal(pf.isPrepared('near'), true, 'the poller did not start the world in range');
+    setTimeout(() => answer({ version: 9 }), 200);
+    await pf.started.get('near');
+    assert.equal(wm.getWorld('near').builtVersion, 9);
+
+    // A stalled provider holds the gateway for the fuse and no longer (memory: "gateways held until prepared").
+    const stalled = manager({ running: true, provider: never });
+    stalled.wm.register(worldClass('far'));
+    const pf2 = new WorldPrefetch({ portals: gates('far'), player: { position: { x: 0, y: 0, z: 0 } }, prepare: (id) => stalled.wm.build(id).then(() => undefined) });
+    const t = performance.now();
+    pf2.update();
+    await pf2.started.get('far');
+    const took = performance.now() - t;
+    assert.ok(took >= 1400 && took < 4000, `the preparation took ${took} ms`);
+    assert.equal(stalled.wm.getWorld('far').builtVersion, 0);
+  });
+});
+
+test("a chain of gateways against a hanging provider pays the fuse once a minute: the poller's first preparation asks and waits, the rest inside the minute are held for nothing, the probe asks once, and a preparation started inside the probe's own fuse asks nothing", async () => {
+  let clock = 0;
+  const asked = [];
+  const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return never(); } });
+  wm.now = () => clock; // the breaker's clock, owned by the test
+  wm.overlayBackgroundMs = 100; // the same fuse, shortened
+  for (const id of ['first', 'second', 'third', 'beside']) wm.register(worldClass(id));
+  const pf = new WorldPrefetch({ portals: gates('first', 'second', 'third'), player: { position: { x: 0, y: 0, z: 0 } }, prepare: (id) => wm.build(id).then(() => undefined) });
+  const timed = async (id) => { const t = performance.now(); await pf.started.get(id); return performance.now() - t; };
+  await quietly(async () => {
+    pf.update(); // nearest first
+    assert.equal(pf.isPrepared('first'), true);
+    assert.ok((await timed('first')) >= 80, 'the first preparation did not wait on the fuse');
+    assert.deepEqual(asked, ['first']); // its hang opened the breaker, at 0 on this clock
+    pf.update(); // the next gateway on the chain, inside the minute
+    assert.equal(pf.isPrepared('second'), true, 'the poller did not move on once the first was prepared');
+    assert.ok((await timed('second')) < 50, 'inside the minute the chain still paid the fuse');
+    assert.deepEqual(asked, ['first'], 'inside the minute a preparation asked');
+    clock = 60_000;
+    pf.update(); // the probe
+    const beside = pf.request('beside'); // started inside the probe's fuse - a portal claim, say
+    assert.equal(pf.isPrepared('third'), true);
+    assert.ok((await timed('beside')) < 50, "a preparation inside the probe's fuse waited on a fuse of its own");
+    assert.ok((await timed('third')) >= 80, 'the probe did not wait on the fuse');
+    assert.deepEqual(asked, ['first', 'third'], 'the chain asked more than once a minute');
+    assert.equal(wm.getWorld('third').builtVersion, 0);
+    assert.equal(wm.getWorld('beside').builtVersion, 0);
+    await beside;
+  });
 });

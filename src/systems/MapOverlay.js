@@ -75,6 +75,25 @@ const _delta = new THREE.Vector3();
 const _box = new THREE.Box3();
 const _shift = new THREE.Matrix4();
 
+/**
+ * How far past a removed object's box a collider may reach and still be its
+ * own (spec §6.3 said 5 cm). Authored boxes overhang on purpose - medieval
+ * shells by +0.08 m on X and Z - so 5 cm finds nothing on the worlds most
+ * likely to be edited, hides the mesh, and leaves exactly the wall the
+ * remove was meant to take. Owner decision B: 0.10 m per axis.
+ */
+const REMOVE_TOLERANCE = 0.10;
+/**
+ * More colliders than this inside one named object's box is a district, not a
+ * prop: `Box3.setFromObject` on a station district Group or a planet's
+ * `planet:prop:*` InstancedMesh is the union of everything in it. Refused with
+ * reason `span` and nothing hidden (decision B), rather than taking the deck
+ * and the floor with it until the next save.
+ */
+const MAX_REMOVE_COLLIDERS = 200;
+const _padded = new THREE.Box3();
+const _aabb = new THREE.Box3();
+
 /** The sampler's ray. Two scratch vectors, reused for every cast of every cell. */
 const _rayOrigin = new THREE.Vector3();
 const _rayDown = new THREE.Vector3();
@@ -234,7 +253,13 @@ export class MapOverlay {
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') continue;
       try {
-        if (entry.kind === 'move') this._applyMove(world, entry, applied, unresolved);
+        // `hidden: true` is v1's spelling of a remove. The site migrates it on
+        // read (schema v2), but a client running this bundle against a v1
+        // document - a rollback, or a page open across the deploy - must not
+        // let hidden objects reappear. Read as a remove for one release.
+        if (entry.kind === 'remove' || (entry.kind === 'move' && entry.hidden === true)) {
+          this._applyRemove(world, entry, applied, unresolved);
+        } else if (entry.kind === 'move') this._applyMove(world, entry, applied, unresolved);
         else if (entry.kind === 'place') this._applyPlace(world, entry, applied, unresolved);
       } catch (err) {
         // One bad entry must never cost the player the world they are standing
@@ -477,8 +502,6 @@ export class MapOverlay {
       target.updateMatrixWorld(true);
     });
 
-    if (entry.hidden) target.visible = false;
-
     const to = entry.position;
     let colliders = 0;
     if (to && Number.isFinite(to.x) && Number.isFinite(to.y) && Number.isFinite(to.z)) {
@@ -624,6 +647,84 @@ export class MapOverlay {
       collider.bounds.getCenter(collider.center);
     }
     if (reattach) physics.add(collider);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Removing                                                            */
+  /* ------------------------------------------------------------------ */
+
+  _applyRemove(world, entry, applied, unresolved) {
+    const name = entry?.target?.name;
+    const target = typeof name === 'string' && name ? world.group.getObjectByName(name) : null;
+    if (!target) {
+      unresolved.push({ id: String(entry.id ?? ''), reason: 'name' });
+      return;
+    }
+
+    // The box is taken from the object as the world built it, before anything
+    // changes: it is what decides which colliders are this object's.
+    target.updateWorldMatrix(true, false);
+    _box.setFromObject(target);
+    const dropping = this._collidersInside(_box);
+    if (dropping === null) {
+      unresolved.push({ id: String(entry.id ?? ''), reason: 'span' });
+      return;
+    }
+
+    const originalVisible = target.visible;
+    target.visible = false;
+    for (const collider of dropping) this.physics.remove(collider);
+
+    /* The undo puts the mesh back and puts NOTHING into physics. Registration
+     * is WorldManager._activate's: it rebuilds the collision world from
+     * `world.colliders` - on which the dropped colliders still sit - before
+     * `world:changed` fires. So when this undo runs the collider is either
+     * already back (a same-world re-entry) or in a physics that now belongs
+     * to another world (a portal): the two cases `_detach` names for a move,
+     * and in neither is an `add` from here right. The first would register
+     * it twice; the second is the leak the hotfix removed. Known limit: a
+     * `dispose()` on a LIVE world runs this undo on the same physics, so the
+     * mesh comes back and its collider does not. Nothing calls `dispose()`
+     * at runtime (main.js never does; it is teardown), so it is stated here
+     * rather than handled. */
+    this._undo.push(() => {
+      target.visible = originalVisible;
+    });
+    applied.push({ id: String(entry.id ?? ''), ok: true, colliders: dropping.length });
+  }
+
+  /**
+   * Every collider whose OWN world AABB lies inside `box` grown by
+   * REMOVE_TOLERANCE, or null when there are more than MAX_REMOVE_COLLIDERS.
+   *
+   * Containment, never centre-in-box: the move heuristic's failure mode is
+   * under-moving, which is safe; inverted for a remove it would be
+   * over-removing - a fence post whose centre sits inside a house-sized box
+   * vanishes with the house (spec §6.3). A trimesh chunk that straddles the
+   * box stays (station's chunks are spatial cells, not objects).
+   *
+   * Excluded by TYPE: heightfields, the ground. Excluded by TAG: any collider
+   * with a non-null `userData` - portal plinths, landed ship hulls, a planet's
+   * floor, liquid barriers and edge walls - volumes other systems own and
+   * rebuild before this applies. `layer` and `solid` are not consulted: a
+   * trigger inside a removed prop belongs to the prop, exactly as
+   * `_moveColliders` takes it along with the prop.
+   */
+  _collidersInside(box) {
+    const physics = this.physics;
+    if (!physics) return [];
+    _padded.copy(box).expandByScalar(REMOVE_TOLERANCE);
+    const inside = [];
+    for (const collider of physics.colliders) {
+      if (!collider || collider.type === 'heightfield' || collider.userData != null) continue;
+      const aabb = physics.colliderAabb(collider, _aabb);
+      // An empty box (a type colliderAabb does not know) is contained by
+      // EVERY box in three's `containsBox`; it must never read as "inside".
+      if (aabb.isEmpty() || !_padded.containsBox(aabb)) continue;
+      inside.push(collider);
+      if (inside.length > MAX_REMOVE_COLLIDERS) return null;
+    }
+    return inside;
   }
 
   /* ------------------------------------------------------------------ */

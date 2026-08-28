@@ -495,6 +495,159 @@ test('leaving a world restores what the overlay moved in it', async () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Removing                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A remove hides the object AND drops the colliders it CONTAINS - each
+ * collider's own world AABB inside the object's box grown by 0.10 m, never
+ * centre-in-box, which would take the fence post beside the house. Terrain
+ * is excluded by type; a collider another system tagged with `userData` is
+ * excluded by that tag. Collider `userData` in this tree (verified 2026-08-28):
+ * src/worlds/PlanetWorld.js :1165 {planetFloor}, :1687/:1694
+ * {planetLiquidBarrier, barrierCap}, :1800 {planetEdgeWall};
+ * src/systems/Portals.js :1140/:1159/:1174 {portal}; src/ships/Piloting.js
+ * :2961 {kind:'ship', shipId}. `World.addSolid` (World.js:206) and
+ * SportsWorld's `_solid` (SportsWorld.js:1860) forward `opts.userData`, but
+ * no call site supplies one - so today the tag means exactly "a volume
+ * another system owns and rebuilds before the overlay applies", and a future
+ * `addSolid(mesh, { userData })` or `_solid(mesh, { userData })` on a prop
+ * would silently exempt that prop. `solid` and `layer` are NOT consulted: a
+ * trigger inside a removed prop belongs to the prop, as `_moveColliders`
+ * moves it.
+ */
+
+const removeBarn = { kind: 'remove', id: 'r1', target: { name: 'barn.main' } };
+
+test('a remove hides the object and drops the collider inside it; the broadphase no longer answers with it', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  const other = rig.physics.addBox(-100, 0, -100, 1, 1, 1);
+  await enter(rig);
+
+  assert.equal(rig.world.barn.visible, false);
+  assert.equal(rig.physics.has(own), false, 'the barn collider is still registered');
+  assert.equal(rig.physics.has(other), true);
+  assert.ok(!rig.physics.query(rig.world.barn.position, 6).includes(own), 'the broadphase still lists the dropped collider');
+  assert.equal(rig.physics.groundHeight(-30, 0, 12, 20), null, 'an invisible wall stands where the barn was');
+  assert.deepEqual(rig.system.report.applied, [{ id: 'r1', ok: true, colliders: 1 }]);
+});
+
+test('a remove never drops the terrain heightfield, even one whose footprint lies inside the box', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  // A 1 m field entirely inside the barn's 4 m box - a genuine candidate, so
+  // the TYPE exclusion is what this test measures.
+  const field = rig.physics.addHeightfield({ heights: new Float32Array(4).fill(0), nx: 2, nz: 2, originX: -30.5, originZ: -0.5, stepX: 1 });
+  const box = new THREE.Box3().setFromObject(rig.world.barn).expandByScalar(0.1);
+  assert.ok(box.containsBox(rig.physics.colliderAabb(field)), 'the field must be a candidate, or this test proves nothing');
+  await enter(rig);
+  assert.equal(rig.physics.heightfields.length, 1);
+  assert.equal(rig.physics.has(field), true);
+  assert.equal(rig.system.report.applied[0].colliders, 0);
+});
+
+test('the tolerance is 0.10 m per axis: an authored +0.08 overhang is dropped, +0.12 is not and reads colliders: 0', async () => {
+  for (const [pad, dropped] of [[0.08, 1], [0.12, 0]]) {
+    const rig = setup(doc([removeBarn], { admin: true }));
+    const c = rig.physics.addBox(-30, 0, 0, 2 + pad, 2 + pad, 2 + pad);
+    await enter(rig);
+    assert.equal(rig.physics.has(c), dropped === 0, `pad ${pad}`);
+    assert.equal(rig.system.report.applied[0].colliders, dropped, `pad ${pad}`);
+    assert.equal(rig.world.barn.visible, false, 'hidden either way');
+  }
+});
+
+test('a Group target drops the colliders of every child inside its union box', async () => {
+  const rig = setup(doc([{ kind: 'remove', id: 'r2', target: { name: 'shed' } }], { admin: true }));
+  const shed = new THREE.Group();
+  shed.name = 'shed';
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 4));
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(3, 0.5, 4));
+  roof.position.y = 2;
+  shed.add(wall, roof);
+  shed.position.set(60, 0, 60);
+  rig.world.group.add(shed);
+  rig.world.group.updateMatrixWorld(true);
+  const a = rig.physics.addBoxFromObject(wall);
+  const b = rig.physics.addBoxFromObject(roof);
+  await enter(rig);
+  assert.equal(rig.physics.has(a), false);
+  assert.equal(rig.physics.has(b), false);
+  assert.equal(rig.system.report.applied[0].colliders, 2);
+});
+
+test('a mesh chunk straddling the box survives; one fully inside is dropped', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  const inside = rig.physics.addTriangleSoup(new Float32Array([-31, 0, -1, -29, 0, -1, -30, 1, 1]));
+  const straddling = rig.physics.addTriangleSoup(new Float32Array([-31, 0, -1, -20, 0, -1, -30, 1, 1]));
+  await enter(rig);
+  assert.equal(rig.physics.has(inside), false);
+  assert.equal(rig.physics.has(straddling), true);
+  assert.equal(rig.system.report.applied[0].colliders, 1);
+});
+
+test('a userData-tagged collider inside the box is left alone; an untagged non-solid one goes with the object', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  const plinth = rig.physics.addBox(-30, 0, 0, 0.5, 0.5, 0.5, { userData: { portal: 'medieval' } });
+  const trigger = rig.physics.addBox(-30, 1, 0, 0.5, 0.5, 0.5, { solid: false });
+  await enter(rig);
+  assert.equal(rig.physics.has(plinth), true, 'a portal plinth was dropped with the barn');
+  assert.equal(rig.physics.has(trigger), false, 'a trigger inside the barn stayed behind');
+  assert.equal(rig.system.report.applied[0].colliders, 1);
+});
+
+test('a remove that would drop more than 200 colliders is refused with reason span, and hides nothing', async () => {
+  const rig = setup(doc([removeBarn], { admin: true }));
+  for (let i = 0; i < 201; i++) {
+    rig.physics.addBox(-31.5 + (i % 20) * 0.15, -1 + Math.floor(i / 20) * 0.2, 0, 0.05, 0.05, 0.05);
+  }
+  const before = rig.physics.colliders.length;
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, true);
+  assert.equal(rig.physics.colliders.length, before);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'r1', reason: 'span' }]);
+  assert.deepEqual(rig.system.report.applied, []);
+});
+
+test('a v1 hidden move is applied as a remove for one release: hidden, colliders dropped, its position ignored', async () => {
+  const rig = setup(doc([{ kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: { x: 40, y: 3, z: -20 }, hidden: true }], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  const authored = rig.world.barn.position.clone();
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, false);
+  assert.deepEqual(rig.world.barn.position.toArray(), authored.toArray(), 'the position of a hidden move is discarded (decision A)');
+  assert.equal(rig.physics.has(own), false);
+  assert.equal(rig.physics.groundHeight(40, -20, 12, 20), null, 'the collider was moved instead of dropped');
+  assert.equal(rig.system.report.applied[0].colliders, 1);
+});
+
+test('re-entering after the remove was dropped from the document registers the collider once, where it was built', async () => {
+  const rig = setup(doc([removeBarn]));
+  const station = solid(rig.physics, rig.world);
+  const [, barnCollider] = station.colliders;
+  await activate(rig, station);
+  assert.equal(rig.physics.has(barnCollider), false, 'precondition: the remove dropped it');
+
+  rig.doc.entries = [];
+  rig.doc.version = 2;
+  await activate(rig, station);
+  assert.equal(rig.world.barn.visible, true);
+  assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
+});
+
+test('leaving for another world after a remove plants nothing of the removed object in the world entered', async () => {
+  const rig = setup(doc([removeBarn]));
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+  const [, barnCollider] = station.colliders;
+  await activate(rig, station);
+  await activate(rig, medieval);
+  assert.equal(rig.world.barn.visible, true, 'the mesh is put back for the next visit');
+  assert.deepEqual(registeredAs(rig.physics, medieval), [0, 1], 'the physics of the world entered holds something that is not its own');
+  assert.equal(rig.physics.has(barnCollider), false);
+});
+
+/* ------------------------------------------------------------------ */
 /* Placing                                                             */
 /* ------------------------------------------------------------------ */
 

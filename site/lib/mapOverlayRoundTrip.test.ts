@@ -95,7 +95,13 @@ describe('an overlay written by the editor applies in the game', () => {
     b.emit('world:changed', { id: w.id, world: w });
     await system.applying;
 
-    expect(w.crate.position.toArray()).toEqual([40, 3, -20]);
+    // The catalogue reports an object's ANCHOR - the world bottom-centre of its
+    // bounds - and a move lands the anchor at the target (post-release fix,
+    // spec section 14). The 2 m crate's bottom therefore sits at y = 3 and its
+    // origin, one metre above it, at y = 4.
+    const box = new THREE.Box3().setFromObject(w.crate);
+    expect([(box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2]).toEqual([40, 3, -20]);
+    expect(w.crate.position.toArray()).toEqual([40, 4, -20]);
     expect(collider!.center.x).toBeCloseTo(40, 6);
     expect(system.report.unresolved).toEqual([]);
     expect(system.report.applied).toEqual([{ id: 'm1', ok: true, colliders: 1 }]);

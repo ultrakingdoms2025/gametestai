@@ -215,14 +215,14 @@ test('a document newer than this build reads is said once, and still applied; an
 
   const newer = setup({ ...doc([moveCrate]), schema: 3 });
   const said = await capture(newer);
-  assert.deepEqual(newer.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(anchorOf(newer.world.crate), [40, 3, -20]);
   assert.equal(said.length, 1, `${said}`);
   assert.match(said[0], /document schema 3 is newer than 2/);
 
   const older = setup(doc([moveCrate]));
   assert.equal(older.doc.schema, 1, 'precondition: the rig serves schema 1');
   const unsaid = await capture(older);
-  assert.deepEqual(older.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(anchorOf(older.world.crate), [40, 3, -20]);
   assert.equal(unsaid.length, 0, `an older document warned: ${unsaid}`);
 });
 
@@ -475,7 +475,7 @@ test('a newer document reached through lookup and then through an entry is said 
   } finally {
     console.warn = warn;
   }
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20], 'the newer document was not applied');
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20], 'the newer document was not applied');
   const said = warned.filter((w) => SCHEMA_WARN.test(w));
   assert.equal(said.length, 1, `${warned}`);
 });
@@ -484,6 +484,13 @@ test('a newer document reached through lookup and then through an entry is said 
 /* Moving                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A move's `position` is where the object's ANCHOR goes - the bottom-centre of
+ * its bounds, the point the catalogue reports and the editor draws. The rig's
+ * crate is a 2 m cube centred on its origin, so a move to y = 3 stands it ON
+ * y = 3: its origin and its collider's centre land at y = 4 (the 4 m barn's at
+ * y = 5). `anchorOf` below measures that from the box, not from the applier.
+ */
 const moveCrate = {
   kind: 'move',
   id: 'm1',
@@ -491,17 +498,18 @@ const moveCrate = {
   position: { x: 40, y: 3, z: -20 },
 };
 
-test('a move resolves by name and sets the ABSOLUTE position it was given', async () => {
+test("a move resolves by name and lands the object's anchor at the ABSOLUTE position it was given", async () => {
   const rig = setup(doc([moveCrate]));
   await enter(rig);
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20]);
+  assert.deepEqual(rig.world.crate.position.toArray(), [40, 4, -20], 'the origin of a centred cube standing on y = 3');
 });
 
 test('applying twice lands in the same place: the position is absolute, not a delta', async () => {
   const rig = setup(doc([moveCrate]));
   await enter(rig);
   await enter(rig);
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20]);
 });
 
 test('a move takes the box collider that sat inside the object with it', async () => {
@@ -514,9 +522,10 @@ test('a move takes the box collider that sat inside the object with it', async (
 
   await enter(rig);
 
+  // The crate stands on y = 3, so the centre of its 2 m collider is at y = 4.
   assert.deepEqual(
     own.center.toArray().map((n) => Math.round(n * 1000) / 1000),
-    [40, 3, -20]
+    [40, 4, -20]
   );
   assert.deepEqual(other.center.toArray(), otherCentre.toArray());
 });
@@ -595,7 +604,7 @@ test('a name nothing answers to is reported unresolved, and the rest still appli
   const rig = setup(doc([ghost, moveCrate]));
   await enter(rig);
 
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20]);
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'gone', reason: 'name' }]);
 });
 
@@ -632,7 +641,7 @@ test('a move undone by leaving the world does not plant the collider in the worl
   const authored = crateCollider.center.clone();
 
   await activate(rig, station);
-  assert.deepEqual(crateCollider.center.toArray(), [40, 3, -20], 'precondition: the move took the collider');
+  assert.deepEqual(crateCollider.center.toArray(), [40, 4, -20], 'precondition: the move took the collider');
 
   // The player portals on. WorldManager has already rebuilt physics for the
   // medieval world by the time this system hears about it.
@@ -673,7 +682,7 @@ test('a same-world re-entry after the entry was dropped leaves each collider reg
   const authored = crateCollider.center.clone();
 
   await activate(rig, station);
-  assert.deepEqual(crateCollider.center.toArray(), [40, 3, -20], 'precondition: the move took the collider');
+  assert.deepEqual(crateCollider.center.toArray(), [40, 4, -20], 'precondition: the move took the collider');
 
   current = doc([], { version: 2 });
   await activate(rig, station);
@@ -695,7 +704,7 @@ test('a document that arrives after the player has portalled on is dropped, not 
   rig.bus.emit('world:changed', { id: station.id, world: station });
   rig.bus.emit('world:changed', { id: medieval.id, world: medieval });
   await rig.system.applying;
-  assert.deepEqual(medieval.crate.position.toArray(), [40, 3, -20], "the medieval world's own document applied");
+  assert.deepEqual(anchorOf(medieval.crate), [40, 3, -20], "the medieval world's own document applied");
 
   release();
   await new Promise((r) => setTimeout(r, 0)); // the station continuation runs to its end
@@ -761,8 +770,8 @@ test('a slow first read that answers an OLDER version than the return visit appl
   await new Promise((r) => setTimeout(r, 0));
 
   assert.equal(rig.system.report.version, 2, 'the stale v1 republished over v2');
-  assert.deepEqual(station.crate.position.toArray(), [-50, 1, 8]);
-  assert.deepEqual(crateCollider.center.toArray().map((n) => Math.round(n * 1000) / 1000), [-50, 1, 8]);
+  assert.deepEqual(anchorOf(station.crate), [-50, 1, 8]);
+  assert.deepEqual(crateCollider.center.toArray().map((n) => Math.round(n * 1000) / 1000), [-50, 2, 8]);
 });
 
 test('leaving a world restores what the overlay moved in it', async () => {
@@ -941,8 +950,8 @@ test('remove then move of one name: the move wins, the remove is superseded, and
   const own = rig.physics.addBoxFromObject(rig.world.barn);
   await enter(rig);
   assert.equal(rig.world.barn.visible, true, 'the superseded remove still hid the barn');
-  assert.deepEqual(rig.world.barn.position.toArray(), [40, 3, -20]);
-  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20], 'the collider did not move with the barn');
+  assert.deepEqual(anchorOf(rig.world.barn), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 5, -20], 'the collider did not move with the barn');
   assert.equal(rig.physics.has(own), true, 'the superseded remove still dropped the collider');
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'r1', reason: 'superseded' }]);
   assert.deepEqual(rig.system.report.applied, [{ id: 'm2', ok: true, colliders: 1 }]);
@@ -965,8 +974,8 @@ test('two moves of one name: only the last applies; the first is superseded rath
   const rig = setup(doc([first, moveCrate], { admin: true }));
   const own = rig.physics.addBoxFromObject(rig.world.crate);
   await enter(rig);
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
-  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20]);
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 4, -20]);
   assert.deepEqual(rig.system.report.applied, [{ id: 'm1', ok: true, colliders: 1 }], 'both moves applied');
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'first', reason: 'superseded' }]);
 });
@@ -981,8 +990,8 @@ test('a v1 hidden move then a move of one name: the move wins and the hidden one
   const own = rig.physics.addBoxFromObject(rig.world.barn);
   await enter(rig);
   assert.equal(rig.world.barn.visible, true, 'the superseded hidden move still hid the barn');
-  assert.deepEqual(rig.world.barn.position.toArray(), [40, 3, -20]);
-  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20], 'the collider did not move with the barn');
+  assert.deepEqual(anchorOf(rig.world.barn), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 5, -20], 'the collider did not move with the barn');
   assert.equal(rig.physics.has(own), true, 'the superseded hidden move still dropped the collider');
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'h1', reason: 'superseded' }]);
   assert.deepEqual(rig.system.report.applied, [{ id: 'm2', ok: true, colliders: 1 }]);
@@ -1050,7 +1059,7 @@ test('an {id} entry is reported pending-rebuild when the document is newer than 
   rig.world.builtVersion = 2;
   await enter(rig);
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'i1', reason: 'pending-rebuild' }, { id: 'i2', reason: 'pending-rebuild' }]);
-  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20], 'the named move beside them still applies');
+  assert.deepEqual(anchorOf(rig.world.crate), [40, 3, -20], 'the named move beside them still applies');
   rig.world.builtVersion = 3;
   await enter(rig);
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'i1', reason: 'id' }, { id: 'i2', reason: 'id' }]);
@@ -1197,6 +1206,105 @@ test('an admin client reports the world catalogue back so the editor can offer r
   const names = post.body.objects.map((o) => o.name);
   assert.ok(names.includes('crate.alpha'));
   assert.ok(names.includes('barn.main'));
+});
+
+/* ------------------------------------------------------------------ */
+/* Where an object stands: the catalogue's anchor                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The world-space bottom-centre of an object's bounds - the point the editor
+ * draws, and the point a move lands. Computed here from the box directly, so
+ * the tests below do not take the applier's word for it.
+ */
+function anchorOf(object) {
+  object.updateWorldMatrix(true, false);
+  const box = new THREE.Box3().setFromObject(object);
+  return [(box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2].map(r3);
+}
+
+/**
+ * A world built the way station builds its districts: a named Group whose own
+ * position is the origin, holding a Mesh whose geometry is baked in WORLD
+ * space. `getWorldPosition` on such a group answers (0, 0, 0) - which is what
+ * 755 of station's 756 catalogue entries reported in production, so every
+ * mark on the editor's map sat on one pixel and nothing could be selected.
+ */
+function makeBakedWorld() {
+  const world = makeWorld();
+
+  const district = new THREE.Group();
+  district.name = 'district.baked';
+  // A 2 m cube whose centre is at world (10, 2, 10): it stands on y = 1.
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2).translate(10, 2, 10));
+  district.add(shell);
+
+  // Named, and nothing to draw: a light's parent, an empty layer.
+  const lamp = new THREE.Group();
+  lamp.name = 'lamp.empty';
+  lamp.position.set(3, 4, 5);
+
+  // A prop authored with its origin at its base, the way a placed prop is.
+  const pedestal = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2).translate(0, 1, 0));
+  pedestal.name = 'pedestal.based';
+  pedestal.position.set(5, 0, 5);
+
+  world.group.add(district, lamp, pedestal);
+  world.group.updateMatrixWorld(true);
+  Object.assign(world, { district, shell, lamp, pedestal });
+  return world;
+}
+
+/** The catalogue entry the admin's report carried for `name`. */
+function catalogued(rig, name) {
+  const post = rig.fetchImpl.calls.find((c) => c.method === 'POST');
+  assert.ok(post, 'expected a report POST');
+  return post.body.objects.find((o) => o.name === name);
+}
+
+test('the catalogue reports where a baked Group STANDS - the bottom-centre of its bounds - not its origin', async () => {
+  const rig = setup(doc([], { admin: true }), { world: makeBakedWorld() });
+  await enter(rig);
+  assert.deepEqual(catalogued(rig, 'district.baked').position, { x: 10, y: 1, z: 10 });
+});
+
+test('a Mesh whose geometry is centred on its origin reports its base, one half-height below its origin', async () => {
+  const rig = setup(doc([], { admin: true }));
+  await enter(rig);
+  // crate.alpha is a 2 m cube at (10, 0, 10): it stands on y = -1.
+  assert.deepEqual(catalogued(rig, 'crate.alpha').position, { x: 10, y: -1, z: 10 });
+});
+
+test('a prop whose origin is at its base reports its origin: the anchor and the position agree', async () => {
+  const rig = setup(doc([], { admin: true }), { world: makeBakedWorld() });
+  await enter(rig);
+  assert.deepEqual(catalogued(rig, 'pedestal.based').position, { x: 5, y: 0, z: 5 });
+});
+
+test('a named node with nothing to draw still reports its world position', async () => {
+  const rig = setup(doc([], { admin: true }), { world: makeBakedWorld() });
+  await enter(rig);
+  assert.deepEqual(catalogued(rig, 'lamp.empty').position, { x: 3, y: 4, z: 5 });
+});
+
+test('a move lands the anchor of a baked Group at the position given, takes its collider by the same delta, and the undo restores both', async () => {
+  const move = { kind: 'move', id: 'mb', target: { name: 'district.baked' }, position: { x: 20, y: 1, z: 10 } };
+  let current = doc([move], { admin: true });
+  const rig = setup(() => current, { world: makeBakedWorld() });
+  const own = rig.physics.addBoxFromObject(rig.world.shell);
+  assert.deepEqual(own.center.toArray().map(r3), [10, 2, 10], 'precondition: the collider sits where the shell was baked');
+
+  await enter(rig);
+  assert.deepEqual(anchorOf(rig.world.district), [20, 1, 10], 'the anchor did not land where the move said');
+  assert.deepEqual(rig.world.district.position.toArray(), [10, 0, 0], 'the group moved by other than the anchor delta');
+  assert.deepEqual(own.center.toArray().map(r3), [20, 2, 10], 'the collider did not move by the same delta');
+  assert.deepEqual(rig.system.report.applied, [{ id: 'mb', ok: true, colliders: 1 }]);
+
+  // The admin dropped the entry and saved again.
+  current = doc([], { admin: true, version: 2 });
+  await enter(rig);
+  assert.deepEqual(rig.world.district.position.toArray(), [0, 0, 0], 'the undo did not restore the authored position');
+  assert.deepEqual(own.center.toArray().map(r3), [10, 2, 10], 'the undo did not restore the collider');
 });
 
 test('a normal player never posts to an admin route', async () => {

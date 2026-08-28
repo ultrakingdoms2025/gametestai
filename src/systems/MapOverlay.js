@@ -35,6 +35,13 @@ import { versionOf } from './overlayVersion.js';
  * crate would walk a little further off each time the player came back. An
  * absolute position is idempotent, and there is a test that enters twice.
  *
+ * "Where the object goes" is where its ANCHOR goes: the world-space
+ * bottom-centre of its bounds (`_anchor`), the same point the catalogue
+ * reports for it. Not its `Object3D.position` - for station's baked Groups
+ * that is the origin whatever the geometry says. The applier measures the
+ * anchor at apply time and translates by the difference, which is still
+ * absolute: the anchor lands at `position` however many times it runs.
+ *
  * ── Restore, then apply ────────────────────────────────────────────────────
  *
  * Every object this touches has its original transform recorded before the
@@ -801,18 +808,27 @@ export class MapOverlay {
     const to = entry.position;
     let colliders = 0;
     if (to && Number.isFinite(to.x) && Number.isFinite(to.y) && Number.isFinite(to.z)) {
-      // The world AABB has to be taken BEFORE the move, because it is what
-      // decides which colliders belong to this object.
-      target.updateWorldMatrix(true, false);
-      _box.setFromObject(target);
-      target.getWorldPosition(_before);
+      // The world AABB is taken BEFORE the move: it decides which colliders
+      // belong to this object, and its bottom-centre is the anchor the move
+      // lands at `position`. `_anchor` leaves the box in `_box` for the
+      // collider sweep, so both read one measurement of the untouched object.
+      this._anchor(target, _before);
+      _delta.set(to.x, to.y, to.z).sub(_before);
 
-      target.position.set(to.x, to.y, to.z);
+      // `_delta` is a world-space translation; `target.position` is in its
+      // parent's space. Carried through the parent's frame so a rotated or
+      // scaled ancestor cannot bend it - the same world delta then moves the
+      // colliders.
+      const parent = target.parent;
+      if (parent) {
+        parent.worldToLocal(_after.copy(_before).add(_delta));
+        parent.worldToLocal(_before);
+        target.position.add(_after.sub(_before));
+      } else {
+        target.position.add(_delta);
+      }
       if (Number.isFinite(entry.rotationY)) target.rotation.y = entry.rotationY;
       target.updateMatrixWorld(true);
-      target.getWorldPosition(_after);
-
-      _delta.copy(_after).sub(_before);
       colliders = this._moveColliders(_box, _delta);
     } else if (Number.isFinite(entry.rotationY)) {
       target.rotation.y = entry.rotationY;
@@ -1071,13 +1087,42 @@ export class MapOverlay {
   /* ------------------------------------------------------------------ */
 
   /**
-   * Every named object in the world, nearest the root first.
+   * Where a node STANDS: the world-space bottom-centre of its bounds, into
+   * `out`. Its world position when it has nothing to draw (a light's parent,
+   * an empty layer) - the box of such a node is empty, and its origin is the
+   * only place it has.
+   *
+   * Not `getWorldPosition`. Station's named objects are Groups whose geometry
+   * is baked in world space and whose own position is the origin, so their
+   * world position IS the origin: in production, 755 of the station's 756
+   * catalogue entries reported (0, 0, 0), every mark on the editor's map sat
+   * on one pixel, and nothing could be selected. The bottom-centre is also
+   * what the editor's ground check wants - an object standing on the ground
+   * has its anchor's Y at the ground.
+   *
+   * Leaves `_box` holding the node's world AABB, which `_applyMove` reuses
+   * for its collider sweep: the anchor and the sweep read one measurement.
+   */
+  _anchor(node, out) {
+    node.updateWorldMatrix(true, false);
+    _box.setFromObject(node);
+    if (_box.isEmpty()) return node.getWorldPosition(out);
+    return out.set((_box.min.x + _box.max.x) / 2, _box.min.y, (_box.min.z + _box.max.z) / 2);
+  }
+
+  /**
+   * Every named object in the world, nearest the root first, each with the
+   * anchor it stands on (`_anchor`).
    *
    * This is the only way the editor can offer real object names: nothing on the
    * server knows what a 12,945-line procedural world built. Breadth-first so
    * that when the cap bites it keeps the large, obviously-editable things —
    * buildings and props — rather than a thousand door handles from one corner
    * of the map.
+   *
+   * Cost: one `Box3.setFromObject` per named node, which walks that node's
+   * subtree - so a district Group pays for every mesh under it, and a named
+   * node under a named node is walked twice. Admin-only, once per visit.
    */
   _catalogue(world) {
     const out = [];
@@ -1091,7 +1136,7 @@ export class MapOverlay {
       const name = typeof node.name === 'string' ? node.name.trim() : '';
       if (name && node !== world.group && !seen.has(name)) {
         seen.add(name);
-        node.getWorldPosition(at);
+        this._anchor(node, at);
         out.push({
           name,
           position: {

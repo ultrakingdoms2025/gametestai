@@ -40,6 +40,15 @@ export class World {
     /** Colliders this world registered, so they can be removed on unload. */
     this.colliders = [];
 
+    /**
+     * The overlay version this build consumed, 0 when none (spec §7). Written
+     * by `WorldManager._runBuild` on EVERY build - a volatile rebuild refreshes
+     * it - and read by MapOverlay into the report's `builtVersion`. One of the
+     * two properties a world ever sees of the overlay; the other, `registry`,
+     * arrives in stage 3.
+     */
+    this.builtVersion = 0;
+
     /** Where the player appears when entering this world. */
     this.playerSpawn = new THREE.Vector3(0, 2, 0);
     /** Player yaw on spawn, radians. */
@@ -192,6 +201,7 @@ export class World {
     this.group.clear();
     this.colliders.length = 0;
     this._built = false;
+    this.builtVersion = 0;
   }
 
   /**

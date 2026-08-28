@@ -31,6 +31,19 @@ const RESOLVED = Promise.resolve();
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
+/**
+ * How long a build waits for the overlay provider (spec §4.1, owner
+ * decision G). Behind the loading gate (`engine.running` false) a wait costs
+ * nothing visible and a cold serverless function needs seconds, so the
+ * ceiling is generous but FINITE: a hanging fetch must not hold the boot for
+ * ever, and it would fail frame-gaps as `timedOut` rather than as itself. In
+ * the player's frames - a prefetch, or a portal forcing its destination - the
+ * world is wanted now, and 1.5 s is the most a held gateway may wait for it.
+ */
+const OVERLAY_GATE_MS = 8000;
+const OVERLAY_BACKGROUND_MS = 1500;
+const OVERLAY_TIMED_OUT = Symbol('overlay timed out');
+
 export class WorldManager {
   /**
    * @param {{ scene: THREE.Scene, engine: any, physics: import('../physics/Physics.js').Physics,
@@ -54,6 +67,12 @@ export class WorldManager {
     this._activation = null;
 
     this._active = null;
+
+    /** The provider ceilings, on the instance so a test can shorten one. */
+    this.overlayGateMs = OVERLAY_GATE_MS;
+    this.overlayBackgroundMs = OVERLAY_BACKGROUND_MS;
+    /** Worlds whose overlay failure has been said. @type {Set<string>} */
+    this._overlayWarned = new Set();
 
     /**
      * What the last crossing cost, step by step, in milliseconds.
@@ -289,6 +308,11 @@ export class WorldManager {
 
     try {
       await report(0, `Generating ${world.displayName}`);
+      // The overlay, from whatever provides one (spec §4.1). Asked here, before
+      // the world builds and inside the scratch-physics window, because stage
+      // 3's primitives will consult it as they build; today only its version
+      // is kept, on the world, for the report.
+      world.builtVersion = await this._overlayVersion(world);
       await world.ensureBuilt(report);
     } finally {
       world.physics = realPhysics;
@@ -306,6 +330,51 @@ export class WorldManager {
     world.group.visible = false;
     await report(1, `${world.displayName} ready`);
     return world;
+  }
+
+  /**
+   * The overlay version this build consumes: what `ctx.overlayProvider`
+   * answers for the world, or 0.
+   *
+   * Reads THE MANAGER'S ctx, not the world's: `getWorld` spreads a copy per
+   * world, and main.js sets the provider on the shared object after the
+   * worlds exist. No provider means no await and no timer - seven headless
+   * suites build worlds through this class with nothing on ctx, and the
+   * slicing test counts every frame a build hands back.
+   *
+   * A failure or a timeout is a world with no overlay, which is what every
+   * world was before this existed: said once per world, and MapOverlay still
+   * applies named-object entries live after the build.
+   *
+   * @param {import('./World.js').World} world
+   * @returns {Promise<number>}
+   */
+  async _overlayVersion(world) {
+    const provider = this.ctx?.overlayProvider;
+    if (typeof provider !== 'function') return 0;
+    const limit = this.engine?.running ? this.overlayBackgroundMs : this.overlayGateMs;
+    let timer = null;
+    try {
+      const lookup = Promise.resolve().then(() => provider(world.id));
+      const fuse = new Promise((resolve) => { timer = setTimeout(() => resolve(OVERLAY_TIMED_OUT), limit); });
+      const doc = await Promise.race([lookup, fuse]);
+      if (doc === OVERLAY_TIMED_OUT) {
+        this._overlayUnavailable(world.id, `no answer within ${limit} ms`);
+        return 0;
+      }
+      return Math.max(0, Math.floor(Number(doc?.version) || 0));
+    } catch (err) {
+      this._overlayUnavailable(world.id, err?.message ?? err);
+      return 0;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  _overlayUnavailable(id, why) {
+    if (this._overlayWarned.has(id)) return;
+    this._overlayWarned.add(id);
+    console.warn(`[WorldManager] overlay unavailable for "${id}": ${why}; building without it`);
   }
 
   /* ------------------------------------------------------------------ */

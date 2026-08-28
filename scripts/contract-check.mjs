@@ -104,6 +104,11 @@ const CONTRACT = [
     exports: ['WorldManager'],
     methods: ['register', 'build', 'activate'],
   },
+  /* The base world. Registered for `builtVersion`, which is not a method and
+   * which the `methods` regex cannot see: WorldManager._runBuild writes it and
+   * MapOverlay reads it into the report, and a rename is a report that says
+   * "built at 0" for every world for ever. Takes the count 131 -> 132. */
+  { file: 'src/worlds/World.js', exports: ['World'], fields: ['builtVersion'] },
   {
     file: 'src/systems/Portals.js',
     exports: ['PortalSystem'],

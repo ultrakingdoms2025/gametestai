@@ -83,6 +83,10 @@ jobs:
   # the Phase 1 acceptance criterion came from a hand-run of `frame-gaps.mjs` on
   # one developer's machine, so a regression in world entry, mount launch or
   # world traversal shipped in silence and was found, if at all, by playing.
+  # Since 2026-08-28 the map editor's ground sampler runs inside the gated
+  # measurement too (`--layout-sample`), and a sampler that does not finish
+  # the entry world FAILS the gate rather than passing on ground it never
+  # walked.
   #
   # IT DOES NOT ASSERT MILLISECONDS, AND THAT IS THE DESIGN. The long note on
   # `BASELINES` in `scripts/frame-gaps.mjs` carries the full argument; the short
@@ -182,6 +186,25 @@ jobs:
       # also confirmed movement/interaction pass on this runner, and that its
       # watchdog sees 10 s no-rAF stretches - the clock stays printed, never
       # asserted.
+      #
+      # `--layout-sample` since 2026-08-28: the map editor's ground sampler
+      # is admin-only and this harness has no session, so until then every
+      # gated run measured a game in which the sampler never started. Now it
+      # samples the entry world inside the measured window, in a `layout`
+      # phase of its own, and `--gate` FAILS on a sampler that did not finish
+      # (see `layoutSampled` in frame-gaps.mjs). `--layout-timeout` is sized
+      # from the sampler's shape, not from a wish: it casts for at most 2 ms
+      # per rendered frame, so its wall time is (frames it needs) / fps, and
+      # a slower CPU needs MORE frames. The only measured run is local: an
+      # RTX 5080, chain-warmed, station's 62 001 cells in 34.0-34.5 s while
+      # the layout phase saw ~9.4 fps (243 frames in 25.8 s) with the
+      # 17-world chain competing (.probe/gaps/stage2-layout*). The
+      # swiftshader baseline records no frame rate, only 10 s starvation
+      # stretches; call it 5-10 fps, which is 1-2x the local phase's, and a
+      # runner CPU that casts 3-5x fewer cells per 2 ms frame stretches 34 s
+      # to ~1-6 min. 600 s covers the worst of that; if it still times out,
+      # raise it and record the printed `layoutWaitMs` here rather than
+      # dropping the flag.
       - name: Frame-gap gate (cold)
         env:
           FRAME_GAPS_GL: swiftshader
@@ -190,6 +213,7 @@ jobs:
           --entry station --worlds station
           --events keybind,weapon,mount,interaction,movement
           --settle 960000
+          --layout-sample --layout-timeout 600000
           --out .probe/ci-frame-gaps
 
       # The run's own JSON, whatever the verdict. A failure that cannot be read

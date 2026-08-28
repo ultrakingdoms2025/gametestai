@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CONSUMABLE_SOURCE_KEYS, NEVER_PLACEABLE_ITEM_IDS, placeableReason } from './mapPlaceable';
+import { CONSUMABLE_SOURCE_KEYS, MOUNT_IDS, NEVER_PLACEABLE_ITEM_IDS, placeableReason } from './mapPlaceable';
 
 /**
  * THE PLACEABLE RULE, PINNED ACROSS THE GAME/SITE BOUNDARY.
@@ -25,6 +25,7 @@ import { CONSUMABLE_SOURCE_KEYS, NEVER_PLACEABLE_ITEM_IDS, placeableReason } fro
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MARKETPLACE = resolve(HERE, '..', '..', 'src', 'systems', 'Marketplace.js');
 const APPLIER = resolve(HERE, '..', '..', 'src', 'systems', 'MapOverlay.js');
+const LIVERY = resolve(HERE, '..', '..', 'src', 'mounts', 'Livery.js');
 const NOT_MERGED = 'game branch not merged here; the pin is inert until both branches are in one tree';
 
 /** The keys of the `MARKETPLACE_CONSUMABLE_ITEMS` object literal: one `key: 'value',` line each. */
@@ -83,7 +84,19 @@ describe('the placeable contract between the game and mapPlaceable.ts', () => {
     const parser = /export function mountPowerGrantFor\([\s\S]*?\n\}/.exec(readFileSync(MARKETPLACE, 'utf8'))?.[0] ?? '';
     expect(parser, 'Marketplace.js exports no mountPowerGrantFor to read').not.toBe('');
     expect(parser).toMatch(/effect !== ['"]grant_mount_power['"]/);
+    // The three fields the parser reads, so a rename on the game side (`mount_id`, `level`) fails here.
+    expect(parser).toMatch(/typeof config\.mount === ['"]string['"]/);
+    expect(parser).toMatch(/typeof config\.power === ['"]string['"]/);
+    expect(parser).toMatch(/config\.tier\b/);
     expect(placeableReason({ source_key: 'unmapped', config: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3 } })).toBeNull();
+  });
+
+  it("the mount ids the site offers are exactly the keys of the game's MOUNT_STATS table (src/mounts/Livery.js)", (ctx) => {
+    if (!existsSync(LIVERY)) return ctx.skip(NOT_MERGED);
+    const block = /export const MOUNT_STATS = \{([^}]*)\}/.exec(readFileSync(LIVERY, 'utf8'));
+    const game = block ? [...block[1].matchAll(/^\s*([a-z]+):\s*\[/gm)].map((m) => m[1]).sort() : [];
+    expect(game, 'Livery.js holds no MOUNT_STATS literal to pin').not.toHaveLength(0);
+    expect(game).toEqual([...MOUNT_IDS].sort());
   });
 
   it('reads the three shapes from a fixture, so a game-side rewrite into a shape this cannot read fails loud rather than passing empty', () => {

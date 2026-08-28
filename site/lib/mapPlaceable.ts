@@ -42,10 +42,11 @@
  * defines or its mount does not sell the power, and the pending row then says so from the report
  * (`rowsWithVerdicts` in `mapEditorState.ts`). The game's `item` reason remains the final word.
  *
- * For a mount row this asks a little MORE than the game's parser does: a string `mount` (the game
- * defaults a missing one to the car) and an integer `tier` of 1 to 3 (the game clamps to at least 1 and
- * caps nothing). Every seeded row satisfies both; a row that does not is a hand-authored one, and
- * offering it would place a grant the catalogue never sells.
+ * For a mount row this asks a little MORE than the game's parser does: a `mount` in `MOUNT_IDS` (the game
+ * defaults a missing one to the car, and its `sellsPower` answers true for a mount no class declares)
+ * and an integer `tier` of 1 to 3 (the game clamps to at least 1 and caps nothing). Every seeded row
+ * satisfies both; a row that does not is a hand-authored one, and offering it would place a grant the
+ * catalogue never sells - or, for an unknown mount, one that grants to nothing.
  *
  * ── Why hide rather than grey out ─────────────────────────────────────────────────────────────────
  *
@@ -80,8 +81,16 @@ export const NEVER_PLACEABLE_ITEM_IDS: ReadonlySet<string> = new Set(['credits']
 /** The reason for everything that has no pickup form and no mapped key: a heal, a config-less row, an effect under an unmapped key. */
 export const NOT_A_PICKUP_TEXT = 'not a pickup the game can spawn';
 
+/**
+ * The mounts a grant may name: the keys of `MOUNT_STATS` in `src/mounts/Livery.js`, pinned by
+ * `mapPlaceableContract.test.ts`. The game's `sellsPower` is LENIENT for a mount no class declares - it
+ * answers true - so this set, not the game, is what keeps a `unicorn` row from reaching the applier and
+ * being granted to nothing.
+ */
+export const MOUNT_IDS: ReadonlySet<string> = new Set(['dragon', 'eagle', 'horse', 'hoverboard', 'bicycle', 'car']);
+
 /** A `grant_mount_power` row this will not offer: the game would parse it, but not into any grant the catalogue sells. */
-export const MOUNT_POWER_TEXT = 'a mount upgrade must name its mount, its power and a tier of 1 to 3';
+export const MOUNT_POWER_TEXT = 'a mount upgrade must name one of the six mounts, its power and a tier of 1 to 3';
 export const COSMETIC_TEXT = 'cosmetics unlock in the wardrobe; they cannot lie on the ground';
 export const CREDITS_TEXT = 'credits are a balance, not a pickup';
 
@@ -98,11 +107,11 @@ function consumableKeyMapped(key: string): boolean {
   return cut > 0 && CONSUMABLE_SOURCE_KEYS.has(key.slice(0, cut));
 }
 
-/** A mount upgrade the catalogue could sell: a named mount and power, and a tier of I, II or III. */
+/** A mount upgrade the catalogue could sell: one of the game's mounts, a named power, and a tier of I, II or III. */
 function wellFormedMountPower(config: Record<string, unknown>): boolean {
   const tier = config.tier;
   return (
-    typeof config.mount === 'string' && config.mount !== '' &&
+    typeof config.mount === 'string' && MOUNT_IDS.has(config.mount) &&
     typeof config.power === 'string' && config.power !== '' &&
     typeof tier === 'number' && Number.isInteger(tier) && tier >= 1 && tier <= 3
   );

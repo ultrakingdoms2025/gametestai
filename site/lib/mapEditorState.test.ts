@@ -46,6 +46,7 @@ import {
   groundStatus,
   hitCandidates,
   hoverInfoFor,
+  isMountPowerEntry,
   layoutAgeText,
   moveEntryFor,
   pendingRows,
@@ -358,6 +359,27 @@ describe('rowsWithVerdicts', () => {
   it('two reports of one id: the first listed wins, as the applier pushes one per entry', () => {
     expect(rowsWithVerdicts(rows, [{ id: 'p1', reason: 'item' }, { id: 'p1', reason: 'pool' }])[0].verdict).toContain('cannot spawn this item');
   });
+
+  it('a verdict from a report of an OLDER version than the one saved says which version it judged, so a fixed row is not read as still refused', () => {
+    const unresolved = [{ id: 'p1', reason: 'item' }];
+    expect(rowsWithVerdicts(rows, unresolved, 3, 4)[0].verdict).toBe(
+      '⛔ not applied in v3 — the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed'
+    );
+    // The same version on both sides is the plain verdict; so is a call that names no versions.
+    expect(rowsWithVerdicts(rows, unresolved, 4, 4)[0].verdict).toBe(
+      '⛔ not applied — the game cannot spawn this item as a pickup — only ammo packs, inventory items and mount upgrades the mount sells can be placed'
+    );
+    expect(rowsWithVerdicts(rows, unresolved)[0].verdict).toMatch(/^⛔ not applied — /);
+  });
+
+  it('a mount upgrade row carries no ×N: a tier is not a stack, and the applier ignores the quantity', () => {
+    const [mount, ammo] = pendingRows(entries.slice(0, 2), [[], []]);
+    expect(mount.label).toBe('Bicycle Speed I');
+    expect(ammo.label).toBe('Rifle rounds ×1');
+    expect(isMountPowerEntry(entries[0])).toBe(true);
+    expect(isMountPowerEntry(entries[1])).toBe(false);
+    expect(isMountPowerEntry(entries[2])).toBe(false);
+  });
 });
 
 describe('unresolvedLines', () => {
@@ -651,6 +673,9 @@ describe('hitCandidates and hoverInfoFor', () => {
   });
   it('hoverInfoFor an entry reads item ×qty or the target name, and null for an unknown key', () => {
     expect(hoverInfoFor(objects, entries, 'e:p')).toEqual({ label: 'S ×1', x: 4, y: 5, z: 6 });
+    // A mount upgrade has no ×qty on hover either.
+    const mount: Draft = { _key: 'mp', kind: 'place', id: 'mp', item: { source_key: 'mount_bicycle_power_1:station', name: 'Bicycle Speed I', config: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 1 } }, position: { x: 1, y: 2, z: 3 }, quantity: 5 };
+    expect(hoverInfoFor(objects, [...entries, mount], 'e:mp')).toEqual({ label: 'Bicycle Speed I', x: 1, y: 2, z: 3 });
     expect(hoverInfoFor(objects, entries, 'e:f')).toEqual({ label: 'ghost', x: 20, y: 1, z: 21 });
     expect(hoverInfoFor(objects, entries, 'e:zzz')).toBeNull();
     expect(hoverInfoFor(objects, entries, 'o:unknown')).toBeNull();

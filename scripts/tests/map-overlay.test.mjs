@@ -124,11 +124,17 @@ function doc(entries, { version = 1, admin = false, world = 'station' } = {}) {
 /**
  * The two MountManager reads a placed mount upgrade needs, over the REAL
  * `MOUNT_STATS` table (Fire is a dragon's alone) and a hand-set ledger of
- * what the rider already owns.
+ * what the rider already owns. `owned` is read at call time, so a test can
+ * write to it after the apply to stand for "the account's save arrived".
+ *
+ * Mirrors production's leniency for an UNKNOWN mount id: `_knownStat`
+ * answers true when no class declares `STATS`, so `sellsPower('unicorn',
+ * 'fire')` is true in the game and must be true here - the site's rule is
+ * what keeps an unknown mount from reaching the applier, not this.
  */
 function makeMounts(owned = {}) {
   return {
-    sellsPower: (mount, power) => (MOUNT_STATS[mount] ?? []).includes(power),
+    sellsPower: (mount, power) => (MOUNT_STATS[mount] ? MOUNT_STATS[mount].includes(power) : true),
     getPowers: (mount) => ({ ...(owned[mount] ?? {}) }),
   };
 }
@@ -1304,6 +1310,52 @@ test('a tier is not a stack: quantity 5 is still one pickup holding one grant', 
   assert.equal(rig.loot.spawned.length, 1);
   assert.equal(rig.loot.spawned[0].contents.length, 1);
   assert.equal(rig.loot.spawned[0].contents[0].qty, 1);
+});
+
+test('once the ledger is restored (game:started), a placed upgrade the rider turns out to own is despawned silently; an unowned one stays', async () => {
+  /* On the ENTRY world the apply-time check reads an EMPTY ledger: boot
+   * activates the start world (and so applies its overlay) before the
+   * account session and the local save restore the mounts, and the
+   * already-active world gets no second `world:changed`. `game:started`
+   * fires after both restores, so the sweep there is what makes "once per
+   * account" true on station - the world the nine sit on. */
+  const ledger = {};
+  const hoverboardSpeedI = {
+    kind: 'place',
+    id: 'p7',
+    item: { source_key: 'mount_hoverboard_power_1:station', name: 'Hoverboard Speed I', config: { effect: 'grant_mount_power', mount: 'hoverboard', power: 'power', tier: 1 } },
+    position: { x: 20, y: 0, z: 20 },
+    quantity: 1,
+  };
+  const rig = setup(doc([bicycleSpeedIII, hoverboardSpeedI]), { mounts: makeMounts(ledger) });
+  await enter(rig);
+  assert.equal(rig.loot.spawned.length, 2, 'an empty ledger spawns both');
+  const [bicycle, hoverboard] = rig.loot.spawned;
+
+  // The save arrives: the rider already holds Bicycle Speed III.
+  ledger.bicycle = { power: 3 };
+  rig.bus.emit('game:started');
+
+  assert.deepEqual(rig.loot.despawned, [bicycle], 'the owned upgrade is taken away, and only it');
+  assert.equal(bicycle.active, false);
+  assert.equal(hoverboard.active, true, 'the unowned upgrade is still there');
+  assert.ok(!rig.system._placed.includes(bicycle), 'a despawned pickup is no longer tracked');
+  assert.ok(rig.system._placed.includes(hoverboard));
+  // Silent: no collection, no grant - the rider already has it.
+  assert.equal(rig.bus.emitted.filter((e) => e.name === 'loot:collected' || e.name === 'mount:power:buy').length, 0);
+  // Leaving the world despawns the survivor once, and nothing twice.
+  rig.bus.emit('world:changed', { id: 'other', world: makeWorld('other') });
+  await rig.system.applying;
+  assert.deepEqual(rig.loot.despawned, [bicycle, hoverboard]);
+});
+
+test('a game:started before any world, or with an ammo pickup placed, is a no-op for the sweep', async () => {
+  const rig = setup(doc([placeAmmo]), { mounts: makeMounts({ bicycle: { power: 3 } }) });
+  rig.bus.emit('game:started');
+  await enter(rig);
+  rig.bus.emit('game:started');
+  assert.equal(rig.loot.spawned.length, 1);
+  assert.equal(rig.loot.despawned.length, 0, 'an item pickup has no tier to own');
 });
 
 test('re-entering the world despawns and re-spawns a placed mount upgrade exactly as it does an ammo pack', async () => {

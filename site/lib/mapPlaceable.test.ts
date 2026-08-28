@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { buildMarketplaceSeedItems } from './marketplaceCatalog';
 import {
   CONSUMABLE_SOURCE_KEYS,
+  MOUNT_IDS,
   MOUNT_POWER_TEXT,
   NOT_A_PICKUP_TEXT,
   hiddenItemsText,
@@ -76,10 +77,15 @@ describe('placeableReason', () => {
     for (const bad of [
       { ...ok, mount: undefined }, { ...ok, mount: 7 }, { ...ok, power: undefined }, { ...ok, power: '' },
       { ...ok, tier: 0 }, { ...ok, tier: 4 }, { ...ok, tier: 1.5 }, { ...ok, tier: '2' }, { ...ok, tier: undefined },
+      // An unknown mount id: the game's `sellsPower` is LENIENT for a mount no class declares (it answers true),
+      // so the site is what keeps a `unicorn` from reaching the applier and being granted to nothing.
+      { ...ok, mount: 'unicorn' }, { ...ok, mount: 'Bicycle' }, { ...ok, mount: '' },
     ]) {
       expect(placeableReason({ source_key: 'x', config: bad as Record<string, unknown> }), JSON.stringify(bad)).toBe(MOUNT_POWER_TEXT);
     }
-    expect(MOUNT_POWER_TEXT).toBe('a mount upgrade must name its mount, its power and a tier of 1 to 3');
+    for (const mount of MOUNT_IDS) expect(placeableReason({ source_key: 'x', config: { ...ok, mount } }), mount).toBeNull();
+    expect([...MOUNT_IDS].sort()).toEqual(['bicycle', 'car', 'dragon', 'eagle', 'horse', 'hoverboard']);
+    expect(MOUNT_POWER_TEXT).toBe('a mount upgrade must name one of the six mounts, its power and a tier of 1 to 3');
   });
 
   it('a cosmetic unlocks in the wardrobe', () => {

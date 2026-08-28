@@ -316,6 +316,18 @@ export class MapOverlay {
           this.applying = this._onWorldChanged(id, world);
         })
       );
+      /* The ENTRY world's overlay is applied before the account's ledger
+       * exists: boot activates the start world (main.js `activate(startWorld)`
+       * → `world:changed` → `_applyPlace` reads `mounts.getPowers`) BEFORE
+       * `hydrateAccountSession` restores the remote mounts and before the
+       * local save's `_restoreMounts` on CONTINUE, and the already-active
+       * world gets no second `world:changed`. So on every fresh boot the
+       * apply-time owned check reads an empty ledger and spawns upgrades the
+       * rider already holds - harmless in state (`grantPower` is a max) and
+       * false as a promise. `game:started` fires after both restores; the
+       * sweep there is what makes "once per account" true on the world the
+       * player boots into. */
+      this._offs.push(bus.on('game:started', () => this._sweepOwned()));
     }
     /* Once, for the life of the system - not per world. Idle when there is
      * no job; frame-gaps attributes it as `u:mapOverlay` because it is named
@@ -1088,8 +1100,49 @@ export class MapOverlay {
   /* Placing                                                             */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * True when the rider already holds `grant`'s tier, or a higher one, on
+   * that mount: `grantPower` is max(existing, tier), so collecting it would
+   * change nothing. Read at apply time (the fast path) and again at
+   * `game:started`, once the account's ledger is actually there.
+   */
+  _ownsGrant(grant) {
+    const owned = Number(this.mounts?.getPowers?.(grant.mount)?.[grant.power] ?? 0);
+    return owned >= grant.tier;
+  }
+
+  /**
+   * Take away every placed upgrade the restored ledger says the rider owns.
+   * Silent - `despawn`, never a collect - so no `loot:collected` and no
+   * `mount:power:buy` for a tier that was already theirs. Item pickups have
+   * no tier and are left alone. See the `game:started` subscription.
+   */
+  _sweepOwned() {
+    if (!this._placed.length) return;
+    const keep = [];
+    for (const pickup of this._placed) {
+      const grant = pickup?.contents?.[0]?.grant;
+      if (grant && this._ownsGrant(grant)) {
+        try {
+          this.loot?.despawn?.(pickup);
+        } catch {
+          /* a pickup the loot pool already recycled is not an error */
+        }
+        continue;
+      }
+      keep.push(pickup);
+    }
+    this._placed.length = 0;
+    this._placed.push(...keep);
+  }
+
   _applyPlace(world, entry, applied, unresolved) {
     const grant = grantForPlacement(entry.item);
+    const power = grant?.grant ?? null;
+    if (!grant) {
+      unresolved.push({ id: String(entry.id ?? ''), reason: 'item' });
+      return;
+    }
     /* A mount upgrade is refused with the SAME reason as an unknown item when
      * the mount does not sell the power (Fire on a horse): `MountManager.
      * grantPower` would drop the grant silently, and a pickup that grants
@@ -1097,9 +1150,10 @@ export class MapOverlay {
      * a game that cannot vouch for the grant does not spawn it. The reason
      * set is pinned by site/lib/mapReasonsContract.test.ts; `item` is what
      * these nine rows were always refused with, and the editor's row now
-     * says so beside the name. */
-    const power = grant?.grant ?? null;
-    if (!grant || (power ? !this.mounts?.sellsPower?.(power.mount, power.power) : NEVER_PLACEABLE.has(grant.itemId) || !ITEMS[grant.itemId])) {
+     * says so beside the name. An item is refused when it is `credits` (a
+     * balance, not a pickup) or one `ITEMS` does not define. */
+    const refused = power ? !this.mounts?.sellsPower?.(power.mount, power.power) : NEVER_PLACEABLE.has(grant.itemId) || !ITEMS[grant.itemId];
+    if (refused) {
       unresolved.push({ id: String(entry.id ?? ''), reason: 'item' });
       return;
     }
@@ -1115,20 +1169,18 @@ export class MapOverlay {
     }
 
     /* ONCE PER ACCOUNT (owner decision). A rider who already holds the tier,
-     * or a higher one, finds no pickup: `grantPower` is max(existing, tier),
-     * so collecting it would change nothing, and a pickup that changes
-     * nothing is one the player walks to for nothing. The entry is reported
-     * APPLIED, not unresolved - the grant's whole effect is already in force
-     * on this account, which is what "applied" means for it; there is
-     * nothing for the admin to fix, and no new field goes on the wire. The
-     * pickup dies on collection (`Loot._collect`), so the next visit lands
-     * here rather than spawning it again. */
-    if (power) {
-      const owned = Number(this.mounts.getPowers?.(power.mount)?.[power.power] ?? 0);
-      if (owned >= power.tier) {
-        applied.push({ id: String(entry.id ?? ''), ok: true, colliders: 0 });
-        return;
-      }
+     * or a higher one, finds no pickup: a pickup that changes nothing is one
+     * the player walks to for nothing. The entry is reported APPLIED, not
+     * unresolved - the grant's whole effect is already in force on this
+     * account, which is what "applied" means for it; there is nothing for
+     * the admin to fix, and no new field goes on the wire. The pickup dies
+     * on collection (`Loot._collect`), so the next visit lands here rather
+     * than spawning it again. This is the fast path; on the entry world the
+     * ledger is not yet restored when this runs, and `_sweepOwned` at
+     * `game:started` finishes the job. */
+    if (power && this._ownsGrant(power)) {
+      applied.push({ id: String(entry.id ?? ''), ok: true, colliders: 0 });
+      return;
     }
 
     /* A tier is not a stack: `quantity` multiplies an item's count and is

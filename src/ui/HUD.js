@@ -1984,6 +1984,11 @@ export class HUD {
 
     /* --- loot / inventory ---------------------------------------------- */
     this._on('loot:collected', ({ itemId, qty }) => {
+      /* A mount-upgrade grant (a pickup the map editor placed) arrives with
+       * `itemId: null` and names itself through its own `hud:notify` -
+       * `Loot.collectEntry` - so without this it toasted "+1 salvage" beside
+       * "+Bicycle Speed III". No Node test covers this: the HUD paints DOM. */
+      if (itemId == null) return;
       const n = Math.max(1, Math.round(qty ?? 1));
       const name = ITEM_LABELS[itemId] ?? String(itemId ?? 'salvage');
       this.notify(`+${n} ${name}`, 'loot');

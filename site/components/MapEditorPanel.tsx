@@ -9,6 +9,7 @@ import { conflictContextFor, conflictsForDocument, hasErrors, type Conflict } fr
 import {
   actionEntryFor,
   canonicalSelection,
+  isMountPowerEntry,
   layoutAgeText,
   moveEntryFor,
   pendingRows,
@@ -291,8 +292,8 @@ export function MapEditorPanel() {
    * game's verdict on a saved row — refused, and why — rides on the row
    * itself (`rowsWithVerdicts`), matched by id against the latest report. */
   const rows = useMemo(
-    () => rowsWithVerdicts(pendingRows(entries, entries.map((e) => conflictByKey.get(e._key) ?? NO_CONFLICTS)), report?.unresolved),
-    [entries, conflictByKey, report]
+    () => rowsWithVerdicts(pendingRows(entries, entries.map((e) => conflictByKey.get(e._key) ?? NO_CONFLICTS)), report?.unresolved, report?.appliedVersion, savedVersion),
+    [entries, conflictByKey, report, savedVersion]
   );
   const blocked = hasErrors(conflicts);
   const checking = deferredEntries !== entries;
@@ -609,7 +610,8 @@ export function MapEditorPanel() {
               onRemoveEntry={removeEntry}
               onRemove={removeSelection}
             />
-            {selEntry?.kind === 'place' ? (
+            {/* No Quantity for a mount upgrade: a tier is not a stack, and the applier holds one grant whatever the number said. */}
+            {selEntry?.kind === 'place' && !isMountPowerEntry(selEntry) ? (
               <label style={{ ...label, maxWidth: 160, marginTop: 10 }}>
                 Quantity
                 <input
@@ -656,6 +658,10 @@ export function MapEditorPanel() {
                 {hiddenItemsText(hidden)}
               </p>
             ) : null}
+            <p data-e2e="catalogue-mount-note" style={{ margin: '6px 0 0', color: dim, fontSize: 12 }}>
+              A mount upgrade appears only to riders who do not yet own that tier — a rider who already has it, you
+              included, finds nothing there.
+            </p>
           </section>
 
           <section style={card}>

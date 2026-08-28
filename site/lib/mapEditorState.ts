@@ -147,6 +147,19 @@ function vecText(p: Vec3): string {
   return `(${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)})`;
 }
 
+/**
+ * A placed mount upgrade. A tier is not a stack - the applier holds one grant whatever `quantity` says -
+ * so the editor shows no `×N` for it and offers no Quantity input.
+ */
+export function isMountPowerEntry(e: OverlayEntry): boolean {
+  return e.kind === 'place' && e.item.config?.effect === 'grant_mount_power';
+}
+
+/** A placement's name for a row or a hover: `Loot Crate ×2`, or the bare name for a mount upgrade. */
+function placeLabel(e: PlaceEntry): string {
+  return isMountPowerEntry(e) ? e.item.name : `${e.item.name} ×${e.quantity}`;
+}
+
 /** Display rows for the pending list; `conflicts[i]` belongs to `entries[i]`. */
 export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingRow[] {
   return entries.map((e, i) => {
@@ -158,7 +171,7 @@ export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingR
     if (e.kind === 'remove') {
       return { key: e._key, id: e.id, kind: 'remove', label: targetLabel(e.target), summary: 'removed', level: rowLevel(own), conflicts: own, verdict: null };
     }
-    return { key: e._key, id: e.id, kind: 'place', label: `${e.item.name} ×${e.quantity}`, summary: `→ ${vecText(e.position)}`, level: rowLevel(own), conflicts: own, verdict: null };
+    return { key: e._key, id: e.id, kind: 'place', label: placeLabel(e), summary: `→ ${vecText(e.position)}`, level: rowLevel(own), conflicts: own, verdict: null };
   });
 }
 
@@ -171,14 +184,25 @@ export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingR
  * stands until it is re-saved and re-applied; an entry minted since the report has an id the report
  * cannot hold and gets no verdict. The first listing of an id wins, as the applier pushes one per entry.
  * Rows come back by identity when there is nothing to say.
+ *
+ * A report judges ONE version - `appliedVersion` - and the page may since have saved another. A verdict
+ * from an older report than the saved document names the version it judged (`not applied in v3`), so a
+ * row the admin has already fixed is not read as still refused before the game has seen the fix. Both
+ * versions omitted, or equal, is the plain verdict.
  */
-export function rowsWithVerdicts(rows: PendingRow[], unresolved: ReadonlyArray<UnresolvedOutcome> | undefined): PendingRow[] {
+export function rowsWithVerdicts(
+  rows: PendingRow[],
+  unresolved: ReadonlyArray<UnresolvedOutcome> | undefined,
+  appliedVersion?: number,
+  savedVersion?: number
+): PendingRow[] {
   if (!unresolved?.length) return rows;
   const byId = new Map<string, string>();
   for (const u of unresolved) if (!byId.has(u.id)) byId.set(u.id, u.reason);
+  const judged = appliedVersion !== savedVersion ? ` in v${appliedVersion}` : '';
   return rows.map((r) => {
     const reason = byId.get(r.id);
-    return reason === undefined ? r : { ...r, verdict: `⛔ not applied — ${unresolvedText(reason)}` };
+    return reason === undefined ? r : { ...r, verdict: `⛔ not applied${judged} — ${unresolvedText(reason)}` };
   });
 }
 
@@ -553,6 +577,6 @@ export function hoverInfoFor(objects: Array<{ name: string; position: Vec3 }>, e
   }
   const e = entries.find((d) => d._key === sel.key);
   if (!e) return null;
-  const label = e.kind === 'place' ? `${e.item.name} ×${e.quantity}` : targetLabel(e.target);
+  const label = e.kind === 'place' ? placeLabel(e) : targetLabel(e.target);
   return { label, x: p.x, y: p.y, z: p.z };
 }

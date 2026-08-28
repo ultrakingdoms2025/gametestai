@@ -16,12 +16,18 @@
  * asserted across `moveEntryFor`, `selectedEntry`, `selectedPosition`,
  * `hitCandidates` and `upsertMoveFor` together, so the map, the panel and a
  * drag cannot disagree about which of two moves for one name is the one.
+ * `authoredLift` is asserted as the term BOTH a drag (`snappedY`) and the
+ * layer picker (`h + lift`) add, on the same slope, so the two cannot
+ * disagree either; and `canonicalSelection` is pinned in both directions,
+ * so a row click and a mark click on one move land on one selection.
  */
 import { describe, expect, it } from 'vitest';
-import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround } from './mapLayout';
+import { NO_SAMPLE, decodeGround, encodeHeights, groundAt, layersAt, type DecodedGround } from './mapLayout';
 import type { Conflict } from './mapConflicts';
 import {
   NO_LAYOUT_TEXT,
+  authoredLift,
+  canonicalSelection,
   degToRad,
   fmt,
   groundStatus,
@@ -40,6 +46,7 @@ import {
   snappedY,
   upsertMoveFor,
   type Draft,
+  type Selected,
 } from './mapEditorState';
 
 /**
@@ -88,6 +95,31 @@ describe('snappedY', () => {
     // … but a destination on the hole is null, and so is a source on it.
     expect(snappedY(holed, { x: 0, y: 0, z: 0 }, 8, 0)).toBeNull();
     expect(snappedY(holed, { x: 8, y: 0, z: 0 }, 0, 0)).toBeNull();
+  });
+});
+
+describe('authoredLift', () => {
+  it('is the one term both callers add: a drag through snappedY, the layer picker through h + lift', () => {
+    const g = slope();
+    const from = { x: 0, y: 0.5, z: 0 };
+    expect(authoredLift(g, from)).toBeCloseTo(0.5, 9);
+    // a half-buried rock has a negative lift
+    expect(authoredLift(g, { x: 4, y: 0.6, z: 4 })).toBeCloseTo(-0.4, 9);
+    const lift = authoredLift(g, from)!;
+    // the drag: the destination's surface plus the lift …
+    const dragged = snappedY(g, from, 4, 0)!;
+    expect(dragged).toBeCloseTo(groundAt(g, 4, 0, from.y)! + lift, 12);
+    // … and the picker, choosing the top surface at that destination, adds the same lift and lands on the same Y
+    const [top] = layersAt(g, 4, 0);
+    expect(top + lift).toBeCloseTo(dragged, 12);
+    expect(dragged).toBeCloseTo(1.5, 9);
+  });
+  it('is null, not zero, where the current position has no sample — and so is a snap from there', () => {
+    const holed = slope();
+    for (let j = 0; j < 3; j++) holed.heights[j * 3 + 2] = NO_SAMPLE;
+    expect(authoredLift(holed, { x: 8, y: 0, z: 0 })).toBeNull();
+    expect(snappedY(holed, { x: 8, y: 0, z: 0 }, 0, 0)).toBeNull();
+    expect(authoredLift(null, { x: 0, y: 0, z: 0 })).toBeNull();
   });
 });
 
@@ -245,6 +277,34 @@ describe('selection helpers', () => {
     expect(out).toHaveLength(3);
     expect(out[2]).toMatchObject({ _key: 'last', position: { x: 1, y: 1, z: 1 } });
     expect(out[0]).toBe(twice[0]);
+  });
+});
+
+describe('canonicalSelection', () => {
+  const objects = [{ name: 'o1' }];
+  const entries: Draft[] = [
+    { _key: 'm', kind: 'move', id: 'm', target: { name: 'o1' }, position: { x: 10, y: 2, z: 30 } },
+    { _key: 'f', kind: 'move', id: 'f', target: { name: 'ghost' }, position: { x: 20, y: 1, z: 21 } },
+    { _key: 'p', kind: 'place', id: 'p', item: { source_key: 's', name: 'S', config: {} }, position: { x: 4, y: 5, z: 6 }, quantity: 1 },
+  ];
+  it('a move of a reported target is the object; an unreported object with a move is its entry', () => {
+    expect(canonicalSelection(objects, entries, { kind: 'entry', key: 'm' })).toEqual({ kind: 'object', name: 'o1' });
+    expect(canonicalSelection(objects, entries, { kind: 'object', name: 'ghost' })).toEqual({ kind: 'entry', key: 'f' });
+  });
+  it('everything else comes back as it was, by identity', () => {
+    const unchanged: NonNullable<Selected>[] = [
+      { kind: 'object', name: 'o1' },
+      { kind: 'entry', key: 'f' },
+      { kind: 'entry', key: 'p' },
+      { kind: 'object', name: 'nobody' }, // unreported, no move yet: still the typed name
+      { kind: 'entry', key: 'zzz' },
+    ];
+    for (const sel of unchanged) expect(canonicalSelection(objects, entries, sel)).toBe(sel);
+    expect(canonicalSelection(objects, entries, null)).toBeNull();
+  });
+  it('two moves of one unreported name select the LAST, as everything else reads it', () => {
+    const twice: Draft[] = [entries[1], { _key: 'f2', kind: 'move', id: 'f2', target: { name: 'ghost' }, position: { x: 0, y: 0, z: 0 } }];
+    expect(canonicalSelection(objects, twice, { kind: 'object', name: 'ghost' })).toEqual({ kind: 'entry', key: 'f2' });
   });
 });
 

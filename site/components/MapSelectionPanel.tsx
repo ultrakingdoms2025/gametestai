@@ -6,6 +6,7 @@ import type { Conflict } from '@/lib/mapConflicts';
 import type { CatalogueObject } from '@/lib/mapOverlay';
 import { round, type PlaceEntry, type Vec3 } from '@/lib/mapOverlaySchema';
 import {
+  authoredLift,
   degToRad,
   fmt,
   groundStatus,
@@ -38,7 +39,17 @@ import { coord, dim, errorColour, input, label, okColour, subtle, warnColour } f
  * includes the position so a drag updates the boxes, and the selection so
  * picking another object clears them. The numbers are rounded to the three
  * places the schema keeps on save, so a drag's raw float never shows digits
- * that will not be written.
+ * that will not be written — and Move here commits them at those same
+ * places (six for the yaw, as `readAngle` keeps), so the document equals
+ * what is displayed rather than a longer float the save would trim.
+ *
+ * ── Which selection a move is ──────────────────────────────────────────────
+ *
+ * Not decided here. A typed name the game has not reported is its move
+ * entry once it has one, and a row for a reported target's move is the
+ * object; both are `canonicalSelection` in `mapEditorState.ts`, applied by
+ * the parent every time a selection is set, so this panel only renders
+ * whatever `selected` it is handed.
  *
  * ── The ground readout is the route's verdict ──────────────────────────────
  *
@@ -123,15 +134,6 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncKey]);
 
-  /* A typed name the game has not reported becomes an entry the moment it
-   * has a move: the dropdown lists such moves under "moves by name" as
-   * `e:<key>`, so an `o:<name>` selection would show as nothing chosen. This
-   * is the mirror of the pending list's `selectRow`, which normalises a move
-   * of a REPORTED target to the object. */
-  useEffect(() => {
-    if (selected?.kind === 'object' && entry && !objectNames.has(selected.name)) onSelect({ kind: 'entry', key: entry._key });
-  }, [selected, entry, objectNames, onSelect]);
-
   function setAxis(axis: 'x' | 'z', value: string) {
     setForm((f) => {
       const next = { ...f, [axis]: value };
@@ -143,15 +145,14 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
     });
   }
 
-  /* An object keeps its authored sink or lift on the chosen surface, as a
-   * drag does through `snappedY`; a placement or a free move sits on it. */
+  /* An object keeps its authored sink or lift on the chosen surface — the
+   * same `authoredLift` a drag adds through `snappedY`; a placement or a
+   * free move sits on it. With no sample under the object the lift is
+   * unknown, and the pick does nothing rather than guess, as the snap does. */
   function pickLayer(h: number) {
-    let y = h;
-    if (selected?.kind === 'object' && current) {
-      const here = groundAt(ground, current.x, current.z, current.y);
-      if (here !== null) y = h + (current.y - here);
-    }
-    setForm((f) => ({ ...f, y: String(round(y, 3)) }));
+    const lift = selected?.kind === 'object' && current ? authoredLift(ground, current) : 0;
+    if (lift === null) return;
+    setForm((f) => ({ ...f, y: String(round(h + lift, 3)) }));
   }
 
   const valid = [form.x, form.y, form.z].every(isCoord);
@@ -166,8 +167,8 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
 
   function commit() {
     if (!selected || !valid) return;
-    const yaw = form.yaw.trim() === '' ? undefined : degToRad(num(form.yaw));
-    onCommit(selected, { x: fx, y: fy, z: fz }, yaw);
+    const yaw = form.yaw.trim() === '' ? undefined : round(degToRad(num(form.yaw)), 6);
+    onCommit(selected, { x: round(fx, 3), y: round(fy, 3), z: round(fz, 3) }, yaw);
   }
 
   function onTypedKey(e: KeyboardEvent<HTMLInputElement>) {

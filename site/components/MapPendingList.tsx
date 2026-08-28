@@ -64,21 +64,48 @@ export default function MapPendingList({ rows, selectedKey, rejectedKeys, disabl
             <b style={{ color: r.kind === 'move' ? moveColour : placeColour, letterSpacing: '0.12em', fontSize: 11 }}>
               {r.kind.toUpperCase()}
             </b>
+            {/* The button's chrome is removed property by property, not with
+              * `all: 'unset'`: that also unset the outline, and the focus ring
+              * is how the keyboard route — the spec's accessibility path — sees
+              * which row it is on. */}
             <button
               type="button"
               data-e2e="pending-select"
               onClick={() => onSelect(r.key)}
-              style={{ all: 'unset', cursor: 'pointer', color: '#cfe6f2', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              style={{
+                background: 'none',
+                border: 0,
+                padding: 0,
+                font: 'inherit',
+                textAlign: 'left',
+                cursor: 'pointer',
+                color: '#cfe6f2',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
               title={`${r.label} ${r.summary}`}
             >
               <span data-e2e="pending-label">{r.label}</span>
               <span style={{ color: dim }}> {r.summary}</span>
             </button>
-            <span data-e2e="pending-status" style={{ color: lv.colour, whiteSpace: 'nowrap' }} title={r.conflicts.map((c) => c.detail).join('\n')}>
+            <span
+              data-e2e="pending-status"
+              style={{ color: lv.colour, whiteSpace: 'nowrap' }}
+              title={r.conflicts.map((c) => c.detail).join('\n')}
+              aria-label={r.conflicts.length ? r.conflicts.map((c) => c.code).join(', ') : 'no conflicts'}
+            >
               {lv.icon}{r.conflicts.length ? ` ${r.conflicts.map((c) => c.code).join(', ')}` : ''}
               {rejected ? ' · rejected by save' : ''}
             </span>
-            <button className="btn btn-ghost btn-sm" type="button" data-e2e="pending-undo" disabled={disabled} onClick={() => onUndo(r.key)}>
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              data-e2e="pending-undo"
+              aria-label={`undo ${r.label}`}
+              disabled={disabled}
+              onClick={() => onUndo(r.key)}
+            >
               undo
             </button>
           </li>

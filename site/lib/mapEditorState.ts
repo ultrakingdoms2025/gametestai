@@ -1,5 +1,5 @@
 import { groundAt, type DecodedGround } from './mapLayout';
-import { groundVerdict, type Conflict } from './mapConflicts';
+import { groundVerdict, type Conflict, type GroundVerdict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
 import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
 
@@ -22,7 +22,21 @@ import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './m
  * The nearest surface at or below the prop's CURRENT y, plus its authored
  * sink or lift. A crate dragged across the station hub stays on the deck
  * rather than jumping onto the dome, and a rock authored half-buried stays
- * half-buried instead of popping up and then tripping `underground`.
+ * half-buried instead of popping up and then tripping `underground`. The
+ * lift term is `authoredLift`, on its own so the layer picker adds the SAME
+ * number to a chosen surface that a drag adds to the snapped one — the
+ * panel's first version re-derived it and fell back to the bare surface
+ * where the current position had no sample.
+ *
+ * ── One selection per move ─────────────────────────────────────────────────
+ *
+ * A move of a REPORTED target is selected as the object (`o:<name>`): the
+ * map draws it as the object's `moved` ring and the picker lists it under
+ * its family. A move of a name the game has not reported is selected as its
+ * entry (`e:<key>`): the picker lists it under "moves by name". Both routes
+ * into a selection — the canvas, the picker, the pending list, a typed name
+ * — pass through `canonicalSelection`, so a row click and a mark click on
+ * the same move cannot land on two different selections.
  *
  * ── The last move wins ─────────────────────────────────────────────────────
  *
@@ -57,15 +71,25 @@ export function fmt(n: number): string {
   return (Math.round(n * 10) / 10).toFixed(1);
 }
 
+/**
+ * How far above (or, negative, below) its ground a prop was authored:
+ * `y − ground(x, z, y)`. Null when there is no sample under it — the lift
+ * is then unknown, not zero, and a caller must not pretend otherwise.
+ */
+export function authoredLift(ground: DecodedGround | null, from: Vec3): number | null {
+  const here = groundAt(ground, from.x, from.z, from.y);
+  return here === null ? null : from.y - here;
+}
+
 export function snappedY(ground: DecodedGround | null, from: Vec3, toX: number, toZ: number): number | null {
   if (!ground) return null;
   const there = groundAt(ground, toX, toZ, from.y);
-  const here = groundAt(ground, from.x, from.z, from.y);
-  if (there === null || here === null) return null;
-  return there + (from.y - here);
+  const lift = authoredLift(ground, from);
+  if (there === null || lift === null) return null;
+  return there + lift;
 }
 
-export type GroundStatus = 'ok' | 'underground' | 'floating' | 'no-ground';
+export type GroundStatus = GroundVerdict | 'ok';
 
 /**
  * What the save route's ground rule would say about a bottom at `y` over
@@ -215,6 +239,25 @@ export function selectedPosition(
   const mv = moveEntryFor(entries, selected.name);
   if (mv?.position) return mv.position;
   return objects.find((o) => o.name === selected.name)?.position ?? null;
+}
+
+/**
+ * The one form a selection of a move takes (see the header): an entry that
+ * is a move of a REPORTED target becomes the object; an object the game did
+ * not report becomes its move entry once it has one. Anything else — a
+ * reported object, a placement, an unreported name with no move yet, an
+ * unknown key, nothing — is returned as it was, by identity.
+ */
+export function canonicalSelection(objects: Array<{ name: string }>, entries: Draft[], sel: Selected): Selected {
+  if (!sel) return null;
+  if (sel.kind === 'entry') {
+    const e = entries.find((d) => d._key === sel.key);
+    if (e?.kind === 'move' && objects.some((o) => o.name === e.target.name)) return { kind: 'object', name: e.target.name };
+    return sel;
+  }
+  if (objects.some((o) => o.name === sel.name)) return sel;
+  const mv = moveEntryFor(entries, sel.name);
+  return mv ? { kind: 'entry', key: mv._key } : sel;
 }
 
 /** The one string the canvas, the picker and the pending list use to name a selection: `o:<name>` or `e:<key>`. */

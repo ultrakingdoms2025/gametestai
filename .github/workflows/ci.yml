@@ -83,10 +83,15 @@ jobs:
   # the Phase 1 acceptance criterion came from a hand-run of `frame-gaps.mjs` on
   # one developer's machine, so a regression in world entry, mount launch or
   # world traversal shipped in silence and was found, if at all, by playing.
-  # Since 2026-08-28 the map editor's ground sampler runs inside the gated
-  # measurement too (`--layout-sample`), and a sampler that does not finish
-  # the entry world FAILS the gate rather than passing on ground it never
-  # walked.
+  # The map editor's ground sampler (`--layout-sample`) was tried inside this
+  # gated measurement on 2026-08-28 (run 33177408325) and withdrawn the same
+  # day: it casts for at most 2 ms per RENDERED frame so that its cost shows
+  # up in the frame gaps, and this runner rendered 32 frames in the 625 s
+  # layout window (seven 10 s stretches with no frame at all). 62 001 cells
+  # cannot finish in 32 frames at any fuse, so the gate would fail forever on
+  # a fact about the runner, not the game. The sampler's cost is evidenced by
+  # hand runs (.probe/map-editor-stage2/perf.md); measuring it here needs a
+  # runner that renders (a GPU, or a non-starved rasteriser).
   #
   # IT DOES NOT ASSERT MILLISECONDS, AND THAT IS THE DESIGN. The long note on
   # `BASELINES` in `scripts/frame-gaps.mjs` carries the full argument; the short
@@ -187,24 +192,14 @@ jobs:
       # watchdog sees 10 s no-rAF stretches - the clock stays printed, never
       # asserted.
       #
-      # `--layout-sample` since 2026-08-28: the map editor's ground sampler
-      # is admin-only and this harness has no session, so until then every
-      # gated run measured a game in which the sampler never started. Now it
-      # samples the entry world inside the measured window, in a `layout`
-      # phase of its own, and `--gate` FAILS on a sampler that did not finish
-      # (see `layoutSampled` in frame-gaps.mjs). `--layout-timeout` is sized
-      # from the sampler's shape, not from a wish: it casts for at most 2 ms
-      # per rendered frame, so its wall time is (frames it needs) / fps, and
-      # a slower CPU needs MORE frames. The only measured run is local: an
-      # RTX 5080, chain-warmed, station's 62 001 cells in 34.0-34.5 s while
-      # the layout phase saw ~9.4 fps (243 frames in 25.8 s) with the
-      # 17-world chain competing (.probe/gaps/stage2-layout*). The
-      # swiftshader baseline records no frame rate, only 10 s starvation
-      # stretches; call it 5-10 fps, which is 1-2x the local phase's, and a
-      # runner CPU that casts 3-5x fewer cells per 2 ms frame stretches 34 s
-      # to ~1-6 min. 600 s covers the worst of that; if it still times out,
-      # raise it and record the printed `layoutWaitMs` here rather than
-      # dropping the flag.
+      # `--layout-sample` is deliberately NOT passed here. It was added on
+      # 2026-08-28 (d828053) and withdrawn after run 33177408325: the layout
+      # phase saw 32 frames in 625 s on this runner and the frame-driven
+      # sampler reached no useful fraction of station's 62 001 cells; `--gate`
+      # then fails honestly on `layoutSampled: false` - forever, on this runner.
+      # The cold base on an RTX 5080 finishes the same world in 34 s at ~9 fps
+      # with the chain competing. Re-add the flag only on a runner that renders;
+      # do not widen `--layout-timeout` past a fuse that frames can satisfy.
       - name: Frame-gap gate (cold)
         env:
           FRAME_GAPS_GL: swiftshader
@@ -213,7 +208,6 @@ jobs:
           --entry station --worlds station
           --events keybind,weapon,mount,interaction,movement
           --settle 960000
-          --layout-sample --layout-timeout 600000
           --out .probe/ci-frame-gaps
 
       # The run's own JSON, whatever the verdict. A failure that cannot be read

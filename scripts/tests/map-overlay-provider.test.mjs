@@ -15,8 +15,11 @@ import * as THREE from 'three';
  * timer; in the player's frames it waits at most 1500 ms, behind the loading
  * gate at most 8000 ms; a failure or a timeout is a world built at 0, said
  * once per outage - a volatile world that fails, answers, then fails again is
- * news twice - and the loader names the wait. The provider is read from the
- * MANAGER's ctx, never the per-world copy. The cases that reach this seam
+ * news twice - and the loader names the wait. One background timeout opens a
+ * session breaker: later background builds skip the provider until a lookup
+ * answers with a document, so a hanging server costs the prefetch chain one
+ * fuse, not one per world. The provider is read from the MANAGER's ctx,
+ * never the per-world copy. The cases that reach this seam
  * through a portal forcing its destination, a WorldPrefetch preparation and a
  * volatile rebuild land with Task 3.6 (`WorldPrefetch` is imported for them).
  *
@@ -199,15 +202,60 @@ test('the loader names the wait: "Reading the map for <world>" while the provide
   assert.ok(!seen.some((l) => /Reading the map/.test(l)), `a build with no provider named a wait: ${seen}`);
 });
 
-test('dispose forgets the outage: after a teardown the same world is asked again, and a failure is said again', async () => {
+test('dispose forgets the outage and closes the breaker: after a teardown the same world is asked again, and a hang is said again', async () => {
   const asked = [];
   const warned = await quietly(async () => {
-    const { wm } = manager({ provider: async (id) => { asked.push(id); throw new Error('down'); } });
+    const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return never(); } });
+    wm.overlayBackgroundMs = 100; // the same fuse, shortened
     wm.register(worldClass('torn'));
-    await wm.build('torn');
+    await wm.build('torn'); // times out in the background: said, and the breaker opens
     wm.dispose();
     await wm.build('torn');
   });
-  assert.deepEqual(asked, ['torn', 'torn']);
+  assert.deepEqual(asked, ['torn', 'torn'], 'after dispose the breaker still skipped the provider');
   assert.equal(warned.length, 2, `said ${warned.length} times: ${warned}`);
+});
+
+test('one background timeout opens the session breaker: the next background build skips the provider - built at 0, nothing said, no fuse - and a late document from the abandoned lookup closes it', async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const asked = [];
+  const warned = await quietly(async (said) => {
+    const { wm } = manager({ running: true, provider: (id) => { asked.push(id); return id === 'slow' ? held : Promise.resolve({ version: 4 }); } });
+    for (const id of ['slow', 'next', 'after']) wm.register(worldClass(id));
+    assert.equal((await wm.build('slow')).builtVersion, 0); // the real 1500 ms fuse
+    assert.deepEqual(asked, ['slow']);
+    const t = performance.now();
+    const next = await wm.build('next');
+    const took = performance.now() - t;
+    assert.equal(next.builtVersion, 0);
+    assert.ok(took < 100, `a broken session still waited ${took} ms`);
+    assert.deepEqual(asked, ['slow'], 'the breaker did not skip the provider');
+    assert.equal(said.length, 1, `a skipped build was said: ${said}`);
+    release({ version: 2 }); // the server was slow, not dead
+    await sleep(0);
+    assert.equal((await wm.build('after')).builtVersion, 4);
+    assert.deepEqual(asked, ['slow', 'after'], 'a late document did not close the breaker');
+  });
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /overlay unavailable for "slow": no answer within 1500 ms/);
+});
+
+test('a gate build always asks, whatever the breaker says, and its answer closes it for the background builds after', async () => {
+  const asked = [];
+  let hang = true;
+  const { wm, engine } = manager({ running: true, provider: (id) => { asked.push(id); return hang ? never() : Promise.resolve({ version: 3 }); } });
+  wm.overlayBackgroundMs = 100; // the same fuse, shortened
+  for (const id of ['a', 'b', 'c', 'd']) wm.register(worldClass(id));
+  await quietly(async () => {
+    assert.equal((await wm.build('a')).builtVersion, 0); // opens the breaker
+    assert.equal((await wm.build('b')).builtVersion, 0);
+    assert.deepEqual(asked, ['a'], 'the breaker did not skip the provider');
+    engine.running = false;
+    hang = false;
+    assert.equal((await wm.build('c')).builtVersion, 3, 'a gate build did not ask');
+    engine.running = true;
+    assert.equal((await wm.build('d')).builtVersion, 3, 'the gate answer did not close the breaker');
+    assert.deepEqual(asked, ['a', 'c', 'd']);
+  });
 });

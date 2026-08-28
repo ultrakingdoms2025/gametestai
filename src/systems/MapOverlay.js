@@ -53,6 +53,20 @@ const REPORT_ENDPOINT = '/api/admin/map/report';
 const OVERLAY_SCHEMA = 2;
 
 /**
+ * How long a `lookup`'s fetch may stay open before it is abandoned.
+ *
+ * `WorldManager._overlayVersion` races a lookup against a fuse and walks away
+ * when the fuse wins; without this the fetch it walked away from stays open
+ * on a dead connection until the tab closes, one per world, and its
+ * `_inflight` entry with it. LONGER than the manager's longest fuse
+ * (`OVERLAY_GATE_MS`, 8 s): the manager decides how long a BUILD waits, and
+ * this only guarantees that a lost race closes its socket - an abort inside
+ * the gate fuse would turn a slow answer the gate was still willing to take
+ * into a failure. Pinned against the gate constant by map-overlay.test.mjs.
+ */
+const LOOKUP_ABORT_MS = 10000;
+
+/**
  * How many named objects the catalogue report carries.
  *
  * A world group holds tens of thousands of nodes. The catalogue exists to fill
@@ -206,6 +220,18 @@ export class MapOverlay {
     /** Pickups this system spawned into `_world`. */
     this._placed = [];
 
+    /**
+     * Per-world documents for the BUILD (spec §4.1): filled by `lookup`,
+     * refreshed by every post-build read. Per session and per world - it
+     * cannot be keyed on a version the client has not fetched yet.
+     * @type {Map<string, object>}
+     */
+    this._cache = new Map();
+    /** Lookups in flight, so two callers for one world share one GET. @type {Map<string, Promise<object|null>>} */
+    this._inflight = new Map();
+    /** The abort ceiling, on the instance so a test can shorten it. */
+    this.lookupAbortMs = LOOKUP_ABORT_MS;
+
     /** @type {Array<() => void>} */
     this._offs = [];
     if (bus) {
@@ -348,31 +374,58 @@ export class MapOverlay {
     this._world = null;
   }
 
-  async _read(worldId) {
+  /**
+   * One GET for the world's document. `signal` is the abort a `lookup` owns;
+   * an entry's read has none - it is dropped by visit number instead.
+   * @param {string} worldId
+   * @param {AbortSignal} [signal]
+   */
+  async _read(worldId, signal) {
     if (!this._fetch) return null;
     try {
-      const res = await this._fetch(`${this.endpoint}?world=${encodeURIComponent(worldId)}`, {
-        cache: 'no-store',
-      });
+      const init = { cache: 'no-store' };
+      if (signal) init.signal = signal;
+      const res = await this._fetch(`${this.endpoint}?world=${encodeURIComponent(worldId)}`, init);
       if (!res?.ok) return null;
-      const data = await res.json();
-      // A document about a different world is not this world's document. The
-      // server answers the world it was asked about; anything else is a stale
-      // reply that arrived after a portal.
-      if (data?.world && data.world !== worldId) return null;
-      // Newer than this build reads. Every kind it knows still applies and the
-      // rest is skipped (spec §5, the v1-client rule); said once a session.
-      if (Number(data?.schema) > OVERLAY_SCHEMA && !this._schemaWarned) {
-        this._schemaWarned = true;
-        console.warn(`[map-overlay] document schema ${data.schema} is newer than ${OVERLAY_SCHEMA}; unknown entries are skipped`);
-      }
-      return data && typeof data === 'object' ? data : null;
+      return this._admit(worldId, await res.json());
     } catch (err) {
       // Offline, signed out, or the endpoint is down. A world with no overlay is
       // exactly the world every player had before this phase existed.
       console.warn('[map-overlay] overlay unavailable:', err?.message ?? err);
       return null;
     }
+  }
+
+  /**
+   * The one place a fetched document is judged and remembered, whichever
+   * path fetched it - `lookup` for a build, `_read` on an entry - so a world
+   * prefetched before the player ever enters it is held to the same rules,
+   * and a newer schema is said once a session whichever path saw it first.
+   * @param {string} worldId
+   * @param {unknown} data
+   * @returns {object|null}
+   */
+  _admit(worldId, data) {
+    if (!data || typeof data !== 'object') return null;
+    // A document about a different world is not this world's document. The
+    // server answers the world it was asked about; anything else is a stale
+    // reply that arrived after a portal.
+    if (data.world && data.world !== worldId) return null;
+    // Newer than this build reads. Every kind it knows still applies and the
+    // rest is skipped (spec §5, the v1-client rule); said once a session.
+    if (Number(data.schema) > OVERLAY_SCHEMA && !this._schemaWarned) {
+      this._schemaWarned = true;
+      console.warn(`[map-overlay] document schema ${data.schema} is newer than ${OVERLAY_SCHEMA}; unknown entries are skipped`);
+    }
+    // The document a later build of this world should consult (a volatile
+    // rebuild after an in-session save). Version-monotonic: this runs on
+    // the same late continuation `_onWorldChanged` drops by visit number,
+    // and a slow first read can answer an OLDER version after a return
+    // visit cached a newer one. Versions are append-only on the site (a
+    // revert writes a new, higher one), so higher is always newer.
+    const have = this._cache.get(worldId);
+    if (!(Number(have?.version) > (Number(data.version) || 0))) this._cache.set(worldId, data);
+    return data;
   }
 
   _publish(report) {
@@ -529,6 +582,45 @@ export class MapOverlay {
     if (!job) return;
     this._job = null;
     job.resolve?.(null);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The document a build consults                                       */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The world's document for `WorldManager._runBuild` (`ctx.overlayProvider`,
+   * wired in main.js): the cached one, or one fetch shared by everyone asking.
+   * A failure answers null and caches nothing, so the next build asks again.
+   * One fetch per build plus one per entry (`_read`, which refreshes this) -
+   * spec §6.4's "one cached fetch per world per session" as built.
+   *
+   * Each fetch owns an abort with a ceiling past the manager's longest fuse
+   * (`LOOKUP_ABORT_MS`), so a race the manager lost still closes its
+   * connection and clears its in-flight entry; what it would have answered
+   * is never cached.
+   * @param {string} worldId
+   * @returns {Promise<object|null>}
+   */
+  lookup(worldId) {
+    const cached = this._cache.get(worldId);
+    if (cached) return Promise.resolve(cached);
+    let inflight = this._inflight.get(worldId);
+    if (!inflight) {
+      const abort = new AbortController();
+      const ceiling = setTimeout(() => abort.abort(), this.lookupAbortMs);
+      inflight = this._read(worldId, abort.signal).finally(() => {
+        clearTimeout(ceiling);
+        this._inflight.delete(worldId);
+      });
+      this._inflight.set(worldId, inflight);
+    }
+    return inflight;
+  }
+
+  /** Start a lookup so the entry world's fetch overlaps the loading gate (main.js, before the entry build). */
+  prefetch(worldId) {
+    void this.lookup(worldId).catch(() => null);
   }
 
   /* ------------------------------------------------------------------ */
@@ -861,6 +953,8 @@ export class MapOverlay {
 
   dispose() {
     this._restore();
+    this._cache.clear();
+    this._inflight.clear();
     for (const off of this._offs) off?.();
     this._offs.length = 0;
   }

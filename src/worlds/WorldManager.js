@@ -77,6 +77,17 @@ export class WorldManager {
      * then fails again is news twice. @type {Set<string>}
      */
     this._overlayWarned = new Set();
+    /**
+     * The session breaker. A provider that HANGS - not one that fails fast -
+     * would cost every background build its whole fuse: seventeen worlds on
+     * the prefetch chain at 1.5 s each, and a `--chain-timeout` under
+     * `?prefetch=all`. One background timeout opens this, and background
+     * builds skip the provider (built at 0, nothing said) until a lookup
+     * answers with a document - a gate build's, which always asks, or the
+     * late answer of the very lookup that was abandoned, which proves the
+     * server slow rather than dead.
+     */
+    this._overlayBroken = false;
 
     /**
      * What the last crossing cost, step by step, in milliseconds.
@@ -363,19 +374,28 @@ export class WorldManager {
   async _overlayVersion(world, report) {
     const provider = this.ctx?.overlayProvider;
     if (typeof provider !== 'function') return 0;
-    const limit = this.engine?.running ? this.overlayBackgroundMs : this.overlayGateMs;
+    const background = this.engine?.running === true;
+    if (background && this._overlayBroken) return 0;
+    const limit = background ? this.overlayBackgroundMs : this.overlayGateMs;
     await report?.(0, `Reading the map for ${world.displayName}`);
     let timer = null;
     let version = 0;
     try {
       const lookup = Promise.resolve().then(() => provider(world.id));
+      // A document closes the breaker whenever it lands - inside the fuse or
+      // long after this build gave up on it. A null or a rejection does not:
+      // MapOverlay.lookup answers null for its own abandoned fetch too.
+      lookup.then((doc) => { if (doc && typeof doc === 'object') this._overlayBroken = false; }, () => {});
       const fuse = new Promise((resolve) => { timer = setTimeout(() => resolve(OVERLAY_TIMED_OUT), limit); });
       const doc = await Promise.race([lookup, fuse]);
       if (doc === OVERLAY_TIMED_OUT) {
+        if (background) this._overlayBroken = true;
         this._overlayUnavailable(world.id, `no answer within ${limit} ms`);
       } else {
-        // An answer ends the outage: the next failure of this world is news.
+        // An answer ends the outage and closes the breaker: the next failure
+        // of this world is news, and the next background build asks.
         this._overlayWarned.delete(world.id);
+        this._overlayBroken = false;
         version = Math.max(0, Math.floor(Number(doc?.version) || 0));
       }
     } catch (err) {
@@ -612,6 +632,7 @@ export class WorldManager {
     this._instances.clear();
     this._building.clear();
     this._overlayWarned.clear();
+    this._overlayBroken = false;
     this._active = null;
   }
 }

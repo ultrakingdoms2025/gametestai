@@ -102,7 +102,11 @@ const CONTRACT = [
   {
     file: 'src/worlds/WorldManager.js',
     exports: ['WorldManager'],
-    methods: ['register', 'build', 'activate'],
+    /* `_overlayVersion` is the seam main.js's `ctx.overlayProvider` reaches
+     * the build through; renamed, every world builds at 0 and the editor's
+     * "built version" line is wrong for ever, with no test outside
+     * map-overlay-provider.test.mjs to say so. */
+    methods: ['register', 'build', 'activate', '_overlayVersion'],
   },
   /* The base world. Registered for `builtVersion`, which is not a method and
    * which the `methods` regex cannot see: WorldManager._runBuild writes it and
@@ -977,7 +981,9 @@ const CONTRACT_V2 = [
   {
     file: 'src/systems/MapOverlay.js',
     exports: ['MapOverlay', 'grantForPlacement'],
-    methods: ['dispose', 'update'],
+    /* `lookup` is what main.js hands WorldManager as `ctx.overlayProvider`;
+     * `prefetch` is the entry world's lookup issued before the entry build. */
+    methods: ['dispose', 'update', 'lookup', 'prefetch'],
   },
   /* The editor's ground grid. Pure, reached only through MapOverlay, so a
    * renamed export would surface as "the editor never gets a layout" one admin

@@ -227,6 +227,137 @@ test('a document newer than this build reads is said once, and still applied; an
 });
 
 /* ------------------------------------------------------------------ */
+/* The document a build consults                                       */
+/* ------------------------------------------------------------------ */
+
+test('lookup fetches a world once and answers from the cache after that; an entry refreshes the cache', async () => {
+  // A function overlay, so the second GET serves a NEW document object: `setup(doc(...))` hands one object out
+  // by reference and `makeFetch` returns that same object, so mutating its `version` would pass the refresh
+  // assertion below whether or not `_read` ever wrote the cache.
+  let current = doc([moveCrate]);
+  const rig = setup(() => current);
+  const a = await rig.system.lookup('station');
+  const b = await rig.system.lookup('station');
+  assert.equal(a.version, 1);
+  assert.equal(b, a);
+  assert.equal(rig.fetchImpl.calls.length, 1);
+  // The admin saved; the player enters. The entry's no-store read is what a volatile rebuild must see next.
+  current = doc([moveCrate], { version: 2 });
+  await enter(rig);
+  assert.equal(rig.fetchImpl.calls.length, 2, 'an entry still reads afresh, once');
+  assert.equal((await rig.system.lookup('station')).version, 2, 'a rebuild after a save would build against the stale document');
+  assert.equal(rig.fetchImpl.calls.length, 2);
+});
+
+test('two lookups in flight share one GET, and prefetch is a lookup nobody awaits', async () => {
+  const rig = setup(doc([]));
+  rig.system.prefetch('station');
+  const [a, b] = await Promise.all([rig.system.lookup('station'), rig.system.lookup('station')]);
+  assert.equal(a, b);
+  assert.equal(rig.fetchImpl.calls.length, 1);
+});
+
+test('a failed lookup answers null and caches nothing, so the next one asks again', async () => {
+  const rig = setup(doc([]), { fail: true });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(await rig.system.lookup('station'), null);
+    assert.equal(await rig.system.lookup('station'), null);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(rig.fetchImpl.calls.length, 2);
+});
+
+test('a late read answering an OLDER version than the cache holds does not overwrite it: the cache is version-monotonic', async () => {
+  // 9b16768's race, seen from the cache: the station's FIRST GET (v1) is held; the player portals away and back;
+  // the return visit's GET (v2) answers at once and is cached; then v1 lands. The applier drops it by visit number,
+  // but `_read` writes the cache BEFORE that guard runs - so the write itself must refuse to go backwards, or a
+  // later build of this world (the maze's every entry) would consult v1 and report builtVersion 1 against an
+  // applied v2, and every {id} entry would read pending-rebuild after a reload that changed nothing.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let stationGets = 0;
+  const v1 = doc([moveCrate], { version: 1 });
+  const v2 = doc([{ ...moveCrate, position: { x: -50, y: 1, z: 8 } }], { version: 2 });
+  const rig = setup(async (worldId) => {
+    if (worldId !== 'station') return doc([], { world: worldId });
+    if (++stationGets === 1) { await held; return v1; }
+    return v2;
+  });
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+
+  await activate(rig, station, { settle: false }); // GET #1 is held in flight
+  await activate(rig, medieval);
+  await activate(rig, station);
+  assert.equal((await rig.system.lookup('station')).version, 2, 'precondition: the return visit cached v2');
+
+  release();
+  await new Promise((r) => setTimeout(r, 0)); // GET #1's continuation runs to its end
+
+  assert.equal((await rig.system.lookup('station')).version, 2, 'the stale v1 overwrote v2 in the cache');
+  assert.equal(rig.fetchImpl.calls.filter((c) => c.method === 'GET' && /world=station/.test(c.url)).length, 2, 'lookup did not answer from the cache');
+});
+
+/**
+ * The manager races a lookup against a fuse and walks away when the fuse
+ * wins; the fetch it walked away from must not stay open on a dead
+ * connection until the tab closes, one per world. Measured on the signal the
+ * fetch was handed, with a fetch that only ever settles by being aborted.
+ */
+test('a lookup whose fetch never answers is abandoned at its ceiling: the signal aborts, nothing is cached, the in-flight entry clears, and the next lookup asks again', async () => {
+  const signals = [];
+  const fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
+    signals.push(init.signal);
+    init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+  });
+  const system = new MapOverlay({ bus: makeBus(), physics: new Physics(makeBus()), fetch: fetchImpl });
+  system.lookupAbortMs = 40; // the same ceiling, shortened
+  const warn = console.warn;
+  console.warn = () => {};
+  let took = 0;
+  try {
+    const t = performance.now();
+    assert.equal(await system.lookup('station'), null);
+    took = performance.now() - t;
+    assert.equal(await system.lookup('station'), null, 'the second lookup did not ask again');
+  } finally {
+    console.warn = warn;
+  }
+  assert.ok(took >= 30 && took < 1000, `abandoned after ${took} ms`);
+  assert.equal(signals.length, 2, 'the in-flight entry did not clear, so the second lookup joined a dead fetch');
+  assert.equal(signals[0].aborted, true, 'the race was lost but the fetch was never told');
+  assert.equal(system._inflight.size, 0);
+  assert.equal(system._cache.size, 0, 'a timed-out lookup cached something');
+  system.dispose();
+
+  // The ceiling outlasts the manager's longest fuse: the manager decides how long a BUILD waits, and an abort
+  // inside its gate fuse would turn a slow answer the gate was still willing to take into a failure.
+  const abortMs = Number(code('src/systems/MapOverlay.js').match(/^const LOOKUP_ABORT_MS = (\d+);/m)?.[1]);
+  const gateMs = Number(code('src/worlds/WorldManager.js').match(/^const OVERLAY_GATE_MS = (\d+);/m)?.[1]);
+  assert.ok(abortMs > gateMs, `LOOKUP_ABORT_MS ${abortMs} does not exceed OVERLAY_GATE_MS ${gateMs}`);
+});
+
+test('a newer document reached through lookup and then through an entry is said once in total: both paths judge a document in one place', async () => {
+  const SCHEMA_WARN = /\[map-overlay\] document schema/;
+  const rig = setup({ ...doc([moveCrate]), schema: 3 });
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    assert.equal((await rig.system.lookup('station')).schema, 3);
+    await enter(rig);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20], 'the newer document was not applied');
+  const said = warned.filter((w) => SCHEMA_WARN.test(w));
+  assert.equal(said.length, 1, `${warned}`);
+});
+
+/* ------------------------------------------------------------------ */
 /* Moving                                                              */
 /* ------------------------------------------------------------------ */
 

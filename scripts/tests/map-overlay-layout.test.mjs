@@ -382,7 +382,7 @@ test('a 200 that stored the layout, an older site that says nothing about it, an
   }
 });
 
-test('a stale document for the world before lands after a portal, and the layout POST still names the world sampled', async () => {
+test('a stale document for the world before lands after a portal: it is dropped, and the layout POST names the world sampled', async () => {
   // The station GET is held until released; elsewhere answers at once, as admin.
   let release;
   const held = new Promise((r) => { release = r; });
@@ -394,7 +394,12 @@ test('a stale document for the world before lands after a portal, and the layout
   rig.engine.tick(); // elsewhere's job is in flight
   release();
   await new Promise((r) => setTimeout(r, 0)); // the station continuation runs to its end
-  assert.equal(rig.system.report.world, 'station', 'precondition: the stale document arrived after the portal');
+  // The station's document arrived after the portal. It is not applied and not
+  // reported: the report stays the world the player is in, and no POST ever
+  // names the station. (This test once pinned the opposite as a precondition,
+  // to show the sampler's POST survived the overwrite; the overwrite is gone.)
+  assert.equal(rig.system.report.world, 'elsewhere', 'the stale document republished over the world the player is in');
+  assert.equal(rig.fetchImpl.posts().some((p) => p.body.world === 'station'), false, 'the stale document was reported back');
   const summary = await finish(rig);
   assert.equal(summary.world, 'elsewhere');
   const layout = rig.fetchImpl.posts().find((p) => p.body.ground);

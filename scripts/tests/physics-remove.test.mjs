@@ -170,3 +170,19 @@ test('clear resets the index as well as the array', () => {
   assert.equal(p.remove(b), true);
   assert.equal(p.colliders.length, 0);
 });
+
+test('has answers whether a collider is registered in THIS physics: after add, not after remove or clear', () => {
+  const p = new Physics(null);
+  const a = p.addBox(0, 0, 0, 1, 1, 1);
+  const b = p.addBox(50, 0, 0, 1, 1, 1);
+  assert.equal(p.has(a), true);
+  assert.equal(p.has(b), true);
+  p.remove(a);
+  assert.equal(p.has(a), false);
+  assert.equal(p.has(b), true);
+  p.clear();
+  assert.equal(p.has(b), false);
+  // Another physics instance knows nothing of it even though the object exists.
+  assert.equal(new Physics(null).has(b), false);
+  assert.equal(p.has(null), false);
+});

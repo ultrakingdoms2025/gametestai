@@ -194,6 +194,12 @@ export class MapOverlay {
     this._world = world;
 
     const document = await this._read(id);
+    // A portal can land while the document is in flight. If it did, `_restore`
+    // has already undone this world and the physics belongs to the world the
+    // player is in now: applying this document would move the world they left
+    // and drag colliders in the wrong physics, and its report would overwrite
+    // the world they are in. It is dropped whole.
+    if (this._world !== world) return;
     const admin = document?.admin === true;
     const report = document
       ? await this._applyDocument(id, world, document, admin)
@@ -201,9 +207,8 @@ export class MapOverlay {
 
     /* The ground is sampled AFTER the overlay is applied, so a moved building's
      * colliders are where the editor will draw them. Admin, or the dev switch;
-     * and only if this is still the world we are in - both awaits above are
-     * places a portal can land. The job carries THIS report: a document for the
-     * world before can land after a portal and republish over `this.report`. */
+     * and only if this is still the world we are in - the admin report-back
+     * above is another place a portal can land. The job carries THIS report. */
     if ((admin || this.forceLayout) && this._world === world) this._startSampling(id, world, admin, report);
   }
 
@@ -523,7 +528,7 @@ export class MapOverlay {
     const dz = delta.z;
 
     for (const collider of moving) {
-      physics.remove(collider);
+      const reattach = this._detach(collider);
 
       if (collider.type === 'box') {
         _shift.makeTranslation(dx, dy, dz);
@@ -544,18 +549,48 @@ export class MapOverlay {
         collider.bounds.getCenter(collider.center);
       }
 
-      physics.add(collider);
+      if (reattach) physics.add(collider);
       const undoDelta = delta.clone();
       this._undo.push(() => this._shiftCollider(collider, undoDelta.clone().negate()));
     }
     return moving.length;
   }
 
+  /**
+   * Take a collider out of the broadphase before mutating it in place, and say
+   * whether to put it back afterwards.
+   *
+   * ── The rule: re-add only what `_activate` did not already re-add ──────
+   *
+   * `_restore` runs from `world:changed`, and by then `WorldManager._activate`
+   * has cleared physics and re-added the ENTERED world's own colliders. So a
+   * collider this system moved is in one of two states when its undo runs:
+   *
+   *  - registered: a same-world re-entry. `_activate` re-added it from
+   *    `world.colliders` (at the moved position, since it is the same object).
+   *    Our `remove` takes it out; shift it back; re-add it. Once.
+   *
+   *  - not registered: the player went elsewhere. Shift it back so the world
+   *    object is right for its next visit, but do NOT add it - this physics
+   *    now belongs to another world, and the re-add would be an invisible
+   *    wall in it at the old world's authored position. Before this rule,
+   *    that is exactly what shipped.
+   *
+   * `Physics.remove` returns false when the collider is not registered here,
+   * which is the whole test. Stated once because the remove-undo of a later
+   * stage has the same two cases and must reuse it.
+   *
+   * @returns {boolean} whether the caller should `physics.add` it back
+   */
+  _detach(collider) {
+    return this.physics.remove(collider) === true;
+  }
+
   /** The single-collider half of `_moveColliders`, used to undo one. */
   _shiftCollider(collider, delta) {
     const physics = this.physics;
     if (!physics || !collider) return;
-    physics.remove(collider);
+    const reattach = this._detach(collider);
     if (collider.type === 'box') {
       _shift.makeTranslation(delta.x, delta.y, delta.z);
       collider.matrix.premultiply(_shift);
@@ -574,7 +609,7 @@ export class MapOverlay {
       collider.bounds.max.add(delta);
       collider.bounds.getCenter(collider.center);
     }
-    physics.add(collider);
+    if (reattach) physics.add(collider);
   }
 
   /* ------------------------------------------------------------------ */

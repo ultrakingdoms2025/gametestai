@@ -517,6 +517,22 @@ export class Physics {
   }
 
   /**
+   * Whether `collider` is registered in THIS physics instance.
+   *
+   * O(1) on `_index`, which every `add` writes and every `remove` and `clear`
+   * drops - so it is the one bookkeeping structure that always agrees with
+   * `colliders`. A world's collider objects outlive a world change (the world
+   * keeps them for its next visit), so "the object exists" says nothing about
+   * whether it is currently solid here; this does.
+   *
+   * @param {Collider} collider
+   * @returns {boolean}
+   */
+  has(collider) {
+    return collider ? this._index.has(collider) : false;
+  }
+
+  /**
    * Unregister a collider.
    *
    * The counterpart to `add`, and the thing that makes streaming possible: a

@@ -76,7 +76,9 @@ function makeWorld(id = 'station') {
 }
 
 /**
- * A fetch stand-in. `overlay` is what the GET answers; every POST is recorded.
+ * A fetch stand-in. `overlay` is what the GET answers - a document, or a
+ * function of the world id asked for, which may hold its answer; every POST
+ * is recorded.
  */
 function makeFetch(overlay, { fail = false } = {}) {
   const calls = [];
@@ -84,7 +86,9 @@ function makeFetch(overlay, { fail = false } = {}) {
     calls.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : null });
     if (fail) throw new Error('offline');
     if ((init?.method ?? 'GET') === 'GET') {
-      return { ok: true, status: 200, json: async () => overlay };
+      const worldId = new URL(url, 'http://game').searchParams.get('world');
+      const answer = typeof overlay === 'function' ? await overlay(worldId) : overlay;
+      return { ok: true, status: 200, json: async () => answer };
     }
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   };
@@ -132,6 +136,32 @@ async function enter({ bus, system, world }) {
   bus.emit('world:changed', { id: world.id, world });
   await system.applying;
 }
+
+/**
+ * Give a world the colliders a built one has - one under its crate, one under
+ * its barn - kept on `world.colliders` the way `World.track` keeps them, so
+ * `activate` below can re-add the same objects the way WorldManager does.
+ */
+function solid(physics, world) {
+  world.colliders = [physics.addBoxFromObject(world.crate), physics.addBoxFromObject(world.barn)];
+  return world;
+}
+
+/**
+ * What `WorldManager._activate` does before it emits `world:changed`: the
+ * collision world is rebuilt from scratch so that only the entered world is
+ * solid, and the entered world's own colliders are re-added. `enter` skips
+ * this, which is exactly why the tests below could not be written with it.
+ */
+async function activate({ bus, physics, system }, world) {
+  physics.clear();
+  for (const c of world.colliders) physics.add(c);
+  bus.emit('world:changed', { id: world.id, world });
+  await system.applying;
+}
+
+/** Where each registered collider sits in `world.colliders` (-1: not this world's). */
+const registeredAs = (physics, world) => physics.colliders.map((c) => world.colliders.indexOf(c)).sort();
 
 /* ------------------------------------------------------------------ */
 /* Fetching                                                            */
@@ -309,6 +339,86 @@ test('an entry dropped from the overlay puts its object back where the world bui
   rig.doc.version = 2;
   await enter(rig);
   assert.deepEqual(rig.world.crate.position.toArray(), original.toArray());
+});
+
+test('a move undone by leaving the world does not plant the collider in the world entered', async () => {
+  const rig = setup(doc([moveCrate]));
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+  const [crateCollider] = station.colliders;
+  const authored = crateCollider.center.clone();
+
+  await activate(rig, station);
+  assert.deepEqual(crateCollider.center.toArray(), [40, 3, -20], 'precondition: the move took the collider');
+
+  // The player portals on. WorldManager has already rebuilt physics for the
+  // medieval world by the time this system hears about it.
+  await activate(rig, medieval);
+
+  // The station's collider is put back where the station built it, for the next visit...
+  assert.deepEqual(crateCollider.center.toArray(), authored.toArray());
+  // ...but the medieval world's physics holds the medieval world's colliders, exactly, and nothing of the station's.
+  assert.deepEqual(registeredAs(rig.physics, medieval), [0, 1], 'the physics of the world entered holds something that is not its own');
+  assert.equal(rig.physics.has(crateCollider), false, 'the station crate is solid in the medieval world');
+});
+
+test('re-entering a world after its entry was dropped leaves each collider registered once, where it was built', async () => {
+  const rig = setup(doc([moveCrate]));
+  const station = solid(rig.physics, rig.world);
+  const medieval = solid(rig.physics, makeWorld('medieval'));
+  const [crateCollider] = station.colliders;
+  const authored = crateCollider.center.clone();
+
+  await activate(rig, station);
+  await activate(rig, medieval);
+
+  // The admin dropped the move; the player walks back.
+  rig.doc.entries = [];
+  rig.doc.version = 2;
+  await activate(rig, station);
+
+  assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
+  assert.deepEqual(crateCollider.center.toArray(), authored.toArray());
+  assert.deepEqual(rig.world.crate.position.toArray(), authored.toArray());
+});
+
+test('a same-world re-entry after the entry was dropped leaves each collider registered once, where it was built', async () => {
+  const rig = setup(doc([moveCrate]));
+  const station = solid(rig.physics, rig.world);
+  const [crateCollider] = station.colliders;
+  const authored = crateCollider.center.clone();
+
+  await activate(rig, station);
+  assert.deepEqual(crateCollider.center.toArray(), [40, 3, -20], 'precondition: the move took the collider');
+
+  rig.doc.entries = [];
+  rig.doc.version = 2;
+  await activate(rig, station);
+
+  assert.deepEqual(registeredAs(rig.physics, station), [0, 1], 'a collider is registered more than once, or is foreign');
+  assert.deepEqual(crateCollider.center.toArray(), authored.toArray());
+});
+
+test('a document that arrives after the player has portalled on is dropped, not applied to the world they left', async () => {
+  // The station's GET is held until released; the medieval one answers at once.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const overlays = { station: doc([moveCrate]), medieval: doc([moveCrate], { world: 'medieval' }) };
+  const rig = setup(async (worldId) => { if (worldId === 'station') await held; return overlays[worldId]; });
+  const station = rig.world;
+  const medieval = makeWorld('medieval');
+  const authored = station.crate.position.clone();
+
+  rig.bus.emit('world:changed', { id: station.id, world: station });
+  rig.bus.emit('world:changed', { id: medieval.id, world: medieval });
+  await rig.system.applying;
+  assert.deepEqual(medieval.crate.position.toArray(), [40, 3, -20], "the medieval world's own document applied");
+
+  release();
+  await new Promise((r) => setTimeout(r, 0)); // the station continuation runs to its end
+
+  assert.deepEqual(station.crate.position.toArray(), authored.toArray(), 'the stale document moved the crate in the world the player left');
+  assert.equal(rig.system.report.world, 'medieval', 'the stale document republished over the world the player is in');
 });
 
 test('leaving a world restores what the overlay moved in it', async () => {

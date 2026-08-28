@@ -6349,3 +6349,23 @@ The map editor can project a world onto a canvas
 Saving the map refuses a document with an out-of-bounds move
 ```
 Do not push, do not merge.
+
+## Execution record (as built, 2026-08-27)
+
+Executed with superpowers:subagent-driven-development — fresh implementer per task, spec review, then quality review, fixes folded into the next task's prior commit. Task-level "as executed" blocks and the full tracker live in `.probe/map-editor-stage1/` (gitignored). The tree is the source of truth; this section lists where it departs from the task text above.
+
+**Chunk 1 (game, `map-editor-game`).** `h >= y → break` in the peel lost the floor at an exact 1 cm gap (6.5 % of station's columns) → skip-and-re-cast with `MAX_SKIPS 4`; PEEL stays 0.01; resolution documented as ~2 cm. `planGrid` keeps `floor(w/step)+1` (up to `step − ε` of the far edge reads `no-ground`; `ceil` is a stage-2 one-liner). MapOverlay: `now` passed wrapped; a throwing `cast` abandons the job and logs once; `_reportBack` warns on `!res.ok` and on a body whose `layout` is not `stored`; `job.report` snapshots the world. Perf: cold `--entry station` boot over-budget frames 12 (control) → 11 (sampler on); `layout` row `{ over 0 }`; frame-gaps `--layout-sample` reports `summary.layoutSampled` honestly (at least one run, right world, sampler finished). Gates: `npm test` 3494, contract-check 130/130, build. Known pre-existing defect left alone: the old `_onWorldChanged` continuation can apply to the previous world after a rapid portal (only sampling is world-guarded).
+
+**Chunk 2 (site).** `Math.round(y*100)` in `groundAt`; `validateGround` rejects negative/fractional/oversized headers before decoding; jsonb `||` merge with a three-way schema CASE; the route refuses 403 → 413 (declared, then measured) → 400 → 404 before touching the DB; an invalid layout keeps the prior and reports `layout: 'kept-prior'` with warnings.
+
+**Chunk 3 (site).** Hidden objects occupy (reversed a Task-1 review). Last move wins (corrected an earlier note). Integer-mm compares replaced float tolerances (the panel and server disagreed at −0.17 on 0.08 m ground). The occupant loop terminates on `Number.isSafeInteger(mm(x))`, not finiteness (`mm(1e20)` is finite and `cx++` stops past 2^53). Bucket grid measured 1.4 ms vs 5.8 ms pairwise.
+
+**Chunks 4–6 (site).** Pixel marks hit-test with `r: 0` (the plan's `r: 0.5` scaled with zoom); `fit()` guarded so a redraw never resets the backing store; `pointercancel` cannot place; focus ring kept by styling property-by-property; `authoredLift`; `canonicalSelection` on a superseded row selects the object; `groundStatus`/`groundVerdict` shared by panel and route; `placementY` pure. Composed panel: `load(which, { keepMessage })` (the old panel's success message was erased in the same React batch), `loadSeq` against stale responses, full document reset on a failed load, Escape cancels place, canvas inert while busy, status paragraph always mounted, Hide checkbox disabled on a hide-only entry.
+
+**Chunk 7 (site).** The harness is the task text plus: `Page.navigate` `errorText` fails fast; secrets compared by length only; ws close/error rejects every pending call (a dead Chrome aborts in ~7 s, next dev killed); a refused save short-circuits with the page's message; SIGINT → shared cleanup promise → exit 130 with `report.json`; loopback-only seeding unless `--allow-shared-db`; 2FA needs `--url`. Prerequisites: `POSTGRES_URL`, `HMAC_SECRET`, `ADMIN_EMAILS`. The credentialed run is the owner's.
+
+**Whole-branch review.** Contract verified identical on both sides; both branches sit on main's tip and `git merge-tree` is clean in every order; deploy order is safe either way. A contract-pin test (`site/lib/mapLayoutContract.test.ts`) asserts `LAYOUT_SCHEMA` and the layer cap agree across `src/` and `site/lib` — it skips with a message until both branches share a tree, then goes live.
+
+**Out of scope, recorded for stage 2:** trimesh undersides as layers; deck-edge bilinear Y (a crate dragged across a 4 m edge cell reads ~1.3 m mid-air and `floating` cannot fire); `planGrid` ceil; a shared `scripts/harness/cdp.mjs` for the two CDP harnesses; the `_onWorldChanged` continuation guard; `built_version` (spec §7) deferred; the CI `--layout-sample` decision.
+
+Final commits: game `4184de1` (code `0b1a8fa`); site `a1ae62e`.

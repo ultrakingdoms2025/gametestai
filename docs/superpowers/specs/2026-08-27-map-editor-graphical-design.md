@@ -468,3 +468,20 @@ about a day). Maze excluded by design.
 - Maze hedges and cells.
 - Editing world *source*; the overlay remains the only thing written.
 - Multi-user editing; the existing optimistic version check remains the concurrency model.
+
+## 14. Amendments as built (stage 1, 2026-08-27)
+
+Stage 1 was executed from `docs/superpowers/plans/2026-08-27-map-editor-stage1.md` on two branches (`map-editor-game`, `map-editor-stage1`). Where the tree differs from the sections above, the tree is right and this section records why. Nothing here changes stage 2's scope.
+
+**§7 Layout report.**
+- The game sends **two** reports per world entry: an immediate one (`layoutSchema`, `bounds`, `shapes`, catalogue) and a second carrying `ground` once sampling finishes (~15 s at station, under 2 ms per frame). If the admin leaves before sampling finishes, only the **ground** of the previous report stands — `objects`, `bounds`, `shapes` and `reported_at` were already replaced by the immediate report.
+- An invalid or mismatched layout is **not** refused with 413/400. The route stores the catalogue, keeps the prior layout, and answers 200 with `{ ok, layout: 'stored' | 'kept-prior' | 'none', warnings }`; the game warns on anything but `stored`. 413 is reserved for bodies over 4 MB (declared or measured); Vercel's own 4.5 MB platform limit sits above that.
+- `ground` is a layered grid (up to 4 layers, layer 0 topmost, Int16 centimetres little-endian, base64, index `((j*nx)+i)*layers+k`, `NO_SAMPLE = -32768`, ~2 cm resolution from a 1 cm peel with skip-and-re-cast); `step = max(4, ceil(extent/256))`; `floorY = bounds.min.y - 20`. Trimesh undersides read as layers (no back-face culling in `_raycastCollider`) — a stage-2 item.
+- There is no "layout: sampling…" banner state: the site cannot tell sampling from left-early. The banner reads `reported <age> · N shapes · no ground grid yet` until the second report lands; the editor does not poll — reload or switch world to see the grid.
+- `?layout=sample` samples but never POSTs, and is honoured only with the dev switch.
+
+**§8 Editor UI.** The canvas emits `onSelect` / `onDrag` / `onPlaceAt`; there is **no ring handle** (yaw is the selection panel's degrees field) and **no prop footprints** (they arrive with `{id}` targets in stage 2). Pixel-drawn marks hit-test with `r: 0`. "[ Remove ]" in the mock is a **Hide** checkbox on the retained `hidden` flag; a loaded hide-only entry cannot be un-hidden from the checkbox (its position is unknown). Place mode: click, or Escape to cancel. The layout reference stays stable across load/save/revert so pan/zoom never resets mid-session.
+
+**§9 Conflicts.** A named object is a **1 m centre-to-centre clearance** (0.5 m radius), not a 1 m-radius disc. Hidden objects **occupy** (the game keeps their colliders — at the new position when one is given). The **last** move per name wins (the game applies in order). Verdicts compare integer millimetres so the panel and the route agree exactly; only `out-of-bounds` (5 m past the reported bounds) is an error; `duplicate-target`, `stale-name`, `underground`, `floating`, `no-ground`, `overlap` warn. When `layout` is null nothing is judged — the normaliser's ±20 000 reject drops such an entry from the save rather than refusing the document. Overlap uses a 4 m bucket grid in `prepare()` (1.4 ms median at 2 000 objects × 500 entries).
+
+**§10/§11.** The save gate refuses with `400 { error: 'conflicts', rejected: [{ index, id, reason }] }` inside the transaction (`ROLLBACK`, no audit row). The e2e is a zero-dependency CDP harness (`site/scripts/map-editor-e2e.mjs`), not Playwright; it signs in through the real form, exits 2 `SKIPPED … NOT a pass` without `MAP_E2E_EMAIL`/`MAP_E2E_PASSWORD`, refuses to seed a non-loopback database without `--allow-shared-db`, and needs `--url` for a 2FA account. DB-backed tests run only where `POSTGRES_TEST_URL` is set (CI has no Postgres; the emitted SQL is gated by fakes). CI's frame-gaps run does not pass `--layout-sample` — the sampler's cost is evidenced by hand runs in `.probe/gaps/layout*` until the owner decides to add it.

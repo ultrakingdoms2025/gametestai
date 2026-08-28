@@ -5,6 +5,12 @@
  *   env: MAP_E2E_EMAIL, MAP_E2E_PASSWORD   (an address listed in ADMIN_EMAILS / MARKETPLACE_ADMIN_EMAILS)
  *        MAP_E2E_CODE                       (optional: the current authenticator code, for a 2FA-enabled admin)
  *
+ *   The site it drives needs, in site/.env.local or its environment:
+ *     POSTGRES_URL   — the report row and the saved version are written there (see below)
+ *     HMAC_SECRET    — the save route signs its audit entry and refuses to save without it
+ *     ADMIN_EMAILS   — (or MARKETPLACE_ADMIN_EMAILS) listing MAP_E2E_EMAIL; a signed-in
+ *                      non-admin reaches the lock banner, not the editor
+ *
  * ── Why a browser ────────────────────────────────────────────────────────
  *
  * The site's vitest has no DOM. Every decision in the editor is a pure,
@@ -26,6 +32,14 @@
  * The report route stores the synthetic layout for `--world` and Save writes
  * an overlay version, both in whatever POSTGRES_URL the site's env points at.
  * Point it at a development database.
+ *
+ * ── A 2FA account must use --url ─────────────────────────────────────────
+ *
+ * A TOTP code is accepted for one 30 s step either side of now, and a cold
+ * `next dev` can take longer than that to serve /login (the wait here allows
+ * 180 s). Starting the server from this script would leave MAP_E2E_CODE dead
+ * by the time it is typed. An admin with 2FA enabled runs this with --url
+ * against a server that is already up, generating the code just before.
  *
  * ── Zero dependencies, on purpose ────────────────────────────────────────
  *
@@ -63,19 +77,29 @@ if (!EMAIL || !PASSWORD) {
 }
 const CODE = process.env.MAP_E2E_CODE ?? '';
 
-/* Set when a child process dies or refuses to start. Every `waitFor` then
- * throws at once instead of polling out its timeout, so the failure reaches
- * `finally` — which kills the other child and writes report.json — rather
- * than an unhandled 'error' event killing this process with next dev
- * orphaned on its port. */
+/* Set when a child process dies or refuses to start, or the devtools socket
+ * drops. Every `waitFor` then throws at once instead of polling out its
+ * timeout, so the failure reaches cleanup — which kills the other child and
+ * writes report.json — rather than an unhandled 'error' event killing this
+ * process with next dev orphaned on its port. */
 let abortReason = null;
 const childFailed = (what) => (e) => {
   if (!abortReason) abortReason = `${what}: ${e instanceof Error ? e.message : `exit code ${e}`}`;
 };
 
 const WORLD = arg('--world') ?? 'station';
-/* Two named objects on a flat floor at y = 0. The crate sits 0.4 m up:
- * inside the ±0.25/+1.5 m band, so it starts with no ground warning. */
+/* The browser window and the emulated viewport are the same size, so the
+ * page lays out exactly once. */
+const VIEWPORT = { width: 1500, height: 1100 };
+/* `mapProjection.createView(bounds, w, h, padPx = 24)`: the inset the map is
+ * fitted inside. Used only when the page does not expose its view. */
+const VIEW_PAD_PX = 24;
+/* The drag: `steps` pointer moves of (dx, dy) px each, released at the sum. */
+const DRAG = { steps: 8, dx: 8, dy: 4 };
+/* The seeded world: ±100 m in both axes, and two named objects on a flat
+ * floor at y = 0. The crate sits 0.4 m up: inside the ±0.25/+1.5 m band, so
+ * it starts with no ground warning. */
+const BOUNDS = { min: { x: -100, y: -5, z: -100 }, max: { x: 100, y: 60, z: 100 } };
 const CRATE = { name: 'e2e:crate', position: { x: 10, y: 0.4, z: -20 } };
 const POST = { name: 'e2e:post', position: { x: -30, y: 0, z: 40 } };
 
@@ -83,7 +107,7 @@ const POST = { name: 'e2e:post', position: { x: -30, y: 0, z: 40 } };
 /* The synthetic layout                                                   */
 /* ====================================================================== */
 
-/** Int16 → base64, little-endian, the encoding `mapLayout.ts` decodes. */
+/** Int16 → base64, little-endian: `mapLayout.encodeHeights` across the TS boundary (that one uses DataView/btoa so it also runs in the browser; this is Node only). */
 function encodeHeightsCm(int16) {
   const buf = Buffer.alloc(int16.length * 2);
   for (let i = 0; i < int16.length; i++) buf.writeInt16LE(int16[i], i * 2);
@@ -101,7 +125,7 @@ function syntheticReport() {
     applied: [],
     unresolved: [],
     layoutSchema: 1,
-    bounds: { min: { x: -100, y: -5, z: -100 }, max: { x: 100, y: 60, z: 100 } },
+    bounds: BOUNDS,
     shapes: [
       { kind: 'rect', x: 0, z: 0, w: 80, d: 60, fill: 0x2a4a66 },
       { kind: 'circle', x: 40, z: -40, r: 8, stroke: '#52e9ff', width: 0.5 },
@@ -150,7 +174,7 @@ function browserCandidates() {
 }
 
 /* ====================================================================== */
-/* A CDP client, in about forty lines                                     */
+/* A CDP client, in about fifty lines                                     */
 /* ====================================================================== */
 
 class CDP {
@@ -158,6 +182,8 @@ class CDP {
     this.ws = ws;
     this.id = 0;
     this.pending = new Map();
+    this.dead = null;
+    this.closing = false;
     this.ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.id != null && this.pending.has(msg.id)) {
@@ -167,6 +193,20 @@ class CDP {
         else resolve(msg.result);
       }
     });
+    /* A Chrome that dies mid-run takes its socket with it. Every call still
+     * in flight is rejected and the run is aborted — otherwise an awaited
+     * `send` would never settle and `waitFor`, which only reads its deadline
+     * between calls, would hang with next dev still on its port. */
+    const died = (why) => {
+      if (this.dead) return;
+      this.dead = why;
+      const waiting = [...this.pending.values()];
+      this.pending.clear();
+      for (const { reject } of waiting) reject(new Error(why));
+      if (!this.closing && !abortReason) abortReason = why;
+    };
+    this.ws.addEventListener('close', () => died('the devtools connection closed (did Chrome die?)'), { once: true });
+    this.ws.addEventListener('error', () => died('the devtools connection errored'), { once: true });
   }
 
   static async connect(url) {
@@ -179,6 +219,7 @@ class CDP {
   }
 
   send(method, params = {}, sessionId) {
+    if (this.dead) return Promise.reject(new Error(this.dead));
     const id = ++this.id;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
@@ -186,7 +227,10 @@ class CDP {
     return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
   }
 
-  close() { try { this.ws.close(); } catch { /* already gone */ } }
+  close() {
+    this.closing = true;
+    try { this.ws.close(); } catch { /* already gone */ }
+  }
 }
 
 /* ====================================================================== */
@@ -255,13 +299,11 @@ async function startNext() {
   const keep = (d) => { log.push(String(d)); if (flag('--verbose')) process.stdout.write(d); };
   child.stdout.on('data', keep);
   child.stderr.on('data', keep);
-  let ready = false;
   child.on('error', childFailed('next dev failed to start'));
-  child.on('exit', (code) => { if (!ready) childFailed('next dev exited before it was listening')(code); });
+  child.on('exit', childFailed('next dev exited'));
   const url = `http://127.0.0.1:${port}`;
   await waitFor(async () => (await fetch(`${url}/login`)).ok, { timeout: 180000, every: 500, what: `next dev at ${url}` })
     .catch((e) => { throw new Error(`${e.message}\n--- next dev output ---\n${log.join('').slice(-4000)}`); });
-  ready = true;
   return { url, child };
 }
 
@@ -270,16 +312,20 @@ async function startNext() {
 /* ====================================================================== */
 
 async function main() {
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  const report = { base: arg('--url') ?? null, world: WORLD, steps: [], screenshots: [] };
+  const reportFile = path.join(outDir, 'report.json');
+
   const chrome = browserCandidates()[0];
   if (!chrome) {
-    console.error('NO BROWSER FOUND — this harness measured nothing. Set CHROME_PATH or install Chrome / Chromium.');
+    report.failure = 'NO BROWSER FOUND — this harness measured nothing. Set CHROME_PATH or install Chrome / Chromium.';
+    console.error(report.failure);
+    await writeFile(reportFile, JSON.stringify(report, null, 2));
     return 1;
   }
   console.log(`browser: ${chrome}`);
-  await rm(outDir, { recursive: true, force: true });
-  await mkdir(outDir, { recursive: true });
 
-  const report = { base: arg('--url') ?? null, world: WORLD, steps: [], screenshots: [] };
   const pageLog = [];
   const userDir = path.join(os.tmpdir(), `an-map-e2e-${process.pid}`);
   let server = null;
@@ -287,9 +333,31 @@ async function main() {
   let client;
   const step = (name, detail) => { report.steps.push({ name, detail, at: new Date().toISOString() }); console.log(`  ${name}${detail ? ` — ${detail}` : ''}`); };
 
+  /* One exit path for every ending — success, a thrown assertion, Ctrl+C:
+   * both children are killed and the report is written. On macOS/Linux
+   * `next dev` is its own process group, so a SIGINT to this process alone
+   * would not reach it. */
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    client?.close();
+    browser?.kill();
+    if (server) killTree(server.child);
+    if (!flag('--keep')) await rm(userDir, { recursive: true, force: true }).catch(() => {});
+    await writeFile(reportFile, JSON.stringify(report, null, 2));
+  };
+  const onSignal = (sig) => {
+    report.failure ??= `interrupted by ${sig}`;
+    console.error(`\n${sig} — cleaning up`);
+    cleanup().finally(() => process.exit(130));
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
   /* Both children are started INSIDE the try: a Chrome that fails to launch
    * (a stale ms-playwright build, a locked --user-data-dir) must still reach
-   * `finally`, which kills next dev and writes the report. */
+   * cleanup, which kills next dev and writes the report. */
   try {
     if (!report.base) {
       server = await startNext();
@@ -306,12 +374,11 @@ async function main() {
       '--no-first-run', '--no-default-browser-check', '--disable-gpu',
       '--hide-scrollbars', '--mute-audio', '--disable-extensions',
       '--force-device-scale-factor=1',
-      '--window-size=1500,1100',
+      `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       'about:blank',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { stdio: 'ignore' });
     browser.on('error', childFailed('chrome failed to launch'));
-    browser.on('exit', (code) => { if (!client) childFailed('chrome exited before devtools came up')(code); });
-    browser.stderr.on('data', () => { /* chrome is noisy on stderr */ });
+    browser.on('exit', childFailed('chrome exited'));
 
     const version = await waitFor(async () => {
       const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
@@ -323,7 +390,7 @@ async function main() {
     const call = (m, p) => client.send(m, p, sessionId);
     await call('Page.enable');
     await call('Runtime.enable');
-    await call('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
+    await call('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, deviceScaleFactor: 1, mobile: false });
     client.ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.sessionId !== sessionId) return;
@@ -346,7 +413,12 @@ async function main() {
     const textOf = (sel) => evaluate(`${q(sel)}?.textContent ?? null`);
     const valueOf = (sel) => evaluate(`${q(sel)}?.value ?? null`);
     const rectOf = (sel) => evaluate(`(() => { const r = ${q(sel)}?.getBoundingClientRect(); return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2, left: r.left, top: r.top, w: r.width, h: r.height } : null; })()`);
-    const mouse = (type, x, y, extra = {}) => call('Input.dispatchMouseEvent', { type, x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1, ...extra });
+    /* A move carries no button of its own — a drag says `buttons: 1` through `extra`. */
+    const mouse = (type, x, y, extra = {}) => call('Input.dispatchMouseEvent', {
+      type, x: Math.round(x), y: Math.round(y),
+      ...(type === 'mouseMoved' ? {} : { button: 'left', clickCount: 1 }),
+      ...extra,
+    });
     const clickSel = async (sel) => {
       await evaluate(`${q(sel)}?.scrollIntoView({ block: 'center' })`);
       const r = await rectOf(sel);
@@ -356,12 +428,19 @@ async function main() {
       await mouse('mouseReleased', r.x, r.y);
     };
     /* Text through Chrome's input pipeline (`Input.insertText`), so React's
-     * controlled inputs see a real edit, not a property write. */
-    const typeInto = async (sel, text) => {
+     * controlled inputs see a real edit, not a property write. A `secret`
+     * is checked by length only: the failure text goes to stdout and
+     * report.json, and a password must never be in either. */
+    const typeInto = async (sel, text, { secret = false } = {}) => {
       await evaluate(`(() => { const el = ${q(sel)}; el.scrollIntoView({ block: 'center' }); el.focus(); el.select(); })()`);
       await call('Input.insertText', { text });
       const got = await valueOf(sel);
-      assert(got === text, `typed ${JSON.stringify(text)} into ${sel} but it reads ${JSON.stringify(got)}`);
+      if (secret) {
+        assert(typeof got === 'string' && got.length === text.length,
+          `typed ${text.length} characters into ${sel} but it reads ${got === null ? 'null' : `${got.length} characters`}`);
+      } else {
+        assert(got === text, `typed ${JSON.stringify(text)} into ${sel} but it reads ${JSON.stringify(got)}`);
+      }
     };
     /* A <select> has no typed path: set through the native setter and fire
      * the change event React listens for. */
@@ -384,16 +463,21 @@ async function main() {
     if (nav.errorText) throw new Error(`cannot load ${loginUrl}: ${nav.errorText}`);
     await waitForSelector('#email', 'the sign-in form');
     await typeInto('#email', EMAIL);
-    await typeInto('#password', PASSWORD);
-    if (CODE) await typeInto('#code', CODE);
+    await typeInto('#password', PASSWORD, { secret: true });
+    /* The shot before the code: `#code` is type="text", and the screenshot
+     * is evidence that gets cited. */
     await shot('01-login');
+    if (CODE) await typeInto('#code', CODE, { secret: true });
     await clickSel('form.auth-form button[type="submit"]');
     /* The locked render has no <h1> — only `.banner > b` — so wait for EITHER
      * the editor or the lock, and let the assert below name the real problem
      * (a signed-in non-admin) instead of a 90 s timeout. */
     await waitFor(async () => {
       const err = await textOf('.auth-error');
-      if (err) { abortReason = `sign-in refused: ${err}`; return false; }
+      if (err) {
+        abortReason = `sign-in refused: ${err}${CODE ? ' (a TOTP code was supplied; it may have expired — use --url against a running server)' : ''}`;
+        return false;
+      }
       return evaluate(`location.pathname === '/admin/map' && (!!document.querySelector('h1') || document.body.innerText.includes('Map editor locked'))`);
     }, { what: 'the editor (or the lock banner) after sign-in', timeout: 90000 });
     assert(!(await evaluate(`document.body.innerText.includes('Map editor locked')`)),
@@ -413,8 +497,17 @@ async function main() {
     const t0 = await evaluate('performance.timeOrigin');
     await call('Page.reload');
     await waitFor(async () => (await evaluate('performance.timeOrigin')) !== t0, { what: 'the reloaded document' });
-    await waitForSelector('[data-e2e="world-select"]', 'the editor');
-    if (WORLD !== 'station') await choose('[data-e2e="world-select"]', WORLD);
+    const worldSel = '[data-e2e="world-select"]';
+    await waitForSelector(worldSel, 'the editor');
+    if (WORLD !== 'station') {
+      /* The panel's first load (station) disables the select while it is in
+       * flight, but a change dispatched from script reaches React anyway and
+       * the two loads would race. Wait for the first to land, switch, then
+       * wait for the switch's own load. */
+      await waitFor(() => evaluate(`!${q(worldSel)}.disabled`), { what: 'the initial load to finish before switching world' });
+      await choose(worldSel, WORLD);
+      await waitFor(() => evaluate(`(() => { const el = ${q(worldSel)}; return el.value === ${JSON.stringify(WORLD)} && !el.disabled; })()`), { what: `the ${WORLD} load to finish` });
+    }
     await waitFor(async () => (await textOf('[data-e2e="layout-age"]'))?.startsWith('reported'), { what: 'the layout banner to read "reported …"' });
     const age = await textOf('[data-e2e="layout-age"]');
     assert(age === 'reported just now', `banner reads ${JSON.stringify(age)}`);
@@ -431,11 +524,14 @@ async function main() {
     assert(canvas, 'the map canvas is on the page');
     let view = await evaluate('window.__mapView ?? null');
     if (!view) {
-      /* Production strips __mapView. Reproduce createView(bounds, w, h, 24)
-       * for an UNTOUCHED view: the bounds are ±100 in both axes. */
-      const iw = canvas.w - 48, ih = canvas.h - 48;
-      const scale = Math.min(iw / 200, ih / 200);
-      view = { scale, ox: canvas.w / 2, oy: canvas.h / 2 };
+      /* Production strips __mapView. Reproduce createView(BOUNDS, w, h,
+       * VIEW_PAD_PX) for an UNTOUCHED view, from the same bounds we seeded. */
+      const ex = BOUNDS.max.x - BOUNDS.min.x;
+      const ez = BOUNDS.max.z - BOUNDS.min.z;
+      const scale = Math.min((canvas.w - 2 * VIEW_PAD_PX) / ex, (canvas.h - 2 * VIEW_PAD_PX) / ez);
+      const cx = (BOUNDS.min.x + BOUNDS.max.x) / 2;
+      const cz = (BOUNDS.min.z + BOUNDS.max.z) / 2;
+      view = { scale, ox: canvas.w / 2 - cx * scale, oy: canvas.h / 2 - cz * scale };
       step('note', 'no window.__mapView (production build) — projecting with createView maths');
     }
     /* World (x, z) → page pixel, the canvas's own convention: sx = ox + x·scale, sy = oy + z·scale. */
@@ -462,15 +558,16 @@ async function main() {
     /* ---- 4. drag on the canvas ----------------------------------------- */
     const sx = crate.x;
     const sy = crate.y;
+    const dragPx = { x: DRAG.steps * DRAG.dx, y: DRAG.steps * DRAG.dy };
     await mouse('mouseMoved', sx, sy);
     await mouse('mousePressed', sx, sy);
-    for (let i = 1; i <= 8; i++) await mouse('mouseMoved', sx + i * 8, sy + i * 4, { buttons: 1 });
-    await mouse('mouseReleased', sx + 64, sy + 32);
+    for (let i = 1; i <= DRAG.steps; i++) await mouse('mouseMoved', sx + i * DRAG.dx, sy + i * DRAG.dy, { buttons: 1 });
+    await mouse('mouseReleased', sx + dragPx.x, sy + dragPx.y);
     await waitFor(() => evaluate(`[...document.querySelectorAll('[data-e2e="pending-row"]')].some(li => li.textContent.includes('e2e:crate'))`), { what: 'a pending row for e2e:crate' });
     const rowText = await evaluate(`[...document.querySelectorAll('[data-e2e="pending-row"]')].find(li => li.textContent.includes('e2e:crate')).textContent`);
     assert(rowText.includes('→ ('), `row reads ${JSON.stringify(rowText)}`);
     const draggedX = Number(await valueOf('[data-e2e="sel-x"]'));
-    const expectedX = CRATE.position.x + 64 / view.scale;
+    const expectedX = CRATE.position.x + dragPx.x / view.scale;
     assert(Math.abs(draggedX - expectedX) < 0.5, `drag moved X to ${draggedX}, expected ≈ ${expectedX.toFixed(2)}`);
     await shot('05-dragged');
     step('dragged', `row: ${rowText.trim()}`);
@@ -493,8 +590,14 @@ async function main() {
     await waitFor(() => evaluate(`!(${q('[data-e2e="sel-conflicts"]')}?.textContent ?? '').includes('underground')`), { what: 'the warning to clear' });
     await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
     await clickSel('[data-e2e="save"]');
-    await waitFor(async () => (await textOf('[data-e2e="message"]'))?.startsWith('Saved version'), { what: 'the save message', timeout: 60000 });
-    const msg = await textOf('[data-e2e="message"]');
+    /* A refused save (a 400, a missing HMAC_SECRET) puts its reason in the
+     * same live region: carry it, so a failure here names it. */
+    const msg = await waitFor(async () => {
+      const m = await textOf('[data-e2e="message"]');
+      if (m?.startsWith('Saved version')) return m;
+      if (m) throw new Error(`the page says: ${m}`);
+      return null;
+    }, { what: 'the save message', timeout: 60000 });
     const savedVersion = Number(/Saved version (\d+)/.exec(msg)[1]);
     assert(savedVersion === versionBefore + 1, `saved version ${savedVersion}, expected ${versionBefore + 1}`);
     await waitFor(async () => (await textOf('[data-e2e="save"]')) === `Saved (v${savedVersion})`, { what: 'the save button to show the new version' });
@@ -506,11 +609,9 @@ async function main() {
     report.pageConsole = pageLog;
     console.error(`\nFAILED: ${report.failure}\n--- page console ---\n${pageLog.join('\n') || '(silent)'}`);
   } finally {
-    client?.close();
-    browser?.kill();
-    if (server) killTree(server.child);
-    if (!flag('--keep')) await rm(userDir, { recursive: true, force: true }).catch(() => {});
-    await writeFile(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
+    await cleanup();
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
   }
 
   if (report.failure) {

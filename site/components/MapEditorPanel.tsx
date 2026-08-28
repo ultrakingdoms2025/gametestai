@@ -174,13 +174,21 @@ export function MapEditorPanel() {
    * `setMessage('')` lands in the SAME React batch as the caller's, and the
    * batch's last write — the blank — is what renders. A caller with
    * something to say asks the reload not to clear it. */
+  /* Loads can overlap — a world switch while the first load is in flight, a
+   * save's reload against a switch — and whichever response arrived LAST
+   * would win, for whichever world it was. Each load takes a sequence
+   * number; a response that is no longer the latest touches nothing, not
+   * even `busy`, which the latest one still owns. */
+  const loadSeq = useRef(0);
   const load = useCallback(
     async (which: OverlayWorld, opts: { keepMessage?: boolean } = {}) => {
+      const seq = ++loadSeq.current;
       setBusy(true);
       if (!opts.keepMessage) setMessage('');
       try {
         const res = await fetch(`/api/admin/map/${which}`, { cache: 'no-store' });
         const data = (await res.json()) as WorldResponse;
+        if (seq !== loadSeq.current) return;
         if (!res.ok) throw new Error(data?.error || 'Could not load the overlay.');
         setEntries(withKeys(data.overlay.entries ?? []));
         setSavedVersion(data.overlay.version ?? 0);
@@ -193,6 +201,7 @@ export function MapEditorPanel() {
         setPlaceItem(null);
         setRejectedKeys(NO_KEYS);
       } catch (error) {
+        if (seq !== loadSeq.current) return;
         setMessage(error instanceof Error ? error.message : 'Could not load the overlay.');
         /* Nothing of the world that was showing may stay on the page under
          * the name of the one that failed to load: a dirty document from
@@ -205,11 +214,12 @@ export function MapEditorPanel() {
         setReport(null);
         setSavedVersion(0);
         setDirty(false);
+        setNote('');
         setSelectedRaw(null);
         setPlaceItem(null);
         setRejectedKeys(NO_KEYS);
       } finally {
-        setBusy(false);
+        if (seq === loadSeq.current) setBusy(false);
       }
     },
     [adoptLayout]
@@ -441,6 +451,7 @@ export function MapEditorPanel() {
   async function revert(version: number) {
     if (!confirm(`Revert ${world} to version ${version}? This writes a new version holding those entries; nothing is deleted.`)) return;
     setBusy(true);
+    setMessage('');
     try {
       const res = await fetch(`/api/admin/map/${world}`, {
         method: 'POST',

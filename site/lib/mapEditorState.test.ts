@@ -20,8 +20,9 @@
  * layer picker (`h + lift`) add, on the same slope, so the two cannot
  * disagree either; and `canonicalSelection` is pinned in both directions,
  * so a row click and a mark click on one move land on one selection.
- * `placementY` is pinned on a two-layer cell whose bytes are NOT top-down,
- * so "the lowest surface" is asserted against the sort, not the byte order.
+ * `placementY` is pinned on two two-layer cells holding the same surfaces in
+ * opposite byte orders, so "the lowest surface" is asserted independently of
+ * how `layersAt` happens to order them.
  */
 import { describe, expect, it } from 'vitest';
 import { NO_SAMPLE, decodeGround, encodeHeights, groundAt, layersAt, type DecodedGround } from './mapLayout';
@@ -240,13 +241,15 @@ describe('placeAt', () => {
 });
 
 describe('placementY', () => {
-  /** 2×2 samples, two layers: cell (0,0) is a roof at 6 m over a deck at 1 m; cell (1,0) is one surface at 2 m; row j = 1 is unsampled. */
+  /** 2×2 samples, two layers. Cell (0,0): a roof at 6 m over a deck at 1 m, deck FIRST in the bytes; cell (0,1): the same two surfaces, roof first; cell (1,0): one surface at 2 m; cell (1,1): unsampled. */
   function domed(): DecodedGround {
     const nx = 2, nz = 2, layers = 2;
     const heights = new Int16Array(nx * nz * layers).fill(NO_SAMPLE);
-    heights[0] = 100; // deck FIRST, roof second: not top-down, so the sort is what is under test
+    heights[0] = 100; // (0,0) deck then roof: not top-down
     heights[1] = 600;
-    heights[2] = 200;
+    heights[2] = 200; // (1,0)
+    heights[4] = 600; // (0,1) roof then deck: the mirror of (0,0)
+    heights[5] = 100;
     return decodeGround({ originX: 0, originZ: 0, step: 4, nx, nz, layers, heightsCm: encodeHeights(heights) });
   }
   it('is the LOWEST surface under the click: under the dome a placement lands on the deck, not the roof', () => {
@@ -257,9 +260,14 @@ describe('placementY', () => {
     // a single-layer grid: that layer (the slope is 1 m at x = 4)
     expect(placementY(slope(), 4, 0)).toBe(1);
   });
+  it('"lowest" is not "last": the mirrored cell, roof first in the bytes, lands on the same deck', () => {
+    const g = domed();
+    expect(placementY(g, 0, 4)).toBe(1);
+    expect(placementY(g, 0, 4)).toBe(placementY(g, 0, 0));
+  });
   it('is 0 with no grid, off the grid, and where the grid has no sample', () => {
     expect(placementY(null, 0, 0)).toBe(0);
-    expect(placementY(domed(), 0, 4)).toBe(0); // row j = 1: NO_SAMPLE in both layers
+    expect(placementY(domed(), 4, 4)).toBe(0); // cell (1,1): NO_SAMPLE in both layers
     expect(placementY(domed(), 50, 50)).toBe(0); // off the grid
   });
 });

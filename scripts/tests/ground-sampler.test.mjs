@@ -147,6 +147,88 @@ test('a float-noise hit at the re-cast origin is skipped, not stored, and the su
   assert.equal(origins[3], 0 - 0.01);
 });
 
+/* THE FLOOR UNDER A ROOF. Under the station hub one column has FIVE surfaces
+ * - dome 171.42, canopy 62 / 61.5 / 59.3, deck 0 - and a cell that stopped
+ * after four hits stored the canopy beam at 61.5 as its lowest layer. The
+ * editor's `placementY` takes the lowest stored layer, said "on surface",
+ * and the game spawned the placed item on the roof while the player stood
+ * on the deck at y 0.08 beneath it (2 084 of the hub's 3 505 cells, 59 %,
+ * had four layers with the lowest above 1 m). The rule: with L layers the
+ * grid keeps the top L-1 surfaces AND THE FLOOR - the lowest hit always
+ * lands in the last slot - so the sampler keeps casting after the cap.
+ * Columns by x (i = (x + 40) / 4); the plan is 6×2 so each is a cell. */
+const STACKS = {
+  0: [171.42, 62, 61.5, 59.3, 0],   // the hub column: five surfaces
+  1: [100, 80, 60, 40, 20, 0],      // six
+  2: [20, 0],                       // two - under the cap
+  3: [30, 20, 10, 0],               // exactly four: the floor IS the fourth
+  4: [30, 20, 10, 5, 0],            // four above the floor, the floor fifth
+  5: [0],                           // open floor
+};
+const STACK_PLAN = planGrid(box(-40, -5, -40, -20, 200, -36)); // step 4, nx 6, nz 2
+const stackIndex = (x) => Math.round((x + 40) / 4);
+function stackCast(x, yTop, z, maxDrop) {
+  const below = STACKS[stackIndex(x)].filter((h) => h <= yTop && yTop - h <= maxDrop);
+  return below.length ? Math.max(...below) : null;
+}
+function stackGrid(cast = stackCast) {
+  const job = createJob(STACK_PLAN, cast, { layers: 4, topY: 200, floorY: -25 });
+  job.run(1e9, () => 0);
+  const g = job.result();
+  const h = decode(g.heightsCm);
+  return (i) => [0, 1, 2, 3].map((k) => at(g, h, i, 0, k));
+}
+
+test('a column with five surfaces keeps the top three and the floor: the fourth-from-top is the layer dropped', () => {
+  const layers = stackGrid();
+  assert.deepEqual(layers(0), [17142, 6200, 6150, 0], 'dome, two canopy layers, the DECK - not the 59.3 m beam');
+});
+
+test('a column with six surfaces keeps the top three and the floor', () => {
+  assert.deepEqual(stackGrid()(1), [10000, 8000, 6000, 0]);
+});
+
+test('a column with four or fewer surfaces is stored whole, top-down, as before', () => {
+  const layers = stackGrid();
+  assert.deepEqual(layers(2), [2000, 0, NO_SAMPLE, NO_SAMPLE]);
+  assert.deepEqual(layers(3), [3000, 2000, 1000, 0]);
+  assert.deepEqual(layers(5), [0, NO_SAMPLE, NO_SAMPLE, NO_SAMPLE]);
+});
+
+test('four surfaces above the floor and the floor fifth: the floor is kept in the last slot; the extra casting is bounded by the column', () => {
+  const casts = new Map();
+  const counting = (x, yTop, z, maxDrop) => { casts.set(stackIndex(x), (casts.get(stackIndex(x)) ?? 0) + 1); return stackCast(x, yTop, z, maxDrop); };
+  const layers = stackGrid(counting);
+  assert.deepEqual(layers(4), [3000, 2000, 1000, 0], 'the 5 m surface gives way to the floor');
+  // Each column is two cells (nz = 2). A column of S surfaces costs S hits and
+  // the one miss that ends it - S + 1 casts a cell - so past the cap the extra
+  // is S - L + 1: the S - L hits below the cap, plus the miss the cap once
+  // spared. Under the cap nothing changed. (The skips bound still applies on top.)
+  assert.equal(casts.get(5) / 2, 2, 'one surface: a hit and a miss, as before');
+  assert.equal(casts.get(2) / 2, 3, 'two surfaces: unchanged');
+  assert.equal(casts.get(3) / 2, 5, 'exactly four: the miss below the floor is the one extra cast');
+  assert.equal(casts.get(4) / 2, 6, 'five: two extra casts');
+  assert.equal(casts.get(1) / 2, 7, 'six: three extra casts');
+});
+
+test('a cast that always answers a hair below its origin is cut off at MAX_CASTS, never run to the floor', () => {
+  // Every cast "finds" a surface 2 cm below where it started. Each hit is honest by the
+  // loop's rule (below the origin), so nothing skips, and with the cap gone a column of
+  // topY 40 over floorY -25 would take (40 + 25) / 0.03 ≈ 2 167 casts - on station,
+  // (topY - floorY) / PEEL is ~19 400 - inside ONE cell, where run() never looks at its
+  // budget. The cap is 64: L + MAX_SKIPS + a dozen decks, with room.
+  let casts = 0;
+  const job = createJob(PLAN, (x, yTop) => { casts++; return yTop - 0.02; }, { layers: 4, topY: 40, floorY: -25 });
+  job.run(1e9, () => 0);
+  assert.equal(casts, CELLS * 64, 'exactly MAX_CASTS casts a cell');
+  const h = decode(job.result().heightsCm);
+  // Each cast lands 0.03 below the last (a 2 cm answer, then the 1 cm peel): cast n hits
+  // 40.01 - 0.03n, so the first three are 39.98, 39.95, 39.92 and the 64th - the lowest,
+  // held in the last slot - is 40.01 - 1.92 = 38.09.
+  assert.deepEqual([...h.subarray(0, 4)], [3998, 3995, 3992, 3809]);
+  assert.ok(h.every((v, n) => v === [3998, 3995, 3992, 3809][n % 4]), 'every cell alike');
+});
+
 test('createJob refuses a plan it could not index', () => {
   assert.throws(() => createJob(null, fakeCast), /GroundSampler\.createJob: invalid plan/);
   assert.throws(() => createJob({ ...PLAN, nx: 20.5 }, fakeCast), /invalid plan/);

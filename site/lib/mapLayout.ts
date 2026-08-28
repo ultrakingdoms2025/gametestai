@@ -11,6 +11,10 @@ import { finiteCoord, readAngle, readVec3, round, type Vec3 } from './mapOverlay
  * and one "height at (x, z)" would put every deck placement sixty metres
  * underground. Each sample holds up to four surfaces, top down, as Int16
  * centimetres (±327 m covers every world); `NO_SAMPLE` is the Int16 minimum.
+ * A column with more surfaces than layers keeps the top three AND the lowest
+ * (the sampler's floor-keeping rule, `src/systems/GroundSampler.js`): the last
+ * stored layer is the floor under a roof, never the fourth surface from the
+ * top - nothing here reads a slot by index, so no decoder changed for it.
  */
 
 export const LAYOUT_SCHEMA = 1;

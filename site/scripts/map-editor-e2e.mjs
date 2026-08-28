@@ -617,11 +617,32 @@ async function main() {
       await mouse('mousePressed', r.x, r.y);
       await mouse('mouseReleased', r.x, r.y);
     };
+    /* An input is HYDRATED once React has attached its fiber to the node
+     * (`__reactFiber$…` / `__reactProps$…` own keys). Until then the element
+     * is the server's HTML: Chrome's input pipeline writes the text into the
+     * DOM, `el.value` reads it back, and the typed check passes - but no
+     * onChange ran, so React's state stays '' and the form posts empty
+     * credentials. That was step 1's deterministic "sign-in refused": the
+     * harness typed into `#email` as soon as the selector wait saw it in
+     * the SSR HTML, ahead of hydration. `waitForSelector` proves presence,
+     * not hydration; this proves hydration. */
+    const waitForHydrated = (sel) => waitFor(
+      () => evaluate(`(() => { const el = ${q(sel)}; return !!el && Object.keys(el).some((k) => k.startsWith('__react')); })()`),
+      { what: `${sel} to be hydrated by React` },
+    );
     /* Text through Chrome's input pipeline (`Input.insertText`), so React's
-     * controlled inputs see a real edit, not a property write. A `secret`
-     * is checked by length only: the failure text goes to stdout and
-     * report.json, and a password must never be in either. */
+     * controlled inputs see a real edit, not a property write - and only
+     * once the input is hydrated, so the edit reaches React's state and
+     * not just the DOM (above). Every typed field passes through here: the
+     * sign-in form's `#email`, `#password` and `#code`, typed straight
+     * after a navigation, are the ones that need the wait; the editor's
+     * `sel-y` is typed after state-driven waits (a selection made by a
+     * click, a `Saved (vN)` label) that only a running React can satisfy,
+     * so for it the wait is an immediate pass. A `secret` is checked by
+     * length only: the failure text goes to stdout and report.json, and a
+     * password must never be in either. */
     const typeInto = async (sel, text, { secret = false } = {}) => {
+      await waitForHydrated(sel);
       await evaluate(`(() => { const el = ${q(sel)}; el.scrollIntoView({ block: 'center' }); el.focus(); el.select(); })()`);
       await call('Input.insertText', { text });
       const got = await valueOf(sel);
@@ -652,6 +673,8 @@ async function main() {
     const nav = await call('Page.navigate', { url: loginUrl });
     if (nav.errorText) throw new Error(`cannot load ${loginUrl}: ${nav.errorText}`);
     await waitForSelector('#email', 'the sign-in form');
+    /* `typeInto` waits for `#email` to be hydrated before it types - the
+     * SSR HTML has the field before React does. */
     await typeInto('#email', EMAIL);
     await typeInto('#password', PASSWORD, { secret: true });
     /* The shot before the code: `#code` is type="text", and the screenshot

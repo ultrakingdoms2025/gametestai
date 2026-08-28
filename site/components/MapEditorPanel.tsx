@@ -4,7 +4,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { OVERLAY_WORLDS, round, type GrantConfig, type OverlayEntry, type OverlayWorld, type Vec3 } from '@/lib/mapOverlaySchema';
 import type { MarketplaceItemRecord } from '@/lib/marketplaceCatalog';
 import type { CatalogueObject, OverlayVersionRow, WorldReport } from '@/lib/mapOverlay';
-import { layersAt, type WorldLayout } from '@/lib/mapLayout';
+import type { WorldLayout } from '@/lib/mapLayout';
 import { conflictContextFor, conflictsForDocument, hasErrors, type Conflict } from '@/lib/mapConflicts';
 import {
   canonicalSelection,
@@ -12,6 +12,7 @@ import {
   moveEntryFor,
   pendingRows,
   placeAt,
+  placementY,
   selectedEntry,
   selectedPosition,
   snappedY,
@@ -146,6 +147,17 @@ export function MapEditorPanel() {
     return () => clearInterval(t);
   }, []);
 
+  /* Escape disarms a placement. The hint's Cancel button is the pointer's
+   * way out of place mode; the keyboard needs one too. */
+  useEffect(() => {
+    if (!placeItem) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPlaceItem(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [placeItem]);
+
   /* Which world and report the held `layout` came from (see the header). */
   const heldLayout = useRef<{ world: OverlayWorld; reportedAt: string | null } | null>(null);
   const adoptLayout = useCallback((which: OverlayWorld, data: WorldResponse) => {
@@ -157,10 +169,15 @@ export function MapEditorPanel() {
     setReportedAt(at);
   }, []);
 
+  /* `keepMessage`: a save or a revert sets its message and then reloads.
+   * `load` runs synchronously to its first await, so its own
+   * `setMessage('')` lands in the SAME React batch as the caller's, and the
+   * batch's last write — the blank — is what renders. A caller with
+   * something to say asks the reload not to clear it. */
   const load = useCallback(
-    async (which: OverlayWorld) => {
+    async (which: OverlayWorld, opts: { keepMessage?: boolean } = {}) => {
       setBusy(true);
-      setMessage('');
+      if (!opts.keepMessage) setMessage('');
       try {
         const res = await fetch(`/api/admin/map/${which}`, { cache: 'no-store' });
         const data = (await res.json()) as WorldResponse;
@@ -177,6 +194,20 @@ export function MapEditorPanel() {
         setRejectedKeys(NO_KEYS);
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Could not load the overlay.');
+        /* Nothing of the world that was showing may stay on the page under
+         * the name of the one that failed to load: a dirty document from
+         * world A would otherwise POST to /api/admin/map/B. */
+        heldLayout.current = null;
+        setLayout(null);
+        setReportedAt(null);
+        setEntries([]);
+        setVersions([]);
+        setReport(null);
+        setSavedVersion(0);
+        setDirty(false);
+        setSelectedRaw(null);
+        setPlaceItem(null);
+        setRejectedKeys(NO_KEYS);
       } finally {
         setBusy(false);
       }
@@ -310,10 +341,9 @@ export function MapEditorPanel() {
 
   function placeHere(x: number, z: number) {
     if (!placeItem) return;
-    // Y from the LOWEST layer under the click (spec §8); the layer picker in
-    // the selection panel is how a rooftop placement is chosen deliberately.
-    const surfaces = layersAt(ground, x, z);
-    const y = surfaces.length ? surfaces[surfaces.length - 1] : 0;
+    // Y from the LOWEST layer under the click (spec §8, `placementY`); the
+    // layer picker in the selection panel is how a rooftop is chosen deliberately.
+    const y = placementY(ground, x, z);
     const draft = placeAt(
       {
         source_key: placeItem.source_key ?? placeItem.id,
@@ -400,7 +430,7 @@ export function MapEditorPanel() {
           ? `Saved version ${data.overlay.version}. ${rejected.length} entr${rejected.length === 1 ? 'y was' : 'ies were'} rejected: ${rejected.map((r: { reason: string }) => r.reason).join(', ')}.`
           : `Saved version ${data.overlay.version}. Reload the world in game to see it.`
       );
-      await load(world);
+      await load(world, { keepMessage: true });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Save failed.');
     } finally {
@@ -420,7 +450,7 @@ export function MapEditorPanel() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Revert failed.');
       setMessage(`Reverted to version ${version}, saved as version ${data.overlay.version}.`);
-      await load(world);
+      await load(world, { keepMessage: true });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Revert failed.');
     } finally {
@@ -473,17 +503,21 @@ export function MapEditorPanel() {
             </button>
           </div>
 
-          <MapCanvas
-            layout={layout}
-            ground={ground}
-            objects={objects}
-            entries={entries}
-            selected={selected}
-            placeMode={placeItem !== null}
-            onSelect={setSelected}
-            onDrag={moveSelection}
-            onPlaceAt={placeHere}
-          />
+          {/* A busy page (a save, a load) must not take a drag it cannot
+            * apply; the canvas has no `disabled`, so the pointer is fenced. */}
+          <div style={{ pointerEvents: busy ? 'none' : 'auto' }}>
+            <MapCanvas
+              layout={layout}
+              ground={ground}
+              objects={objects}
+              entries={entries}
+              selected={selected}
+              placeMode={placeItem !== null}
+              onSelect={setSelected}
+              onDrag={moveSelection}
+              onPlaceAt={placeHere}
+            />
+          </div>
           <p style={{ margin: '8px 0 14px', fontSize: 11, color: subtle }}>
             Click a mark to select it; drag a selected mark to move it; wheel to zoom about the cursor; drag empty
             ground, the middle button or hold Space to pan. North is up (−Z).
@@ -510,9 +544,9 @@ export function MapEditorPanel() {
             <input style={input} data-e2e="note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="what changed and why" />
           </label>
 
-          {message ? (
-            <p data-e2e="message" style={{ margin: '14px 0 0', color: statusColour, fontSize: 13 }} role="status">{message}</p>
-          ) : null}
+          {/* Always mounted: a live region announces a change to a node
+            * that already exists, not one that appears with its text. */}
+          <p data-e2e="message" style={{ margin: message ? '14px 0 0' : 0, color: statusColour, fontSize: 13 }} role="status">{message}</p>
         </section>
 
         <div style={{ display: 'grid', gap: 20 }}>

@@ -1,4 +1,4 @@
-import { groundAt, type DecodedGround } from './mapLayout';
+import { groundAt, layersAt, type DecodedGround } from './mapLayout';
 import { groundVerdict, type Conflict, type GroundVerdict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
 import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
@@ -219,6 +219,17 @@ export function placeAt(
     position: { x, y, z },
     quantity: 1,
   };
+}
+
+/**
+ * Y for a placement clicked at (x, z): the LOWEST surface under the click
+ * (spec §8 — under the station dome that is the deck, not the roof; the
+ * layer picker is how a rooftop is chosen deliberately). 0 with no grid, and
+ * 0 where the grid has no sample: the placement then sits on the origin
+ * plane and the conflict pass says `no-ground`, which is the honest verdict.
+ */
+export function placementY(ground: DecodedGround | null, x: number, z: number): number {
+  return layersAt(ground, x, z).at(-1) ?? 0;
 }
 
 /** The document entry a selection edits: an object's pending move, or the entry itself. */

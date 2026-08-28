@@ -373,9 +373,14 @@ export class MapOverlay {
         // `hidden: true` is v1's spelling of a remove. The site's normaliser
         // migrates it to a `remove` on read (site/lib/mapOverlaySchema.ts,
         // schema 2), so a document served by this site never carries it; but
-        // a client running this bundle against a v1 document - a rollback, or
-        // a page open across the deploy - must not let hidden objects
-        // reappear. Read as a remove for one release: the remove route
+        // this bundle can meet a raw v1 document under a site ROLLBACK - the
+        // previous site answering a browser that cached this bundle - and
+        // must not let hidden objects reappear. (The other direction, a page
+        // still on the previous bundle reading a v2 document, runs the OLD
+        // applier, which no arm here can help: it skips every remove
+        // unapplied and unreported until the page reloads.) Read as a remove
+        // for one release - remove in the release after 4ace9a8, with its
+        // two tests in scripts/tests/map-overlay.test.mjs. The remove route
         // DISCARDS the v1 move's `position` and `rotationY` (decision A), so
         // a hidden object is never also moved.
         if (entry.kind === 'remove' || (entry.kind === 'move' && entry.hidden === true)) {
@@ -478,7 +483,11 @@ export class MapOverlay {
         // after the next save. A 404 is a host without the route (the
         // frame-gaps static server). A 5xx is the server failing - the
         // route's own 503, a platform 502 - and is said once per world, news
-        // again after a document for the world is admitted (`_admit`).
+        // again after a document for the world is admitted (`_admit`). A 429
+        // is deliberately silent: nothing on the overlay path emits one (only
+        // the chat and telemetry routes rate-limit), and under one a
+        // signed-in admin's world would build at 0 unsaid - revisit the rule
+        // if a 429 ever appears here.
         if (res?.status >= 500 && !this._readRefused.has(worldId)) {
           this._readRefused.add(worldId);
           console.warn(`[map-overlay] overlay unavailable for "${worldId}": HTTP ${res.status}`);

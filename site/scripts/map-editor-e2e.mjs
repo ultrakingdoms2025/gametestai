@@ -89,6 +89,16 @@ const site = path.resolve(here, '..');
 const root = path.resolve(site, '..');
 const outDir = path.join(root, '.probe', 'map-editor-e2e');
 
+/** The layout schema the site decodes, pinned the way `lib/mapLayoutContract.test.ts` pins it - a textual read of the
+ * exported literal, because this file is plain Node and cannot import `lib/mapLayout.ts`. A hard-coded 1 here would
+ * let a schema bump turn every seed into a 200 `kept-prior` answer that surfaces thirty lines later as a banner mismatch. */
+const LAYOUT_SCHEMA = (() => {
+  const src = readFileSync(path.join(site, 'lib', 'mapLayout.ts'), 'utf8');
+  const m = /^export const LAYOUT_SCHEMA = (\d+);/m.exec(src);
+  if (!m) throw new Error('lib/mapLayout.ts exports no LAYOUT_SCHEMA literal to pin');
+  return Number(m[1]);
+})();
+
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const arg = (name) => {
@@ -286,7 +296,7 @@ function syntheticReport() {
     objects: [CRATE, POST],
     applied: [],
     unresolved: [],
-    layoutSchema: 1,
+    layoutSchema: LAYOUT_SCHEMA,
     bounds: BOUNDS,
     shapes: [
       { kind: 'rect', x: 0, z: 0, w: 80, d: 60, fill: 0x2a4a66 },
@@ -428,6 +438,19 @@ async function waitFor(fn, { timeout = 45000, every = 150, what = 'condition' } 
 
 function assert(cond, msg) {
   if (!cond) throw new Error(`ASSERTION FAILED: ${msg}`);
+}
+
+/** A report POST's answer is `{ ok, world, layout, warnings }`, and the route answers 200 even when the grid did NOT land
+ * (`layout: 'kept-prior'` on a schema mismatch or an unusable ground, `'none'` when the report said nothing about it), so a
+ * 200 alone proves only that the objects were stored. The outcome and the warnings are named in the failure. */
+function assertStored(what, res) {
+  assert(res.status === 200, `report route answered ${res.status} for ${what}: ${res.text}`);
+  let body;
+  try { body = JSON.parse(res.text); } catch { assert(false, `report route answered ${what} with non-JSON: ${res.text}`); }
+  const layout = body?.layout;
+  const warnings = Array.isArray(body?.warnings) ? body.warnings : null;
+  assert(layout === 'stored' && warnings !== null && warnings.length === 0,
+    `${what}: the report route answered 200 with layout ${JSON.stringify(layout)} and warnings ${JSON.stringify(body?.warnings)} - the grid did not land (expected layout "stored" with no warnings)`);
 }
 
 /** Kill a process and everything it spawned (`next dev` forks its server). */
@@ -654,7 +677,7 @@ async function main() {
     /* ---- 2. seed the layout through the real report route ------------- */
     const body = JSON.stringify(syntheticReport());
     const seeded = await evaluate(`fetch('/api/admin/map/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(body)} }).then(async (r) => ({ status: r.status, text: await r.text() }))`, true);
-    assert(seeded.status === 200, `report route answered ${seeded.status}: ${seeded.text}`);
+    assertStored('the seed', seeded);
     step('seeded layout', `${WORLD}, ${body.length} bytes, db host ${dbHost ?? `unknown (whatever ${TARGET} is configured with)`}`);
 
     /* `Page.reload` returns before the navigation; the OLD document keeps
@@ -806,7 +829,7 @@ async function main() {
     assert(removeEntry, `the saved document holds no remove of e2e:post: ${JSON.stringify(current.overlay?.entries ?? [])}`);
     const applied = JSON.stringify({ ...syntheticReport(), appliedVersion: savedVersion + 1, builtVersion: savedVersion + 1, applied: [{ id: removeEntry.id, ok: true, colliders: 0 }] });
     const reported = await evaluate(`fetch('/api/admin/map/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(applied)} }).then(async (r) => ({ status: r.status, text: await r.text() }))`, true);
-    assert(reported.status === 200, `report route answered ${reported.status}: ${reported.text}`);
+    assertStored('the step-7 report', reported);
     /* The same reload-and-settle step 2 does: a new document has a new performance.timeOrigin. */
     const t1 = await evaluate('performance.timeOrigin');
     await call('Page.reload');

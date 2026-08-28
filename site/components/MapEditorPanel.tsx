@@ -579,12 +579,18 @@ export function MapEditorPanel() {
               onRemoveEntry={removeEntry}
             />
             {selEntry?.kind === 'move' ? (
-              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#cfe6f2', marginTop: 10 }}>
+              /* A loaded hide-only entry has no position: unticking it would leave
+               * `{ position: null }` with no `hidden`, which the row still calls
+               * "hidden" and the normaliser refuses at save. It can only be removed. */
+              <label
+                title={selEntry.position === null ? 'A hide-only entry can only be removed, not un-hidden here' : undefined}
+                style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#cfe6f2', marginTop: 10 }}
+              >
                 <input
                   type="checkbox"
                   data-e2e="hidden"
                   checked={Boolean(selEntry.hidden)}
-                  disabled={busy}
+                  disabled={busy || selEntry.position === null}
                   onChange={(e) => setHidden(selEntry._key, e.target.checked)}
                 />
                 Hide this object instead of only moving it

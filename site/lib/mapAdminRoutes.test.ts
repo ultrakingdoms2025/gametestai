@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MAX_LAYOUT_BYTES, encodeHeights, type WorldLayout } from '@/lib/mapLayout';
+import type { LayoutOutcome } from '@/lib/mapOverlay';
 
 /**
  * WHO CAN REACH THE MAP EDITOR.
@@ -115,6 +116,7 @@ beforeEach(() => {
   });
   store.listOverlayVersions.mockResolvedValue([]);
   store.readWorldReport.mockResolvedValue(null);
+  store.recordWorldReport.mockResolvedValue({ layout: 'none', warnings: [] });
   store.saveOverlayVersion.mockResolvedValue({
     worldId: 'station',
     version: 1,
@@ -514,6 +516,24 @@ describe('POST /api/admin/map/report', () => {
     const res = await post({ ...REPORT, ...LAYOUT });
     expect(res.status).toBe(200);
     expect(store.recordWorldReport.mock.calls[0][2]).toMatchObject(LAYOUT);
+  });
+
+  /**
+   * The store's verdict on the layout travels back, whole, at 200. A 4xx for a kept layout would be wrong twice: the
+   * catalogue part of the report WAS stored, and the game reads a non-2xx as "refused" and says so with the status
+   * alone — the reason would be lost at the one console an admin is watching.
+   */
+  const OUTCOMES: Array<[LayoutOutcome, string[]]> = [
+    ['stored', []],
+    ['kept-prior', ['layoutSchema 2 is not 1']],
+    ['none', []],
+  ];
+  it.each(OUTCOMES)("answers 200 with the store's layout outcome %s and its warnings, so the game can say when the prior was kept", async (layout, warnings) => {
+    signedInAs(ADMIN);
+    store.recordWorldReport.mockResolvedValue({ layout, warnings: [...warnings] });
+    const res = await post({ ...REPORT, ...LAYOUT });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, world: 'station', layout, warnings });
   });
 
   it('refuses a report over the byte cap with 413 and never opens a connection; still 400 for non-JSON', async () => {

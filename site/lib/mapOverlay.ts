@@ -98,6 +98,21 @@ export interface ReportedLayoutFields { layoutSchema?: unknown; bounds?: unknown
 export interface StoredWorldReport extends WorldReport { reportedAt: string; layout: WorldLayout | null }
 
 /**
+ * What became of the layout a report carried — the answer the report route hands back to the game.
+ *
+ *   `stored`      the report carried `layoutSchema` and every layout part it carried (bounds and shapes; ground when
+ *                 present) was stored. `warnings` may still name shapes that were dropped or cut: a thinner map, not a kept one.
+ *   `kept-prior`  the report carried `layoutSchema` but its schema is not this one, or a part it carried was unusable
+ *                 (bounds that do not read, a ground that does not decode, shapes with no bounds to hang them on). The
+ *                 prior stayed for that part; parts that passed were stored. Always said on the console too.
+ *   `none`        the report said nothing about the layout: no `layoutSchema`, or a schema with no bounds and no ground.
+ *
+ * `warnings` are the human reasons, world-agnostic, for the game's console: `layoutSchema 2 is not 1`, `unusable ground; prior kept`.
+ */
+export type LayoutOutcome = 'stored' | 'kept-prior' | 'none';
+export interface ReportOutcome { layout: LayoutOutcome; warnings: string[] }
+
+/**
  * How many named objects one world may report.
  *
  * A world's group holds tens of thousands of nodes; the catalogue exists to
@@ -321,14 +336,31 @@ function clampNumber(value: unknown): number {
  * yesterday's ground, and nothing keeps everything.
  *
  * Every way a layout comes back thinner, or not at all, is said on the console here, where it
- * is first known. `saveOverlayVersion` hands `rejected` back for the editor to show; a report
- * has no one to show it to, and a quietly missing or thinner map hides a world file's bug.
- * Absent is not unusable: a field that was not sent is the keep-the-prior rule working, and
- * says nothing.
+ * is first known, AND handed back as a `ReportOutcome` for the route to answer with. `saveOverlayVersion`
+ * hands `rejected` back for the editor to show; a report's only reader is the game that sent it, and
+ * until the outcome travelled back a quietly kept map — the schema mismatch was not even logged — hid
+ * a world file's bug, or a stale client, behind `{ ok: true }`. Absent is not unusable: a field that
+ * was not sent is the keep-the-prior rule working, and says nothing.
  */
-function layoutPatch(worldId: string, report: ReportedLayoutFields): Partial<WorldLayout> {
+function layoutPatch(worldId: string, report: ReportedLayoutFields): { patch: Partial<WorldLayout>; outcome: ReportOutcome } {
   const patch: Partial<WorldLayout> = {};
-  if (report.layoutSchema !== LAYOUT_SCHEMA) return patch;
+  const warnings: string[] = [];
+  // `== null`: undefined and null are both "not sent", the rule `bounds` and `ground` follow below.
+  if (report.layoutSchema == null) {
+    if (report.bounds != null || report.ground != null || (Array.isArray(report.shapes) && report.shapes.length > 0)) {
+      // An old or odd client: layout fields with no schema to read them under. Dropped, but not quietly.
+      warnings.push('layout fields sent without layoutSchema; ignored');
+      console.warn(`[map-report] layout fields sent without layoutSchema for ${worldId}; ignored`);
+    }
+    return { patch, outcome: { layout: 'none', warnings } };
+  }
+  if (report.layoutSchema !== LAYOUT_SCHEMA) {
+    // The one kept-prior that was silent before the whole-branch review: a newer client's report vanished into `{ ok: true }`.
+    const reason = `layoutSchema ${JSON.stringify(report.layoutSchema)} is not ${LAYOUT_SCHEMA}`;
+    console.warn(`[map-report] ${reason} for ${worldId}; prior layout kept`);
+    return { patch, outcome: { layout: 'kept-prior', warnings: [reason] } };
+  }
+  let keptPrior = false;
   const bounds = validateBounds(report.bounds);
   if (bounds) {
     patch.schema = LAYOUT_SCHEMA;
@@ -340,34 +372,55 @@ function layoutPatch(worldId: string, report: ReportedLayoutFields): Partial<Wor
       // Two lines from two counts, each only when it happened. Truncation is not unreadability: the cap keeps
       // the first MAX_SHAPES readable and never reads the rest, and calling those "unreadable" would send
       // someone hunting a bug a world file does not have — while the shape it really could not read went unsaid.
+      // Neither keeps the prior: the map is stored, thinner, so they are warnings under `stored`.
       if (audit.truncated > 0) {
+        warnings.push(`kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes`);
         console.warn(`[map-report] kept the first ${MAX_SHAPES} of ${report.shapes.length} shapes for ${worldId}`);
       }
       if (audit.unreadable > 0) {
+        warnings.push(`dropped ${audit.unreadable} unreadable shapes`);
         console.warn(`[map-report] dropped ${audit.unreadable} unreadable shapes for ${worldId}`);
       }
     }
   } else if (report.bounds != null) {
     // `!= null` as for `ground` below: null means not sent, for both, and says nothing.
+    keptPrior = true;
+    warnings.push('unusable bounds; prior bounds and shapes kept');
     console.warn(`[map-report] unusable bounds for ${worldId}; prior bounds and shapes kept`);
+  } else if (Array.isArray(report.shapes) && report.shapes.length > 0) {
+    // Shapes are stored under bounds (the branch above), so shapes with no bounds have nowhere to go — the case of a
+    // world whose Box3 is empty: the game omits `bounds` and sends its floorplan anyway.
+    keptPrior = true;
+    warnings.push('shapes without bounds; not stored, prior kept');
+    console.warn(`[map-report] shapes without bounds for ${worldId}; not stored, prior kept`);
   }
   const ground = report.ground == null ? null : validateGround(report.ground);
   if (ground) {
     patch.schema = LAYOUT_SCHEMA;
     patch.ground = ground;
   } else if (report.ground != null) {
+    keptPrior = true;
+    warnings.push('unusable ground; prior kept');
     console.warn(`[map-report] unusable ground for ${worldId}; prior kept`);
   }
   // A valid ground under invalid bounds stores { schema, ground }: readWorldReport answers `layout: null` until bounds arrive, and the ground is already there when they do. Self-healing, not a bug.
-  return patch;
+  // `kept-prior` wins over a part stored beside it: the game's one console line is for what did NOT land.
+  const stored = patch.bounds !== undefined || patch.ground !== undefined;
+  const layout: LayoutOutcome = keptPrior ? 'kept-prior' : stored ? 'stored' : 'none';
+  return { patch, outcome: { layout, warnings } };
 }
 
-/** Record what the running game found and did: one row per world, a cache of the last report, not a history (that is `map_overlays`). The layout is the one part that MERGES — see `layoutPatch`. */
+/**
+ * Record what the running game found and did: one row per world, a cache of the last report, not a history (that is
+ * `map_overlays`). The layout is the one part that MERGES — see `layoutPatch` — and the one part whose fate is
+ * answered: the objects, applied and unresolved lists are always stored, so the route answers 200 whatever the layout
+ * did, and the returned `ReportOutcome` is how the game learns that its map did not land.
+ */
 export async function recordWorldReport(
   db: Db,
   worldId: string,
   report: WorldReport & ReportedLayoutFields
-): Promise<void> {
+): Promise<ReportOutcome> {
   await ensureMapOverlaySchema(db);
 
   const objects = (Array.isArray(report.objects) ? report.objects : [])
@@ -397,7 +450,7 @@ export async function recordWorldReport(
       reason: String((u as UnresolvedOutcome)?.reason ?? '').slice(0, 64),
     }));
 
-  const patch = layoutPatch(worldId, report);
+  const { patch, outcome } = layoutPatch(worldId, report);
 
   await db.query(
     `INSERT INTO map_world_reports
@@ -430,6 +483,7 @@ export async function recordWorldReport(
       patch.schema === LAYOUT_SCHEMA ? LAYOUT_SCHEMA : 0,
     ]
   );
+  return outcome;
 }
 
 export async function readWorldReport(db: Db, worldId: string): Promise<StoredWorldReport | null> {

@@ -76,8 +76,8 @@ export async function POST(request: Request) {
     // Every field is clamped and coerced inside recordWorldReport: this is data
     // from a browser, and being an admin's browser does not make it structured.
     // The layout fields go through as-is for the same reason: the store, not
-    // the route, decides what a usable grid is, and keeps the prior one if not.
-    await recordWorldReport(db, world, {
+    // the route, decides what a usable grid is, keeps the prior one if not, and says which.
+    const outcome = await recordWorldReport(db, world, {
       appliedVersion: Number(body.appliedVersion) || 0,
       objects: Array.isArray(body.objects) ? (body.objects as never[]) : [],
       applied: Array.isArray(body.applied) ? (body.applied as never[]) : [],
@@ -87,7 +87,9 @@ export async function POST(request: Request) {
       shapes: body.shapes,
       ground: body.ground,
     });
-    return NextResponse.json({ ok: true, world });
+    // Still 200 when the layout was kept: the objects, applied and unresolved lists WERE stored, and a 4xx would
+    // make the game treat the whole report as refused. `layout` and `warnings` are how it learns the map did not land.
+    return NextResponse.json({ ok: true, world, layout: outcome.layout, warnings: outcome.warnings });
   } catch (err) {
     console.error('[admin/map/report] failed:', err);
     return NextResponse.json({ error: 'Could not record the report.' }, { status: 500 });

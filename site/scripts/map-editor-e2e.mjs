@@ -1,7 +1,7 @@
 /**
  * THE MAP EDITOR, END TO END.
  *
- *   node site/scripts/map-editor-e2e.mjs [--url http://127.0.0.1:3000] [--world station] [--keep] [--verbose]
+ *   node site/scripts/map-editor-e2e.mjs [--url http://127.0.0.1:3000] [--world station] [--keep] [--verbose] [--allow-shared-db]
  *   env: MAP_E2E_EMAIL, MAP_E2E_PASSWORD   (an address listed in ADMIN_EMAILS / MARKETPLACE_ADMIN_EMAILS)
  *        MAP_E2E_CODE                       (optional: the current authenticator code, for a 2FA-enabled admin)
  *
@@ -27,11 +27,28 @@
  * read as green. (This repository has paid nine times for gates that passed
  * against nothing.)
  *
- * ── It writes to the configured database ─────────────────────────────────
+ * ── It writes to the configured database, and refuses a shared one ───────
  *
- * The report route stores the synthetic layout for `--world` and Save writes
- * an overlay version, both in whatever POSTGRES_URL the site's env points at.
- * Point it at a development database.
+ * The report route stores the synthetic layout for `--world` — REPLACING that
+ * world's stored objects, bounds, shapes and ground — and Save writes a real
+ * overlay version with an audit row, all in whatever POSTGRES_URL the site
+ * resolves. A team or production database reached that way by accident keeps
+ * the seed until the next admin visit in game. So, before anything is spawned
+ * (and after the no-credentials skip, which stays the first check):
+ *
+ *   - without --url, POSTGRES_URL is read the way the dev server resolves it —
+ *     the process environment first (Next never overrides a variable that is
+ *     already set), then site/.env.development.local, .env.local,
+ *     .env.development, .env, first match wins — and its HOST parsed. A host
+ *     that is not loopback (localhost, 127.0.0.1, ::1) refuses with exit 1,
+ *     naming the host and the flag, unless --allow-shared-db is passed;
+ *   - with --url, the operator chose the server: a note says its database
+ *     will be written, a --url host that is not loopback refuses the same
+ *     way, and a loopback --url is checked against this checkout's env files
+ *     as well, because a server on this machine most likely reads them.
+ *
+ * Only the host is ever printed: the connection string carries the password.
+ * The "seeded layout" step names the host it wrote to when it is known.
  *
  * ── A 2FA account must use --url ─────────────────────────────────────────
  *
@@ -50,7 +67,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createSocketServer } from 'node:net';
 import os from 'node:os';
@@ -77,6 +94,97 @@ if (!EMAIL || !PASSWORD) {
 }
 const CODE = process.env.MAP_E2E_CODE ?? '';
 
+/* ====================================================================== */
+/* The database this run would write — refused before anything is spawned */
+/* ====================================================================== */
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
+const isLoopback = (host) => host != null && LOOPBACK.has(String(host).toLowerCase());
+
+/** One KEY=value from a dotenv file: the first uncommented `key` line, quotes stripped; null when the file or the key is absent. */
+function envFileValue(file, key) {
+  if (!existsSync(file)) return null;
+  for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    if (line.slice(0, eq).trim().replace(/^export\s+/, '') !== key) continue;
+    const v = line.slice(eq + 1).trim();
+    return /^(["']).*\1$/.test(v) ? v.slice(1, -1) : v;
+  }
+  return null;
+}
+
+/** POSTGRES_URL as the dev server resolves it, and where it came from. The value is never printed. */
+function configuredDatabase() {
+  if (process.env.POSTGRES_URL) return { url: process.env.POSTGRES_URL, source: 'the environment' };
+  for (const name of ['.env.development.local', '.env.local', '.env.development', '.env']) {
+    const url = envFileValue(path.join(site, name), 'POSTGRES_URL');
+    if (url) return { url, source: `site/${name}` };
+  }
+  return { url: null, source: null };
+}
+
+/** The host of a URL and nothing else of it — the rest of a connection string is the password. */
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^\[(.*)\]$/, '$1') || null;
+  } catch {
+    return null;
+  }
+}
+
+const refuse = (lines) => {
+  console.error(['REFUSED — nothing was started.', ...lines].join('\n'));
+  process.exit(1);
+};
+
+const WORLD = arg('--world') ?? 'station';
+const TARGET = arg('--url') ?? null;
+const ALLOW_SHARED = flag('--allow-shared-db');
+const configured = configuredDatabase();
+/* The host the seed lands on, for the "seeded layout" step: read from the env
+ * files without --url, inferred from them for a loopback --url, unknown for
+ * a remote one. */
+let dbHost = null;
+if (!TARGET) {
+  if (!configured.url) {
+    refuse([
+      'no POSTGRES_URL in the environment or in site/.env.development.local, .env.local, .env.development or .env:',
+      'the dev server would start, but the report route could store nothing.',
+    ]);
+  }
+  dbHost = hostOf(configured.url);
+  if (!isLoopback(dbHost) && !ALLOW_SHARED) {
+    refuse([
+      `${configured.source} names a database on ${dbHost ?? 'a host this script cannot parse'}, which is not loopback.`,
+      `This harness seeds a synthetic layout for "${WORLD}" there (replacing its stored objects, bounds, shapes and ground),`,
+      'saves a real overlay version and appends an audit row.',
+      `Point POSTGRES_URL at a local database, or pass --allow-shared-db to write to ${dbHost ?? 'it'} anyway.`,
+    ]);
+  }
+} else {
+  const targetHost = hostOf(TARGET);
+  console.log(`note: the database behind ${TARGET} will be written — a report row for "${WORLD}", an overlay version and an audit row.`);
+  if (!isLoopback(targetHost) && !ALLOW_SHARED) {
+    refuse([
+      `--url ${TARGET} is not a loopback server (host ${targetHost ?? 'unparseable'}); its database is shared with everyone else who uses it.`,
+      'Pass --allow-shared-db to write there anyway.',
+    ]);
+  }
+  if (isLoopback(targetHost) && configured.url) {
+    dbHost = hostOf(configured.url);
+    if (!isLoopback(dbHost) && !ALLOW_SHARED) {
+      refuse([
+        `--url ${TARGET} is a server on this machine, and ${configured.source} names a database on ${dbHost ?? 'a host this script cannot parse'}, which is not loopback.`,
+        'A server started from this checkout reads that same file, so the seed would land there.',
+        `Pass --allow-shared-db if that server is known to write elsewhere, or to write to ${dbHost ?? 'it'} anyway.`,
+      ]);
+    }
+  }
+}
+
 /* Set when a child process dies or refuses to start, or the devtools socket
  * drops. Every `waitFor` then throws at once instead of polling out its
  * timeout, so the failure reaches cleanup — which kills the other child and
@@ -87,7 +195,6 @@ const childFailed = (what) => (e) => {
   if (!abortReason) abortReason = `${what}: ${e instanceof Error ? e.message : `exit code ${e}`}`;
 };
 
-const WORLD = arg('--world') ?? 'station';
 /* The browser window and the emulated viewport are the same size, so the
  * page lays out exactly once. */
 const VIEWPORT = { width: 1500, height: 1100 };
@@ -493,7 +600,7 @@ async function main() {
     const body = JSON.stringify(syntheticReport());
     const seeded = await evaluate(`fetch('/api/admin/map/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(body)} }).then(async (r) => ({ status: r.status, text: await r.text() }))`, true);
     assert(seeded.status === 200, `report route answered ${seeded.status}: ${seeded.text}`);
-    step('seeded layout', `${WORLD}, ${body.length} bytes`);
+    step('seeded layout', `${WORLD}, ${body.length} bytes, db host ${dbHost ?? `unknown (whatever ${TARGET} is configured with)`}`);
 
     /* `Page.reload` returns before the navigation; the OLD document keeps
      * answering selectors for a moment, so a world with a prior report would

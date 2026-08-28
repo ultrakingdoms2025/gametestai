@@ -4,7 +4,10 @@
  * or fractional version is 0 and never a refusal. One clamp for the
  * manager's `builtVersion`, the cache's monotonic write, the applier's
  * `appliedVersion` and its `{id}` gate, so no two of them can disagree about
- * which document is newer.
+ * which document is newer. `{version: Infinity}` passes through as Infinity -
+ * unreachable from a JSON number, and harmless where it lands (`>` is true,
+ * `JSON.stringify` writes `null`, which the store clamps to 0) - so do not
+ * add a `Number.isFinite` here without adding it to every reader at once.
  *
  * A leaf on purpose: `WorldManager` needs this and nothing else of the
  * applier, and importing it from `MapOverlay.js` dragged that file's whole

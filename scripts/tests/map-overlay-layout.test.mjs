@@ -238,7 +238,7 @@ test('builtVersion rides on BOTH reports of a visit, and neither report carries 
   const posts = rig.fetchImpl.posts();
   assert.equal(posts.length, 2);
   assert.deepEqual(posts.map((p) => p.body.builtVersion), [6, 6]);
-  assert.equal('schema' in posts[1].body, false, 'the report has no schema: the layout axis is layoutSchema and a bump there erases every stored grid');
+  assert.deepEqual(posts.map((p) => 'schema' in p.body), [false, false], 'the report has no schema: the layout axis is layoutSchema and a bump there erases every stored grid');
   assert.equal(posts[1].body.layoutSchema, 1);
 });
 

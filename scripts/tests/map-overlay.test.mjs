@@ -1038,6 +1038,16 @@ test('the report carries builtVersion beside appliedVersion - 0 for a world that
   await enter(rig);
   assert.equal(rig.fetchImpl.calls.filter((c) => c.method === 'POST').at(-1).body.builtVersion, 4);
   assert.equal(rig.bus.emitted.filter((e) => e.name === 'map-overlay:applied').at(-1).payload.builtVersion, 4);
+
+  // No document at all (a signed-out player, or a world with no overlay) is the OTHER publish path - it
+  // reads the world's builtVersion too, not a 0 written by hand: the world was built against it whatever
+  // this visit found to apply.
+  const bare = setup(null);
+  bare.world.builtVersion = 4;
+  await enter(bare);
+  assert.equal(bare.system.report.builtVersion, 4);
+  assert.equal(bare.bus.emitted.filter((e) => e.name === 'map-overlay:applied').at(-1).payload.builtVersion, 4, 'the no-document publish did not carry the built version');
+  assert.equal(bare.fetchImpl.calls.filter((c) => c.method === 'POST').length, 0, 'nothing to report back without a document');
 });
 
 /* ------------------------------------------------------------------ */

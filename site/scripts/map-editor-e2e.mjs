@@ -43,9 +43,19 @@
  *     that is not loopback (localhost, 127.0.0.1, ::1) refuses with exit 1,
  *     naming the host and the flag, unless --allow-shared-db is passed;
  *   - with --url, the operator chose the server: a note says its database
- *     will be written, a --url host that is not loopback refuses the same
- *     way, and a loopback --url is checked against this checkout's env files
- *     as well, because a server on this machine most likely reads them.
+ *     will be written, and a --url host that is not loopback refuses the same
+ *     way. A loopback --url is a server on this machine, most likely started
+ *     from this checkout — in EITHER mode: `next dev` loads the development
+ *     files, `next start` loads .env.production.local / .env.production
+ *     instead, and only .env.local is common to both. So ALL six files
+ *     (.env.development.local, .env.production.local, .env.local,
+ *     .env.development, .env.production, .env) are scanned, and any one that
+ *     defines a POSTGRES_URL on a non-loopback host refuses, naming the file
+ *     and the host. A process-environment POSTGRES_URL wins over every file
+ *     in both paths: a server started from this shell inherits it, and Next
+ *     never overrides a variable that is already set;
+ *   - a `${…}` value is Next's env expansion, which this script does not
+ *     resolve: it refuses by name, not as "unparseable".
  *
  * Only the host is ever printed: the connection string carries the password.
  * The "seeded layout" step names the host it wrote to when it is known.
@@ -116,14 +126,28 @@ function envFileValue(file, key) {
   return null;
 }
 
-/** POSTGRES_URL as the dev server resolves it, and where it came from. The value is never printed. */
+/* The dotenv files Next loads, by mode. `next dev` reads DEV_FILES in order,
+ * first match wins; `next start` reads .env.production.local, .env.local,
+ * .env.production, .env instead — .env.local is common to both, the mode
+ * files are not. ALL_FILES is the union, in the order a scan reports them. */
+const DEV_FILES = ['.env.development.local', '.env.local', '.env.development', '.env'];
+const ALL_FILES = ['.env.development.local', '.env.production.local', '.env.local', '.env.development', '.env.production', '.env'];
+
+/** POSTGRES_URL as `next dev` resolves it, and where it came from. The value is never printed. */
 function configuredDatabase() {
   if (process.env.POSTGRES_URL) return { url: process.env.POSTGRES_URL, source: 'the environment' };
-  for (const name of ['.env.development.local', '.env.local', '.env.development', '.env']) {
+  for (const name of DEV_FILES) {
     const url = envFileValue(path.join(site, name), 'POSTGRES_URL');
     if (url) return { url, source: `site/${name}` };
   }
   return { url: null, source: null };
+}
+
+/** Every file that defines POSTGRES_URL, in ALL_FILES order — what a server of EITHER mode could be reading. */
+function definedDatabases() {
+  return ALL_FILES
+    .map((name) => ({ url: envFileValue(path.join(site, name), 'POSTGRES_URL'), source: `site/${name}` }))
+    .filter((d) => d.url);
 }
 
 /** The host of a URL and nothing else of it — the rest of a connection string is the password. */
@@ -133,6 +157,21 @@ function hostOf(url) {
   } catch {
     return null;
   }
+}
+
+/**
+ * One connection string's verdict: `{ host, problem }`, `problem` null when the host is
+ * loopback, else the line that refuses it. A `${…}` value is Next's env expansion, which
+ * this script does not resolve — it is refused by name rather than as "unparseable", so
+ * the fix is obvious.
+ */
+function judge(url, source) {
+  if (/\$\{/.test(url)) {
+    return { host: null, problem: `POSTGRES_URL in ${source} uses \${…} expansion, which this harness does not resolve — set a literal or pass --allow-shared-db.` };
+  }
+  const host = hostOf(url);
+  if (isLoopback(host)) return { host, problem: null };
+  return { host, problem: `${source} names a database on ${host ?? 'a host this script cannot parse'}, which is not loopback.` };
 }
 
 const refuse = (lines) => {
@@ -149,16 +188,18 @@ const configured = configuredDatabase();
  * a remote one. */
 let dbHost = null;
 if (!TARGET) {
+  /* Exact for the server THIS script starts, which is `next dev`. */
   if (!configured.url) {
     refuse([
       'no POSTGRES_URL in the environment or in site/.env.development.local, .env.local, .env.development or .env:',
       'the dev server would start, but the report route could store nothing.',
     ]);
   }
-  dbHost = hostOf(configured.url);
-  if (!isLoopback(dbHost) && !ALLOW_SHARED) {
+  const verdict = judge(configured.url, configured.source);
+  dbHost = verdict.host;
+  if (verdict.problem && !ALLOW_SHARED) {
     refuse([
-      `${configured.source} names a database on ${dbHost ?? 'a host this script cannot parse'}, which is not loopback.`,
+      verdict.problem,
       `This harness seeds a synthetic layout for "${WORLD}" there (replacing its stored objects, bounds, shapes and ground),`,
       'saves a real overlay version and appends an audit row.',
       `Point POSTGRES_URL at a local database, or pass --allow-shared-db to write to ${dbHost ?? 'it'} anyway.`,
@@ -173,13 +214,26 @@ if (!TARGET) {
       'Pass --allow-shared-db to write there anyway.',
     ]);
   }
-  if (isLoopback(targetHost) && configured.url) {
-    dbHost = hostOf(configured.url);
-    if (!isLoopback(dbHost) && !ALLOW_SHARED) {
+  if (isLoopback(targetHost)) {
+    /* A server on this machine is most likely one started from this checkout,
+     * in EITHER mode: `next dev` reads the development files, `next start` the
+     * production ones, and only .env.local is common to both. So every file
+     * that defines POSTGRES_URL is judged, not the one next dev would pick —
+     * unless the environment sets it, which a server started from this shell
+     * inherits and Next never overrides. */
+    const candidates = process.env.POSTGRES_URL
+      ? [{ url: process.env.POSTGRES_URL, source: 'the environment' }]
+      : definedDatabases();
+    const verdicts = candidates.map((c) => judge(c.url, c.source));
+    dbHost = verdicts.find((v) => v.host)?.host ?? null;
+    const bad = verdicts.filter((v) => v.problem);
+    if (bad.length > 0 && !ALLOW_SHARED) {
       refuse([
-        `--url ${TARGET} is a server on this machine, and ${configured.source} names a database on ${dbHost ?? 'a host this script cannot parse'}, which is not loopback.`,
-        'A server started from this checkout reads that same file, so the seed would land there.',
-        `Pass --allow-shared-db if that server is known to write elsewhere, or to write to ${dbHost ?? 'it'} anyway.`,
+        `--url ${TARGET} is a server on this machine, which most likely reads this checkout's env files, and:`,
+        ...bad.map((v) => `  ${v.problem}`),
+        'A server started from this checkout with next dev reads .env.development.local, .env.local, .env.development, .env;',
+        'one started with next start reads .env.production.local, .env.local, .env.production, .env. The seed would land there.',
+        'Pass --allow-shared-db if that server is known to write elsewhere, or to write there anyway.',
       ]);
     }
   }

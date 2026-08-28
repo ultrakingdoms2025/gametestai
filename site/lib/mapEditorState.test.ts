@@ -55,11 +55,13 @@ import {
   removeFor,
   removeWarnings,
   rowLevel,
+  rowsWithVerdicts,
   selectedEntry,
   selectedPosition,
   selectionFromKey,
   selectionKey,
   snappedY,
+  unresolvedLines,
   unresolvedText,
   versionStatus,
   upsertMoveFor,
@@ -196,6 +198,11 @@ describe('rowLevel and pendingRows', () => {
     expect(rows[2]).toMatchObject({ key: 'c', kind: 'place', label: 'Loot Crate ×2', summary: '→ (1.0, 2.0, 3.0)', level: 'error' });
     expect(rows[2].conflicts).toEqual([err, warn]);
   });
+  it('every row carries its entry id and no verdict: the id is what a report names, the verdict is rowsWithVerdicts to add', () => {
+    const rows = pendingRows(entries, []);
+    expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c']);
+    for (const r of rows) expect(r.verdict).toBeNull();
+  });
   it('tolerates a conflicts array shorter than the document', () => {
     expect(pendingRows(entries, [])[2].level).toBe('ok');
   });
@@ -295,7 +302,7 @@ describe('unresolvedText', () => {
     expect(unresolvedText('name')).toBe('no object of that name in the world');
     expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
     expect(unresolvedText('error')).toBe('the entry threw while being applied — see the game console');
-    expect(unresolvedText('item')).toBe('not a placeable item — unknown to the game, or never placeable');
+    expect(unresolvedText('item')).toBe('the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed');
     expect(unresolvedText('no-loot')).toBe('the game has no loot system to spawn a placement in');
     expect(unresolvedText('position')).toBe("the placement's position is not a finite point");
     expect(unresolvedText('pool')).toBe("no pickup free to spawn it — the world's loot pool is full");
@@ -305,6 +312,78 @@ describe('unresolvedText', () => {
   it('prints a reason it does not know as it came, so a reason the game grows first is still visible', () => {
     expect(unresolvedText('not-a-reason')).toBe('not-a-reason');
     expect(unresolvedText('')).toBe('');
+  });
+});
+
+describe('rowsWithVerdicts', () => {
+  /**
+   * The nine mount rows: the admin saved nine placements, the game refused all nine with `item`, and the
+   * card printed nine ids with nothing to say which row each was. The verdict goes on the ROW, beside the
+   * item name that is already there, in the applier's words.
+   */
+  const entries: Draft[] = [
+    { _key: 'k1', kind: 'place', id: 'p1', item: { source_key: 'mount_bicycle_power_1:station', name: 'Bicycle Speed I', config: { effect: 'grant_mount_power' } }, position: { x: 1, y: 2, z: 3 }, quantity: 1 },
+    { _key: 'k2', kind: 'place', id: 'p2', item: { source_key: 'pack_bullets:station', name: 'Rifle rounds', config: { effect: 'grant_ammo', ammo_item: 'bullet' } }, position: { x: 1, y: 2, z: 3 }, quantity: 1 },
+    { _key: 'k3', kind: 'move', id: 'm1', target: { name: 'station:crate' }, position: { x: 1, y: 2, z: 3 } },
+    { _key: 'k4', kind: 'remove', id: 'r1', target: { id: 'station:post@1.0,2.0' } },
+  ];
+  const rows = pendingRows(entries, []);
+
+  it("a row whose id the report lists as unresolved says so, in the applier's words; the rest stay as they were", () => {
+    const out = rowsWithVerdicts(rows, [
+      { id: 'p1', reason: 'item' },
+      { id: 'm1', reason: 'name' },
+      { id: 'r1', reason: 'id' },
+      { id: 'not-in-the-document', reason: 'error' },
+    ]);
+    expect(out.map((r) => r.verdict)).toEqual([
+      '⛔ not applied — the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed',
+      null,
+      '⛔ not applied — no object of that name in the world',
+      '⛔ not applied — build-time target — nothing resolves ids until stage 3',
+    ]);
+    // Everything but the verdict is the row as pendingRows made it.
+    out.forEach((r, i) => expect({ ...r, verdict: null }).toEqual(rows[i]));
+  });
+
+  it('with nothing unresolved, or no report at all, the rows come back by identity', () => {
+    expect(rowsWithVerdicts(rows, [])).toBe(rows);
+    expect(rowsWithVerdicts(rows, undefined)).toBe(rows);
+  });
+
+  it('a reason the site does not know is printed as it came, so the verdict is still a verdict', () => {
+    expect(rowsWithVerdicts(rows, [{ id: 'p2', reason: 'new-reason' }])[1].verdict).toBe('⛔ not applied — new-reason');
+  });
+
+  it('two reports of one id: the first listed wins, as the applier pushes one per entry', () => {
+    expect(rowsWithVerdicts(rows, [{ id: 'p1', reason: 'item' }, { id: 'p1', reason: 'pool' }])[0].verdict).toContain('cannot spawn this item');
+  });
+});
+
+describe('unresolvedLines', () => {
+  const entries: Draft[] = [
+    { _key: 'k1', kind: 'place', id: 'p1', item: { source_key: 'mount_bicycle_power_1:station', name: 'Bicycle Speed I', config: {} }, position: { x: 1, y: 2, z: 3 }, quantity: 3 },
+    { _key: 'k3', kind: 'move', id: 'm1', target: { name: 'station:crate' }, position: { x: 1, y: 2, z: 3 } },
+    { _key: 'k4', kind: 'remove', id: 'r1', target: { id: 'station:post@1.0,2.0' } },
+  ];
+
+  it("prints the entry's label — the item name, or the target — beside the id, and the applier's words", () => {
+    expect(unresolvedLines([{ id: 'p1', reason: 'item' }, { id: 'm1', reason: 'name' }, { id: 'r1', reason: 'id' }], entries)).toEqual([
+      { id: 'p1', label: 'Bicycle Speed I', text: 'the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed' },
+      { id: 'm1', label: 'station:crate', text: 'no object of that name in the world' },
+      { id: 'r1', label: 'station:post@1.0,2.0', text: 'build-time target — nothing resolves ids until stage 3' },
+    ]);
+  });
+
+  it('an id the document no longer holds — undone since the report — has no label, and is still listed', () => {
+    expect(unresolvedLines([{ id: 'gone', reason: 'error' }], entries)).toEqual([
+      { id: 'gone', label: null, text: 'the entry threw while being applied — see the game console' },
+    ]);
+  });
+
+  it('is the report in its order, one line per unresolved entry, and empty for an empty report', () => {
+    expect(unresolvedLines([], entries)).toEqual([]);
+    expect(unresolvedLines([{ id: 'm1', reason: 'name' }, { id: 'p1', reason: 'item' }], entries).map((l) => l.id)).toEqual(['m1', 'p1']);
   });
 });
 

@@ -16,15 +16,17 @@ import {
   placementY,
   removeFor,
   removeWarnings,
+  rowsWithVerdicts,
   selectedEntry,
   selectedPosition,
   snappedY,
-  unresolvedText,
+  unresolvedLines,
   upsertMoveFor,
   versionStatus,
   type Draft,
   type Selected,
 } from '@/lib/mapEditorState';
+import { hiddenItemsText, partitionPlaceable } from '@/lib/mapPlaceable';
 import MapCanvas from './MapCanvas';
 import MapPendingList from './MapPendingList';
 import MapSelectionPanel from './MapSelectionPanel';
@@ -253,6 +255,13 @@ export function MapEditorPanel() {
 
   const objects = useMemo<CatalogueObject[]>(() => report?.objects ?? [], [report]);
 
+  /* The Place list offers what the game's applier can spawn and nothing
+   * else (`placeableReason`): nine mount upgrades placed on station were all
+   * refused with `item`, and the list that had offered them was the defect.
+   * The hidden rows are counted under the list, so a short list reads as a
+   * rule and not as a catalogue that failed to load. */
+  const { placeable, hidden } = useMemo(() => partitionPlaceable(catalogue), [catalogue]);
+
   /* Built once per layout or report, not per document change: it decodes
    * the ground grid, and the same decoded grid drives snapping and the
    * canvas. */
@@ -266,6 +275,9 @@ export function MapEditorPanel() {
    * the document on this page (`removeWarnings`). On the DEFERRED document,
    * like the conflicts pass: a drag frame must not re-walk the report. */
   const warnings = useMemo(() => removeWarnings(report?.applied ?? [], deferredEntries), [report, deferredEntries]);
+  /* The report card's unresolved list with each entry's label beside its id
+   * (`unresolvedLines`), on the deferred document for the same reason. */
+  const refusals = useMemo(() => unresolvedLines(report?.unresolved ?? [], deferredEntries), [report, deferredEntries]);
   /* Once per render, not once per line: the two version lines read one call. Meaningless without a report; unused then. */
   const versionWords = versionStatus(report?.appliedVersion ?? 0, report?.builtVersion ?? 0, savedVersion);
   const conflictByKey = useMemo(
@@ -273,10 +285,12 @@ export function MapEditorPanel() {
     [deferredEntries, conflicts]
   );
   /* Rebuilt in LIVE order: `pendingRows` aligns by index, and the live
-   * document may have lost or gained a row since the deferred one. */
+   * document may have lost or gained a row since the deferred one. The
+   * game's verdict on a saved row — refused, and why — rides on the row
+   * itself (`rowsWithVerdicts`), matched by id against the latest report. */
   const rows = useMemo(
-    () => pendingRows(entries, entries.map((e) => conflictByKey.get(e._key) ?? NO_CONFLICTS)),
-    [entries, conflictByKey]
+    () => rowsWithVerdicts(pendingRows(entries, entries.map((e) => conflictByKey.get(e._key) ?? NO_CONFLICTS)), report?.unresolved),
+    [entries, conflictByKey, report]
   );
   const blocked = hasErrors(conflicts);
   const checking = deferredEntries !== entries;
@@ -620,7 +634,7 @@ export function MapEditorPanel() {
               {catalogue.length === 0 ? (
                 <p style={{ margin: 0, color: dim, fontSize: 13 }}>No catalogue items loaded.</p>
               ) : null}
-              {catalogue.slice(0, 200).map((item) => (
+              {placeable.slice(0, 200).map((item) => (
                 <button
                   key={item.id}
                   className={`btn ${placeItem?.id === item.id ? 'btn-primary' : 'btn-ghost'}`}
@@ -635,6 +649,11 @@ export function MapEditorPanel() {
                 </button>
               ))}
             </div>
+            {hidden.length ? (
+              <p data-e2e="catalogue-hidden" style={{ margin: '10px 0 0', color: dim, fontSize: 12 }}>
+                {hiddenItemsText(hidden)}
+              </p>
+            ) : null}
           </section>
 
           <section style={card}>
@@ -650,8 +669,10 @@ export function MapEditorPanel() {
                 ) : null}
                 {report.unresolved.length ? (
                   <ul data-e2e="report-unresolved" style={{ margin: '6px 0 0', paddingLeft: 18, color: '#ffb08a' }}>
-                    {report.unresolved.map((u) => (
-                      <li key={u.id}>{u.id} — {unresolvedText(u.reason)}</li>
+                    {refusals.map((u) => (
+                      <li key={u.id}>
+                        {u.label ? <>{u.label} <span style={{ color: dim }}>· {u.id}</span></> : u.id} — {u.text}
+                      </li>
                     ))}
                   </ul>
                 ) : null}

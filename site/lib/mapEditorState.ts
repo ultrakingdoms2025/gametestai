@@ -1,7 +1,7 @@
 import { groundAt, layersAt, type DecodedGround } from './mapLayout';
 import { groundVerdict, type Conflict, type GroundVerdict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
-import type { AppliedOutcome } from './mapOverlay';
+import type { AppliedOutcome, UnresolvedOutcome } from './mapOverlay';
 import { targetLabel, targetName, type GrantConfig, type MoveEntry, type OverlayEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from './mapOverlaySchema';
 
 /**
@@ -129,11 +129,18 @@ export function rowLevel(conflicts: Conflict[]): RowLevel {
 
 export interface PendingRow {
   key: string;
+  /** The entry's document id — what the game's report names an entry by. */
+  id: string;
   kind: 'move' | 'remove' | 'place';
   label: string;
   summary: string;
   level: RowLevel;
   conflicts: Conflict[];
+  /**
+   * What the game said of this entry the last time it applied the document, when it refused it:
+   * `⛔ not applied — <reason>`. Null from `pendingRows`; `rowsWithVerdicts` fills it from the report.
+   */
+  verdict: string | null;
 }
 
 function vecText(p: Vec3): string {
@@ -146,12 +153,32 @@ export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingR
     const own = conflicts[i] ?? [];
     if (e.kind === 'move') {
       const yaw = e.rotationY !== undefined ? ` yaw ${Math.round(radToDeg(e.rotationY))}°` : '';
-      return { key: e._key, kind: 'move', label: targetLabel(e.target), summary: `→ ${vecText(e.position)}${yaw}`, level: rowLevel(own), conflicts: own };
+      return { key: e._key, id: e.id, kind: 'move', label: targetLabel(e.target), summary: `→ ${vecText(e.position)}${yaw}`, level: rowLevel(own), conflicts: own, verdict: null };
     }
     if (e.kind === 'remove') {
-      return { key: e._key, kind: 'remove', label: targetLabel(e.target), summary: 'removed', level: rowLevel(own), conflicts: own };
+      return { key: e._key, id: e.id, kind: 'remove', label: targetLabel(e.target), summary: 'removed', level: rowLevel(own), conflicts: own, verdict: null };
     }
-    return { key: e._key, kind: 'place', label: `${e.item.name} ×${e.quantity}`, summary: `→ ${vecText(e.position)}`, level: rowLevel(own), conflicts: own };
+    return { key: e._key, id: e.id, kind: 'place', label: `${e.item.name} ×${e.quantity}`, summary: `→ ${vecText(e.position)}`, level: rowLevel(own), conflicts: own, verdict: null };
+  });
+}
+
+/**
+ * The applier's verdict on each row, from the latest report's `unresolved` list, matched by id. An
+ * admin placed nine mount upgrades on station; the game refused all nine with `item`; the card listed
+ * nine ids with no names, and the admin read a Y problem into it. The refusal belongs on the ROW, beside
+ * the item name that is already there. Matched by id because that is what the game names an entry by
+ * and what survives an edit: a saved entry moved again keeps its id, and the game's last word on that id
+ * stands until it is re-saved and re-applied; an entry minted since the report has an id the report
+ * cannot hold and gets no verdict. The first listing of an id wins, as the applier pushes one per entry.
+ * Rows come back by identity when there is nothing to say.
+ */
+export function rowsWithVerdicts(rows: PendingRow[], unresolved: ReadonlyArray<UnresolvedOutcome> | undefined): PendingRow[] {
+  if (!unresolved?.length) return rows;
+  const byId = new Map<string, string>();
+  for (const u of unresolved) if (!byId.has(u.id)) byId.set(u.id, u.reason);
+  return rows.map((r) => {
+    const reason = byId.get(r.id);
+    return reason === undefined ? r : { ...r, verdict: `⛔ not applied — ${unresolvedText(reason)}` };
   });
 }
 
@@ -245,7 +272,7 @@ export const APPLIER_REASON_TEXT: ReadonlyMap<string, string> = new Map([
   ['name', 'no object of that name in the world'],
   ['superseded', 'superseded by a later action on the same object'],
   ['error', 'the entry threw while being applied — see the game console'],
-  ['item', 'not a placeable item — unknown to the game, or never placeable'],
+  ['item', 'the game cannot spawn this item as a pickup — only ammo packs and inventory items can be placed'],
   ['no-loot', 'the game has no loot system to spawn a placement in'],
   ['position', "the placement's position is not a finite point"],
   ['pool', "no pickup free to spawn it — the world's loot pool is full"],
@@ -254,6 +281,33 @@ export const APPLIER_REASON_TEXT: ReadonlyMap<string, string> = new Map([
 /** The words for a reason; an unknown one is printed as it came, so a reason the game grows first is still visible. */
 export function unresolvedText(reason: string): string {
   return APPLIER_REASON_TEXT.get(reason) ?? reason;
+}
+
+export interface UnresolvedLine {
+  id: string;
+  /** The entry's item name or target, from the document on this page; null when the document no longer holds the id. */
+  label: string | null;
+  text: string;
+}
+
+/** What an entry is called wherever the editor names one: a placement by its item, an action by its target. */
+function entryLabel(e: OverlayEntry): string {
+  return e.kind === 'place' ? e.item.name : targetLabel(e.target);
+}
+
+/**
+ * The report card's unresolved list, one line per entry the game refused, in the report's order: the
+ * entry's label beside its id, and the applier's reason in words. The label comes from the document on
+ * this page, matched by id (first wins, as `removeWarnings` matches); an id the document has lost since
+ * the report — undone, or saved over — is listed by id alone, still visible.
+ */
+export function unresolvedLines(unresolved: ReadonlyArray<UnresolvedOutcome>, entries: Draft[]): UnresolvedLine[] {
+  const byId = new Map<string, Draft>();
+  for (const d of entries) if (!byId.has(d.id)) byId.set(d.id, d);
+  return unresolved.map((u) => {
+    const e = byId.get(u.id);
+    return { id: u.id, label: e ? entryLabel(e) : null, text: unresolvedText(u.reason) };
+  });
 }
 
 /**

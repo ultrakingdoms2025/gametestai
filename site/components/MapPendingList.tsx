@@ -10,7 +10,11 @@ import { KIND_COLOUR, dim, errorColour, okColour, warnColour } from './mapEditor
  * an overlay saved last week is still a set of moves the game applies on
  * every load, and hiding it would make the map lie about why a crate is
  * where it is. Each row is the entry's text from `pendingRows`, its worst
- * conflict level, and an undo that removes it from the document.
+ * conflict level, and an undo that removes it from the document. A row the
+ * game refused the last time it applied the document carries the game's
+ * verdict on a line of its own (`rowsWithVerdicts`), under the name that
+ * is already there — nine refused mount rows once read as nine bare ids on
+ * the report card, and the admin looked for the fault in Y.
  */
 
 export interface MapPendingListProps {
@@ -108,6 +112,11 @@ export default function MapPendingList({ rows, selectedKey, rejectedKeys, disabl
             >
               undo
             </button>
+            {r.verdict ? (
+              <span data-e2e="pending-verdict" style={{ gridColumn: '1 / -1', color: errorColour, fontSize: 12 }}>
+                {r.verdict}
+              </span>
+            ) : null}
           </li>
         );
       })}

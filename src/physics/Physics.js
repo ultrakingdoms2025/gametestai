@@ -533,6 +533,50 @@ export class Physics {
   }
 
   /**
+   * The world-space AABB of a collider, written into `out`.
+   *
+   * Nothing on a collider carried one before this except `mesh.bounds`: a box
+   * is an OBB - half-extents plus a matrix - with only a bounding SPHERE for
+   * the broadphase, and the |R|·h expansion that turns it into an axis box was
+   * inlined in full in Unstuck._solidIndex and PlanetWorld._solidIndex (the
+   * pad-return walkability index), and as a yaw-only cos/sin variant in the
+   * citadel caves. MapOverlay's
+   * remove sweep needs the exact box: "this collider's own AABB lies inside
+   * that object's box" is the rule that stops a remove of a house taking the
+   * fence post beside it.
+   *
+   * @param {Collider} collider
+   * @param {THREE.Box3} [out]
+   * @returns {THREE.Box3} `out`; EMPTY for null or an unknown type - and a
+   *   caller that tests containment must check `isEmpty()` first, because
+   *   three's `Box3.containsBox` holds an empty box inside every box
+   */
+  colliderAabb(collider, out = new THREE.Box3()) {
+    out.makeEmpty();
+    if (!collider) return out;
+    if (collider.type === 'box') {
+      const m = collider.matrix.elements;
+      const h = collider.halfExtents;
+      const ax = Math.abs(m[0]) * h.x + Math.abs(m[4]) * h.y + Math.abs(m[8]) * h.z;
+      const ay = Math.abs(m[1]) * h.x + Math.abs(m[5]) * h.y + Math.abs(m[9]) * h.z;
+      const az = Math.abs(m[2]) * h.x + Math.abs(m[6]) * h.y + Math.abs(m[10]) * h.z;
+      out.min.set(m[12] - ax, m[13] - ay, m[14] - az);
+      out.max.set(m[12] + ax, m[13] + ay, m[14] + az);
+    } else if (collider.type === 'sphere') {
+      const c = collider.center;
+      const r = collider.radius;
+      out.min.set(c.x - r, c.y - r, c.z - r);
+      out.max.set(c.x + r, c.y + r, c.z + r);
+    } else if (collider.type === 'mesh') {
+      out.copy(collider.bounds);
+    } else if (collider.type === 'heightfield') {
+      out.min.set(collider.originX, collider.minY, collider.originZ);
+      out.max.set(collider.originX + collider.sizeX, collider.maxY, collider.originZ + collider.sizeZ);
+    }
+    return out;
+  }
+
+  /**
    * Unregister a collider.
    *
    * The counterpart to `add`, and the thing that makes streaming possible: a

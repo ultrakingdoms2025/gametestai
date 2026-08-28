@@ -955,6 +955,15 @@ const CONTRACT_V2 = [
     methods: ['save', 'load', 'hasSave', 'trialLedger', 'mergeTrials', 'raceLedger', 'mergeRaces'],
   },
   { file: 'src/systems/Unstuck.js', exports: ['UnstuckSystem'], methods: ['fixedUpdate', 'unstuck'] },
+  /* The collision world. Registered now because the map overlay's remove sweep
+   * reaches `has` and `colliderAabb` only at apply time - a renamed method
+   * would surface as "the remove hid the mesh and left the wall" one admin
+   * visit later, never as a failed check here. Takes the count 130 -> 131. */
+  {
+    file: 'src/physics/Physics.js',
+    exports: ['Physics', 'Collider', 'COLLISION_LAYER'],
+    methods: ['add', 'remove', 'has', 'clear', 'query', 'raycast', 'colliderAabb'],
+  },
   /* The admin map editor's applier. Registered for the reason every entry here
    * is: it is reached only through `world:changed` and a fetch, so a renamed
    * export would surface as "the overlay silently stopped applying" one browser

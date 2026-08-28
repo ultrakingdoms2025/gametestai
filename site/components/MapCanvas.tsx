@@ -29,7 +29,7 @@ import {
   type MapMark,
   type Selected,
 } from '@/lib/mapEditorState';
-import { moveColour, okColour, placeColour } from './mapEditorStyles';
+import { moveColour, okColour, placeColour, removeColour } from './mapEditorStyles';
 
 export type { HoverInfo } from '@/lib/mapEditorState';
 
@@ -104,6 +104,7 @@ const C = {
   objectFaint: 'rgba(82, 233, 255, 0.35)',
   place: placeColour,
   pending: okColour,
+  removed: removeColour,
   selected: '#ffffff',
   text: '#cfe6f2',
 };
@@ -161,7 +162,19 @@ function drawMark(ctx: CanvasRenderingContext2D, view: MapView, m: MapMark, isSe
       if (isSel) ring(ctx, p.sx, p.sy, 10, C.selected);
       return;
     }
-    case 'removed':
+    case 'removed': {
+      /* Where the game reported it, faint, struck through: the object is
+       * still in the report and still selectable, but it is not in the world. */
+      dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, C.objectFaint);
+      ctx.strokeStyle = C.removed;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(p.sx - 6, p.sy + 6);
+      ctx.lineTo(p.sx + 6, p.sy - 6);
+      ctx.stroke();
+      if (isSel) ring(ctx, p.sx, p.sy, 9, C.selected);
+      return;
+    }
     case 'object':
       dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, C.object);
       if (isSel) ring(ctx, p.sx, p.sy, 9, C.selected);
@@ -446,7 +459,10 @@ export default function MapCanvas(props: MapCanvasProps) {
       return;
     }
     const hit = hitTest(view, marks, sx, sy, HIT_TOL_PX);
-    if (hit && hit.key === selectionKey(selected)) {
+    /* A press on the selected mark starts a drag — unless the mark says it
+     * never drags (`MapMark.draggable`, the removed object's strike-through):
+     * that press is a click, so a 3 px slip cannot turn a remove into a move. */
+    if (hit && hit.key === selectionKey(selected) && (hit as MapMark).draggable !== false) {
       gestureRef.current = { mode: 'drag', target: selectionFromKey(hit.key), startX: sx, startY: sy, lastX: sx, lastY: sy, moved: false };
       return;
     }

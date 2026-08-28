@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { PendingRow } from '@/lib/mapEditorState';
 
 /**
  * Inline styles shared by the map editor's components.
@@ -45,3 +46,15 @@ export const errorColour = '#ff5566';
 export const moveColour = '#52e9ff';
 export const placeColour = '#ffb44a';
 export const removeColour = '#ff7a90';
+
+/**
+ * The colour of a pending row's kind. A table, not a ternary: the list's
+ * first version read `kind === 'move' ? move : place`, and a REMOVE row wore
+ * the placement colour. `satisfies` makes a fourth kind a compile error here
+ * rather than a wrong colour there.
+ */
+export const KIND_COLOUR = {
+  move: moveColour,
+  remove: removeColour,
+  place: placeColour,
+} as const satisfies Record<PendingRow['kind'], string>;

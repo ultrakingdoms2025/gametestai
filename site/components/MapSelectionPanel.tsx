@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react';
 import { groundAt, layersAt, type DecodedGround } from '@/lib/mapLayout';
 import type { Conflict } from '@/lib/mapConflicts';
 import type { CatalogueObject } from '@/lib/mapOverlay';
-import { round, targetLabel, type MoveEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from '@/lib/mapOverlaySchema';
+import { round, targetLabel, targetName, type MoveEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from '@/lib/mapOverlaySchema';
 import {
   authoredLift,
   degToRad,
@@ -73,6 +73,8 @@ export interface MapSelectionPanelProps {
   onCommit: (sel: NonNullable<Selected>, position: Vec3, rotationY: number | undefined) => void;
   onReset: (sel: NonNullable<Selected>) => void;
   onRemoveEntry: (key: string) => void;
+  /** Remove the named object from the world: one remove entry replaces whatever the document said about it. */
+  onRemove: (name: string) => void;
 }
 
 type Form = { x: string; y: string; z: string; yaw: string };
@@ -93,7 +95,7 @@ function isCoord(v: string): boolean {
 }
 
 export default function MapSelectionPanel(props: MapSelectionPanelProps) {
-  const { objects, entries, selected, ground, conflicts, disabled, onSelect, onCommit, onReset, onRemoveEntry } = props;
+  const { objects, entries, selected, ground, conflicts, disabled, onSelect, onCommit, onReset, onRemoveEntry, onRemove } = props;
   const listId = useId();
 
   const objectNames = useMemo(() => new Set(objects.map((o) => o.name)), [objects]);
@@ -184,6 +186,15 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
     : entry?.kind === 'place' ? `${entry.item.name} ×${entry.quantity}`
     : entry ? `${targetLabel(entry.target)}${removed ? ' (removed)' : ''}` : 'entry';
 
+  /* Which name [Remove] acts on: a selected object that is not already removed, or a free move's name. An {id}
+   * target and a placement cannot be removed by name. */
+  const removeName = !selected ? null
+    : selected.kind === 'object' ? (removed ? null : selected.name)
+    : entry?.kind === 'move' ? targetName(entry.target) : null;
+  /* `removeFor` is deliberately lossy: the pending move is dropped for the remove, and undoing that remove
+   * returns the object to where the game REPORTED it, not to the move. Said beside the button, not confirmed. */
+  const removeDropsMove = removeName !== null && entry?.kind === 'move';
+
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <label style={label}>
@@ -211,7 +222,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
             </optgroup>
           ) : null}
           {freeActions.length ? (
-            <optgroup label="by name (not in the report)">
+            <optgroup label="by name or id (not in the report)">
               {freeActions.map((m) => (
                 <option key={m._key} value={`e:${m._key}`}>{targetLabel(m.target)}{m.kind === 'remove' ? ' (removed)' : ''}</option>
               ))}
@@ -331,14 +342,25 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
             Reset
           </button>
         ) : null}
+        {removeName !== null ? (
+          <button className="btn btn-ghost btn-sm" type="button" data-e2e="remove" disabled={disabled} onClick={() => onRemove(removeName)}>
+            Remove
+          </button>
+        ) : null}
         {selected?.kind === 'entry' ? (
           <button className="btn btn-ghost btn-sm" type="button" data-e2e="remove-entry" disabled={disabled} onClick={() => onRemoveEntry(selected.key)}>
             Remove entry
           </button>
         ) : null}
       </div>
+      {removeDropsMove ? (
+        <p data-e2e="remove-hint" style={{ margin: 0, fontSize: 11, color: warnColour }}>
+          Remove drops this pending move; undoing the remove puts the object back where the game reported it.
+        </p>
+      ) : null}
       <p style={{ margin: 0, fontSize: 11, color: subtle }}>
         Yaw is stored in radians; this field is degrees. Drag the mark on the map to move without typing.
+        Remove hides the object in game and drops the colliders inside it; Move here on a removed object puts it back.
       </p>
     </div>
   );

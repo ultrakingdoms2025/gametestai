@@ -1,6 +1,7 @@
 import { groundAt, layersAt, type DecodedGround } from './mapLayout';
 import { groundVerdict, type Conflict, type GroundVerdict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
+import type { AppliedOutcome } from './mapOverlay';
 import { targetLabel, targetName, type GrantConfig, type MoveEntry, type OverlayEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from './mapOverlaySchema';
 
 /**
@@ -237,6 +238,42 @@ export function unresolvedText(reason: string): string {
   }
 }
 
+/**
+ * How many colliders one prop plausibly owns. Above it a remove has almost
+ * certainly swept OTHER objects' colliders: a large named container — a
+ * 100 m terrain tile is a catalogue name — drops every collider fully inside
+ * its box while staying under the applier's 200 cap, and the buildings stay
+ * visible in their batches with nothing solid left in them (decision B, as
+ * written; the applier does not refuse it, so the editor says so).
+ */
+export const WIDE_REMOVE_COLLIDERS = 8;
+
+export interface RemoveWarning {
+  id: string;
+  text: string;
+}
+
+/**
+ * What the report card warns beside a remove the game APPLIED, matched by id
+ * against the document on this page (what the game applied was a saved
+ * version, and the id is what both share). Two states, from the applier's own
+ * `colliders` count: 0 on a `{name}` remove means "hidden, but nothing dropped
+ * — it may still block", the defect this stage exists to end; more than
+ * `WIDE_REMOVE_COLLIDERS` means the box took other objects' colliders with it.
+ * A report without the count reads as 0, as the store clamps it.
+ */
+export function removeWarnings(applied: ReadonlyArray<AppliedOutcome>, entries: Draft[]): RemoveWarning[] {
+  const out: RemoveWarning[] = [];
+  for (const a of applied) {
+    const e = entries.find((d) => d.id === a.id);
+    if (!e || e.kind !== 'remove') continue;
+    const n = a.colliders ?? 0;
+    if (n > WIDE_REMOVE_COLLIDERS) out.push({ id: a.id, text: `removed ${n} colliders — more than one object has; check the map` });
+    else if (n === 0 && targetName(e.target) !== null) out.push({ id: a.id, text: 'removed, but nothing dropped: this object may still block' });
+  }
+  return out;
+}
+
 /** A place draft for a catalogue item at a point. The config is COPIED (see `mapOverlaySchema.ts`). */
 export function placeAt(
   item: { source_key: string; name: string; config: GrantConfig },
@@ -350,6 +387,14 @@ export interface MapMark extends HitCandidate {
   r: 0;
   mark: MarkKind;
   from?: { x: number; z: number };
+  /**
+   * `false` on a mark that selects but never drags; absent means draggable.
+   * A removed object has no pending position for a drag to edit, and a 3 px
+   * drag on its mark would turn the remove into a move through the drag's
+   * upsert — Save would write it. The canvas starts a `click` gesture, never
+   * a `drag`, on a mark that says so.
+   */
+  draggable?: boolean;
 }
 
 /** What the hover label says for a mark. */
@@ -375,7 +420,7 @@ export function hitCandidates(objects: Array<{ name: string; position: Vec3 }>, 
       out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'origin' });
       out.push({ key, x: act.position.x, z: act.position.z, r: 0, mark: 'moved', from: { x: o.position.x, z: o.position.z } });
     } else if (act?.kind === 'remove') {
-      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'removed' });
+      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'removed', draggable: false });
     } else {
       out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'object' });
     }

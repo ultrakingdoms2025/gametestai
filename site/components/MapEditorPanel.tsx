@@ -14,9 +14,12 @@ import {
   pendingRows,
   placeAt,
   placementY,
+  removeFor,
+  removeWarnings,
   selectedEntry,
   selectedPosition,
   snappedY,
+  unresolvedText,
   upsertMoveFor,
   type Draft,
   type Selected,
@@ -249,6 +252,11 @@ export function MapEditorPanel() {
 
   const objects = useMemo<CatalogueObject[]>(() => report?.objects ?? [], [report]);
 
+  /* What the report card warns beside a remove the game applied — nothing
+   * dropped, or more than one prop owns (decision B) — matched by id against
+   * the document on this page (`removeWarnings`). */
+  const warnings = useMemo(() => removeWarnings(report?.applied ?? [], entries), [report, entries]);
+
   /* Built once per layout or report, not per document change: it decodes
    * the ground grid, and the same decoded grid drives snapping and the
    * canvas. */
@@ -352,6 +360,16 @@ export function MapEditorPanel() {
     if (sel.kind !== 'object') return;
     const act = actionEntryFor(entries, sel.name);
     if (act) removeEntry(act._key);
+  }
+
+  /* One remove for the name, whatever the document said about it before
+   * (`removeFor`). The key is minted here for the same reason `commitTransform`
+   * mints its own: a name the game has not reported is selected as its entry
+   * once it has an action (`canonicalSelection`), and that entry is this one. */
+  function removeSelection(name: string) {
+    const key = actionEntryFor(entries, name)?._key ?? newKey();
+    edit((list) => removeFor(list, name, () => key));
+    if (!objects.some((o) => o.name === name)) setSelectedRaw({ kind: 'entry', key });
   }
 
   function placeHere(x: number, z: number) {
@@ -570,6 +588,7 @@ export function MapEditorPanel() {
               onCommit={commitTransform}
               onReset={resetSelection}
               onRemoveEntry={removeEntry}
+              onRemove={removeSelection}
             />
             {selEntry?.kind === 'place' ? (
               <label style={{ ...label, maxWidth: 160, marginTop: 10 }}>
@@ -626,9 +645,16 @@ export function MapEditorPanel() {
                   <div style={{ color: dim }}>reported {new Date(report.reportedAt).toLocaleString()}</div>
                 ) : null}
                 {report.unresolved.length ? (
-                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#ffb08a' }}>
+                  <ul data-e2e="report-unresolved" style={{ margin: '6px 0 0', paddingLeft: 18, color: '#ffb08a' }}>
                     {report.unresolved.map((u) => (
-                      <li key={u.id}>{u.id} — {u.reason}</li>
+                      <li key={u.id}>{u.id} — {unresolvedText(u.reason)}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {warnings.length ? (
+                  <ul data-e2e="report-remove-warnings" style={{ margin: '6px 0 0', paddingLeft: 18, color: warnColour }}>
+                    {warnings.map((w) => (
+                      <li key={w.id}>{w.id} — {w.text}</li>
                     ))}
                   </ul>
                 ) : null}

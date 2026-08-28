@@ -22,14 +22,21 @@
  * so a row click and a mark click on one move land on one selection.
  * `placementY` is pinned on two two-layer cells holding the same surfaces in
  * opposite byte orders, so "the lowest surface" is asserted independently of
- * how `layersAt` happens to order them.
+ * how `layersAt` happens to order them. What the untestable components read
+ * off this module for a remove is pinned as data: the removed mark is the
+ * only non-draggable one (`hitCandidates`), a REMOVE row's colour is its own
+ * (`KIND_COLOUR`), and the report card's two remove warnings — nothing
+ * dropped, too much dropped — are `removeWarnings` on the applier's own
+ * `colliders` count.
  */
 import { describe, expect, it } from 'vitest';
 import { NO_SAMPLE, decodeGround, encodeHeights, groundAt, layersAt, type DecodedGround } from './mapLayout';
 import type { Conflict } from './mapConflicts';
 import { targetLabel, type MoveEntry } from './mapOverlaySchema';
+import { KIND_COLOUR, moveColour, placeColour, removeColour } from '@/components/mapEditorStyles';
 import {
   NO_LAYOUT_TEXT,
+  WIDE_REMOVE_COLLIDERS,
   actionEntryFor,
   authoredLift,
   canonicalSelection,
@@ -45,6 +52,7 @@ import {
   placementY,
   radToDeg,
   removeFor,
+  removeWarnings,
   rowLevel,
   selectedEntry,
   selectedPosition,
@@ -193,6 +201,13 @@ describe('rowLevel and pendingRows', () => {
     const only: Draft[] = [{ _key: 'd', kind: 'remove', id: 'd', target: { id: 'medieval:house@1.0,2.0' } }];
     expect(pendingRows(only, [])[0]).toMatchObject({ kind: 'remove', label: 'medieval:house@1.0,2.0', summary: 'removed' });
   });
+  it('every row kind has its own colour, and a REMOVE row is not painted as a placement', () => {
+    // The list's first version read `kind === 'move' ? move : place`, so a REMOVE row wore the placement colour.
+    expect(Object.keys(KIND_COLOUR).sort()).toEqual(['move', 'place', 'remove']);
+    expect(KIND_COLOUR).toEqual({ move: moveColour, remove: removeColour, place: placeColour });
+    expect(new Set(Object.values(KIND_COLOUR)).size).toBe(3);
+    for (const r of pendingRows(entries, [])) expect(KIND_COLOUR[r.kind]).toBeTypeOf('string');
+  });
 });
 
 describe('upsertMoveFor', () => {
@@ -271,6 +286,44 @@ describe('unresolvedText', () => {
     expect(unresolvedText('name')).toBe('no object of that name in the world');
     expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
     expect(unresolvedText('error')).toBe('error');
+  });
+});
+
+describe('removeWarnings', () => {
+  const rmName: Draft = { _key: 'r', kind: 'remove', id: 'r', target: { name: 'barn' } };
+  const rmId: Draft = { _key: 'q', kind: 'remove', id: 'q', target: { id: 'rock@5,-7' } };
+  const mv: Draft = { _key: 'm', kind: 'move', id: 'm', target: { name: 'well' }, position: { x: 1, y: 2, z: 3 } };
+  const doc = [rmName, rmId, mv];
+
+  it('a {name} remove the game applied with no colliders dropped is hidden but may still block (decision B)', () => {
+    expect(removeWarnings([{ id: 'r', ok: true, colliders: 0 }], doc)).toEqual([
+      { id: 'r', text: 'removed, but nothing dropped: this object may still block' },
+    ]);
+    // the applier's report has always carried `colliders`; a report without it reads as 0, as the store clamps it
+    expect(removeWarnings([{ id: 'r', ok: true }], doc)).toEqual([
+      { id: 'r', text: 'removed, but nothing dropped: this object may still block' },
+    ]);
+  });
+  it('a remove that dropped more colliders than one prop owns has swept other objects: a large named container under the cap', () => {
+    expect(WIDE_REMOVE_COLLIDERS).toBe(8);
+    expect(removeWarnings([{ id: 'r', ok: true, colliders: 9 }], doc)).toEqual([
+      { id: 'r', text: 'removed 9 colliders — more than one object has; check the map' },
+    ]);
+    expect(removeWarnings([{ id: 'q', ok: true, colliders: 47 }], doc)).toEqual([
+      { id: 'q', text: 'removed 47 colliders — more than one object has; check the map' },
+    ]);
+    expect(removeWarnings([{ id: 'r', ok: true, colliders: 8 }], doc)).toEqual([]);
+  });
+  it('is matched by id against the document on this page: a move, an {id} remove with no drops, and an id not in the document say nothing', () => {
+    expect(removeWarnings([{ id: 'm', ok: true, colliders: 0 }], doc)).toEqual([]);
+    expect(removeWarnings([{ id: 'q', ok: true, colliders: 0 }], doc)).toEqual([]);
+    expect(removeWarnings([{ id: 'gone', ok: true, colliders: 0 }], doc)).toEqual([]);
+    expect(removeWarnings([{ id: 'r', ok: true, colliders: 1 }], doc)).toEqual([]);
+    expect(removeWarnings([], doc)).toEqual([]);
+  });
+  it('one line per applied entry, in the report order', () => {
+    const out = removeWarnings([{ id: 'q', ok: true, colliders: 12 }, { id: 'm', ok: true, colliders: 1 }, { id: 'r', ok: true, colliders: 0 }], doc);
+    expect(out.map((w) => w.id)).toEqual(['q', 'r']);
   });
 });
 
@@ -448,7 +501,13 @@ describe('hitCandidates and hoverInfoFor', () => {
   });
   it('an unmoved object is one mark; a removed object is one struck-through mark at its reported position', () => {
     expect(marks.filter((m) => m.key === 'o:o2')).toEqual([{ key: 'o:o2', x: 7, z: 8, r: 0, mark: 'object' }]);
-    expect(marks.filter((m) => m.key === 'o:o3')).toEqual([{ key: 'o:o3', x: 9, z: 9, r: 0, mark: 'removed' }]);
+    expect(marks.filter((m) => m.key === 'o:o3')).toEqual([{ key: 'o:o3', x: 9, z: 9, r: 0, mark: 'removed', draggable: false }]);
+  });
+  it('the removed mark is the ONLY one that selects but never drags', () => {
+    // A 3 px drag on it would turn the remove into a move through the drag's upsert, and Save would write it.
+    // The canvas reads this flag; the rule is pinned here so that component decides nothing.
+    expect(marks.filter((m) => m.draggable === false).map((m) => m.mark)).toEqual(['removed']);
+    expect(marks.filter((m) => m.mark !== 'removed').every((m) => m.draggable === undefined)).toBe(true);
   });
   it('a placement and a free-text move are entry marks; a remove is never one', () => {
     expect(marks.find((m) => m.key === 'e:p')).toEqual({ key: 'e:p', x: 4, z: 6, r: 0, mark: 'place' });

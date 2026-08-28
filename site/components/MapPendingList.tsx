@@ -1,7 +1,7 @@
 'use client';
 
 import type { PendingRow } from '@/lib/mapEditorState';
-import { dim, errorColour, moveColour, okColour, placeColour, warnColour } from './mapEditorStyles';
+import { KIND_COLOUR, dim, errorColour, okColour, warnColour } from './mapEditorStyles';
 
 /**
  * The pending list: what this version will say, one row per entry.
@@ -61,7 +61,7 @@ export default function MapPendingList({ rows, selectedKey, rejectedKeys, disabl
               border: rejected ? `1px solid ${errorColour}` : isSel ? '1px solid rgba(82, 233, 255, 0.4)' : '1px solid rgba(255,255,255,0.06)',
             }}
           >
-            <b style={{ color: r.kind === 'move' ? moveColour : placeColour, letterSpacing: '0.12em', fontSize: 11 }}>
+            <b style={{ color: KIND_COLOUR[r.kind], letterSpacing: '0.12em', fontSize: 11 }}>
               {r.kind.toUpperCase()}
             </b>
             {/* The button's chrome is removed property by property, not with

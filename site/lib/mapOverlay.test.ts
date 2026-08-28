@@ -379,6 +379,19 @@ describe('recordWorldReport — the SQL it emits', () => {
     expect(q.params[6]).toBe(1);
   });
 
+  /**
+   * Clamp, never refuse. `applied_version` is INTEGER: a forged 1e300 would refuse the whole INSERT — the catalogue
+   * and the layout with it — and the route would 500 on a number nobody can see. The row is written, capped.
+   */
+  it('clamps appliedVersion into the INTEGER column: 1e300 is stored as 2147483647, a negative or a word as 0', async () => {
+    const db = makeFakeDb();
+    for (const [raw, clamped] of [[1e300, 2147483647], [2147483648, 2147483647], [-1, 0], ['x', 0], [2.9, 2], [7, 7]] as const) {
+      db.clear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, appliedVersion: raw as unknown as number });
+      expect(db.only('INSERT INTO map_world_reports').params[1], String(raw)).toBe(clamped);
+    }
+  });
+
   it('leaves shapes out of the patch when the report did not carry them', async () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, layoutSchema: 1, bounds: BOUNDS });
@@ -575,10 +588,25 @@ describe('revertOverlayTo — writes the migrated document', () => {
  * handed to `db.query`.
  */
 describe('what is cut is cut by code point, at every site', () => {
+  /** A lone surrogate in a RAW string (author and note are TEXT params, handed over as they are). */
   const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  /**
+   * The same defect in JSON TEXT: `JSON.stringify` writes a lone surrogate as the six ASCII characters
+   * `\ud83d`, so `lone` can never fire on a jsonb param — it would have to match a backslash. This does.
+   */
+  const escaped = /\\ud[89a-f][0-9a-f]{2}/i;
   /** `n` ASCII characters, then an emoji straddling the cut at `n + 1`, then more. */
   const straddle = (n: number) => `${'a'.repeat(n)}😀tail`;
   const whole = (n: number) => `${'a'.repeat(n)}😀`;
+
+  it('the instruments bite: a lone surrogate matches lone raw and escaped once stringified; a pair matches neither', () => {
+    expect('\ud83d').toMatch(lone);
+    expect(JSON.stringify('\ud83d')).toMatch(escaped);
+    expect(JSON.stringify('\ud83d')).not.toMatch(lone);   // the vacuous form this replaces
+    expect(JSON.stringify(['x\udc00'])).toMatch(escaped);
+    expect('😀').not.toMatch(lone);
+    expect(JSON.stringify('😀')).not.toMatch(escaped);
+  });
 
   it('author and note, on the save', async () => {
     const db = makeFakeDb((sql, params) => {
@@ -591,14 +619,49 @@ describe('what is cut is cut by code point, at every site', () => {
     const insert = db.only('INSERT INTO map_overlays');
     expect(insert.params[3]).toBe(whole(199));
     expect(insert.params[4]).toBe(whole(499));
-    expect(JSON.stringify([insert.params[3], insert.params[4]])).not.toMatch(lone);
+    for (const p of [insert.params[3], insert.params[4]]) expect(p).not.toMatch(lone);
+  });
+
+  /**
+   * The cut cannot make a lone surrogate, but a JSON body can spell one (`"\ud83d"` is valid JSON text) and the
+   * save route parses it into exactly that. The store's cut is `toWellFormed()`, so the value the save route hands
+   * `saveOverlayVersion` is stored as U+FFFD — what a TEXT column made of it anyway — and the route answers 200.
+   */
+  it("the save route's store call: an author or note that arrived already malformed is stored as U+FFFD, not refused", async () => {
+    const db = makeFakeDb((sql, params) => {
+      if (sql.startsWith('INSERT INTO map_overlays')) {
+        return [{ version: 1, schema: params[1], entries: [], author: params[3], note: params[4], created_at: '2026-08-28T00:00:00.000Z' }];
+      }
+      return undefined;
+    });
+    const saved = await saveOverlayVersion(db, { worldId: 'test-overlay-sql', entries: [], author: 'own\ud83der@example.com', note: 'moved \udc00 it' });
+    const insert = db.only('INSERT INTO map_overlays');
+    expect(insert.params[3]).toBe('own\ufffder@example.com');
+    expect(insert.params[4]).toBe('moved \ufffd it');
+    for (const p of [insert.params[3], insert.params[4]]) expect(p).not.toMatch(lone);
+    expect(saved.author).toBe('own\ufffder@example.com');
+  });
+
+  /** The report route's store call, where the string lands in a jsonb param: `::jsonb` would have refused `\ud83d`. */
+  it("the report route's store call: a reported name that arrived already malformed is stored as U+FFFD inside valid JSON", async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', {
+      ...PLAIN,
+      objects: [{ name: 'cr\ud83date', position: { x: 1, y: 2, z: 3 } }],
+      unresolved: [{ id: 'e\udc00', reason: 'na\ud83dme' }],
+    });
+    const q = db.only('INSERT INTO map_world_reports');
+    expect(String(q.params[2])).not.toMatch(escaped);
+    expect(String(q.params[4])).not.toMatch(escaped);
+    expect(JSON.parse(String(q.params[2]))).toEqual([{ name: 'cr\ufffdate', position: { x: 1, y: 2, z: 3 } }]);
+    expect(JSON.parse(String(q.params[4]))).toEqual([{ id: 'e\ufffd', reason: 'na\ufffdme' }]);
   });
 
   it("a reported object's name", async () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, objects: [{ name: straddle(199), position: { x: 1, y: 2, z: 3 } }] });
     const objects = String(db.only('INSERT INTO map_world_reports').params[2]);
-    expect(objects).not.toMatch(lone);
+    expect(objects).not.toMatch(escaped);
     expect(JSON.parse(objects)).toEqual([{ name: whole(199), position: { x: 1, y: 2, z: 3 } }]);
   });
 
@@ -606,7 +669,7 @@ describe('what is cut is cut by code point, at every site', () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, applied: [{ id: straddle(63), ok: true, colliders: 2 }] });
     const applied = String(db.only('INSERT INTO map_world_reports').params[3]);
-    expect(applied).not.toMatch(lone);
+    expect(applied).not.toMatch(escaped);
     expect(JSON.parse(applied)).toEqual([{ id: whole(63), ok: true, colliders: 2 }]);
   });
 
@@ -614,7 +677,7 @@ describe('what is cut is cut by code point, at every site', () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, unresolved: [{ id: straddle(63), reason: straddle(63) }] });
     const unresolved = String(db.only('INSERT INTO map_world_reports').params[4]);
-    expect(unresolved).not.toMatch(lone);
+    expect(unresolved).not.toMatch(escaped);
     expect(JSON.parse(unresolved)).toEqual([{ id: whole(63), reason: whole(63) }]);
   });
 });

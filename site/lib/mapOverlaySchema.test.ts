@@ -272,7 +272,7 @@ describe('placement grant config', () => {
     };
     const kept = configOf(`${'a'.repeat(199)}😀tail`);
     expect(kept).toBe(`${'a'.repeat(199)}😀`);
-    expect(JSON.stringify(kept)).not.toMatch(lone);
+    expect(kept).not.toMatch(lone);
     expect(configOf(`${'a'.repeat(200)}😀`)).toBe('a'.repeat(200));
   });
 });
@@ -294,7 +294,7 @@ describe('cutCodePoints', () => {
       // The pre-cut to `max * 2` units is an optimisation the result cannot see:
       // this is the plain, un-pre-cut form, and the two agree byte for byte.
       expect(cutCodePoints(s, 200)).toBe(plain(s, 200));
-      expect(JSON.stringify(cutCodePoints(s, 200))).not.toMatch(lone);
+      expect(cutCodePoints(s, 200)).not.toMatch(lone);
     }
     expect(cutCodePoints(`a${astral}`, 200)).toBe(`a${'😀'.repeat(199)}`);
     expect(cutCodePoints('', 200)).toBe('');
@@ -306,7 +306,23 @@ describe('cutCodePoints', () => {
     expect(Array.from(family)).toHaveLength(5);
     const cut = cutCodePoints(family, 3);
     expect(cut).toBe('👨‍👩');
-    expect(JSON.stringify(cut)).not.toMatch(lone);
+    expect(cut).not.toMatch(lone);
+  });
+
+  /**
+   * The cut cannot make a lone surrogate, but a JSON body can spell one
+   * (`"\ud83d"` is valid JSON text) and an admin string that arrived that way
+   * used to reach `::jsonb` and 500. The result is well-formed whatever came
+   * in: U+FFFD, which is what the TEXT columns already made of it.
+   */
+  it('makes an already-malformed string well-formed: a lone surrogate that arrived becomes U+FFFD, in place', () => {
+    expect(cutCodePoints('own\ud83der', 200)).toBe('own\ufffder');
+    expect(cutCodePoints('\udc00ab', 200)).toBe('\ufffdab');
+    // Under the cut it is still one code point: replaced, never split or doubled.
+    expect(cutCodePoints('ab\ud83dcd', 3)).toBe('ab\ufffd');
+    expect(cutCodePoints('ab\ud83dcd', 3)).not.toMatch(lone);
+    // A well-formed pair is left exactly as it was.
+    expect(cutCodePoints('a😀b', 200)).toBe('a😀b');
   });
 });
 

@@ -237,9 +237,19 @@ export function readAngle(raw: unknown): number | undefined {
  * A ZWJ sequence (a family emoji) cut between its code points stays valid
  * UTF-16 and Postgres-safe — only the glyph changes, from one family to two
  * people. The rule is about surrogates, not graphemes.
+ *
+ * The result is also `toWellFormed()` (Node ≥ 20.9, the `engines` floor):
+ * the cut cannot make a lone surrogate, but a JSON body can spell one
+ * (`"\ud83d"` is valid JSON text), and an admin string that arrived already
+ * malformed used to reach `::jsonb` and 500 the save or the report. It
+ * becomes U+FFFD instead — what the TEXT columns already make of it — in
+ * place, so it still counts as the one code point it was under the cut.
+ *
+ * `max` is a non-negative integer at every call site; negative is not
+ * handled.
  */
 export function cutCodePoints(s: string, max: number): string {
-  return Array.from(s.slice(0, max * 2)).slice(0, max).join('');
+  return Array.from(s.slice(0, max * 2)).slice(0, max).join('').toWellFormed();
 }
 
 /**

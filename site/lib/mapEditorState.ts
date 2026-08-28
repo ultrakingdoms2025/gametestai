@@ -226,14 +226,28 @@ export function removeFor(entries: Draft[], name: string, mint: () => string): D
     .map((e) => (e === existing ? remove(existing._key, existing.id) : e));
 }
 
-/** What the report card says beside an unresolved id. The reasons are the game's (`src/systems/MapOverlay.js`); an unknown one is printed as it came. */
+/**
+ * What the report card says beside an unresolved id. The reasons are the
+ * game's — the ten `reason:` sites in `src/systems/MapOverlay.js`, listed
+ * under "Applier reasons" in `CONTRACTS.md` — and every one is labelled here;
+ * an unknown one is printed as it came, so a reason the game grows before this
+ * table does is still visible. `pending-rebuild` is hedged for stage 2: the
+ * build saw an older document than the entry's, but nothing resolves an `{id}`
+ * until stage 3, so a reload gets the build current without making the entry
+ * apply.
+ */
 export function unresolvedText(reason: string): string {
   switch (reason) {
-    case 'pending-rebuild': return 'applies on next world load';
+    case 'pending-rebuild': return "newer than the world's build — reload; ids resolve from stage 3";
     case 'span': return 'refused — would drop more than 200 colliders; nothing hidden';
     case 'id': return 'build-time target — nothing resolves ids until stage 3';
     case 'name': return 'no object of that name in the world';
     case 'superseded': return 'superseded by a later action on the same object';
+    case 'error': return 'the entry threw while being applied — see the game console';
+    case 'item': return 'not a placeable item — unknown to the game, or never placeable';
+    case 'no-loot': return 'this world has no loot system to spawn a placement in';
+    case 'position': return "the placement's position is not a finite point";
+    case 'pool': return "no pickup free to spawn it — the world's loot pool is full";
     default: return reason;
   }
 }

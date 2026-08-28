@@ -333,6 +333,17 @@ function clampNumber(value: unknown): number {
 }
 
 /**
+ * A version on its way into an INTEGER column: floored at 0 and capped at
+ * 2^31 − 1. Clamp, never refuse: without the cap a forged 1e300 would refuse
+ * the whole INSERT — the catalogue and the layout with it — and the report
+ * route would 500 on a number nobody can see. Infinity arrives as JSON null
+ * and reads as 0.
+ */
+function clampVersion(value: unknown): number {
+  return Math.min(2147483647, Math.max(0, Math.floor(Number(value) || 0)));
+}
+
+/**
  * Only the keys that arrived AND passed. `bounds`/`shapes` travel on every report, `ground`
  * only when sampling finished; jsonb `||` is shallow, so bounds without ground keeps
  * yesterday's ground, and nothing keeps everything.
@@ -477,7 +488,7 @@ export async function recordWorldReport(
            reported_at     = NOW()`,
     [
       worldId,
-      Math.max(0, Math.floor(Number(report.appliedVersion) || 0)),
+      clampVersion(report.appliedVersion),
       JSON.stringify(objects),
       JSON.stringify(applied),
       JSON.stringify(unresolved),

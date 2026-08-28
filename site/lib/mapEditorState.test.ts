@@ -279,13 +279,26 @@ describe('removeFor and actionEntryFor', () => {
 });
 
 describe('unresolvedText', () => {
-  it('names the version-lag and span states in words, and passes anything else through', () => {
-    expect(unresolvedText('pending-rebuild')).toBe('applies on next world load');
+  /** The ten `reason:` strings in `src/systems/MapOverlay.js` (CONTRACTS.md, "Applier reasons"): every one has words, none is printed raw. */
+  const REASONS = ['name', 'span', 'pending-rebuild', 'id', 'superseded', 'error', 'item', 'no-loot', 'position', 'pool'];
+
+  it('labels all ten reasons the applier can give, in words the admin can act on', () => {
+    expect(unresolvedText('pending-rebuild')).toBe("newer than the world's build — reload; ids resolve from stage 3");
     expect(unresolvedText('span')).toBe('refused — would drop more than 200 colliders; nothing hidden');
     expect(unresolvedText('id')).toBe('build-time target — nothing resolves ids until stage 3');
     expect(unresolvedText('name')).toBe('no object of that name in the world');
     expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
-    expect(unresolvedText('error')).toBe('error');
+    expect(unresolvedText('error')).toBe('the entry threw while being applied — see the game console');
+    expect(unresolvedText('item')).toBe('not a placeable item — unknown to the game, or never placeable');
+    expect(unresolvedText('no-loot')).toBe('this world has no loot system to spawn a placement in');
+    expect(unresolvedText('position')).toBe("the placement's position is not a finite point");
+    expect(unresolvedText('pool')).toBe("no pickup free to spawn it — the world's loot pool is full");
+    for (const r of REASONS) expect(unresolvedText(r), r).not.toBe(r);
+  });
+
+  it('prints a reason it does not know as it came, so a reason the game grows first is still visible', () => {
+    expect(unresolvedText('not-a-reason')).toBe('not-a-reason');
+    expect(unresolvedText('')).toBe('');
   });
 });
 

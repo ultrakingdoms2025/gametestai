@@ -158,13 +158,30 @@ export function grantForPlacement(item) {
 }
 
 /**
- * The name a move or a remove acts on, or null: a place has no target, and an
- * `{id}` target names nothing this stage resolves.
+ * The build-time id a move or a remove targets, or null. An `{id}` names a
+ * prop the BUILD placed (stage 3's registry); nothing here resolves one, so
+ * the applier reports it and never applies it. An entry carrying both a
+ * name and an id is an id entry - the site's normaliser writes neither.
  */
-function actionName(entry) {
+function targetId(entry) {
+  const id = entry?.target?.id;
+  return typeof id === 'string' && id ? id : null;
+}
+
+/**
+ * The key the last-wins pre-pass runs on (decision F): the name a move or a
+ * remove acts on, or - in a key space of its own - the build-time id it
+ * names, so two actions on one id supersede each other exactly as two on
+ * one name do, and an id can never collide with a name that spells the
+ * same string. A place has no target and is never keyed; neither is an
+ * entry whose target names nothing.
+ */
+function actionKey(entry) {
   if (entry?.kind !== 'move' && entry?.kind !== 'remove') return null;
+  const id = targetId(entry);
+  if (id !== null) return `id:${id}`;
   const name = entry.target?.name;
-  return typeof name === 'string' && name ? name : null;
+  return typeof name === 'string' && name ? `name:${name}` : null;
 }
 
 export class MapOverlay {
@@ -204,7 +221,7 @@ export class MapOverlay {
     this._schemaWarned = false;
 
     /** Last report: what was applied, what could not be, what exists. */
-    this.report = { world: null, version: 0, applied: [], unresolved: [], objects: [] };
+    this.report = { world: null, version: 0, builtVersion: 0, applied: [], unresolved: [], objects: [] };
 
     /** The world currently carrying overlay changes. */
     this._world = null;
@@ -289,7 +306,7 @@ export class MapOverlay {
     const admin = document?.admin === true;
     const report = document
       ? await this._applyDocument(id, world, document, admin)
-      : this._publish({ world: id, version: 0, applied: [], unresolved: [], objects: [] });
+      : this._publish({ world: id, version: 0, builtVersion: this._builtVersion(world), applied: [], unresolved: [], objects: [] });
 
     /* The ground is sampled AFTER the overlay is applied, so a moved building's
      * colliders are where the editor will draw them. Admin, or the dev switch;
@@ -304,22 +321,37 @@ export class MapOverlay {
     const applied = [];
     const unresolved = [];
     const winner = this._lastActions(entries);
+    // One clamp (`versionOf`) on both sides of the {id} gate below, so a
+    // fractional or negative version cannot read one way here and another
+    // on `world.builtVersion` and disagree about which is newer.
+    const version = versionOf(document);
+    const builtVersion = this._builtVersion(world);
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (!entry || typeof entry !== 'object') continue;
-      // Owner decision F: the LAST action on a name in document order wins.
-      // Running the document in order is not enough on its own - a remove
-      // drops the colliders, so a move after it would find nothing to take
-      // along and leave the object hidden AND moved with its colliders gone.
-      // An action a later one supersedes is skipped whole and said so; the
-      // editor already warns both entries as `duplicate-target`.
-      const name = actionName(entry);
-      if (name !== null && winner.get(name) !== i) {
+      // Owner decision F: the LAST action on a name - or on a build-time id -
+      // in document order wins. Running the document in order is not enough
+      // on its own - a remove drops the colliders, so a move after it would
+      // find nothing to take along and leave the object hidden AND moved
+      // with its colliders gone. An action a later one supersedes is skipped
+      // whole and said so; the editor already warns both entries as
+      // `duplicate-target`.
+      const key = actionKey(entry);
+      if (key !== null && winner.get(key) !== i) {
         unresolved.push({ id: String(entry.id ?? ''), reason: 'superseded' });
         continue;
       }
       try {
+        // An {id} target is a build-time prop. Nothing resolves one until stage
+        // 3's registry, so it is reported and never applied: pending-rebuild
+        // when the document is newer than the build (a reload could consume
+        // it), else id - the honest word, not a label that promises a reload
+        // will fix it (owner decision D).
+        if ((entry.kind === 'move' || entry.kind === 'remove') && targetId(entry) !== null) {
+          unresolved.push({ id: String(entry.id ?? ''), reason: version > builtVersion ? 'pending-rebuild' : 'id' });
+          continue;
+        }
         // `hidden: true` is v1's spelling of a remove. The site's normaliser
         // migrates it to a `remove` on read (site/lib/mapOverlaySchema.ts,
         // schema 2), so a document served by this site never carries it; but
@@ -341,10 +373,10 @@ export class MapOverlay {
     }
 
     const objects = admin ? this._catalogue(world) : [];
-    // `versionOf`, the one clamp: a fractional or negative version must read
-    // the same here as it does on `world.builtVersion`, or the two could
-    // disagree about which is newer by the width of a floor.
-    const report = { world: id, version: versionOf(document), applied, unresolved, objects };
+    // A new object every time: the document is frozen, and the editor reads
+    // `version` (what this visit applied) beside `builtVersion` (what the
+    // build consumed) to tell "enter the world" from "reload it".
+    const report = { world: id, version, builtVersion, applied, unresolved, objects };
     this._publish(report);
 
     if (admin) await this._reportBack(report, world);
@@ -352,15 +384,15 @@ export class MapOverlay {
   }
 
   /**
-   * For every name the document acts on, the index of the LAST move or remove
-   * of it - the one that wins (decision F). Places have no target and an
-   * `{id}` target names nothing this stage resolves, so neither is keyed.
+   * For every name - and, in a key space of its own, every build-time id -
+   * the document acts on, the index of the LAST move or remove of it: the
+   * one that wins (decision F). Places have no target and are not keyed.
    */
   _lastActions(entries) {
     const last = new Map();
     entries.forEach((entry, i) => {
-      const name = actionName(entry);
-      if (name !== null) last.set(name, i);
+      const key = actionKey(entry);
+      if (key !== null) last.set(key, i);
     });
     return last;
   }
@@ -478,6 +510,13 @@ export class MapOverlay {
       const body = {
         world: report.world,
         appliedVersion: report.version,
+        // What the world's BUILD consumed, beside what this visit applied: a
+        // cached world was built against whatever existed at build time, and
+        // the two together are how the editor tells "enter" from "reload".
+        // On BOTH reports of a visit - the layout report carries the same
+        // object. There is no `schema` field: the layout axis is
+        // `layoutSchema`, and a bump there erases every stored grid.
+        builtVersion: report.builtVersion ?? 0,
         objects: report.objects,
         applied: report.applied,
         unresolved: report.unresolved,
@@ -535,6 +574,16 @@ export class MapOverlay {
       ...(bounds ? { bounds } : {}),
       shapes: Array.isArray(world?.minimapShapes) ? world.minimapShapes : [],
     };
+  }
+
+  /**
+   * What the world's BUILD consumed (`WorldManager._runBuild`); 0 for a
+   * world built with no provider, or a rig world that declares no such
+   * field. Through `versionOf` rather than a copy of its arithmetic, so the
+   * two sides of the {id} gate cannot drift apart.
+   */
+  _builtVersion(world) {
+    return versionOf({ version: world?.builtVersion });
   }
 
   /* ------------------------------------------------------------------ */

@@ -985,6 +985,62 @@ test('returning to a world whose document still holds the remove drops the colli
 });
 
 /* ------------------------------------------------------------------ */
+/* Build-time targets and the built version                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * An `{id}` target names a build-time prop that nothing resolves before
+ * stage 3's registry, so the applier REPORTS it and never applies it:
+ * `pending-rebuild` when the document is newer than what the world was
+ * built against (a reload could consume it), else `id` - the honest word
+ * (owner decision D). The rig's world declares no `builtVersion`, which
+ * reads 0 exactly as a world built with no provider does, so every case
+ * below sets the version it means. Two `{id}` actions on one id are
+ * last-wins like two on one name, in a key space of their own.
+ */
+
+test('an {id} entry is reported pending-rebuild when the document is newer than the build, else id; nothing is applied for it', async () => {
+  const idMove = { kind: 'move', id: 'i1', target: { id: 'rock@5,-7' }, position: { x: 1, y: 1, z: 1 } };
+  const idRemove = { kind: 'remove', id: 'i2', target: { id: 'rock@5,-8' } };
+  const rig = setup(doc([idMove, idRemove, moveCrate], { version: 3 }));
+  rig.world.builtVersion = 2;
+  await enter(rig);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'i1', reason: 'pending-rebuild' }, { id: 'i2', reason: 'pending-rebuild' }]);
+  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20], 'the named move beside them still applies');
+  rig.world.builtVersion = 3;
+  await enter(rig);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'i1', reason: 'id' }, { id: 'i2', reason: 'id' }]);
+  assert.equal(rig.system.report.builtVersion, 3);
+});
+
+test('two {id} actions on one id: the last is the one reported and the first is superseded; a {name} spelling the same string is keyed apart', async () => {
+  const first = { kind: 'move', id: 'i1', target: { id: 'rock@5,-7' }, position: { x: 1, y: 1, z: 1 } };
+  const named = { kind: 'remove', id: 'n1', target: { name: 'rock@5,-7' } };
+  const second = { kind: 'remove', id: 'i2', target: { id: 'rock@5,-7' } };
+  const rig = setup(doc([first, named, second], { version: 1 }));
+  rig.world.builtVersion = 1;
+  await enter(rig);
+  // `named` resolves nothing (no object of that name) - and is NOT superseded by the id after it: one key space each.
+  assert.deepEqual(rig.system.report.unresolved, [
+    { id: 'i1', reason: 'superseded' },
+    { id: 'n1', reason: 'name' },
+    { id: 'i2', reason: 'id' },
+  ]);
+  assert.deepEqual(rig.system.report.applied, []);
+});
+
+test('the report carries builtVersion beside appliedVersion - 0 for a world that has none - on the POST and the bus', async () => {
+  const rig = setup(doc([moveCrate], { admin: true }));
+  await enter(rig);
+  assert.equal(rig.fetchImpl.calls.find((c) => c.method === 'POST').body.builtVersion, 0);
+  assert.equal(rig.system.report.builtVersion, 0);
+  rig.world.builtVersion = 4;
+  await enter(rig);
+  assert.equal(rig.fetchImpl.calls.filter((c) => c.method === 'POST').at(-1).body.builtVersion, 4);
+  assert.equal(rig.bus.emitted.filter((e) => e.name === 'map-overlay:applied').at(-1).payload.builtVersion, 4);
+});
+
+/* ------------------------------------------------------------------ */
 /* Placing                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1170,7 +1226,7 @@ test('the entry kinds the editor writes are the kinds the game dispatches on, an
   for (const [field, pattern, schemaPattern] of [
     ['position', /entry\.position\b/, /position: Vec3;/], ['rotationY', /entry\.rotationY\b/, /rotationY\?: number;/],
     ['quantity', /entry\.quantity\b/, /quantity: number;/], ['source_key', /source_key/, /source_key: string;/],
-    ['name', /target\?\.name\b/, /\{ name: string \}/],
+    ['name', /target\?\.name\b/, /\{ name: string \}/], ['id', /target\?\.id\b/, /\{ id: string \}/],
   ]) {
     assert.match(schema, schemaPattern, `schema no longer declares ${field} as code`);
     assert.match(system, pattern, `MapOverlay.js never reads ${field}`);

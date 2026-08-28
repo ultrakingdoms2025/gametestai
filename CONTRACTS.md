@@ -82,7 +82,7 @@ Emit and listen only to these. Adding an event is fine — document it in your r
 | `world:changed` | `{id, world}` | WorldManager |
 | `world:ready` | `{id}` | main |
 | `worlds:all-ready` | — | main |
-| `map-overlay:applied` | `{world, version, applied, unresolved, objects}` | MapOverlay |
+| `map-overlay:applied` | `{world, version, builtVersion, applied, unresolved, objects}` | MapOverlay |
 | `map-overlay:layout` | `{world, cells, layers, sampledMs}` | MapOverlay |
 | `player:spawned` | `{position}` | Player |
 | `player:damaged` | `{amount, health, maxHealth, sourcePosition}` | Combat |
@@ -107,6 +107,8 @@ Emit and listen only to these. Adding an event is fine — document it in your r
 | `portal:near` | `{portal}` or `{portal:null}` | PortalSystem |
 | `portal:entering` | `{from, to, duration}` | PortalSystem |
 | `hud:notify` | `{text, tone}` where tone ∈ `info \| warn \| kill \| lore` | anyone |
+
+**Overlay provider (map editor stage 2).** `main.js` sets `worldManager.ctx.overlayProvider = (worldId) => Promise<{version, entries, admin} | null>` on the manager's own ctx before the entry build, gated on the session. `WorldManager._runBuild` awaits it before `ensureBuilt` (no provider: no await; 8 s behind the loading gate, 1.5 s otherwise) and stores `world.builtVersion` (0 when none). The report POST carries `builtVersion` beside `appliedVersion`; it carries no `schema`.
 
 ---
 

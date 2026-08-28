@@ -230,6 +230,18 @@ test('(b) after sampling, a second POST carries a grid with two layers under the
   assert.ok(Number.isFinite(summary.sampledMs), `sampledMs is a duration, got ${summary.sampledMs}`);
 });
 
+test('builtVersion rides on BOTH reports of a visit, and neither report carries a schema field', async () => {
+  const rig = setup(doc([], { admin: true }));
+  rig.world.builtVersion = 6;
+  await enter(rig);
+  await finish(rig);
+  const posts = rig.fetchImpl.posts();
+  assert.equal(posts.length, 2);
+  assert.deepEqual(posts.map((p) => p.body.builtVersion), [6, 6]);
+  assert.equal('schema' in posts[1].body, false, 'the report has no schema: the layout axis is layoutSchema and a bump there erases every stored grid');
+  assert.equal(posts[1].body.layoutSchema, 1);
+});
+
 test('(c) one frame samples about one cell at 1 ms per cast, and the job resumes on the next', async () => {
   const rig = setup(doc([], { admin: true }), { clockPerCast: 1 });
   await enter(rig);

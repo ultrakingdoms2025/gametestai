@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 
-import { normaliseOverlayEntries } from './mapOverlaySchema';
+import { MAP_OVERLAY_SCHEMA, normaliseOverlayEntries } from './mapOverlaySchema';
 // The GAME's applier and physics, imported directly. Not a copy of them, not a
 // description of them — the modules the browser runs.
 import { Physics } from '../../src/physics/Physics.js';
@@ -65,7 +65,7 @@ function bus(): any {
 function served(rawEntries: unknown[], version = 1) {
   const { entries, rejected } = normaliseOverlayEntries(rawEntries);
   expect(rejected, 'the fixture itself must survive normalisation').toEqual([]);
-  return { world: 'station', schema: 1, version, entries, admin: false };
+  return { world: 'station', schema: MAP_OVERLAY_SCHEMA, version, entries, admin: false };
 }
 
 describe('an overlay written by the editor applies in the game', () => {
@@ -142,25 +142,26 @@ describe('an overlay written by the editor applies in the game', () => {
     expect(spawned[0].contents).toEqual([{ itemId: 'bullet', qty: 60 }]);
   });
 
-  it('hides an object the admin marked hidden, with no position given', async () => {
-    const document = served([
-      { kind: 'move', id: 'h1', target: { name: 'crate.alpha' }, hidden: true },
-    ]);
+  it('a v1 hidden move reaches the game as a remove: the object is hidden AND its collider leaves the physics', async () => {
+    const document = served([{ kind: 'move', id: 'h1', target: { name: 'crate.alpha' }, hidden: true }]);
+    expect(document.entries).toEqual([{ kind: 'remove', id: 'h1', target: { name: 'crate.alpha' } }]);
 
     const b = bus();
+    const physics = new Physics(b);
+    const w = world();
+    const collider = physics.addBoxFromObject(w.crate);
     const system = new MapOverlay({
       bus: b,
-      physics: new Physics(b),
+      physics,
       loot: { spawn: () => null, despawn: () => true },
-      // Only `ok` and `json` are read; the rest of Response is not this test's subject.
       fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
     });
-
-    const w = world();
     b.emit('world:changed', { id: w.id, world: w });
     await system.applying;
 
     expect(w.crate.visible).toBe(false);
+    expect(physics.has(collider!)).toBe(false);
+    expect(system.report.applied).toEqual([{ id: 'h1', ok: true, colliders: 1 }]);
     expect(system.report.unresolved).toEqual([]);
   });
 });

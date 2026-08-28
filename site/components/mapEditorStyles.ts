@@ -44,3 +44,4 @@ export const warnColour = '#ffb44a';
 export const errorColour = '#ff5566';
 export const moveColour = '#52e9ff';
 export const placeColour = '#ffb44a';
+export const removeColour = '#ff7a90';

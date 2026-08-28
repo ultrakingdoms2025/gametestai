@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { MoveEntry, OverlayEntry, PlaceEntry } from './mapOverlaySchema';
+import type { MoveEntry, OverlayEntry, PlaceEntry, RemoveEntry } from './mapOverlaySchema';
 import { NO_SAMPLE, decodeGround, encodeHeights, type DecodedGround, type WorldLayout } from './mapLayout';
 import { conflictContextFor, conflictsFor, conflictsForDocument, hasErrors, type Conflict, type ConflictContext } from './mapConflicts';
 
@@ -22,6 +22,10 @@ import { conflictContextFor, conflictsFor, conflictsForDocument, hasErrors, type
 
 function move(over: Partial<MoveEntry> = {}): MoveEntry {
   return { kind: 'move', id: 'm1', target: { name: 'barn.roof' }, position: { x: 2, y: 2, z: 2 }, ...over };
+}
+
+function remove(over: Partial<RemoveEntry> = {}): RemoveEntry {
+  return { kind: 'remove', id: 'r1', target: { name: 'barn.roof' }, ...over };
 }
 
 function place(over: Partial<PlaceEntry> = {}): PlaceEntry {
@@ -65,10 +69,25 @@ describe('the name rules, which need no layout', () => {
     expect(codes(conflictsFor(known, 0, [known], ctx({ objects: [crate] })))).toEqual([]);
   });
 
-  it('gives a hidden move, which has no position, the name rules and nothing else', () => {
-    const hidden = move({ position: null, hidden: true });
-    const found = conflictsFor(hidden, 0, [hidden], ctx({ layout: layout(), objects: [crate] }));
-    expect(codes(found)).toEqual(['stale-name']);
+  it('gives a remove the name rules and nothing else, with or without a layout', () => {
+    expect(codes(conflictsFor(remove(), 0, [remove()], ctx({ layout: layout(), objects: [crate] })))).toEqual(['stale-name']);
+    expect(conflictsFor(remove(), 0, [remove()], ctx())).toEqual([]);
+    const known = remove({ target: { name: 'crate' } });
+    expect(conflictsFor(known, 0, [known], ctx({ layout: layout(), objects: [crate] }))).toEqual([]);
+  });
+
+  it('warns a move and a remove of one name as duplicate-target, each naming the other', () => {
+    const doc = [move({ id: 'a', target: { name: 'crate' } }), remove({ id: 'b', target: { name: 'crate' } })];
+    const all = conflictsForDocument(doc, ctx({ objects: [crate] }));
+    expect(all[0]).toEqual([expect.objectContaining({ code: 'duplicate-target', other: 'b' })]);
+    expect(all[1]).toEqual([expect.objectContaining({ code: 'duplicate-target', other: 'a' })]);
+    expect(all[0][0].detail).toMatch(/also removes "crate"; the last one wins/);
+    expect(all[1][0].detail).toMatch(/also moves "crate"; the last one wins/);
+  });
+
+  it('applies no name rule to an {id} target: nothing reports ids until stage 3', () => {
+    const m = move({ target: { id: 'medieval:house@2.0,2.0' } });
+    expect(conflictsFor(m, 0, [m], ctx({ objects: [crate] }))).toEqual([]);
   });
 
   it('lets a move a kilometre out through when there is no layout to measure against', () => {
@@ -78,29 +97,32 @@ describe('the name rules, which need no layout', () => {
 });
 
 describe('occupancy', () => {
-  // The game's `_applyMove` clears `visible` on a hidden move and then relocates the object's colliders only
-  // when the entry carries a position. A hidden object is therefore an invisible wall: at the new spot when the
-  // move has one, at the reported spot when it does not. The rules compose occupancy that way on purpose, and
-  // these two fixtures pin it through the overlap rule, the only reader of the occupants.
+  // The game's `_applyRemove` hides the object AND drops the colliders inside its box, so a removed object
+  // occupies nothing - the reverse of stage 1's hidden, whose colliders stayed. The last action on a name
+  // wins because the applier runs the document in order.
+  const spot = { x: 50, y: 0, z: 50 };
+  const world = () => ctx({ layout: layout(), objects: [crate] });
 
-  it('lets a hidden move that still carries a position stand at that spot: its colliders go there', () => {
-    const spot = { x: 50, y: 0, z: 50 };
-    const beside = place({ position: spot });
-    const stranger = move({ hidden: true, position: spot });
-    const known = move({ hidden: true, position: spot, target: { name: 'crate' } });
-    const world = () => ctx({ layout: layout(), objects: [crate] });
-    const all = conflictsForDocument([stranger, beside], world());
-    expect(all.map(codes)).toEqual([['stale-name', 'overlap'], ['overlap']]);
-    expect(all[1][0].other).toBe('m1');
-    expect(conflictsForDocument([known, beside], world()).map(codes)).toEqual([['overlap'], ['overlap']]);
+  it('a removed reported object occupies nothing: a placement where it stood is clear', () => {
+    const gone = remove({ target: { name: 'crate' } });
+    const onCrate = place({ position: crate.position });
+    expect(conflictsForDocument([gone, onCrate], world()).map(codes)).toEqual([[], []]);
   });
 
-  it('leaves the reported object standing where it was when a hidden move has no position', () => {
-    const gone = move({ hidden: true, position: null, target: { name: 'crate' } });
-    const onCrate = place({ position: crate.position });
-    const all = conflictsForDocument([gone, onCrate], ctx({ layout: layout(), objects: [crate] }));
-    expect(all.map(codes)).toEqual([[], ['overlap']]);
-    expect(all[1][0].other).toBe('crate');
+  it('move then remove: the remove wins, both warn duplicate-target, and the object stands nowhere', () => {
+    const moved = move({ id: 'a', target: { name: 'crate' }, position: spot });
+    const gone = remove({ id: 'b', target: { name: 'crate' } });
+    const beside = place({ position: spot });
+    expect(conflictsForDocument([moved, gone, beside], world()).map(codes)).toEqual([['duplicate-target'], ['duplicate-target'], []]);
+  });
+
+  it('remove then move: the move wins and occupies its new spot', () => {
+    const gone = remove({ id: 'a', target: { name: 'crate' } });
+    const moved = move({ id: 'b', target: { name: 'crate' }, position: spot });
+    const beside = place({ position: spot });
+    const all = conflictsForDocument([gone, moved, beside], world());
+    expect(all.map(codes)).toEqual([['duplicate-target'], ['duplicate-target', 'overlap'], ['overlap']]);
+    expect(all[2][0].other).toBe('b');
   });
 });
 
@@ -246,9 +268,11 @@ describe('the ground rules, through a real Int16 grid', () => {
     expect(codes(conflictsFor(at(1.5), 0, [at(1.5)], c()))).toEqual(['underground']);
   });
 
-  it('checks a hidden move that carries a position: its colliders go there', () => {
-    const m = move({ hidden: true, position: { x: 2, y: 1.7, z: 2 } });
-    expect(codes(conflictsFor(m, 0, [m], twoMetres()))).toEqual(['underground']);
+  it('an {id} move gets the bounds rule only: no ground verdict, no overlap', () => {
+    const m = move({ target: { id: 'medieval:house@2.0,2.0' }, position: { x: 2, y: 1.7, z: 2 } });
+    expect(conflictsFor(m, 0, [m], twoMetres())).toEqual([]);
+    const far = move({ target: { id: 'medieval:house@2.0,2.0' }, position: { x: 300, y: 2, z: 2 } });
+    expect(codes(conflictsFor(far, 0, [far], twoMetres()))).toEqual(['out-of-bounds']);
   });
 
   it('says nothing about the ground when the layout has no grid yet', () => {
@@ -316,12 +340,10 @@ describe('overlap, against the layout composed with the document', () => {
     expect(conflictsFor(m, 0, [m], withLayout([roof]))).toEqual([]);
   });
 
-  it('keeps an object the document hides in place as an occupant: its colliders stay where the game put them', () => {
-    // The task text had this hide "occupying nothing"; the game's `_applyMove` disagrees (see the header and the
-    // `occupancy` cases), and a barrel placed on an invisible crate is a barrel nobody can walk up to.
+  it('does not overlap a placement with an object the document removes', () => {
     const farCrate = { name: 'crate', position: { x: 10, y: 0, z: 10 } };
-    const hide = move({ id: 'h', target: { name: 'crate' }, position: null, hidden: true });
-    expect(conflictsForDocument([hide, place({ position: at(10, 10) })], withLayout([farCrate]))).toEqual([[], [overlapWith('crate')]]);
+    const gone = remove({ id: 'r', target: { name: 'crate' } });
+    expect(conflictsForDocument([gone, place({ position: at(10, 10) })], withLayout([farCrate]))).toEqual([[], []]);
   });
 
   it('tests a placement as a footprint: a point within half a metre of its rect overlaps', () => {
@@ -512,11 +534,11 @@ describe('overlap: the last move wins, whole millimetres, and the bucket grid', 
     // It deliberately omits last-move-wins — no two entries here move the same name — which is pinned separately above.
     type Occ = { label: string; x: number; z: number; rect: { minX: number; maxX: number; minZ: number; maxZ: number } | null };
     const mm = (m: number) => Math.round(m * 1000);
-    const moved = new Set(entries.flatMap((e) => (e.kind === 'move' && e.position ? [e.target.name] : [])));
+    const moved = new Set(entries.flatMap((e) => (e.kind === 'move' && 'name' in e.target ? [e.target.name] : [])));
     const occ: Occ[] = objects.filter((o) => !moved.has(o.name)).map((o) => ({ label: o.name, x: mm(o.position.x), z: mm(o.position.z), rect: null }));
     const byEntry = new Map<number, Occ>();
     entries.forEach((e, i) => {
-      if (!e.position) return;
+      if (e.kind === 'remove') return;
       const { x, z } = e.position;
       let rect: Occ['rect'] = null;
       if (e.kind === 'place') {

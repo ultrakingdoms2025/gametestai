@@ -7,6 +7,7 @@ import type { CatalogueObject, OverlayVersionRow, WorldReport } from '@/lib/mapO
 import type { WorldLayout } from '@/lib/mapLayout';
 import { conflictContextFor, conflictsForDocument, hasErrors, type Conflict } from '@/lib/mapConflicts';
 import {
+  actionEntryFor,
   canonicalSelection,
   layoutAgeText,
   moveEntryFor,
@@ -312,7 +313,7 @@ export function MapEditorPanel() {
       if (target.kind === 'object') {
         return upsertMoveFor(list, target.name, position, moveEntryFor(list, target.name)?.rotationY, newKey);
       }
-      return list.map((e) => (e._key === target.key && e.position ? ({ ...e, position } as Draft) : e));
+      return list.map((e) => (e._key === target.key && e.kind !== 'remove' ? ({ ...e, position } as Draft) : e));
     }, phase === 'end');
     if (phase === 'end') dragFromRef.current = null;
   }
@@ -322,7 +323,7 @@ export function MapEditorPanel() {
       /* The key is minted here, not inside the updater: a name the game has
        * not reported is selected as its entry the moment it has a move
        * (`canonicalSelection`), and that entry's key is this one. */
-      const key = moveEntryFor(entries, sel.name)?._key ?? newKey();
+      const key = actionEntryFor(entries, sel.name)?._key ?? newKey();
       edit((list) => upsertMoveFor(list, sel.name, position, rotationY, () => key));
       if (!objects.some((o) => o.name === sel.name)) setSelectedRaw({ kind: 'entry', key });
       return;
@@ -330,9 +331,13 @@ export function MapEditorPanel() {
     edit((list) =>
       list.map((e) => {
         if (e._key !== sel.key) return e;
+        if (e.kind === 'remove') {
+          // Move here on a removed name puts it back as a move, under the same key and id.
+          return { _key: e._key, kind: 'move', id: e.id, target: e.target, position, ...(rotationY !== undefined ? { rotationY } : {}) } as Draft;
+        }
         const next = { ...e, position } as Draft;
         if (rotationY === undefined) delete (next as { rotationY?: number }).rotationY;
-        else next.rotationY = rotationY;
+        else (next as { rotationY?: number }).rotationY = rotationY;
         return next;
       })
     );
@@ -345,8 +350,8 @@ export function MapEditorPanel() {
 
   function resetSelection(sel: NonNullable<Selected>) {
     if (sel.kind !== 'object') return;
-    const mv = moveEntryFor(entries, sel.name);
-    if (mv) removeEntry(mv._key);
+    const act = actionEntryFor(entries, sel.name);
+    if (act) removeEntry(act._key);
   }
 
   function placeHere(x: number, z: number) {
@@ -370,18 +375,6 @@ export function MapEditorPanel() {
     edit((list) => [...list, draft]);
     setSelectedRaw({ kind: 'entry', key: draft._key });
     setPlaceItem(null);
-  }
-
-  function setHidden(key: string, hidden: boolean) {
-    edit((list) =>
-      list.map((e) => {
-        if (e._key !== key || e.kind !== 'move') return e;
-        const next = { ...e } as Draft & { hidden?: true };
-        if (hidden) next.hidden = true;
-        else delete next.hidden;
-        return next;
-      })
-    );
   }
 
   function setQuantity(key: string, value: string) {
@@ -578,24 +571,6 @@ export function MapEditorPanel() {
               onReset={resetSelection}
               onRemoveEntry={removeEntry}
             />
-            {selEntry?.kind === 'move' ? (
-              /* A loaded hide-only entry has no position: unticking it would leave
-               * `{ position: null }` with no `hidden`, which the row still calls
-               * "hidden" and the normaliser refuses at save. It can only be removed. */
-              <label
-                title={selEntry.position === null ? 'A hide-only entry can only be removed, not un-hidden here' : undefined}
-                style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#cfe6f2', marginTop: 10 }}
-              >
-                <input
-                  type="checkbox"
-                  data-e2e="hidden"
-                  checked={Boolean(selEntry.hidden)}
-                  disabled={busy || selEntry.position === null}
-                  onChange={(e) => setHidden(selEntry._key, e.target.checked)}
-                />
-                Hide this object instead of only moving it
-              </label>
-            ) : null}
             {selEntry?.kind === 'place' ? (
               <label style={{ ...label, maxWidth: 160, marginTop: 10 }}>
                 Quantity

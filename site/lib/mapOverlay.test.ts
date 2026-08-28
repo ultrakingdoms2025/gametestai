@@ -14,6 +14,7 @@ import {
   saveOverlayVersion,
 } from './mapOverlay';
 import { MAX_SHAPES, encodeHeights } from './mapLayout';
+import { MAP_OVERLAY_SCHEMA } from './mapOverlaySchema';
 import { flat, makeFakeDb } from './fakeDb';
 
 /**
@@ -537,5 +538,30 @@ describe('recordWorldReport — the SQL it emits', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * A revert is a WRITE under the current schema, not a read of the old one:
+ * reverting to a version saved before v2 must land a v2 document. Proved on
+ * the recording client so it runs on every machine.
+ */
+describe('revertOverlayTo — writes the migrated document', () => {
+  it('reverting to a v1 version that hid an object inserts a schema-2 document holding a remove', async () => {
+    const v1 = [{ kind: 'move', id: 'h1', target: { name: 'crate.a' }, position: { x: 4, y: 0, z: 4 }, hidden: true }, MOVE];
+    const db = makeFakeDb((sql, params) => {
+      if (sql.startsWith('SELECT entries FROM map_overlays')) return [{ entries: v1 }];
+      if (sql.startsWith('INSERT INTO map_overlays')) {
+        return [{ version: 3, schema: params[1], entries: JSON.parse(String(params[2])), author: params[3], note: params[4], created_at: '2026-08-28T00:00:00.000Z' }];
+      }
+      return undefined;
+    });
+    const saved = await revertOverlayTo(db, { worldId: 'test-overlay-sql', version: 1, author: 'owner@example.com' });
+    const insert = db.only('INSERT INTO map_overlays');
+    expect(insert.params[1]).toBe(MAP_OVERLAY_SCHEMA);
+    expect(JSON.parse(String(insert.params[2]))).toEqual([{ kind: 'remove', id: 'h1', target: { name: 'crate.a' } }, MOVE]);
+    expect(saved?.schema).toBe(2);
+    expect(saved?.entries[0]).toEqual({ kind: 'remove', id: 'h1', target: { name: 'crate.a' } });
+    expect(saved?.note).toBe('revert to version 1');
   });
 });

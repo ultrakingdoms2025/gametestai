@@ -27,8 +27,10 @@
 import { describe, expect, it } from 'vitest';
 import { NO_SAMPLE, decodeGround, encodeHeights, groundAt, layersAt, type DecodedGround } from './mapLayout';
 import type { Conflict } from './mapConflicts';
+import { targetLabel, type MoveEntry } from './mapOverlaySchema';
 import {
   NO_LAYOUT_TEXT,
+  actionEntryFor,
   authoredLift,
   canonicalSelection,
   degToRad,
@@ -42,12 +44,14 @@ import {
   placeAt,
   placementY,
   radToDeg,
+  removeFor,
   rowLevel,
   selectedEntry,
   selectedPosition,
   selectionFromKey,
   selectionKey,
   snappedY,
+  unresolvedText,
   upsertMoveFor,
   type Draft,
   type Selected,
@@ -166,7 +170,7 @@ describe('rowLevel and pendingRows', () => {
   const err: Conflict = { level: 'error', code: 'out-of-bounds', detail: 'x 900 outside bounds' };
   const entries: Draft[] = [
     { _key: 'a', kind: 'move', id: 'a', target: { name: 'medieval:house' }, position: { x: 12.3, y: 3.2, z: -40.1 }, rotationY: Math.PI / 2 },
-    { _key: 'b', kind: 'move', id: 'b', target: { name: 'station:crate' }, position: null, hidden: true },
+    { _key: 'b', kind: 'remove', id: 'b', target: { name: 'station:crate' } },
     { _key: 'c', kind: 'place', id: 'c', item: { source_key: 'loot', name: 'Loot Crate', config: {} }, position: { x: 1, y: 2, z: 3 }, quantity: 2 },
   ];
   it('the worst conflict sets the level', () => {
@@ -178,16 +182,16 @@ describe('rowLevel and pendingRows', () => {
     const rows = pendingRows(entries, [[warn], [], [err, warn]]);
     expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({ key: 'a', kind: 'move', label: 'medieval:house', summary: '→ (12.3, 3.2, -40.1) yaw 90°', level: 'warn' });
-    expect(rows[1]).toMatchObject({ key: 'b', kind: 'move', label: 'station:crate', summary: 'hidden', level: 'ok' });
+    expect(rows[1]).toMatchObject({ key: 'b', kind: 'remove', label: 'station:crate', summary: 'removed', level: 'ok' });
     expect(rows[2]).toMatchObject({ key: 'c', kind: 'place', label: 'Loot Crate ×2', summary: '→ (1.0, 2.0, 3.0)', level: 'error' });
     expect(rows[2].conflicts).toEqual([err, warn]);
   });
   it('tolerates a conflicts array shorter than the document', () => {
     expect(pendingRows(entries, [])[2].level).toBe('ok');
   });
-  it('a hidden move that also has a position says both', () => {
-    const only: Draft[] = [{ _key: 'd', kind: 'move', id: 'd', target: { name: 'x' }, position: { x: 1, y: 2, z: 3 }, hidden: true }];
-    expect(pendingRows(only, [])[0].summary).toBe('→ (1.0, 2.0, 3.0) (hidden)');
+  it('a remove of an {id} target is labelled by the id', () => {
+    const only: Draft[] = [{ _key: 'd', kind: 'remove', id: 'd', target: { id: 'medieval:house@1.0,2.0' } }];
+    expect(pendingRows(only, [])[0]).toMatchObject({ kind: 'remove', label: 'medieval:house@1.0,2.0', summary: 'removed' });
   });
 });
 
@@ -196,7 +200,7 @@ describe('upsertMoveFor', () => {
     const one = upsertMoveFor([], 'a:b', { x: 1, y: 2, z: 3 }, undefined, mint);
     expect(one).toHaveLength(1);
     expect(one[0]).toMatchObject({ kind: 'move', target: { name: 'a:b' }, position: { x: 1, y: 2, z: 3 } });
-    expect(one[0].rotationY).toBeUndefined();
+    expect((one[0] as Draft & MoveEntry).rotationY).toBeUndefined();
     const two = upsertMoveFor(one, 'a:b', { x: 9, y: 8, z: 7 }, 1.5, mint);
     expect(two).toHaveLength(1);
     expect(two[0]._key).toBe(one[0]._key);
@@ -206,26 +210,67 @@ describe('upsertMoveFor', () => {
   it('leaves other entries and their order alone', () => {
     const base = upsertMoveFor(upsertMoveFor([], 'x', { x: 0, y: 0, z: 0 }, undefined, mint), 'y', { x: 1, y: 1, z: 1 }, undefined, mint);
     const out = upsertMoveFor(base, 'x', { x: 5, y: 5, z: 5 }, undefined, mint);
-    expect(out.map((e) => (e.kind === 'move' ? e.target.name : ''))).toEqual(['x', 'y']);
+    expect(out.map((e) => (e.kind === 'move' ? targetLabel(e.target) : ''))).toEqual(['x', 'y']);
     expect(out[1]).toBe(base[1]);
   });
-  it('a hidden move keeps its hidden flag when it is given a position', () => {
-    const hidden: Draft[] = [{ _key: 'h', kind: 'move', id: 'h', target: { name: 'q' }, position: null, hidden: true }];
-    const out = upsertMoveFor(hidden, 'q', { x: 1, y: 1, z: 1 }, undefined, mint);
-    expect(out[0]).toMatchObject({ hidden: true, position: { x: 1, y: 1, z: 1 } });
+  it('Move here on a removed name replaces the remove with a move, under its key and id', () => {
+    const gone: Draft[] = [{ _key: 'h', kind: 'remove', id: 'h', target: { name: 'q' } }];
+    expect(upsertMoveFor(gone, 'q', { x: 1, y: 1, z: 1 }, undefined, mint)).toEqual([
+      { _key: 'h', kind: 'move', id: 'h', target: { name: 'q' }, position: { x: 1, y: 1, z: 1 } },
+    ]);
   });
   it("rotationY undefined CLEARS an existing rotation; a caller passes the entry's own to keep it", () => {
     const turned = upsertMoveFor([], 'r', { x: 0, y: 0, z: 0 }, 1.5, mint);
-    expect(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, undefined, mint)[0].rotationY).toBeUndefined();
-    expect(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, turned[0].rotationY, mint)[0].rotationY).toBe(1.5);
+    const yawOf = (list: Draft[]) => (list[0] as Draft & MoveEntry).rotationY;
+    expect(yawOf(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, undefined, mint))).toBeUndefined();
+    expect(yawOf(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, yawOf(turned), mint))).toBe(1.5);
   });
   it('stores a copy of the position, as placeAt copies its config', () => {
     const position = { x: 1, y: 2, z: 3 };
     const added = upsertMoveFor([], 'c', position, undefined, mint);
-    expect(added[0].position).toEqual(position);
-    expect(added[0].position).not.toBe(position);
+    const positionOf = (list: Draft[]) => (list[0] as Draft & MoveEntry).position;
+    expect(positionOf(added)).toEqual(position);
+    expect(positionOf(added)).not.toBe(position);
     const updated = upsertMoveFor(added, 'c', position, undefined, mint);
-    expect(updated[0].position).not.toBe(position);
+    expect(positionOf(updated)).not.toBe(position);
+  });
+});
+
+describe('removeFor and actionEntryFor', () => {
+  const mv = (key: string, name: string): Draft => ({ _key: key, kind: 'move', id: key, target: { name }, position: { x: 1, y: 2, z: 3 } });
+  const rm = (key: string, name: string): Draft => ({ _key: key, kind: 'remove', id: key, target: { name } });
+  const pl: Draft = { _key: 'p', kind: 'place', id: 'p', item: { source_key: 's', name: 'S', config: {} }, position: { x: 4, y: 5, z: 6 }, quantity: 1 };
+
+  it('appends one remove for a name nothing acts on, keyed as its id', () => {
+    const out = removeFor([pl], 'x', mint);
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({ kind: 'remove', target: { name: 'x' } });
+    expect(out[1]._key).toBe(out[1].id);
+  });
+  it('replaces the move of a name with a remove under the same key and id, leaving the rest alone', () => {
+    expect(removeFor([mv('a', 'x'), pl, mv('b', 'y')], 'x', mint)).toEqual([rm('a', 'x'), pl, mv('b', 'y')]);
+  });
+  it('is a fixed point on a name already removed, and drops an earlier duplicate action on the name', () => {
+    expect(removeFor([rm('a', 'x')], 'x', mint)).toEqual([rm('a', 'x')]);
+    expect(removeFor([mv('a', 'x'), pl, mv('b', 'x')], 'x', mint)).toEqual([pl, rm('b', 'x')]);
+  });
+  it('actionEntryFor is the LAST move-or-remove of a name; moveEntryFor answers only when that action is a move', () => {
+    const doc = [mv('a', 'x'), rm('b', 'x'), mv('c', 'y')];
+    expect(actionEntryFor(doc, 'x')?._key).toBe('b');
+    expect(moveEntryFor(doc, 'x')).toBeUndefined();
+    expect(moveEntryFor(doc, 'y')?._key).toBe('c');
+    expect(actionEntryFor(doc, 'z')).toBeUndefined();
+  });
+});
+
+describe('unresolvedText', () => {
+  it('names the version-lag and span states in words, and passes anything else through', () => {
+    expect(unresolvedText('pending-rebuild')).toBe('applies on next world load');
+    expect(unresolvedText('span')).toBe('refused — would drop more than 200 colliders; nothing hidden');
+    expect(unresolvedText('id')).toBe('build-time target — nothing resolves ids until stage 3');
+    expect(unresolvedText('name')).toBe('no object of that name in the world');
+    expect(unresolvedText('superseded')).toBe('superseded by a later action on the same object');
+    expect(unresolvedText('error')).toBe('error');
   });
 });
 
@@ -314,6 +359,12 @@ describe('selection helpers', () => {
     expect(out[2]).toMatchObject({ _key: 'last', position: { x: 1, y: 1, z: 1 } });
     expect(out[0]).toBe(twice[0]);
   });
+  it('a removed object selects as the remove, and is where the game reported it', () => {
+    const gone: Draft[] = [entries[0], { _key: 'r', kind: 'remove', id: 'r', target: { name: 'o1' } }];
+    expect(selectedEntry(gone, { kind: 'object', name: 'o1' })?._key).toBe('r');
+    expect(selectedPosition(objects, gone, { kind: 'object', name: 'o1' })).toEqual({ x: 1, y: 2, z: 3 });
+    expect(selectedPosition(objects, gone, { kind: 'entry', key: 'r' })).toBeNull();
+  });
 });
 
 describe('canonicalSelection', () => {
@@ -322,10 +373,16 @@ describe('canonicalSelection', () => {
     { _key: 'm', kind: 'move', id: 'm', target: { name: 'o1' }, position: { x: 10, y: 2, z: 30 } },
     { _key: 'f', kind: 'move', id: 'f', target: { name: 'ghost' }, position: { x: 20, y: 1, z: 21 } },
     { _key: 'p', kind: 'place', id: 'p', item: { source_key: 's', name: 'S', config: {} }, position: { x: 4, y: 5, z: 6 }, quantity: 1 },
+    { _key: 'r', kind: 'remove', id: 'r', target: { name: 'o1' } },
   ];
   it('a move of a reported target is the object; an unreported object with a move is its entry', () => {
     expect(canonicalSelection(objects, entries, { kind: 'entry', key: 'm' })).toEqual({ kind: 'object', name: 'o1' });
     expect(canonicalSelection(objects, entries, { kind: 'object', name: 'ghost' })).toEqual({ kind: 'entry', key: 'f' });
+  });
+  it('a remove of a reported target is the object; a typed unreported name with only a remove is its entry', () => {
+    expect(canonicalSelection(objects, entries, { kind: 'entry', key: 'r' })).toEqual({ kind: 'object', name: 'o1' });
+    const typed: Draft[] = [{ _key: 'g', kind: 'remove', id: 'g', target: { name: 'ghost' } }];
+    expect(canonicalSelection(objects, typed, { kind: 'object', name: 'ghost' })).toEqual({ kind: 'entry', key: 'g' });
   });
   it('everything else comes back as it was, by identity', () => {
     const unchanged: NonNullable<Selected>[] = [
@@ -375,8 +432,8 @@ describe('hitCandidates and hoverInfoFor', () => {
     { _key: 'm', kind: 'move', id: 'm', target: { name: 'o1' }, position: { x: 10, y: 2, z: 30 } },
     { _key: 'p', kind: 'place', id: 'p', item: { source_key: 's', name: 'S', config: {} }, position: { x: 4, y: 5, z: 6 }, quantity: 1 },
     { _key: 'f', kind: 'move', id: 'f', target: { name: 'ghost' }, position: { x: 20, y: 1, z: 21 } },
-    { _key: 'h', kind: 'move', id: 'h', target: { name: 'o3' }, position: null, hidden: true },
-    { _key: 'n', kind: 'move', id: 'n', target: { name: 'nowhere' }, position: null, hidden: true },
+    { _key: 'h', kind: 'remove', id: 'h', target: { name: 'o3' } },
+    { _key: 'n', kind: 'remove', id: 'n', target: { name: 'nowhere' } },
   ];
   const marks = hitCandidates(objects, entries);
 
@@ -389,11 +446,11 @@ describe('hitCandidates and hoverInfoFor', () => {
     // the reported target's move does NOT also appear as an entry mark
     expect(marks.find((m) => m.key === 'e:m')).toBeUndefined();
   });
-  it('an unmoved object is one mark; a hide-only move keeps it there, faint', () => {
-    expect(marks.filter((m) => m.key === 'o:o2')).toEqual([{ key: 'o:o2', x: 7, z: 8, r: 0, mark: 'object', hidden: false }]);
-    expect(marks.filter((m) => m.key === 'o:o3')).toEqual([{ key: 'o:o3', x: 9, z: 9, r: 0, mark: 'object', hidden: true }]);
+  it('an unmoved object is one mark; a removed object is one struck-through mark at its reported position', () => {
+    expect(marks.filter((m) => m.key === 'o:o2')).toEqual([{ key: 'o:o2', x: 7, z: 8, r: 0, mark: 'object' }]);
+    expect(marks.filter((m) => m.key === 'o:o3')).toEqual([{ key: 'o:o3', x: 9, z: 9, r: 0, mark: 'removed' }]);
   });
-  it('a placement and a free-text move are entry marks; a positionless move is not', () => {
+  it('a placement and a free-text move are entry marks; a remove is never one', () => {
     expect(marks.find((m) => m.key === 'e:p')).toEqual({ key: 'e:p', x: 4, z: 6, r: 0, mark: 'place' });
     expect(marks.find((m) => m.key === 'e:f')).toEqual({ key: 'e:f', x: 20, z: 21, r: 0, mark: 'free' });
     expect(marks.find((m) => m.key === 'e:n')).toBeUndefined();
@@ -406,6 +463,7 @@ describe('hitCandidates and hoverInfoFor', () => {
   it('hoverInfoFor an object reads its name and where it currently is', () => {
     expect(hoverInfoFor(objects, entries, 'o:o1')).toEqual({ label: 'o1', x: 10, y: 2, z: 30 });
     expect(hoverInfoFor(objects, entries, 'o:o2')).toEqual({ label: 'o2', x: 7, y: 0, z: 8 });
+    expect(hoverInfoFor(objects, entries, 'o:o3')).toEqual({ label: 'o3 — removed', x: 9, y: 0, z: 9 });
   });
   it('hoverInfoFor an entry reads item ×qty or the target name, and null for an unknown key', () => {
     expect(hoverInfoFor(objects, entries, 'e:p')).toEqual({ label: 'S ×1', x: 4, y: 5, z: 6 });

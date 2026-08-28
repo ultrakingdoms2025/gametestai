@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react';
 import { groundAt, layersAt, type DecodedGround } from '@/lib/mapLayout';
 import type { Conflict } from '@/lib/mapConflicts';
 import type { CatalogueObject } from '@/lib/mapOverlay';
-import { round, type PlaceEntry, type Vec3 } from '@/lib/mapOverlaySchema';
+import { round, targetLabel, type MoveEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from '@/lib/mapOverlaySchema';
 import {
   authoredLift,
   degToRad,
@@ -110,14 +110,14 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
       .map(([g, names]) => [g, names.sort((a, b) => a.localeCompare(b))] as const);
   }, [objects]);
   const places = useMemo(() => entries.filter((e): e is Draft & PlaceEntry => e.kind === 'place'), [entries]);
-  const freeMoves = useMemo(
-    () => entries.filter((e) => e.kind === 'move' && !objectNames.has(e.target.name)),
+  const freeActions = useMemo(
+    () => entries.filter((e): e is Draft & (MoveEntry | RemoveEntry) => e.kind !== 'place' && !objectNames.has(targetLabel(e.target))),
     [entries, objectNames]
   );
 
   const entry = selectedEntry(entries, selected);
   const current = selectedPosition(objects, entries, selected);
-  const rotation = entry?.rotationY;
+  const rotation = entry && entry.kind !== 'remove' ? entry.rotationY : undefined;
 
   const [form, setForm] = useState<Form>({ x: '0', y: '0', z: '0', yaw: '' });
   const [snap, setSnap] = useState(true);
@@ -178,7 +178,11 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
     if (name) onSelect({ kind: 'object', name });
   }
 
-  const title = !selected ? 'Nothing selected' : selected.kind === 'object' ? selected.name : entry?.kind === 'place' ? `${entry.item.name} ×${entry.quantity}` : entry?.kind === 'move' ? entry.target.name : 'entry';
+  const removed = entry?.kind === 'remove';
+  const title = !selected ? 'Nothing selected'
+    : selected.kind === 'object' ? `${selected.name}${removed ? ' (removed)' : ''}`
+    : entry?.kind === 'place' ? `${entry.item.name} ×${entry.quantity}`
+    : entry ? `${targetLabel(entry.target)}${removed ? ' (removed)' : ''}` : 'entry';
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
@@ -206,10 +210,10 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
               ))}
             </optgroup>
           ) : null}
-          {freeMoves.length ? (
-            <optgroup label="moves by name (not in the report)">
-              {freeMoves.map((m) => (
-                <option key={m._key} value={`e:${m._key}`}>{m.kind === 'move' ? m.target.name : ''}</option>
+          {freeActions.length ? (
+            <optgroup label="by name (not in the report)">
+              {freeActions.map((m) => (
+                <option key={m._key} value={`e:${m._key}`}>{targetLabel(m.target)}{m.kind === 'remove' ? ' (removed)' : ''}</option>
               ))}
             </optgroup>
           ) : null}

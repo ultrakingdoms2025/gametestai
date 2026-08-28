@@ -161,8 +161,9 @@ function drawMark(ctx: CanvasRenderingContext2D, view: MapView, m: MapMark, isSe
       if (isSel) ring(ctx, p.sx, p.sy, 10, C.selected);
       return;
     }
+    case 'removed':
     case 'object':
-      dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, m.hidden ? C.objectFaint : C.object);
+      dot(ctx, p.sx, p.sy, isSel ? 4.5 : 3, C.object);
       if (isSel) ring(ctx, p.sx, p.sy, 9, C.selected);
       return;
     case 'place':

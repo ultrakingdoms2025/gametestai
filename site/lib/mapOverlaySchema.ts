@@ -31,8 +31,8 @@
  *    A rejected entry is visible in the editor; a NaN is not visible at all.
  */
 
-/** Bumped when the shape below changes in a way a reader must notice. */
-export const MAP_OVERLAY_SCHEMA = 1;
+/** Bumped when the shape below changes in a way a reader must notice. 2: `remove` is a kind, a target may be an `{id}`, and `hidden` is read as a remove. */
+export const MAP_OVERLAY_SCHEMA = 2;
 
 /**
  * How many entries one world's overlay may hold.
@@ -90,14 +90,40 @@ export interface Vec3 {
   z: number;
 }
 
+/**
+ * What an entry acts on: a named Object3D the applier resolves live, or a
+ * registry id the BUILD resolves (stage 3; this stage accepts the shape so no
+ * further bump is needed). Ids are `family@x,z[#n]` - the authored position at
+ * 0.1 m, `#n` only when two props of one family share a spot - and the family
+ * may carry a namespace, as medieval's `medieval:${key}` batch keys do.
+ */
+export type Target = { name: string } | { id: string };
+
 export interface MoveEntry {
   kind: 'move';
   id: string;
-  target: { name: string };
-  /** Absolute world position, or null when the entry only hides the object. */
-  position: Vec3 | null;
+  target: Target;
+  /** Absolute world position. A move always says where; taking an object out of the world is a `remove`. */
+  position: Vec3;
   rotationY?: number;
-  hidden?: true;
+}
+
+export interface RemoveEntry {
+  kind: 'remove';
+  id: string;
+  target: Target;
+}
+
+/** A registry id may be this long (spec §5). A truncated id would be a DIFFERENT id, so an over-long one is refused, not cut. */
+export const TARGET_ID_MAX = 128;
+const TARGET_ID_RE = /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*@-?\d+(?:\.\d)?,-?\d+(?:\.\d)?(?:#\d+)?$/;
+
+export function targetName(t: Target): string | null {
+  return 'name' in t ? t.name : null;
+}
+
+export function targetLabel(t: Target): string {
+  return 'name' in t ? t.name : t.id;
 }
 
 /** Scalar-only, one level deep. See `readConfig`. */
@@ -118,7 +144,7 @@ export interface PlaceEntry {
   quantity: number;
 }
 
-export type OverlayEntry = MoveEntry | PlaceEntry;
+export type OverlayEntry = MoveEntry | RemoveEntry | PlaceEntry;
 
 export type RejectReason =
   | 'kind'
@@ -200,6 +226,23 @@ function readName(raw: unknown, max: number): string | null {
   return trimmed;
 }
 
+/** A `{name}` (trimmed, ≤ 200) or an `{id}` (exact, ≤ 128, in registry form); never both, never neither. */
+function readTarget(raw: unknown): Target | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const hasName = r.name !== undefined;
+  const hasId = r.id !== undefined;
+  if (hasName === hasId) return null;
+  if (hasName) {
+    const name = readName(r.name, 200);
+    return name ? { name } : null;
+  }
+  if (typeof r.id !== 'string') return null;
+  const id = r.id.trim();
+  if (!id || id.length > TARGET_ID_MAX || !TARGET_ID_RE.test(id)) return null;
+  return { id };
+}
+
 /**
  * A placement's grant descriptor, flattened to scalars.
  *
@@ -272,26 +315,43 @@ export function normaliseOverlayEntries(raw: unknown): NormalisedOverlay {
     const rotationY = readAngle(r.rotationY);
 
     if (r.kind === 'move') {
-      const targetRaw = r.target as Record<string, unknown> | undefined;
-      const name = readName(targetRaw?.name, 200);
-      if (!name) {
+      const target = readTarget(r.target);
+      if (!target) {
         rejected.push({ index, id, reason: 'target' });
         continue;
       }
-      const hidden = r.hidden === undefined ? false : Boolean(r.hidden);
+      // v1 spelled "take this object out of the world" as a move with `hidden`.
+      // That is a remove now, and it is migrated HERE, on read, so every stored
+      // version, every revert and the game GET load it without a rewrite. Its
+      // position - where v1 parked the object's colliders - is discarded: a
+      // hidden object's position was never observable, and the colliders it
+      // governed are now dropped by containment at the authored box (owner
+      // decision A). One raw entry becomes one entry, so the save route's
+      // `rejected[].index` walk stays a raw index.
+      if (r.hidden !== undefined && Boolean(r.hidden)) {
+        entries.push({ kind: 'remove', id, target });
+        seen.add(id);
+        continue;
+      }
       const position = readVec3(r.position);
-      // A move must say WHERE, unless its whole purpose is to hide the object —
-      // hiding needs no destination, and refusing it would make "remove this
-      // prop" impossible without editing world source, which is the one thing
-      // this system exists not to do.
-      if (position === null && !hidden) {
+      if (position === null) {
         rejected.push({ index, id, reason: 'position' });
         continue;
       }
-      const entry: MoveEntry = { kind: 'move', id, target: { name }, position };
+      const entry: MoveEntry = { kind: 'move', id, target, position };
       if (rotationY !== undefined) entry.rotationY = rotationY;
-      if (hidden) entry.hidden = true;
       entries.push(entry);
+      seen.add(id);
+      continue;
+    }
+
+    if (r.kind === 'remove') {
+      const target = readTarget(r.target);
+      if (!target) {
+        rejected.push({ index, id, reason: 'target' });
+        continue;
+      }
+      entries.push({ kind: 'remove', id, target });
       seen.add(id);
       continue;
     }

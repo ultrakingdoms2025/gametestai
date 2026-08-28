@@ -12,7 +12,7 @@ import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.
  * Worlds here are procedural code and one of them (`MedievalWorld.js`) is
  * 12,945 lines. An editor that rewrote world source would collide head-on with
  * the art passes editing those same files. So the editor writes a SEPARATE,
- * versioned document — a set of moved and placed instances — and this applies it
+ * versioned document — a set of moved, removed and placed instances — and this applies it
  * after `world:changed`. Nothing in `src/worlds/` knows this file exists, and
  * every change is revertible because nothing was overwritten.
  *
@@ -48,6 +48,9 @@ const READ_ENDPOINT = '/api/game/map-overlay';
 
 /** Where an admin's own client reports what it found and did. */
 const REPORT_ENDPOINT = '/api/admin/map/report';
+
+/** The document shape this build reads (site/lib/mapOverlaySchema.ts MAP_OVERLAY_SCHEMA); pinned across the boundary by map-overlay.test.mjs. */
+const OVERLAY_SCHEMA = 2;
 
 /**
  * How many named objects the catalogue report carries.
@@ -139,6 +142,16 @@ export function grantForPlacement(item) {
   return null;
 }
 
+/**
+ * The name a move or a remove acts on, or null: a place has no target, and an
+ * `{id}` target names nothing this stage resolves.
+ */
+function actionName(entry) {
+  if (entry?.kind !== 'move' && entry?.kind !== 'remove') return null;
+  const name = entry.target?.name;
+  return typeof name === 'string' && name ? name : null;
+}
+
 export class MapOverlay {
   /**
    * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
@@ -173,6 +186,7 @@ export class MapOverlay {
      * @type {Promise<void>|null}
      */
     this.applying = null;
+    this._schemaWarned = false;
 
     /** Last report: what was applied, what could not be, what exists. */
     this.report = { world: null, version: 0, applied: [], unresolved: [], objects: [] };
@@ -249,16 +263,31 @@ export class MapOverlay {
     const entries = Array.isArray(document.entries) ? document.entries : [];
     const applied = [];
     const unresolved = [];
+    const winner = this._lastActions(entries);
 
-    for (const entry of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
       if (!entry || typeof entry !== 'object') continue;
+      // Owner decision F: the LAST action on a name in document order wins.
+      // Running the document in order is not enough on its own - a remove
+      // drops the colliders, so a move after it would find nothing to take
+      // along and leave the object hidden AND moved with its colliders gone.
+      // An action a later one supersedes is skipped whole and said so; the
+      // editor already warns both entries as `duplicate-target`.
+      const name = actionName(entry);
+      if (name !== null && winner.get(name) !== i) {
+        unresolved.push({ id: String(entry.id ?? ''), reason: 'superseded' });
+        continue;
+      }
       try {
-        // `hidden: true` is v1's spelling of a remove. The site migrates it on
-        // read (schema v2), but a client running this bundle against a v1
-        // document - a rollback, or a page open across the deploy - must not
-        // let hidden objects reappear. Read as a remove for one release: the
-        // remove route DISCARDS the v1 move's `position` and `rotationY`
-        // (decision A), so a hidden object is never also moved.
+        // `hidden: true` is v1's spelling of a remove. The site's normaliser
+        // migrates it to a `remove` on read (site/lib/mapOverlaySchema.ts,
+        // schema 2), so a document served by this site never carries it; but
+        // a client running this bundle against a v1 document - a rollback, or
+        // a page open across the deploy - must not let hidden objects
+        // reappear. Read as a remove for one release: the remove route
+        // DISCARDS the v1 move's `position` and `rotationY` (decision A), so
+        // a hidden object is never also moved.
         if (entry.kind === 'remove' || (entry.kind === 'move' && entry.hidden === true)) {
           this._applyRemove(world, entry, applied, unresolved);
         } else if (entry.kind === 'move') this._applyMove(world, entry, applied, unresolved);
@@ -277,6 +306,20 @@ export class MapOverlay {
 
     if (admin) await this._reportBack(report, world);
     return report;
+  }
+
+  /**
+   * For every name the document acts on, the index of the LAST move or remove
+   * of it - the one that wins (decision F). Places have no target and an
+   * `{id}` target names nothing this stage resolves, so neither is keyed.
+   */
+  _lastActions(entries) {
+    const last = new Map();
+    entries.forEach((entry, i) => {
+      const name = actionName(entry);
+      if (name !== null) last.set(name, i);
+    });
+    return last;
   }
 
   /** Undo everything applied to the world this system last touched, and end its visit. */
@@ -317,6 +360,12 @@ export class MapOverlay {
       // server answers the world it was asked about; anything else is a stale
       // reply that arrived after a portal.
       if (data?.world && data.world !== worldId) return null;
+      // Newer than this build reads. Every kind it knows still applies and the
+      // rest is skipped (spec §5, the v1-client rule); said once a session.
+      if (Number(data?.schema) > OVERLAY_SCHEMA && !this._schemaWarned) {
+        this._schemaWarned = true;
+        console.warn(`[map-overlay] document schema ${data.schema} is newer than ${OVERLAY_SCHEMA}; unknown entries are skipped`);
+      }
       return data && typeof data === 'object' ? data : null;
     } catch (err) {
       // Offline, signed out, or the endpoint is down. A world with no overlay is
@@ -614,8 +663,8 @@ export class MapOverlay {
    *    that is exactly what shipped.
    *
    * `Physics.remove` returns false when the collider is not registered here,
-   * which is the whole test. Stated once because the remove-undo of a later
-   * stage has the same two cases and must reuse it.
+   * which is the whole test. Stated once: the remove undo faces the same two
+   * cases and answers both by adding nothing.
    *
    * @returns {boolean} whether the caller should `physics.add` it back
    */

@@ -191,6 +191,21 @@ test('a malformed document applies nothing rather than half of it', async () => 
   }
 });
 
+test('a document newer than this build reads is said once, and still applied', async () => {
+  const rig = setup({ ...doc([moveCrate]), schema: 3 });
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await enter(rig);
+    await enter(rig);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
+  assert.equal(warned.filter((w) => /\[map-overlay\] document schema 3 is newer than 2/.test(w)).length, 1, `${warned}`);
+});
+
 /* ------------------------------------------------------------------ */
 /* Moving                                                              */
 /* ------------------------------------------------------------------ */
@@ -308,12 +323,6 @@ test('a name nothing answers to is reported unresolved, and the rest still appli
 
   assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
   assert.deepEqual(rig.system.report.unresolved, [{ id: 'gone', reason: 'name' }]);
-});
-
-test('hidden takes an object out of the world via the remove route (one-release compatibility)', async () => {
-  const rig = setup(doc([{ kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: null, hidden: true }]));
-  await enter(rig);
-  assert.equal(rig.world.barn.visible, false);
 });
 
 test('a rotation is applied about Y and nothing else', async () => {
@@ -519,6 +528,12 @@ test('leaving a world restores what the overlay moved in it', async () => {
 
 const removeBarn = { kind: 'remove', id: 'r1', target: { name: 'barn.main' } };
 
+test('a remove takes an object out of the world without touching world source', async () => {
+  const rig = setup(doc([{ kind: 'remove', id: 'r0', target: { name: 'barn.main' } }]));
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, false);
+});
+
 test('a remove hides the object and drops the collider inside it; the broadphase no longer answers with it', async () => {
   const rig = setup(doc([removeBarn], { admin: true }));
   const own = rig.physics.addBoxFromObject(rig.world.barn);
@@ -631,6 +646,62 @@ test('a v1 hidden move is applied as a remove for one release: hidden, colliders
   assert.equal(rig.physics.has(own), false);
   assert.equal(rig.physics.groundHeight(40, -20, 12, 20), null, 'the collider was moved instead of dropped');
   assert.equal(rig.system.report.applied[0].colliders, 1);
+});
+
+test('a v1 hidden move with no position (the hide-only shape) is a remove too: hidden, and its collider dropped', async () => {
+  const rig = setup(doc([{ kind: 'move', id: 'h1', target: { name: 'barn.main' }, position: null, hidden: true }], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, false);
+  assert.equal(rig.physics.has(own), false, 'the collider of a hide-only move stayed registered');
+  assert.deepEqual(rig.system.report.applied, [{ id: 'h1', ok: true, colliders: 1 }]);
+});
+
+/**
+ * Owner decision F: the LAST action on a name in document order wins. The
+ * applier runs entries in order, which alone is not enough - a remove drops
+ * the colliders, and a move after it would find nothing to take along, so
+ * "remove then move" would leave the object hidden AND moved with its
+ * colliders gone. So every action a later one supersedes is skipped whole
+ * and reported `superseded`, and only the winner touches the world.
+ */
+const moveBarn = { kind: 'move', id: 'm2', target: { name: 'barn.main' }, position: { x: 40, y: 3, z: -20 } };
+const r3 = (n) => Math.round(n * 1000) / 1000;
+
+test('remove then move of one name: the move wins, the remove is superseded, and the collider moves with the object', async () => {
+  const rig = setup(doc([removeBarn, moveBarn], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, true, 'the superseded remove still hid the barn');
+  assert.deepEqual(rig.world.barn.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20], 'the collider did not move with the barn');
+  assert.equal(rig.physics.has(own), true, 'the superseded remove still dropped the collider');
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'r1', reason: 'superseded' }]);
+  assert.deepEqual(rig.system.report.applied, [{ id: 'm2', ok: true, colliders: 1 }]);
+});
+
+test('move then remove of one name: the remove wins, the move is superseded, and the collider is dropped where it was built', async () => {
+  const rig = setup(doc([moveBarn, removeBarn], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.barn);
+  const authored = rig.world.barn.position.clone();
+  await enter(rig);
+  assert.equal(rig.world.barn.visible, false);
+  assert.deepEqual(rig.world.barn.position.toArray(), authored.toArray(), 'the superseded move still moved the barn');
+  assert.equal(rig.physics.has(own), false);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'm2', reason: 'superseded' }]);
+  assert.deepEqual(rig.system.report.applied, [{ id: 'r1', ok: true, colliders: 1 }]);
+});
+
+test('two moves of one name: only the last applies; the first is superseded rather than applied and overwritten', async () => {
+  const first = { kind: 'move', id: 'first', target: { name: 'crate.alpha' }, position: { x: 1, y: 1, z: 1 } };
+  const rig = setup(doc([first, moveCrate], { admin: true }));
+  const own = rig.physics.addBoxFromObject(rig.world.crate);
+  await enter(rig);
+  assert.deepEqual(rig.world.crate.position.toArray(), [40, 3, -20]);
+  assert.deepEqual(own.center.toArray().map(r3), [40, 3, -20]);
+  assert.equal(rig.system.report.applied.length, 1, 'both moves applied');
+  assert.deepEqual(rig.system.report.applied, [{ id: 'm1', ok: true, colliders: 1 }]);
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'first', reason: 'superseded' }]);
 });
 
 test('re-entering after the remove was dropped from the document registers the collider once, where it was built', async () => {
@@ -842,18 +913,27 @@ test('the world list the editor offers is the world list the game has', () => {
   assert.deepEqual(extra, [], `worlds the editor offers but the game does not have: ${extra}`);
 });
 
-test('the entry kinds the editor writes are the entry kinds the game reads', () => {
-  const schema = read('site/lib/mapOverlaySchema.ts');
-  const system = read('src/systems/MapOverlay.js');
-  for (const kind of ["'move'", "'place'"]) {
-    assert.ok(schema.includes(`kind: ${kind}`), `schema is missing ${kind}`);
-    assert.ok(system.includes(kind), `MapOverlay.js never mentions ${kind}`);
+/** Comments stripped, so a pin cannot be satisfied by prose about the thing. The two regexes map-overlay-layout.test.mjs uses. */
+const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+
+test('the entry kinds the editor writes are the kinds the game dispatches on, and both sides carry schema 2', () => {
+  const schema = code('site/lib/mapOverlaySchema.ts');
+  const system = code('src/systems/MapOverlay.js');
+  for (const kind of ['move', 'remove', 'place']) {
+    assert.match(schema, new RegExp(`kind: '${kind}'`), `schema never writes kind '${kind}'`);
+    assert.match(system, new RegExp(`entry\\.kind === '${kind}'`), `MapOverlay.js never dispatches on kind '${kind}'`);
   }
-  // Field names the applier indexes into. A rename on either side is a silent
-  // no-op at runtime — the overlay applies zero entries and says nothing.
-  for (const field of ['source_key', 'rotationY', 'hidden', 'quantity', 'position']) {
-    assert.ok(schema.includes(field), `schema is missing ${field}`);
-    assert.ok(system.includes(field), `MapOverlay.js is missing ${field}`);
+  assert.match(schema, /^export const MAP_OVERLAY_SCHEMA = 2;/m, 'the site writes a schema number other than 2');
+  assert.match(system, /^const OVERLAY_SCHEMA = 2;/m, 'the game reads a schema number other than the one the site writes');
+  // Field names the applier indexes into, as CODE on both sides where a bare word could match anything
+  // (`includes('id')` is true of every identifier with 'id' in it): a rename is a silent no-op at runtime.
+  for (const [field, pattern, schemaPattern] of [
+    ['position', /entry\.position\b/, /position: Vec3;/], ['rotationY', /entry\.rotationY\b/, /rotationY\?: number;/],
+    ['quantity', /entry\.quantity\b/, /quantity: number;/], ['source_key', /source_key/, /source_key: string;/],
+    ['name', /target\?\.name\b/, /\{ name: string \}/],
+  ]) {
+    assert.match(schema, schemaPattern, `schema no longer declares ${field} as code`);
+    assert.match(system, pattern, `MapOverlay.js never reads ${field}`);
   }
 });
 

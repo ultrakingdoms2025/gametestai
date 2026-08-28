@@ -1,4 +1,4 @@
-import { round, type OverlayEntry, type PlaceEntry, type Vec3 } from './mapOverlaySchema';
+import { round, targetName, type OverlayEntry, type PlaceEntry, type Vec3 } from './mapOverlaySchema';
 import { decodeGround, groundAt, type DecodedGround, type WorldLayout } from './mapLayout';
 import type { CatalogueObject } from './mapOverlay';
 
@@ -24,24 +24,21 @@ import type { CatalogueObject } from './mapOverlay';
  *
  * ── Occupancy is the layout composed with the document ─────────────────────
  *
- * A named object stands where the game reported it UNLESS this document moves
- * it (then it stands at the new position only) or hides it (then its colliders
- * stay where they are). That last is the game's own apply path: `_applyMove`
- * in `src/systems/MapOverlay.js` clears `visible` and then relocates the
- * object's colliders only when the entry carries a position — so a hidden
- * object is an invisible wall, at the new spot when the move has one and at
- * the reported spot when it does not. These rules are deliberately NOT blind
- * to parked colliders: a barrel placed on a hidden crate is a barrel nobody
- * can walk up to. So a moved crate is tested where it now stands and can never
- * "overlap" its own old position. Every entry with a position stands at it,
- * except a move superseded by a later move of the same object: the game
- * applies a document in order and the last one wins, so the earlier move
- * stands nowhere — it is not an occupant, and it gets neither the ground
- * rules nor overlap (it already carries `duplicate-target`). It still gets
- * bounds: an out-of-bounds coordinate must never be saved, inert or not, or
- * it would slip through the moment a second move of the same object followed
- * it. On the route path the normaliser keeps such duplicates exactly as sent
- * (it de-duplicates ids, not targets); only `lastMove` in `prepare` composes.
+ * A named object stands where the game reported it UNLESS this document acts
+ * on it. The LAST action on a name wins, because the game applies a document
+ * in order: a move puts the object, and its colliders, at the new spot only
+ * (it can never "overlap" its own old position); a remove takes the object
+ * out of the world AND drops the colliders inside its box (`_applyRemove` in
+ * `src/systems/MapOverlay.js`, by containment), so a removed object occupies
+ * NOTHING - the reverse of stage 1's `hidden`, whose colliders stayed. An
+ * action superseded by a later one stands nowhere: not an occupant, no
+ * ground or overlap rule (it already carries `duplicate-target`), but still
+ * the bounds rule, so an out-of-bounds coordinate cannot slip through behind
+ * a later entry. An `{id}` target names a build-time prop this stage has no
+ * layout entry for: it is judged for bounds only and composes nothing until
+ * stage 3 brings `props[]`. On the route path the normaliser keeps duplicate
+ * targets exactly as sent (it de-duplicates ids, not targets); only
+ * `lastAction` in `prepare` composes.
  *
  * ── The grid answers in bounded time for any input ─────────────────────────
  *
@@ -161,8 +158,8 @@ interface Rect { minX: number; maxX: number; minZ: number; maxZ: number }
 interface Occupant { key: string; label: string; order: number; x: number; z: number; rect: Rect | null }
 /** Every occupant by key, and the cells each one's reach touches. */
 interface Occupancy { byKey: Map<string, Occupant>; cells: Map<number, Occupant[]> }
-/** The reported names, the occupancy, and for each moved name the index of the move that wins. */
-interface Prepared { names: Set<string>; occupancy: Occupancy; lastMove: Map<string, number> }
+/** The reported names, the occupancy, and for each name the document acts on the index of the action that wins. */
+interface Prepared { names: Set<string>; occupancy: Occupancy; lastAction: Map<string, number> }
 
 /**
  * A cell's Map key as one integer rather than a string: `prepare` runs every drag frame and a string per cell
@@ -238,51 +235,49 @@ function addOccupant(occupancy: Occupancy, o: Occupant): void {
 /** The reported names, and the occupancy of layout ∘ document (see the header). */
 function prepare(document: OverlayEntry[], ctx: ConflictContext): Prepared {
   const names = new Set(ctx.objects.map((o) => o.name));
-  // Only a move WITH a position relocates the object and its colliders. A hidden move without one leaves the
-  // reported object exactly where the game put it, so the reported object stays the occupant of that spot.
-  // Two such moves on one name: the game applies the document in order, so the LAST is where the object ends
-  // up and the only one of them that occupies anything.
-  const lastMove = new Map<string, number>();
+  const lastAction = new Map<string, number>();
   document.forEach((entry, index) => {
-    if (entry.kind === 'move' && entry.position) lastMove.set(entry.target.name, index);
+    if (entry.kind === 'place') return;
+    const name = targetName(entry.target);
+    if (name !== null) lastAction.set(name, index);
   });
 
   const occupancy: Occupancy = { byKey: new Map(), cells: new Map() };
   let order = 0;
   for (const obj of ctx.objects) {
-    if (lastMove.has(obj.name)) continue;
+    if (lastAction.has(obj.name)) continue;
     // A position the grid cannot place stands nowhere (see the header).
     const at = placeable(obj.position.x, obj.position.z);
     if (!at) continue;
     addOccupant(occupancy, { key: `object:${obj.name}`, label: obj.name, order: order++, x: at.x, z: at.z, rect: null });
   }
   document.forEach((entry, index) => {
-    // A hidden move that carries a position still sends the object's colliders there (see the header), so it
-    // occupies the new spot like any other move. Only an entry with no position stands nowhere new.
-    if (!entry.position) return;
-    if (entry.kind === 'move' && lastMove.get(entry.target.name) !== index) return;
+    if (entry.kind === 'remove') return;
+    if (entry.kind === 'move') {
+      const name = targetName(entry.target);
+      if (name === null || lastAction.get(name) !== index) return;
+    }
     // A position the grid cannot place stands nowhere; the bounds rule still refuses it.
     const at = placeable(entry.position.x, entry.position.z);
     if (!at) return;
     const rect = entry.kind === 'place' ? footprintRect(entry, ctx) : null;
     addOccupant(occupancy, { key: entryKey(index), label: entry.id, order: order++, x: at.x, z: at.z, rect });
   });
-  return { names, occupancy, lastMove };
+  return { names, occupancy, lastAction };
 }
 
 function nameRules(entry: OverlayEntry, index: number, document: OverlayEntry[], prepared: Prepared, out: Conflict[]): void {
-  if (entry.kind !== 'move') return;
-  const name = entry.target.name;
-  // `names` holds what `recordWorldReport` stored, which clamps each name to 200 chars; the normaliser clamps
-  // a move's target to 200 too (`readName(…, 200)`). Both sides clamp to 200, so the comparison is consistent
-  // and a long target still matches its long reported name.
+  if (entry.kind === 'place') return;
+  const name = targetName(entry.target);
+  if (name === null) return;
+  // Both sides clamp a name to 200 chars (`recordWorldReport`, `readName(…, 200)`), so the comparison is consistent.
   if (prepared.names.size > 0 && !prepared.names.has(name)) {
     out.push(warn('stale-name', `"${name}" is not among the ${prepared.names.size} known names this world last reported`));
   }
   document.forEach((other, j) => {
-    if (j !== index && other.kind === 'move' && other.target.name === name) {
-      out.push(warn('duplicate-target', `"${other.id}" also moves "${name}"; the last one wins`, other.id));
-    }
+    if (j === index || other.kind === 'place' || targetName(other.target) !== name) return;
+    const verb = other.kind === 'remove' ? 'removes' : 'moves';
+    out.push(warn('duplicate-target', `"${other.id}" also ${verb} "${name}"; the last one wins`, other.id));
   });
 }
 
@@ -396,12 +391,14 @@ function overlapRule(index: number, occupancy: Occupancy, out: Conflict[]): void
 function conflictsWith(entry: OverlayEntry, index: number, document: OverlayEntry[], ctx: ConflictContext, prepared: Prepared): Conflict[] {
   const out: Conflict[] = [];
   nameRules(entry, index, document, prepared, out);
+  if (entry.kind === 'remove' || !ctx.layout) return out;
   const pos = entry.position;
-  if (!pos || !ctx.layout) return out;
   if (boundsRule(pos, ctx.layout, out)) return out;
-  // A move superseded by a later move of the same object stands nowhere (see the header): bounds was still
-  // applied above, but there is no ground under nowhere and nothing there to overlap.
-  if (entry.kind === 'move' && prepared.lastMove.get(entry.target.name) !== index) return out;
+  if (entry.kind === 'move') {
+    const name = targetName(entry.target);
+    // An {id} move is judged for bounds only; a superseded move stands nowhere (see the header).
+    if (name === null || prepared.lastAction.get(name) !== index) return out;
+  }
   if (ctx.ground) groundRule(pos, ctx.ground, out);
   overlapRule(index, prepared.occupancy, out);
   return out;

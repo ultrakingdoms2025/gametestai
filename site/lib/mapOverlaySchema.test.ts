@@ -5,7 +5,11 @@ import {
   WORLD_COORD_LIMIT,
   isKnownOverlayWorld,
   normaliseOverlayEntries,
+  targetLabel,
+  targetName,
+  type MoveEntry,
   type OverlayEntry,
+  type RemoveEntry,
 } from './mapOverlaySchema';
 
 /**
@@ -57,7 +61,7 @@ describe('normaliseOverlayEntries', () => {
     expect(entries).toHaveLength(1);
     const e = entries[0] as Extract<OverlayEntry, { kind: 'move' }>;
     expect(e.kind).toBe('move');
-    expect(e.target.name).toBe('barn.roof');
+    expect(e.target).toEqual({ name: 'barn.roof' });
     expect(e.position).toEqual({ x: 1, y: 2, z: 3 });
   });
 
@@ -154,31 +158,13 @@ describe('normaliseOverlayEntries', () => {
     const { entries } = normaliseOverlayEntries([
       move({ position: { x: 1.23456789, y: 0, z: 0 } }),
     ]);
-    /* `position` is `Vec3 | null` because a move entry may only HIDE an object.
-     * This case builds one with a position, so the assertion is safe - but it
-     * says so rather than letting `.x` read through a null. */
     const moved = entries[0] as Extract<OverlayEntry, { kind: 'move' }>;
-    expect(moved.position).not.toBeNull();
-    expect(moved.position!.x).toBe(1.235);
+    expect(moved.position.x).toBe(1.235);
   });
 
   it('wraps rotationY into a single turn', () => {
     const { entries } = normaliseOverlayEntries([move({ rotationY: Math.PI * 2 + 0.5 })]);
-    expect(entries[0].rotationY).toBeCloseTo(0.5, 6);
-  });
-
-  it('carries hidden through as a boolean and defaults it off', () => {
-    expect(normaliseOverlayEntries([move()]).entries[0]).not.toHaveProperty('hidden');
-    const { entries } = normaliseOverlayEntries([move({ hidden: 'yes' })]);
-    expect((entries[0] as Extract<OverlayEntry, { kind: 'move' }>).hidden).toBe(true);
-  });
-
-  it('accepts a hidden-only move with no position, because hiding needs no destination', () => {
-    const { entries, rejected } = normaliseOverlayEntries([
-      move({ position: undefined, hidden: true }),
-    ]);
-    expect(rejected).toEqual([]);
-    expect((entries[0] as Extract<OverlayEntry, { kind: 'move' }>).position).toBeNull();
+    expect((entries[0] as MoveEntry).rotationY).toBeCloseTo(0.5, 6);
   });
 
   it('survives rubbish input without throwing', () => {
@@ -272,5 +258,90 @@ describe('MAP_OVERLAY_SCHEMA', () => {
   it('is a version number the game can refuse to read', () => {
     expect(Number.isInteger(MAP_OVERLAY_SCHEMA)).toBe(true);
     expect(MAP_OVERLAY_SCHEMA).toBeGreaterThan(0);
+    expect(MAP_OVERLAY_SCHEMA).toBe(2);
+  });
+});
+
+describe('schema v2: targets, remove, and what became of hidden', () => {
+  const asMove = (e: OverlayEntry) => e as MoveEntry;
+  const asRemove = (e: OverlayEntry) => e as RemoveEntry;
+
+  it('migrates a v1 hidden move with no position to a remove of the same id and target', () => {
+    const { entries, rejected } = normaliseOverlayEntries([move({ id: 'h1', position: undefined, hidden: true })]);
+    expect(rejected).toEqual([]);
+    expect(entries).toEqual([{ kind: 'remove', id: 'h1', target: { name: 'barn.roof' } }]);
+  });
+
+  it('migrates a v1 hidden move WITH a position to a remove, discarding the position and yaw (decision A), one raw entry to one entry', () => {
+    const raw = [move({ id: 'h2', position: { x: 4, y: 0, z: 4 }, rotationY: 1, hidden: true }), move({ id: 'm2', target: { name: 'well' } })];
+    const { entries, rejected } = normaliseOverlayEntries(raw);
+    expect(rejected).toEqual([]);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toEqual({ kind: 'remove', id: 'h2', target: { name: 'barn.roof' } });
+    expect(entries[1].id).toBe('m2');
+    // the old coercion read any truthy flag as hidden; a stored 'yes' must migrate the same way
+    expect(normaliseOverlayEntries([move({ hidden: 'yes' })]).entries[0].kind).toBe('remove');
+  });
+
+  it('rejects a move with a null position: hiding is a remove, and a move must say where', () => {
+    const { entries, rejected } = normaliseOverlayEntries([move({ position: null })]);
+    expect(entries).toEqual([]);
+    expect(rejected).toEqual([{ index: 0, id: 'e1', reason: 'position' }]);
+  });
+
+  it('accepts a remove of a named target, and re-normalises it to itself', () => {
+    const first = normaliseOverlayEntries([{ kind: 'remove', id: 'r1', target: { name: 'barn.roof' } }]);
+    expect(first.rejected).toEqual([]);
+    expect(first.entries).toEqual([{ kind: 'remove', id: 'r1', target: { name: 'barn.roof' } }]);
+    expect(normaliseOverlayEntries(first.entries)).toEqual(first);
+  });
+
+  it('rejects a remove with no usable target', () => {
+    for (const bad of [undefined, {}, { name: '' }, { name: 42 }, { name: 'x', id: 'a@1,2' }]) {
+      const { entries, rejected } = normaliseOverlayEntries([{ kind: 'remove', id: 'r', target: bad }]);
+      expect(entries, JSON.stringify(bad)).toEqual([]);
+      expect(rejected[0].reason).toBe('target');
+    }
+  });
+
+  it('accepts an {id} target in family@x,z[#n] form, namespaced or not, on a move and a remove', () => {
+    const ids = ['medieval:house@12.3,-40.1', 'rock@5,-7#2', 'planet:prop:tree@0.0,0.0', 'crate_a-1.b@-100,100#12'];
+    for (const id of ids) {
+      const { entries, rejected } = normaliseOverlayEntries([move({ target: { id } }), { kind: 'remove', id: 'r', target: { id } }]);
+      expect(rejected, id).toEqual([]);
+      expect(asMove(entries[0]).target).toEqual({ id });
+      expect(asRemove(entries[1]).target).toEqual({ id });
+    }
+  });
+
+  it('rejects an {id} that is not in that form, over 128 chars, or beside a name', () => {
+    // `${'a'.repeat(130)}@1,2#1` is 136 chars: past TARGET_ID_MAX however well-formed. (120 a's would be 126 and ACCEPTED.)
+    const bad = ['house', 'house@x,z', 'house@1,2,3', 'house@1.25,2', `${'a'.repeat(130)}@1,2#1`, 7];
+    for (const id of bad) {
+      const { entries, rejected } = normaliseOverlayEntries([move({ target: { id } })]);
+      expect(entries, String(id)).toEqual([]);
+      expect(rejected[0].reason).toBe('target');
+    }
+    // The boundary itself: `@1,2#1` is 6 chars, so 122 a's make exactly 128 (accepted) and 123 make 129 (refused, not cut).
+    const ofLength = (n: number) => `${'a'.repeat(n - 6)}@1,2#1`;
+    expect(ofLength(128)).toHaveLength(128);
+    expect(normaliseOverlayEntries([move({ target: { id: ofLength(128) } })]).rejected).toEqual([]);
+    expect(normaliseOverlayEntries([move({ target: { id: ofLength(129) } })]).rejected[0].reason).toBe('target');
+    expect(normaliseOverlayEntries([move({ target: { name: 'a', id: 'a@1,2' } })]).rejected[0].reason).toBe('target');
+    expect(normaliseOverlayEntries([move({ target: {} })]).rejected[0].reason).toBe('target');
+  });
+
+  it('keeps a mixed document of name and id targets in order, 1:1 with what was sent', () => {
+    const raw = [move({ id: 'a' }), move({ id: 'b', target: { id: 'rock@5,-7' } }), { kind: 'remove', id: 'c', target: { id: 'rock@5,-8' } }, place()];
+    const { entries, rejected } = normaliseOverlayEntries(raw);
+    expect(rejected).toEqual([]);
+    expect(entries.map((e) => e.id)).toEqual(['a', 'b', 'c', 'e2']);
+  });
+
+  it('targetName and targetLabel read both target shapes', () => {
+    expect(targetName({ name: 'barn' })).toBe('barn');
+    expect(targetName({ id: 'rock@5,-7' })).toBeNull();
+    expect(targetLabel({ name: 'barn' })).toBe('barn');
+    expect(targetLabel({ id: 'rock@5,-7' })).toBe('rock@5,-7');
   });
 });

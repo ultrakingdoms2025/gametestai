@@ -1,7 +1,7 @@
 import { groundAt, layersAt, type DecodedGround } from './mapLayout';
 import { groundVerdict, type Conflict, type GroundVerdict } from './mapConflicts';
 import type { HitCandidate } from './mapProjection';
-import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './mapOverlaySchema';
+import { targetLabel, targetName, type GrantConfig, type MoveEntry, type OverlayEntry, type PlaceEntry, type RemoveEntry, type Vec3 } from './mapOverlaySchema';
 
 /**
  * Every decision the map editor's DOM takes, as pure functions.
@@ -38,15 +38,18 @@ import type { GrantConfig, MoveEntry, OverlayEntry, PlaceEntry, Vec3 } from './m
  * — pass through `canonicalSelection`, so a row click and a mark click on
  * the same move cannot land on two different selections.
  *
- * ── The last move wins ─────────────────────────────────────────────────────
+ * ── The last action wins ───────────────────────────────────────────────────
  *
- * A saved document can carry two moves of one object (the normaliser
+ * A saved document can carry two entries acting on one name (the normaliser
  * de-duplicates ids, not targets). The game applies a document in order, so
- * the LAST is where the object ends up, and `mapConflicts.prepare` already
- * treats it as the occupant. Everything here that resolves a name to its
- * move — `moveEntryFor`, and through it the selection, the panel's fields, a
- * drag's upsert and the `moved` mark — reads the last one too, so the map
- * never draws a position the panel would not edit.
+ * the LAST move-or-remove of a name is what the world shows, and
+ * `mapConflicts.prepare` already composes it that way. Everything here that
+ * resolves a name - `actionEntryFor`, and through it the selection, the
+ * panel's fields, a drag's upsert, `removeFor` and the marks - reads the last
+ * one too, so the map never draws a state the panel would not edit. A removed
+ * object is drawn struck through where the game REPORTED it (a `{name}` has
+ * no authored position) and cannot be dragged; Move here puts it back as a
+ * move under the same key and id.
  *
  * ── The ground readout is the route's verdict ──────────────────────────────
  *
@@ -125,7 +128,7 @@ export function rowLevel(conflicts: Conflict[]): RowLevel {
 
 export interface PendingRow {
   key: string;
-  kind: 'move' | 'place';
+  kind: 'move' | 'remove' | 'place';
   label: string;
   summary: string;
   level: RowLevel;
@@ -142,27 +145,28 @@ export function pendingRows(entries: Draft[], conflicts: Conflict[][]): PendingR
     const own = conflicts[i] ?? [];
     if (e.kind === 'move') {
       const yaw = e.rotationY !== undefined ? ` yaw ${Math.round(radToDeg(e.rotationY))}°` : '';
-      const summary = e.position ? `→ ${vecText(e.position)}${yaw}${e.hidden ? ' (hidden)' : ''}` : 'hidden';
-      return { key: e._key, kind: 'move', label: e.target.name, summary, level: rowLevel(own), conflicts: own };
+      return { key: e._key, kind: 'move', label: targetLabel(e.target), summary: `→ ${vecText(e.position)}${yaw}`, level: rowLevel(own), conflicts: own };
     }
-    return {
-      key: e._key,
-      kind: 'place',
-      label: `${e.item.name} ×${e.quantity}`,
-      summary: `→ ${vecText(e.position)}`,
-      level: rowLevel(own),
-      conflicts: own,
-    };
+    if (e.kind === 'remove') {
+      return { key: e._key, kind: 'remove', label: targetLabel(e.target), summary: 'removed', level: rowLevel(own), conflicts: own };
+    }
+    return { key: e._key, kind: 'place', label: `${e.item.name} ×${e.quantity}`, summary: `→ ${vecText(e.position)}`, level: rowLevel(own), conflicts: own };
   });
 }
 
-/** The move that WINS for a name: the last in the document (see the header). */
-export function moveEntryFor(entries: Draft[], name: string): (Draft & MoveEntry) | undefined {
+/** The action that WINS for a name: the last move-or-remove of a `{name}` target in the document (see the header). */
+export function actionEntryFor(entries: Draft[], name: string): (Draft & (MoveEntry | RemoveEntry)) | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (e.kind === 'move' && e.target.name === name) return e;
+    if (e.kind !== 'place' && targetName(e.target) === name) return e;
   }
   return undefined;
+}
+
+/** The move that wins for a name - only when the winning action IS a move. */
+export function moveEntryFor(entries: Draft[], name: string): (Draft & MoveEntry) | undefined {
+  const e = actionEntryFor(entries, name);
+  return e?.kind === 'move' ? e : undefined;
 }
 
 /**
@@ -186,13 +190,13 @@ export function upsertMoveFor(
   rotationY: number | undefined,
   mint: () => string
 ): Draft[] {
-  const existing = moveEntryFor(entries, name);
+  const existing = actionEntryFor(entries, name);
   if (existing) {
+    // The winning entry becomes (or stays) the move, under its own key and id: Move here on a removed object puts it back.
     return entries.map((e) => {
       if (e !== existing) return e;
-      const next: Draft & MoveEntry = { ...existing, position: { ...position } };
-      if (rotationY === undefined) delete next.rotationY;
-      else next.rotationY = rotationY;
+      const next: Draft & MoveEntry = { _key: existing._key, kind: 'move', id: existing.id, target: { name }, position: { ...position } };
+      if (rotationY !== undefined) next.rotationY = rotationY;
       return next;
     });
   }
@@ -200,6 +204,37 @@ export function upsertMoveFor(
   const entry: Draft & MoveEntry = { _key: key, kind: 'move', id: key, target: { name }, position: { ...position } };
   if (rotationY !== undefined) entry.rotationY = rotationY;
   return [...entries, entry];
+}
+
+/**
+ * One remove for a name, whatever the document said about it before: the
+ * winning action becomes the remove under its own key and id, and any earlier
+ * action on the name is dropped so the document carries one word about it.
+ * A fixed point on a name already removed. `mint` supplies the key for a name
+ * nothing acted on.
+ */
+export function removeFor(entries: Draft[], name: string, mint: () => string): Draft[] {
+  const existing = actionEntryFor(entries, name);
+  const remove = (key: string, id: string): Draft & RemoveEntry => ({ _key: key, kind: 'remove', id, target: { name } });
+  if (!existing) {
+    const key = mint();
+    return [...entries, remove(key, key)];
+  }
+  return entries
+    .filter((e) => e === existing || e.kind === 'place' || targetName(e.target) !== name)
+    .map((e) => (e === existing ? remove(existing._key, existing.id) : e));
+}
+
+/** What the report card says beside an unresolved id. The reasons are the game's (`src/systems/MapOverlay.js`); an unknown one is printed as it came. */
+export function unresolvedText(reason: string): string {
+  switch (reason) {
+    case 'pending-rebuild': return 'applies on next world load';
+    case 'span': return 'refused — would drop more than 200 colliders; nothing hidden';
+    case 'id': return 'build-time target — nothing resolves ids until stage 3';
+    case 'name': return 'no object of that name in the world';
+    case 'superseded': return 'superseded by a later action on the same object';
+    default: return reason;
+  }
 }
 
 /** A place draft for a catalogue item at a point. The config is COPIED (see `mapOverlaySchema.ts`). */
@@ -235,7 +270,7 @@ export function placementY(ground: DecodedGround | null, x: number, z: number): 
 /** The document entry a selection edits: an object's pending move, or the entry itself. */
 export function selectedEntry(entries: Draft[], selected: Selected): Draft | undefined {
   if (!selected) return undefined;
-  if (selected.kind === 'object') return moveEntryFor(entries, selected.name);
+  if (selected.kind === 'object') return actionEntryFor(entries, selected.name);
   return entries.find((e) => e._key === selected.key);
 }
 
@@ -246,9 +281,13 @@ export function selectedPosition(
   selected: Selected
 ): Vec3 | null {
   if (!selected) return null;
-  if (selected.kind === 'entry') return entries.find((e) => e._key === selected.key)?.position ?? null;
-  const mv = moveEntryFor(entries, selected.name);
-  if (mv?.position) return mv.position;
+  if (selected.kind === 'entry') {
+    const e = entries.find((d) => d._key === selected.key);
+    return e && e.kind !== 'remove' ? e.position : null;
+  }
+  const act = actionEntryFor(entries, selected.name);
+  if (act?.kind === 'move') return act.position;
+  // Unmoved, or removed: where the game reported it.
   return objects.find((o) => o.name === selected.name)?.position ?? null;
 }
 
@@ -263,12 +302,15 @@ export function canonicalSelection(objects: Array<{ name: string }>, entries: Dr
   if (!sel) return null;
   if (sel.kind === 'entry') {
     const e = entries.find((d) => d._key === sel.key);
-    if (e?.kind === 'move' && objects.some((o) => o.name === e.target.name)) return { kind: 'object', name: e.target.name };
+    if (e && e.kind !== 'place') {
+      const name = targetName(e.target);
+      if (name !== null && objects.some((o) => o.name === name)) return { kind: 'object', name };
+    }
     return sel;
   }
   if (objects.some((o) => o.name === sel.name)) return sel;
-  const mv = moveEntryFor(entries, sel.name);
-  return mv ? { kind: 'entry', key: mv._key } : sel;
+  const act = actionEntryFor(entries, sel.name);
+  return act ? { kind: 'entry', key: act._key } : sel;
 }
 
 /** The one string the canvas, the picker and the pending list use to name a selection: `o:<name>` or `e:<key>`. */
@@ -285,7 +327,7 @@ export function selectionFromKey(key: string): NonNullable<Selected> {
 /* ── What the canvas draws and hit-tests ──────────────────────────────────── */
 
 export type MarkKind =
-  /** A reported object where the game reported it (no pending move, or a hide-only move). */
+  /** A reported object where the game reported it (no pending action). */
   | 'object'
   /** The faint dot at a moved object's reported position. */
   | 'origin'
@@ -294,7 +336,9 @@ export type MarkKind =
   /** A placement. */
   | 'place'
   /** A move whose target the game did not report — a free-text move. */
-  | 'free';
+  | 'free'
+  /** A removed object, struck through where the game reported it. */
+  | 'removed';
 
 /**
  * One mark on the map: a `HitCandidate` (so `hitTest` reads it as-is) plus
@@ -305,7 +349,6 @@ export type MarkKind =
 export interface MapMark extends HitCandidate {
   r: 0;
   mark: MarkKind;
-  hidden?: boolean;
   from?: { x: number; z: number };
 }
 
@@ -324,25 +367,27 @@ export interface HoverInfo {
  * reported target's move is already the object's `moved` mark).
  */
 export function hitCandidates(objects: Array<{ name: string; position: Vec3 }>, entries: Draft[]): MapMark[] {
-  const moveByName = new Map<string, Draft & MoveEntry>();
-  for (const e of entries) if (e.kind === 'move') moveByName.set(e.target.name, e);
   const out: MapMark[] = [];
   for (const o of objects) {
     const key = `o:${o.name}`;
-    const mv = moveByName.get(o.name);
-    if (mv?.position) {
+    const act = actionEntryFor(entries, o.name);
+    if (act?.kind === 'move') {
       out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'origin' });
-      out.push({ key, x: mv.position.x, z: mv.position.z, r: 0, mark: 'moved', from: { x: o.position.x, z: o.position.z } });
+      out.push({ key, x: act.position.x, z: act.position.z, r: 0, mark: 'moved', from: { x: o.position.x, z: o.position.z } });
+    } else if (act?.kind === 'remove') {
+      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'removed' });
     } else {
-      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'object', hidden: mv?.hidden === true });
+      out.push({ key, x: o.position.x, z: o.position.z, r: 0, mark: 'object' });
     }
   }
   const reported = new Set(objects.map((o) => o.name));
   for (const e of entries) {
     if (e.kind === 'place') out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0, mark: 'place' });
-    else if (e.position && !reported.has(e.target.name)) {
-      out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0, mark: 'free' });
+    else if (e.kind === 'move') {
+      const name = targetName(e.target);
+      if (name === null || !reported.has(name)) out.push({ key: `e:${e._key}`, x: e.position.x, z: e.position.z, r: 0, mark: 'free' });
     }
+    // A remove of an unreported name has no position and no mark; the pending list and the picker reach it.
   }
   return out;
 }
@@ -357,9 +402,12 @@ export function hoverInfoFor(objects: Array<{ name: string; position: Vec3 }>, e
   const sel = selectionFromKey(key);
   const p = selectedPosition(objects, entries, sel);
   if (!p) return null;
-  if (sel.kind === 'object') return { label: sel.name, x: p.x, y: p.y, z: p.z };
+  if (sel.kind === 'object') {
+    const act = actionEntryFor(entries, sel.name);
+    return { label: act?.kind === 'remove' ? `${sel.name} — removed` : sel.name, x: p.x, y: p.y, z: p.z };
+  }
   const e = entries.find((d) => d._key === sel.key);
   if (!e) return null;
-  const label = e.kind === 'place' ? `${e.item.name} ×${e.quantity}` : e.target.name;
+  const label = e.kind === 'place' ? `${e.item.name} ×${e.quantity}` : targetLabel(e.target);
   return { label, x: p.x, y: p.y, z: p.z };
 }

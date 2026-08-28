@@ -1,0 +1,524 @@
+/**
+ * THE MAP EDITOR, END TO END.
+ *
+ *   node site/scripts/map-editor-e2e.mjs [--url http://127.0.0.1:3000] [--world station] [--keep] [--verbose]
+ *   env: MAP_E2E_EMAIL, MAP_E2E_PASSWORD   (an address listed in ADMIN_EMAILS / MARKETPLACE_ADMIN_EMAILS)
+ *        MAP_E2E_CODE                       (optional: the current authenticator code, for a 2FA-enabled admin)
+ *
+ * ── Why a browser ────────────────────────────────────────────────────────
+ *
+ * The site's vitest has no DOM. Every decision in the editor is a pure,
+ * tested function, but "an admin can sign in, pick a crate, drag it, read
+ * the warning and save" is a claim about a page, and only a page can prove
+ * it. This drives real Chrome over the DevTools Protocol against a real
+ * `next dev` on a fresh port, through the real sign-in form, the real report
+ * route and the real editor. Nothing is mocked.
+ *
+ * ── A skip is not a pass ─────────────────────────────────────────────────
+ *
+ * Without credentials there is nothing to measure. The script says so on
+ * stderr and exits 2, so a CI step that ran it with no secrets cannot be
+ * read as green. (This repository has paid nine times for gates that passed
+ * against nothing.)
+ *
+ * ── It writes to the configured database ─────────────────────────────────
+ *
+ * The report route stores the synthetic layout for `--world` and Save writes
+ * an overlay version, both in whatever POSTGRES_URL the site's env points at.
+ * Point it at a development database.
+ *
+ * ── Zero dependencies, on purpose ────────────────────────────────────────
+ *
+ * Same reasoning as scripts/hud-viewport-probe.mjs: Node 22 ships a global
+ * WebSocket, which is all CDP needs, and a browser-automation library is a
+ * second thing to rot. Chromium is Playwright's pinned build if present,
+ * else Chrome/Edge.
+ */
+
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer as createSocketServer } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const site = path.resolve(here, '..');
+const root = path.resolve(site, '..');
+const outDir = path.join(root, '.probe', 'map-editor-e2e');
+
+const args = process.argv.slice(2);
+const flag = (name) => args.includes(name);
+const arg = (name) => {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+};
+
+const EMAIL = process.env.MAP_E2E_EMAIL;
+const PASSWORD = process.env.MAP_E2E_PASSWORD;
+if (!EMAIL || !PASSWORD) {
+  console.error('SKIPPED (no MAP_E2E_EMAIL/MAP_E2E_PASSWORD) — this is NOT a pass');
+  process.exit(2);
+}
+const CODE = process.env.MAP_E2E_CODE ?? '';
+
+/* Set when a child process dies or refuses to start. Every `waitFor` then
+ * throws at once instead of polling out its timeout, so the failure reaches
+ * `finally` — which kills the other child and writes report.json — rather
+ * than an unhandled 'error' event killing this process with next dev
+ * orphaned on its port. */
+let abortReason = null;
+const childFailed = (what) => (e) => {
+  if (!abortReason) abortReason = `${what}: ${e instanceof Error ? e.message : `exit code ${e}`}`;
+};
+
+const WORLD = arg('--world') ?? 'station';
+/* Two named objects on a flat floor at y = 0. The crate sits 0.4 m up:
+ * inside the ±0.25/+1.5 m band, so it starts with no ground warning. */
+const CRATE = { name: 'e2e:crate', position: { x: 10, y: 0.4, z: -20 } };
+const POST = { name: 'e2e:post', position: { x: -30, y: 0, z: 40 } };
+
+/* ====================================================================== */
+/* The synthetic layout                                                   */
+/* ====================================================================== */
+
+/** Int16 → base64, little-endian, the encoding `mapLayout.ts` decodes. */
+function encodeHeightsCm(int16) {
+  const buf = Buffer.alloc(int16.length * 2);
+  for (let i = 0; i < int16.length; i++) buf.writeInt16LE(int16[i], i * 2);
+  return buf.toString('base64');
+}
+
+function syntheticReport() {
+  const nx = 51;
+  const nz = 51;
+  const heights = new Int16Array(nx * nz); // every sample 0 cm: a flat floor at y = 0
+  return {
+    world: WORLD,
+    appliedVersion: 0,
+    objects: [CRATE, POST],
+    applied: [],
+    unresolved: [],
+    layoutSchema: 1,
+    bounds: { min: { x: -100, y: -5, z: -100 }, max: { x: 100, y: 60, z: 100 } },
+    shapes: [
+      { kind: 'rect', x: 0, z: 0, w: 80, d: 60, fill: 0x2a4a66 },
+      { kind: 'circle', x: 40, z: -40, r: 8, stroke: '#52e9ff', width: 0.5 },
+    ],
+    ground: { originX: -100, originZ: -100, step: 4, nx, nz, layers: 1, heightsCm: encodeHeightsCm(heights) },
+  };
+}
+
+/* ====================================================================== */
+/* Browser discovery (scripts/hud-viewport-probe.mjs)                     */
+/* ====================================================================== */
+
+function browserCandidates() {
+  const home = os.homedir();
+  const out = [];
+  if (process.env.CHROME_PATH) out.push(process.env.CHROME_PATH);
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
+    const pf = process.env.ProgramFiles ?? 'C:\\Program Files';
+    const pf86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+    const ms = path.join(local, 'ms-playwright');
+    if (existsSync(ms)) {
+      for (const dir of ['chromium-1223', 'chromium-1217']) {
+        out.push(path.join(ms, dir, 'chrome-win64', 'chrome.exe'));
+      }
+    }
+    out.push(path.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+    out.push(path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+    out.push(path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+    out.push(path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+    out.push(path.join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+  } else if (process.platform === 'darwin') {
+    out.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    out.push('/Applications/Chromium.app/Contents/MacOS/Chromium');
+  } else {
+    out.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium');
+    const ms = path.join(home, '.cache', 'ms-playwright');
+    if (existsSync(ms)) {
+      for (const dir of ['chromium-1223', 'chromium-1217']) {
+        out.push(path.join(ms, dir, 'chrome-linux', 'chrome'));
+      }
+    }
+  }
+  return out.filter((p) => existsSync(p));
+}
+
+/* ====================================================================== */
+/* A CDP client, in about forty lines                                     */
+/* ====================================================================== */
+
+class CDP {
+  constructor(ws) {
+    this.ws = ws;
+    this.id = 0;
+    this.pending = new Map();
+    this.ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.id != null && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`));
+        else resolve(msg.result);
+      }
+    });
+  }
+
+  static async connect(url) {
+    const ws = new WebSocket(url);
+    await new Promise((res, rej) => {
+      ws.addEventListener('open', res, { once: true });
+      ws.addEventListener('error', () => rej(new Error(`cannot reach ${url}`)), { once: true });
+    });
+    return new CDP(ws);
+  }
+
+  send(method, params = {}, sessionId) {
+    const id = ++this.id;
+    const payload = { id, method, params };
+    if (sessionId) payload.sessionId = sessionId;
+    this.ws.send(JSON.stringify(payload));
+    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+  }
+
+  close() { try { this.ws.close(); } catch { /* already gone */ } }
+}
+
+/* ====================================================================== */
+/* Small helpers                                                          */
+/* ====================================================================== */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = createSocketServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+async function waitFor(fn, { timeout = 45000, every = 150, what = 'condition' } = {}) {
+  const until = Date.now() + timeout;
+  let last;
+  while (Date.now() < until) {
+    if (abortReason) throw new Error(abortReason);
+    try {
+      const v = await fn();
+      if (v) return v;
+    } catch (e) { last = e; }
+    await sleep(every);
+  }
+  throw new Error(`timed out waiting for ${what}${last ? `: ${last.message}` : ''}`);
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(`ASSERTION FAILED: ${msg}`);
+}
+
+/** Kill a process and everything it spawned (`next dev` forks its server). */
+function killTree(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { child.kill('SIGTERM'); }
+  }
+}
+
+/* ====================================================================== */
+/* The dev server                                                         */
+/* ====================================================================== */
+
+async function startNext() {
+  const port = await freePort();
+  /* The bin script through `process.execPath`, not `npx`/`next.cmd`: Node
+   * refuses to spawn a `.cmd` without a shell on Windows, and a worktree's
+   * junctioned node_modules resolves the same file. */
+  const bin = path.join(site, 'node_modules', 'next', 'dist', 'bin', 'next');
+  if (!existsSync(bin)) throw new Error(`no next binary at ${bin} — run npm install in site/`);
+  const child = spawn(process.execPath, [bin, 'dev', '-p', String(port), '-H', '127.0.0.1'], {
+    cwd: site,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, BROWSER: 'none' },
+    detached: process.platform !== 'win32',
+  });
+  const log = [];
+  const keep = (d) => { log.push(String(d)); if (flag('--verbose')) process.stdout.write(d); };
+  child.stdout.on('data', keep);
+  child.stderr.on('data', keep);
+  let ready = false;
+  child.on('error', childFailed('next dev failed to start'));
+  child.on('exit', (code) => { if (!ready) childFailed('next dev exited before it was listening')(code); });
+  const url = `http://127.0.0.1:${port}`;
+  await waitFor(async () => (await fetch(`${url}/login`)).ok, { timeout: 180000, every: 500, what: `next dev at ${url}` })
+    .catch((e) => { throw new Error(`${e.message}\n--- next dev output ---\n${log.join('').slice(-4000)}`); });
+  ready = true;
+  return { url, child };
+}
+
+/* ====================================================================== */
+/* Main                                                                   */
+/* ====================================================================== */
+
+async function main() {
+  const chrome = browserCandidates()[0];
+  if (!chrome) {
+    console.error('NO BROWSER FOUND — this harness measured nothing. Set CHROME_PATH or install Chrome / Chromium.');
+    return 1;
+  }
+  console.log(`browser: ${chrome}`);
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+
+  const report = { base: arg('--url') ?? null, world: WORLD, steps: [], screenshots: [] };
+  const pageLog = [];
+  const userDir = path.join(os.tmpdir(), `an-map-e2e-${process.pid}`);
+  let server = null;
+  let browser = null;
+  let client;
+  const step = (name, detail) => { report.steps.push({ name, detail, at: new Date().toISOString() }); console.log(`  ${name}${detail ? ` — ${detail}` : ''}`); };
+
+  /* Both children are started INSIDE the try: a Chrome that fails to launch
+   * (a stale ms-playwright build, a locked --user-data-dir) must still reach
+   * `finally`, which kills next dev and writes the report. */
+  try {
+    if (!report.base) {
+      server = await startNext();
+      report.base = server.url;
+    }
+    const base = report.base.replace(/\/$/, '');
+    console.log(`site: ${base}`);
+
+    const cdpPort = await freePort();
+    browser = spawn(chrome, [
+      '--headless=new',
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${userDir}`,
+      '--no-first-run', '--no-default-browser-check', '--disable-gpu',
+      '--hide-scrollbars', '--mute-audio', '--disable-extensions',
+      '--force-device-scale-factor=1',
+      '--window-size=1500,1100',
+      'about:blank',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    browser.on('error', childFailed('chrome failed to launch'));
+    browser.on('exit', (code) => { if (!client) childFailed('chrome exited before devtools came up')(code); });
+    browser.stderr.on('data', () => { /* chrome is noisy on stderr */ });
+
+    const version = await waitFor(async () => {
+      const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+      return r.ok ? r.json() : null;
+    }, { what: `chrome devtools on ${cdpPort}` });
+    client = await CDP.connect(version.webSocketDebuggerUrl);
+    const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true });
+    const call = (m, p) => client.send(m, p, sessionId);
+    await call('Page.enable');
+    await call('Runtime.enable');
+    await call('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
+    client.ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.sessionId !== sessionId) return;
+      if (msg.method === 'Runtime.consoleAPICalled') {
+        pageLog.push(`${msg.params.type}: ${(msg.params.args ?? []).map((a) => a.value ?? a.description ?? a.type).join(' ')}`);
+      } else if (msg.method === 'Runtime.exceptionThrown') {
+        const d = msg.params.exceptionDetails;
+        pageLog.push(`exception: ${d.exception?.description ?? d.text}`);
+      }
+    });
+
+    /* ---- page helpers ------------------------------------------------ */
+    const evaluate = async (expression, awaitPromise = false) => {
+      const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise });
+      if (r.exceptionDetails) throw new Error(`page threw: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+      return r.result?.value;
+    };
+    const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
+    const waitForSelector = (sel, what) => waitFor(() => evaluate(`!!${q(sel)}`), { what: what ?? sel });
+    const textOf = (sel) => evaluate(`${q(sel)}?.textContent ?? null`);
+    const valueOf = (sel) => evaluate(`${q(sel)}?.value ?? null`);
+    const rectOf = (sel) => evaluate(`(() => { const r = ${q(sel)}?.getBoundingClientRect(); return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2, left: r.left, top: r.top, w: r.width, h: r.height } : null; })()`);
+    const mouse = (type, x, y, extra = {}) => call('Input.dispatchMouseEvent', { type, x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1, ...extra });
+    const clickSel = async (sel) => {
+      await evaluate(`${q(sel)}?.scrollIntoView({ block: 'center' })`);
+      const r = await rectOf(sel);
+      assert(r, `no element for ${sel}`);
+      await mouse('mouseMoved', r.x, r.y);
+      await mouse('mousePressed', r.x, r.y);
+      await mouse('mouseReleased', r.x, r.y);
+    };
+    /* Text through Chrome's input pipeline (`Input.insertText`), so React's
+     * controlled inputs see a real edit, not a property write. */
+    const typeInto = async (sel, text) => {
+      await evaluate(`(() => { const el = ${q(sel)}; el.scrollIntoView({ block: 'center' }); el.focus(); el.select(); })()`);
+      await call('Input.insertText', { text });
+      const got = await valueOf(sel);
+      assert(got === text, `typed ${JSON.stringify(text)} into ${sel} but it reads ${JSON.stringify(got)}`);
+    };
+    /* A <select> has no typed path: set through the native setter and fire
+     * the change event React listens for. */
+    const choose = async (sel, value) => {
+      const got = await evaluate(`(() => { const el = ${q(sel)}; const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()`);
+      assert(got === value, `could not choose ${value} in ${sel} (options: ${await evaluate(`[...${q(sel)}.options].map(o => o.value).join(', ')`)})`);
+    };
+    const shot = async (name) => {
+      const s = await call('Page.captureScreenshot', { format: 'png' });
+      const file = path.join(outDir, `${name}.png`);
+      await writeFile(file, Buffer.from(s.data, 'base64'));
+      report.screenshots.push(path.relative(root, file));
+    };
+
+    /* ---- 1. sign in through the real form ------------------------------ */
+    const loginUrl = `${base}/login?callbackUrl=${encodeURIComponent('/admin/map')}`;
+    /* `Page.navigate` reports a connection failure in `errorText` — say so
+     * now rather than after the selector wait's 45 s. */
+    const nav = await call('Page.navigate', { url: loginUrl });
+    if (nav.errorText) throw new Error(`cannot load ${loginUrl}: ${nav.errorText}`);
+    await waitForSelector('#email', 'the sign-in form');
+    await typeInto('#email', EMAIL);
+    await typeInto('#password', PASSWORD);
+    if (CODE) await typeInto('#code', CODE);
+    await shot('01-login');
+    await clickSel('form.auth-form button[type="submit"]');
+    /* The locked render has no <h1> — only `.banner > b` — so wait for EITHER
+     * the editor or the lock, and let the assert below name the real problem
+     * (a signed-in non-admin) instead of a 90 s timeout. */
+    await waitFor(async () => {
+      const err = await textOf('.auth-error');
+      if (err) { abortReason = `sign-in refused: ${err}`; return false; }
+      return evaluate(`location.pathname === '/admin/map' && (!!document.querySelector('h1') || document.body.innerText.includes('Map editor locked'))`);
+    }, { what: 'the editor (or the lock banner) after sign-in', timeout: 90000 });
+    assert(!(await evaluate(`document.body.innerText.includes('Map editor locked')`)),
+      `${EMAIL} signed in but is not an admin (ADMIN_EMAILS / MARKETPLACE_ADMIN_EMAILS)`);
+    step('signed in', EMAIL);
+
+    /* ---- 2. seed the layout through the real report route ------------- */
+    const body = JSON.stringify(syntheticReport());
+    const seeded = await evaluate(`fetch('/api/admin/map/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(body)} }).then(async (r) => ({ status: r.status, text: await r.text() }))`, true);
+    assert(seeded.status === 200, `report route answered ${seeded.status}: ${seeded.text}`);
+    step('seeded layout', `${WORLD}, ${body.length} bytes`);
+
+    /* `Page.reload` returns before the navigation; the OLD document keeps
+     * answering selectors for a moment, so a world with a prior report would
+     * show its stale age and `choose()` would fire on a page being torn down.
+     * A new document has a new performance.timeOrigin: wait for that first. */
+    const t0 = await evaluate('performance.timeOrigin');
+    await call('Page.reload');
+    await waitFor(async () => (await evaluate('performance.timeOrigin')) !== t0, { what: 'the reloaded document' });
+    await waitForSelector('[data-e2e="world-select"]', 'the editor');
+    if (WORLD !== 'station') await choose('[data-e2e="world-select"]', WORLD);
+    await waitFor(async () => (await textOf('[data-e2e="layout-age"]'))?.startsWith('reported'), { what: 'the layout banner to read "reported …"' });
+    const age = await textOf('[data-e2e="layout-age"]');
+    assert(age === 'reported just now', `banner reads ${JSON.stringify(age)}`);
+    assert((await textOf('[data-e2e="layout-banner"]')).includes('2 shapes'), 'banner counts the two seeded shapes');
+    await waitFor(() => evaluate(`[...(${q('[data-e2e="object-select"]')}?.options ?? [])].some(o => o.value === 'o:e2e:crate')`), { what: 'the seeded object in the picker' });
+    const saveLabel = await waitFor(async () => { const t = await textOf('[data-e2e="save"]'); return /Saved \(v\d+\)/.test(t ?? '') ? t : null; }, { what: 'the Save button to settle on "Saved (vN)"' });
+    const versionBefore = Number(/Saved \(v(\d+)\)/.exec(saveLabel ?? '')?.[1] ?? NaN);
+    assert(Number.isInteger(versionBefore), `save button reads ${JSON.stringify(saveLabel)}, expected "Saved (vN)"`);
+    await shot('02-editor');
+    step('editor loaded', `${age}; version ${versionBefore}`);
+
+    /* ---- 3. click the footprint, deselect, then the dropdown ----------- */
+    const canvas = await rectOf('[data-e2e="map-canvas"]');
+    assert(canvas, 'the map canvas is on the page');
+    let view = await evaluate('window.__mapView ?? null');
+    if (!view) {
+      /* Production strips __mapView. Reproduce createView(bounds, w, h, 24)
+       * for an UNTOUCHED view: the bounds are ±100 in both axes. */
+      const iw = canvas.w - 48, ih = canvas.h - 48;
+      const scale = Math.min(iw / 200, ih / 200);
+      view = { scale, ox: canvas.w / 2, oy: canvas.h / 2 };
+      step('note', 'no window.__mapView (production build) — projecting with createView maths');
+    }
+    /* World (x, z) → page pixel, the canvas's own convention: sx = ox + x·scale, sy = oy + z·scale. */
+    const at = (x, z) => ({ x: canvas.left + view.ox + x * view.scale, y: canvas.top + view.oy + z * view.scale });
+    const click = async (p) => {
+      await mouse('mouseMoved', p.x, p.y);
+      await mouse('mousePressed', p.x, p.y);
+      await mouse('mouseReleased', p.x, p.y);
+    };
+    const crate = at(CRATE.position.x, CRATE.position.z);
+    await click(crate);
+    await waitFor(async () => (await textOf('[data-e2e="sel-name"]'))?.includes('e2e:crate'), { what: 'a click on the footprint to select e2e:crate' });
+    await shot('03-clicked');
+    step('clicked', 'e2e:crate selected from the canvas');
+    await click(at(-80, 80)); // inside the bounds, nothing there, no item armed → deselect
+    await waitFor(async () => (await textOf('[data-e2e="sel-name"]'))?.includes('Nothing selected'), { what: 'a click on empty ground to deselect' });
+    await choose('[data-e2e="object-select"]', 'o:e2e:crate');
+    await waitFor(async () => (await textOf('[data-e2e="sel-name"]'))?.includes('e2e:crate'), { what: 'the selection panel to show e2e:crate' });
+    assert((await valueOf('[data-e2e="sel-x"]')) === '10', 'X shows the reported 10');
+    assert((await valueOf('[data-e2e="sel-z"]')) === '-20', 'Z shows the reported -20');
+    await shot('04-selected');
+    step('selected', 'e2e:crate via the dropdown');
+
+    /* ---- 4. drag on the canvas ----------------------------------------- */
+    const sx = crate.x;
+    const sy = crate.y;
+    await mouse('mouseMoved', sx, sy);
+    await mouse('mousePressed', sx, sy);
+    for (let i = 1; i <= 8; i++) await mouse('mouseMoved', sx + i * 8, sy + i * 4, { buttons: 1 });
+    await mouse('mouseReleased', sx + 64, sy + 32);
+    await waitFor(() => evaluate(`[...document.querySelectorAll('[data-e2e="pending-row"]')].some(li => li.textContent.includes('e2e:crate'))`), { what: 'a pending row for e2e:crate' });
+    const rowText = await evaluate(`[...document.querySelectorAll('[data-e2e="pending-row"]')].find(li => li.textContent.includes('e2e:crate')).textContent`);
+    assert(rowText.includes('→ ('), `row reads ${JSON.stringify(rowText)}`);
+    const draggedX = Number(await valueOf('[data-e2e="sel-x"]'));
+    const expectedX = CRATE.position.x + 64 / view.scale;
+    assert(Math.abs(draggedX - expectedX) < 0.5, `drag moved X to ${draggedX}, expected ≈ ${expectedX.toFixed(2)}`);
+    await shot('05-dragged');
+    step('dragged', `row: ${rowText.trim()}`);
+
+    /* ---- 5. type Y below the floor → underground ----------------------- */
+    await typeInto('[data-e2e="sel-y"]', '-3');
+    await clickSel('[data-e2e="move-here"]');
+    await waitFor(() => evaluate(`(${q('[data-e2e="sel-conflicts"]')}?.textContent ?? '').includes('underground')`), { what: 'an underground warning in the selection panel' });
+    const status = await evaluate(`[...document.querySelectorAll('[data-e2e="pending-row"]')].find(li => li.textContent.includes('e2e:crate')).querySelector('[data-e2e="pending-status"]').textContent`);
+    assert(status.includes('underground'), `pending row status reads ${JSON.stringify(status)}`);
+    /* Not a synchronous assert: Save reads `Checking…` (disabled) until the
+     * deferred conflict pass catches up; a warning must leave it ENABLED once it has. */
+    await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled — a warning is not an error' });
+    await shot('06-underground');
+    step('underground warned', status.trim());
+
+    /* ---- 6. fix Y, save, version increments ---------------------------- */
+    await typeInto('[data-e2e="sel-y"]', '0.4');
+    await clickSel('[data-e2e="move-here"]');
+    await waitFor(() => evaluate(`!(${q('[data-e2e="sel-conflicts"]')}?.textContent ?? '').includes('underground')`), { what: 'the warning to clear' });
+    await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
+    await clickSel('[data-e2e="save"]');
+    await waitFor(async () => (await textOf('[data-e2e="message"]'))?.startsWith('Saved version'), { what: 'the save message', timeout: 60000 });
+    const msg = await textOf('[data-e2e="message"]');
+    const savedVersion = Number(/Saved version (\d+)/.exec(msg)[1]);
+    assert(savedVersion === versionBefore + 1, `saved version ${savedVersion}, expected ${versionBefore + 1}`);
+    await waitFor(async () => (await textOf('[data-e2e="save"]')) === `Saved (v${savedVersion})`, { what: 'the save button to show the new version' });
+    assert(await evaluate(`[...document.querySelectorAll('[data-e2e="version-row"]')].some(r => r.textContent.includes('v${savedVersion}'))`), 'the version list shows the new version');
+    await shot('07-saved');
+    step('saved', msg);
+  } catch (e) {
+    report.failure = abortReason ?? e.message;
+    report.pageConsole = pageLog;
+    console.error(`\nFAILED: ${report.failure}\n--- page console ---\n${pageLog.join('\n') || '(silent)'}`);
+  } finally {
+    client?.close();
+    browser?.kill();
+    if (server) killTree(server.child);
+    if (!flag('--keep')) await rm(userDir, { recursive: true, force: true }).catch(() => {});
+    await writeFile(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
+  }
+
+  if (report.failure) {
+    console.error(`screenshots + report: ${path.relative(root, outDir)}`);
+    return 1;
+  }
+  console.log(`\nMAP EDITOR E2E OK — ${report.steps.length} steps, ${report.screenshots.length} screenshots in ${path.relative(root, outDir)}`);
+  return 0;
+}
+
+main().then((code) => process.exit(code), (e) => { console.error(e); process.exit(1); });

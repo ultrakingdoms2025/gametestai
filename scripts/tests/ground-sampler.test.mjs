@@ -211,6 +211,24 @@ test('four surfaces above the floor and the floor fifth: the floor is kept in th
   assert.equal(casts.get(1) / 2, 7, 'six: three extra casts');
 });
 
+test('a cast that always answers a hair below its origin is cut off at MAX_CASTS, never run to the floor', () => {
+  // Every cast "finds" a surface 2 cm below where it started. Each hit is honest by the
+  // loop's rule (below the origin), so nothing skips, and with the cap gone a column of
+  // topY 40 over floorY -25 would take (40 + 25) / 0.03 ≈ 2 167 casts - on station,
+  // (topY - floorY) / PEEL is ~19 400 - inside ONE cell, where run() never looks at its
+  // budget. The cap is 64: L + MAX_SKIPS + a dozen decks, with room.
+  let casts = 0;
+  const job = createJob(PLAN, (x, yTop) => { casts++; return yTop - 0.02; }, { layers: 4, topY: 40, floorY: -25 });
+  job.run(1e9, () => 0);
+  assert.equal(casts, CELLS * 64, 'exactly MAX_CASTS casts a cell');
+  const h = decode(job.result().heightsCm);
+  // Each cast lands 0.03 below the last (a 2 cm answer, then the 1 cm peel): cast n hits
+  // 40.01 - 0.03n, so the first three are 39.98, 39.95, 39.92 and the 64th - the lowest,
+  // held in the last slot - is 40.01 - 1.92 = 38.09.
+  assert.deepEqual([...h.subarray(0, 4)], [3998, 3995, 3992, 3809]);
+  assert.ok(h.every((v, n) => v === [3998, 3995, 3992, 3809][n % 4]), 'every cell alike');
+});
+
 test('createJob refuses a plan it could not index', () => {
   assert.throws(() => createJob(null, fakeCast), /GroundSampler\.createJob: invalid plan/);
   assert.throws(() => createJob({ ...PLAN, nx: 20.5 }, fakeCast), /invalid plan/);

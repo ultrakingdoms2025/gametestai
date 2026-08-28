@@ -467,6 +467,28 @@ test('a top exactly 1 cm below the last hit never loses the floor beneath it: si
   }
 });
 
+test('five surfaces through the real raycast keep the top three and the floor: four slabs over the deck', async () => {
+  // The station hub's shape - a dome, canopy layers, the deck - as four 1 m slabs over
+  // x ∈ [-38, -22] with tops at 60, 40, 20 and 10 over the rig's floor at 0. The bounds
+  // reach 70 so the first cast (bounds.max.y + 10) starts above the highest slab. Each
+  // re-cast starts 1 cm below a top, inside that slab, which the real collider code
+  // misses (a ray starting inside a box has tmin <= 0), so the next slab down is the
+  // next hit. With four layers the fourth slab (10 m) gives way to the deck: a cell that
+  // stopped at four hits stored [6000, 4000, 2000, 1000] and called the 10 m slab the
+  // floor - the very shape that put a placed item on the hub's canopy beam.
+  const rig = setup(doc([], { admin: true }));
+  rig.world.bounds = new THREE.Box3(new THREE.Vector3(-40, -5, -40), new THREE.Vector3(40, 70, 40));
+  for (const top of [60, 40, 20, 10]) rig.physics.addBox(-30, top - 0.5, 0, 8, 0.5, 100);
+  await enter(rig);
+  await finish(rig);
+  const g = rig.fetchImpl.posts()[1].body.ground;
+  const h = decode(g);
+  // cell (1, 10) is x = -36, z = 0: under all four slabs.
+  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 1, 10, k)), [6000, 4000, 2000, 0]);
+  // cell (0, 10) is x = -40: open floor beside them.
+  assert.deepEqual([0, 1, 2, 3].map((k) => at(g, h, 0, 10, k)), [0, NO_SAMPLE, NO_SAMPLE, NO_SAMPLE]);
+});
+
 /* ------------------------------------------------------ the dev switch -- */
 
 test('?layout=sample reaches applyUrlOverrides as layout: "sample" beside dev=1 only; its absence, and a URL without dev=1, read null', async () => {

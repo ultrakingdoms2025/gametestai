@@ -29,8 +29,11 @@
  * grid carries its floors after its next visit re-samples it. The cost is
  * bounded by the column: S surfaces cost S hits and one miss, so past the cap
  * a cell pays S - L + 1 extra casts (the S - L hits below the cap, plus the
- * miss the cap once spared); the peel still stops at `floorY`, and MAX_SKIPS
- * still applies.
+ * miss the cap once spared); the peel still stops at `floorY`, MAX_SKIPS
+ * still applies, and MAX_CASTS (64) is the absolute ceiling a cell can cost -
+ * without it a raycast answering a hair below its origin every time would
+ * run (topY - floorY) / PEEL casts, ~19 400 on station, inside one cell,
+ * where `run()` never checks its budget.
  *
  * RESUMABLE, because 62 000 cells do not fit in a frame: `run(budgetMs, now)`
  * samples until the budget is spent; MapOverlay ticks it every frame.
@@ -55,6 +58,14 @@ const PEEL = 0.01;
  * the physics rounded the distance to nothing - never a surface below.
  */
 const MAX_SKIPS = 4;
+/**
+ * The most casts one cell may make, honest hits included. L + MAX_SKIPS + a
+ * dozen decks with room to spare; the only constant bound on a cell once the
+ * layer cap stopped ending it (a cast that keeps answering just below its
+ * origin is otherwise bounded by floorY alone: thousands of casts in one cell,
+ * and run() checks its budget only between cells).
+ */
+const MAX_CASTS = 64;
 
 /**
  * Samples run to the first multiple of `step` at or past the far edge, so no
@@ -126,12 +137,14 @@ export function createJob(plan, cast, { layers = MAX_LAYERS, topY = 200, floorY 
     let y = topY;
     let skips = 0;
     let k = 0;
-    // Not `k < L`: the cast goes on past the cap until it misses or reaches
-    // floorY, so the LAST slot holds the lowest surface - the floor under a
-    // roof - not merely the fourth from the top (see the header).
+    let casts = 0;
+    // Not `k < L`: the cast goes on past the cap until it misses, reaches
+    // floorY or spends MAX_CASTS, so the LAST slot holds the lowest surface -
+    // the floor under a roof - not merely the fourth from the top (see the header).
     for (;;) {
       const drop = y - floorY;
       if (!(drop > 0)) break;
+      if (++casts > MAX_CASTS) break;
       const h = cast(x, y, z, drop);
       if (typeof h !== 'number' || !Number.isFinite(h)) break;
       if (h >= y) {

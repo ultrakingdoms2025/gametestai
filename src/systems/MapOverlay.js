@@ -1190,12 +1190,14 @@ export class MapOverlay {
 
     /* `persistent` exempts it from the fade timer and from pool recycling — a
      * placed item is a feature of the map, not litter from a firefight, and must
-     * still be there when the player comes back. `snap:false` honours the height
-     * the admin authored, which is what a crate on a rooftop ledge needs. Both
-     * are exactly how `Interiors` places authored world caches. */
+     * still be there when the player comes back. For COLLECTIBLE items (those with
+     * contents), snap to ground so players can reach them. For visual-only items
+     * (no contents), preserve authored height like a rooftop crate. Both match
+     * how `Interiors` places authored world caches. */
+    const hasContents = contents && contents.length > 0;
     const pickup = this.loot.spawn(new THREE.Vector3(p.x, p.y, p.z), contents, {
       persistent: true,
-      snap: false,
+      snap: hasContents,  // Snap collectible items to ground; preserve height for visual-only items
       tag: `overlay:${entry.id}`,
     });
 

@@ -17,10 +17,11 @@ import { APPLIER_REASON_TEXT } from './mapEditorState';
  * `mapLayoutContract.test.ts` reads `GroundSampler.js`, and holds the two sets equal — both directions, so a
  * reason the game DROPS is noticed too, rather than living on as a label nothing can reach.
  *
- * Two shapes are read: the plain `reason: 'word'` literal, and the one ternary — `reason: cond ? 'a' : 'b'` —
- * that chooses between two. A third shape the game may grow (a variable, a lookup) would be read as NOTHING,
- * and the set comparison would then fail on the site's extra key, which is the loud failure wanted: a reason
- * this test cannot read is a reason it cannot pin.
+ * Two shapes are read, in either quote style: the plain `reason: 'word'` (or `reason: "word"`) literal, and the
+ * one ternary — `reason: cond ? 'a' : 'b'` — that chooses between two. A shape this cannot read — a template
+ * literal, a variable, a lookup — is read as NOTHING. If the site labels that reason too, the set comparison
+ * fails loud on the site's extra key; if the site never labelled it, a NEW reason in an unreadable shape passes
+ * SILENTLY — the residual blindness of a textual pin, so keep every reason a quoted literal.
  *
  * An absent game file SKIPS, with a message that says so, never passes: a pin that passed on an absent file would
  * be the gate-that-measures-nothing shape this repository has paid for many times over.
@@ -29,13 +30,13 @@ import { APPLIER_REASON_TEXT } from './mapEditorState';
 const APPLIER = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'systems', 'MapOverlay.js');
 const NOT_MERGED = 'game branch not merged here; the pin is inert until both branches are in one tree';
 
-/** Every reason literal the applier can push, from the two shapes it is written in. */
+/** Every reason literal the applier can push, from the two shapes it is written in, in either quote style. */
 function applierReasons(src: string): string[] {
   const found = new Set<string>();
-  for (const m of src.matchAll(/reason: '([a-z-]+)'/g)) found.add(m[1]);
-  for (const m of src.matchAll(/reason: [^\n]*?\? '([a-z-]+)' : '([a-z-]+)'/g)) {
-    found.add(m[1]);
+  for (const m of src.matchAll(/reason: (['"])([a-z-]+)\1/g)) found.add(m[2]);
+  for (const m of src.matchAll(/reason: [^\n]*?\? (['"])([a-z-]+)\1 : (['"])([a-z-]+)\3/g)) {
     found.add(m[2]);
+    found.add(m[4]);
   }
   return [...found].sort();
 }
@@ -48,14 +49,19 @@ describe('the reasons contract between MapOverlay.js and mapEditorState.ts', () 
     expect(game).toEqual([...APPLIER_REASON_TEXT.keys()].sort());
   });
 
-  it('reads both shapes the game writes a reason in — the plain literal and the ternary', () => {
+  it('reads both shapes the game writes a reason in — the plain literal and the ternary — in either quote style', () => {
     const src = [
       "      unresolved.push({ id: String(entry.id ?? ''), reason: 'superseded' });",
       "      unresolved.push({ id: String(entry.id ?? ''), reason: version > builtVersion ? 'pending-rebuild' : 'id' });",
       "      unresolved.push({ id: String(entry.id ?? ''), reason: 'name' });",
       "      unresolved.push({ id: String(entry.id ?? ''), reason: 'name' });",
+      '      unresolved.push({ id: String(entry.id ?? ""), reason: "www" });',
+      '      unresolved.push({ id: String(entry.id ?? ""), reason: pooled ? "pool" : "item" });',
       "      // a comment that says reason `span` in backticks is not a literal",
+      "      unresolved.push({ id: String(entry.id ?? ''), reason: `tpl` });",
     ].join('\n');
-    expect(applierReasons(src)).toEqual(['id', 'name', 'pending-rebuild', 'superseded']);
+    // `www`, `pool` and `item` are read from the double-quoted lines; the backticked comment and the template
+    // literal `tpl` are not — the shapes the header says this pin cannot see.
+    expect(applierReasons(src)).toEqual(['id', 'item', 'name', 'pending-rebuild', 'pool', 'superseded', 'www']);
   });
 });

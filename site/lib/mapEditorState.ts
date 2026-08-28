@@ -114,6 +114,10 @@ export function moveEntryFor(entries: Draft[], name: string): (Draft & MoveEntry
  * `rotationY: undefined` CLEARS an existing rotation — the argument is the
  * whole new transform, not a patch. A caller that means "keep it" passes
  * the entry's own value (the panel's drag passes `mv?.rotationY`).
+ *
+ * The position is COPIED, as `placeAt` copies its config: a caller that
+ * keeps mutating its own Vec3 (a drag's scratch point) must not reach into
+ * the document through it.
  */
 export function upsertMoveFor(
   entries: Draft[],
@@ -126,14 +130,14 @@ export function upsertMoveFor(
   if (existing) {
     return entries.map((e) => {
       if (e !== existing) return e;
-      const next: Draft & MoveEntry = { ...existing, position };
+      const next: Draft & MoveEntry = { ...existing, position: { ...position } };
       if (rotationY === undefined) delete next.rotationY;
       else next.rotationY = rotationY;
       return next;
     });
   }
   const key = mint();
-  const entry: Draft & MoveEntry = { _key: key, kind: 'move', id: key, target: { name }, position };
+  const entry: Draft & MoveEntry = { _key: key, kind: 'move', id: key, target: { name }, position: { ...position } };
   if (rotationY !== undefined) entry.rotationY = rotationY;
   return [...entries, entry];
 }

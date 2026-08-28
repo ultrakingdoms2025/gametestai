@@ -94,6 +94,16 @@ describe('layoutAgeText', () => {
   it('treats an unparsable stamp as no layout', () => {
     expect(layoutAgeText('yesterday', now)).toBe(NO_LAYOUT_TEXT);
   });
+  it('is pinned at every threshold, and a future stamp reads as just now', () => {
+    expect(layoutAgeText('2026-08-27T11:59:00.100Z', now)).toBe('reported just now'); // 59.9 s
+    expect(layoutAgeText('2026-08-27T11:59:00Z', now)).toBe('reported 1 min ago'); // 60 s
+    expect(layoutAgeText('2026-08-27T11:00:01Z', now)).toBe('reported 59 min ago'); // 3599 s
+    expect(layoutAgeText('2026-08-27T11:00:00Z', now)).toBe('reported 1 h ago'); // 3600 s
+    expect(layoutAgeText('2026-08-26T12:00:01Z', now)).toBe('reported 23 h ago'); // 86399 s
+    expect(layoutAgeText('2026-08-26T11:00:00Z', now)).toBe('reported 1 d ago'); // 90 000 s
+    // A clock ahead of the server's must not print a negative age.
+    expect(layoutAgeText('2026-08-27T13:00:00Z', now)).toBe('reported just now');
+  });
 });
 
 describe('fmt', () => {
@@ -162,6 +172,14 @@ describe('upsertMoveFor', () => {
     const turned = upsertMoveFor([], 'r', { x: 0, y: 0, z: 0 }, 1.5, mint);
     expect(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, undefined, mint)[0].rotationY).toBeUndefined();
     expect(upsertMoveFor(turned, 'r', { x: 1, y: 0, z: 0 }, turned[0].rotationY, mint)[0].rotationY).toBe(1.5);
+  });
+  it('stores a copy of the position, as placeAt copies its config', () => {
+    const position = { x: 1, y: 2, z: 3 };
+    const added = upsertMoveFor([], 'c', position, undefined, mint);
+    expect(added[0].position).toEqual(position);
+    expect(added[0].position).not.toBe(position);
+    const updated = upsertMoveFor(added, 'c', position, undefined, mint);
+    expect(updated[0].position).not.toBe(position);
   });
 });
 

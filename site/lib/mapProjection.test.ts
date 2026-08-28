@@ -22,6 +22,7 @@ import {
   toScreen,
   toWorld,
   zoomAt,
+  type MapView,
 } from './mapProjection';
 
 const bounds = { min: { x: -100, y: 0, z: -50 }, max: { x: 100, y: 10, z: 50 } };
@@ -59,6 +60,15 @@ describe('createView', () => {
     expect(v.scale).toBeGreaterThanOrEqual(MIN_SCALE);
     expect(Number.isFinite(v.ox)).toBe(true);
   });
+
+  it('stays finite on a canvas smaller than its own padding', () => {
+    // 30 px minus 2×24 px padding is negative; the inner box floors at 1 px
+    const v = createView(bounds, 30, 30);
+    expect(Number.isFinite(v.scale)).toBe(true);
+    expect(v.scale).toBeGreaterThanOrEqual(MIN_SCALE);
+    expect(Number.isFinite(v.ox)).toBe(true);
+    expect(Number.isFinite(v.oy)).toBe(true);
+  });
 });
 
 describe('toScreen / toWorld', () => {
@@ -92,6 +102,20 @@ describe('zoomAt', () => {
     const v = createView(bounds, 640, 480);
     expect(zoomAt(v, 0, 0, 1e9).scale).toBe(MAX_SCALE);
     expect(zoomAt(v, 0, 0, 1e-9).scale).toBe(MIN_SCALE);
+  });
+
+  it('keeps the cursor point fixed even when the clamp bites', () => {
+    // The ratio applied to the origin must be clamped/scale, not the requested
+    // factor: a factor-based origin would fling the metre under the cursor
+    // ~1e9 px away the moment the clamp engaged.
+    const v = createView(bounds, 640, 480);
+    const cursor = { sx: 500, sy: 100 };
+    const before = toWorld(v, cursor.sx, cursor.sy);
+    const z = zoomAt(v, cursor.sx, cursor.sy, 1e9);
+    expect(z.scale).toBe(MAX_SCALE);
+    const after = toWorld(z, cursor.sx, cursor.sy);
+    expect(after.x).toBeCloseTo(before.x, 9);
+    expect(after.z).toBeCloseTo(before.z, 9);
   });
 });
 
@@ -130,6 +154,13 @@ describe('hitTest', () => {
   it('is the NEAREST, not the first listed, when two are in reach', () => {
     const s = toScreen(v, 7, 0); // 12.32 px from a (listed first), 5.28 px from b
     expect(hitTest(v, cands, s.sx, s.sy, 20)?.key).toBe('b');
+  });
+  it('an exact tie goes to the first listed', () => {
+    // Integer view so both distances are exactly 10 px, not 10 ± an ulp.
+    const tv: MapView = { scale: 2, ox: 100, oy: 100, w: 200, h: 200 };
+    const pair = [{ key: 'first', x: 0, z: 0 }, { key: 'second', x: 10, z: 0 }];
+    expect(hitTest(tv, pair, 110, 100, 12)?.key).toBe('first');
+    expect(hitTest(tv, [pair[1], pair[0]], 110, 100, 12)?.key).toBe('second');
   });
   it('misses when nothing is within tolerance', () => {
     const s = toScreen(v, 5, 0); // 8.8 px from both a and b

@@ -14,6 +14,9 @@ import type { LayoutBounds } from './mapLayout';
  * looks like the in-game minimap and a rect's corners can be projected with
  * the minimap's own formula (`rectCorners`).
  *
+ * All screen coordinates are CSS px; `fit()` applies the DPR transform, so
+ * this module never sees it.
+ *
  * ── Why a view is a value ──────────────────────────────────────────────────
  *
  * `zoomAt`, `pan` and `resizeView` return a new view instead of mutating
@@ -116,14 +119,16 @@ export function hitTest(
 }
 
 /** The four world-space corners of a (possibly rotated) rect, in `Minimap.js` order and formula. */
-export function rectCorners(s: { x: number; z: number; w: number; d: number; rotation?: number }): [number, number][] {
-  const hw = (s.w ?? 1) * 0.5;
-  const hd = (s.d ?? 1) * 0.5;
+export function rectCorners(
+  s: { x: number; z: number; w: number; d: number; rotation?: number }
+): [[number, number], [number, number], [number, number], [number, number]] {
+  const hw = s.w * 0.5;
+  const hd = s.d * 0.5;
   const rot = s.rotation ?? 0;
   const cs = Math.cos(rot);
   const sn = Math.sin(rot);
-  const local: [number, number][] = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
-  return local.map(([lx, lz]) => [s.x + lx * cs - lz * sn, s.z + lx * sn + lz * cs]);
+  const corner = (lx: number, lz: number): [number, number] => [s.x + lx * cs - lz * sn, s.z + lx * sn + lz * cs];
+  return [corner(-hw, -hd), corner(hw, -hd), corner(hw, hd), corner(-hw, hd)];
 }
 
 /** A layout colour (Three numeric or CSS string) as a canvas fill/stroke string. */

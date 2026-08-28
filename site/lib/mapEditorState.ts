@@ -253,6 +253,21 @@ export function unresolvedText(reason: string): string {
 }
 
 /**
+ * The report card's two version lines. `applied` lags when the world was entered before the save (enter it again);
+ * `built` lags when the world was BUILT before it - a cached world, which only a reload rebuilds (spec §7). A build
+ * at 0 beside an applied version is a third thing, not "behind": the build reads 0 when it saw NO session (the
+ * provider is gated on the signed-in signal), so the world was built without the overlay rather than against an
+ * older one, and the line says so with the version a reload would build against.
+ */
+export function versionStatus(applied: number, built: number, saved: number): { applied: string; built: string } {
+  const word = (n: number, behind: string) => (n === saved ? '(current)' : n < saved ? behind : '(ahead of this page — reload the editor)');
+  const builtWord = built === 0 && applied > 0 && saved > 0
+    ? `(built without the overlay — not signed in at build; reload to build against v${saved})`
+    : word(built, '(behind — reload the world in game)');
+  return { applied: word(applied, '(behind — enter the world in game)'), built: builtWord };
+}
+
+/**
  * How many colliders one prop plausibly owns. Above it a remove has almost
  * certainly swept OTHER objects' colliders: a large named container — a
  * 100 m terrain tile is a catalogue name — drops every collider fully inside

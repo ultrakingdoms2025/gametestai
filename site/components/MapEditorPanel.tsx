@@ -21,6 +21,7 @@ import {
   snappedY,
   unresolvedText,
   upsertMoveFor,
+  versionStatus,
   type Draft,
   type Selected,
 } from '@/lib/mapEditorState';
@@ -638,7 +639,8 @@ export function MapEditorPanel() {
             <h2 style={{ margin: '0 0 10px', fontSize: 15 }}>What the game reports</h2>
             {report ? (
               <div style={{ display: 'grid', gap: 6, fontSize: 13, color: '#cfe6f2' }}>
-                <div>Applied version <b>{report.appliedVersion}</b> {report.appliedVersion === savedVersion ? '(current)' : '(behind — reload the world in game)'}</div>
+                <div>Applied version <b>{report.appliedVersion}</b> {versionStatus(report.appliedVersion, report.builtVersion, savedVersion).applied}</div>
+                <div>Built version <b>{report.builtVersion}</b> {versionStatus(report.appliedVersion, report.builtVersion, savedVersion).built}</div>
                 <div>{report.objects.length} named objects seen in this world</div>
                 <div>{report.applied.length} entries applied, {report.unresolved.length} unresolved</div>
                 {report.reportedAt ? (

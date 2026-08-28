@@ -87,6 +87,8 @@ export interface CatalogueObject {
 
 export interface WorldReport {
   appliedVersion: number;
+  /** The overlay version the world's BUILD consumed (spec §7); 0 when none. Stored beside `appliedVersion`, replaced on every report. */
+  builtVersion: number;
   objects: CatalogueObject[];
   applied: AppliedOutcome[];
   unresolved: UnresolvedOutcome[];
@@ -125,7 +127,7 @@ export const MAX_CATALOGUE_OBJECTS = 2000;
 
 let ensured: Promise<void> | null = null;
 
-/** Create the two tables and add the layout columns to the reports table. Memoised as a promise — see the note above. */
+/** Create the two tables and add the layout and built_version columns to the reports table. Memoised as a promise — see the note above. */
 export function ensureMapOverlaySchema(db: Db): Promise<void> {
   if (!ensured) {
     ensured = (async () => {
@@ -168,6 +170,11 @@ export function ensureMapOverlaySchema(db: Db): Promise<void> {
       await db.query(`
         ALTER TABLE map_world_reports
           ADD COLUMN IF NOT EXISTS layout_schema INTEGER NOT NULL DEFAULT 0
+      `);
+      // Stage 2: which version the world was BUILT against, beside which one it applied.
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS built_version INTEGER NOT NULL DEFAULT 0
       `);
     })().catch((err) => {
       // A failed ensure must not be remembered as done, or every later request
@@ -467,8 +474,8 @@ export async function recordWorldReport(
 
   await db.query(
     `INSERT INTO map_world_reports
-       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, reported_at)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, NOW())
+       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, built_version, reported_at)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, NOW())
      ON CONFLICT (world_id) DO UPDATE
        SET applied_version = EXCLUDED.applied_version,
            objects         = EXCLUDED.objects,
@@ -485,6 +492,8 @@ export async function recordWorldReport(
                                ELSE map_world_reports.layout
                              END,
            layout_schema   = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema),
+           -- A report says what its build consumed; it does not merge. Plain replace, outside the layout CASE.
+           built_version   = EXCLUDED.built_version,
            reported_at     = NOW()`,
     [
       worldId,
@@ -494,6 +503,7 @@ export async function recordWorldReport(
       JSON.stringify(unresolved),
       JSON.stringify(patch),
       patch.schema === LAYOUT_SCHEMA ? LAYOUT_SCHEMA : 0,
+      clampVersion(report.builtVersion),
     ]
   );
   return outcome;
@@ -502,7 +512,7 @@ export async function recordWorldReport(
 export async function readWorldReport(db: Db, worldId: string): Promise<StoredWorldReport | null> {
   await ensureMapOverlaySchema(db);
   const r = await db.query(
-    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, reported_at
+    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, built_version, reported_at
        FROM map_world_reports WHERE world_id = $1`,
     [worldId]
   );
@@ -510,6 +520,7 @@ export async function readWorldReport(db: Db, worldId: string): Promise<StoredWo
   if (!row) return null;
   return {
     appliedVersion: Number(row.applied_version ?? 0),
+    builtVersion: Number(row.built_version ?? 0),
     objects: Array.isArray(row.objects) ? (row.objects as CatalogueObject[]) : [],
     applied: Array.isArray(row.applied) ? (row.applied as AppliedOutcome[]) : [],
     unresolved: Array.isArray(row.unresolved) ? (row.unresolved as UnresolvedOutcome[]) : [],

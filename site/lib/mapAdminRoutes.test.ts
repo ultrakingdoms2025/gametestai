@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MAX_LAYOUT_BYTES, encodeHeights, type WorldLayout } from '@/lib/mapLayout';
 import type { LayoutOutcome } from '@/lib/mapOverlay';
+import { MAP_OVERLAY_SCHEMA, normaliseOverlayEntries } from '@/lib/mapOverlaySchema';
 
 /**
  * WHO CAN REACH THE MAP EDITOR.
@@ -208,7 +209,7 @@ describe('GET /api/admin/map/[world]', () => {
 
   /**
    * `layout` is lifted BESIDE `report`, not left inside it: the panel that reads `report` today
-   * must see exactly the five fields it always did, so the test pins the absence as well as the presence.
+   * must see exactly the six fields it now reads (stage 2 added `builtVersion`), so the test pins the absence as well as the presence.
    */
   it('returns the stored layout and its age from the one report read, beside an unchanged report', async () => {
     signedInAs(ADMIN);
@@ -216,14 +217,23 @@ describe('GET /api/admin/map/[world]', () => {
       schema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [],
       ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
     };
-    const report = { appliedVersion: 2, objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
+    const report = { appliedVersion: 2, builtVersion: 1, objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
     store.readWorldReport.mockResolvedValue({ ...report, layout });
     const body = await (await get()).json();
     expect(body.layout).toEqual(layout);
     expect(body.reportedAt).toBe(report.reportedAt);
     expect(body.report).toEqual(report);
+    expect(body.report.builtVersion).toBe(1);
     expect(body.report.layout).toBeUndefined();
     expect(store.readWorldReport).toHaveBeenCalledTimes(1);
+  });
+
+  // The "row written before the column" half is proved at the store (Task 4.1's readWorldReport case); this proves the route forwards the number it was given.
+  it('forwards builtVersion 0 from the store as 0, not undefined', async () => {
+    signedInAs(ADMIN);
+    store.readWorldReport.mockResolvedValue({ appliedVersion: 2, builtVersion: 0, objects: [], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z', layout: null });
+    const body = await (await get()).json();
+    expect(body.report.builtVersion).toBe(0);
   });
 });
 
@@ -597,6 +607,14 @@ describe('POST /api/admin/map/report', () => {
       text.mockRestore();
     }
   });
+
+  it('forwards builtVersion to the store explicitly, and 0 when the game did not send one', async () => {
+    signedInAs(ADMIN);
+    await post({ ...REPORT, builtVersion: 4 });
+    expect(store.recordWorldReport.mock.calls[0][2].builtVersion).toBe(4);
+    await post(REPORT);
+    expect(store.recordWorldReport.mock.calls[1][2].builtVersion).toBe(0);
+  });
 });
 
 describe('GET /api/game/map-overlay', () => {
@@ -633,5 +651,31 @@ describe('GET /api/game/map-overlay', () => {
     signedInAs('player@example.com');
     const res = await get('not-a-world');
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * `readCurrentOverlay` migrates every row on the way out (`rowEntries` → `normaliseOverlayEntries`), so the entries
+   * the game receives are always the CURRENT schema's shape whatever the row was written under - and the number beside
+   * them must say so. The row's own `schema` stays what it was, as history, on the admin read; the game never sees it.
+   * Signed out is the 401 above, which the game's `_read` treats as "no overlay" without a word.
+   */
+  it('serves the CONSTANT schema over migrated entries: a v1 row holding a hidden move arrives as schema 2 with a remove', async () => {
+    signedInAs('player@example.com');
+    const entries = normaliseOverlayEntries([{ kind: 'move', id: 'h1', target: { name: 'crate' }, hidden: true }]).entries;
+    store.readCurrentOverlay.mockResolvedValue({ worldId: 'station', version: 4, schema: 1, entries, author: null, note: null, createdAt: null });
+    const body = await (await get()).json();
+    expect(body).toEqual({ world: 'station', schema: 2, version: 4, entries: [{ kind: 'remove', id: 'h1', target: { name: 'crate' } }], admin: false });
+    expect(MAP_OVERLAY_SCHEMA).toBe(2);
+  });
+
+  it('answers 503 when the store fails, so the world stays enterable with no overlay', async () => {
+    signedInAs('player@example.com');
+    store.readCurrentOverlay.mockRejectedValue(new Error('down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await get()).status).toBe(503);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

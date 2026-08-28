@@ -60,6 +60,7 @@ import {
   selectionKey,
   snappedY,
   unresolvedText,
+  versionStatus,
   upsertMoveFor,
   type Draft,
   type Selected,
@@ -299,6 +300,29 @@ describe('unresolvedText', () => {
   it('prints a reason it does not know as it came, so a reason the game grows first is still visible', () => {
     expect(unresolvedText('not-a-reason')).toBe('not-a-reason');
     expect(unresolvedText('')).toBe('');
+  });
+});
+
+describe('versionStatus', () => {
+  it('tells "enter the world" (applied lags) from "reload the world" (built lags), and says when the page is behind', () => {
+    expect(versionStatus(3, 3, 3)).toEqual({ applied: '(current)', built: '(current)' });
+    expect(versionStatus(2, 2, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(behind — reload the world in game)' });
+    expect(versionStatus(3, 2, 3)).toEqual({ applied: '(current)', built: '(behind — reload the world in game)' });
+    expect(versionStatus(4, 4, 3)).toEqual({ applied: '(ahead of this page — reload the editor)', built: '(ahead of this page — reload the editor)' });
+  });
+
+  /**
+   * 0 is not "stale": the build reads 0 when there was NO session at build time (the provider is gated on the
+   * signed-in signal), so a world that applied a version while its build saw nothing was built without the
+   * overlay, not against an older one. Said as such, with the version a reload would build against.
+   */
+  it('a build at 0 beside an applied version is "built without the overlay", not "behind"', () => {
+    expect(versionStatus(3, 0, 3)).toEqual({ applied: '(current)', built: '(built without the overlay — not signed in at build; reload to build against v3)' });
+    expect(versionStatus(2, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(built without the overlay — not signed in at build; reload to build against v3)' });
+    // Nothing applied either: the world was entered before any save, and both lines say behind.
+    expect(versionStatus(0, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(behind — reload the world in game)' });
+    // Nothing saved yet: 0 everywhere is current.
+    expect(versionStatus(0, 0, 0)).toEqual({ applied: '(current)', built: '(current)' });
   });
 });
 

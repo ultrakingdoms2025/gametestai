@@ -52,7 +52,7 @@ export async function POST(request: Request) {
   if (Buffer.byteLength(text, 'utf8') > MAX_LAYOUT_BYTES) return NextResponse.json({ error: 'Report too large' }, { status: 413 });
 
   let body: {
-    world?: unknown; appliedVersion?: unknown; objects?: unknown; applied?: unknown; unresolved?: unknown;
+    world?: unknown; appliedVersion?: unknown; builtVersion?: unknown; objects?: unknown; applied?: unknown; unresolved?: unknown;
     layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown;
   };
   try {
@@ -79,6 +79,8 @@ export async function POST(request: Request) {
     // the route, decides what a usable grid is, keeps the prior one if not, and says which.
     const outcome = await recordWorldReport(db, world, {
       appliedVersion: Number(body.appliedVersion) || 0,
+      // Clamp-never-refuse: the store floors and caps it; an absent field is 0, which is what a pre-stage-2 game sends.
+      builtVersion: Number(body.builtVersion) || 0,
       objects: Array.isArray(body.objects) ? (body.objects as never[]) : [],
       applied: Array.isArray(body.applied) ? (body.applied as never[]) : [],
       unresolved: Array.isArray(body.unresolved) ? (body.unresolved as never[]) : [],

@@ -59,7 +59,7 @@ const suite = URL_ ? describe : describe.skip;
 
 const WORLD = 'test-overlay-alpha';
 const OTHER = 'test-overlay-beta';
-const PLAIN = { appliedVersion: 1, objects: [], applied: [], unresolved: [] };
+const PLAIN = { appliedVersion: 1, builtVersion: 0, objects: [], applied: [], unresolved: [] };
 const BOUNDS = { min: { x: -20, y: 0, z: -20 }, max: { x: 20, y: 10, z: 20 } };
 /** A 3×3 single-layer grid at 20 m, every cell at `cm`. */
 function ground(cm: number) {
@@ -248,6 +248,7 @@ suite('mapOverlay (integration)', () => {
 
     await recordWorldReport(db, WORLD, {
       appliedVersion: 1,
+      builtVersion: 0,
       objects: [{ name: 'crate.a', position: { x: 0, y: 0, z: 0 } }],
       applied: [{ id: 'm1', ok: true, colliders: 2 }],
       unresolved: [],
@@ -258,6 +259,7 @@ suite('mapOverlay (integration)', () => {
 
     await recordWorldReport(db, WORLD, {
       appliedVersion: 2,
+      builtVersion: 0,
       objects: [
         { name: 'crate.a', position: { x: 0, y: 0, z: 0 } },
         { name: 'crate.b', position: { x: 1, y: 0, z: 0 } },
@@ -278,6 +280,7 @@ suite('mapOverlay (integration)', () => {
     }));
     await recordWorldReport(db, WORLD, {
       appliedVersion: 0,
+      builtVersion: 0,
       objects,
       applied: [],
       unresolved: [],
@@ -290,7 +293,7 @@ suite('mapOverlay (integration)', () => {
     resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
     resetMapOverlaySchemaMemo(); await ensureMapOverlaySchema(db);
     const cols = await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'map_world_reports'`);
-    expect(cols.rows.map((r) => r.column_name)).toEqual(expect.arrayContaining(['layout', 'layout_schema']));
+    expect(cols.rows.map((r) => r.column_name)).toEqual(expect.arrayContaining(['layout', 'layout_schema', 'built_version']));
   });
 
   it('reads layout null, with a fresh reportedAt, for a world whose reports never carried one', async () => {
@@ -354,6 +357,16 @@ suite('mapOverlay (integration)', () => {
     await db.query('UPDATE map_world_reports SET layout = $2::jsonb, layout_schema = 0 WHERE world_id = $1', [WORLD, JSON.stringify({ ground: ground(150) })]);
     await recordWorldReport(db, WORLD, { ...PLAIN, layoutSchema: 1, bounds: BOUNDS, shapes: [] });
     expect((await readWorldReport(db, WORLD))?.layout).toEqual({ schema: 1, bounds: BOUNDS, shapes: [], ground: null });
+  });
+
+  it('stores builtVersion, reads it back, and replaces it on every report whatever the layout did', async () => {
+    await recordWorldReport(db, WORLD, { ...PLAIN, builtVersion: 3, layoutSchema: 1, bounds: BOUNDS, shapes: [], ground: ground(100) });
+    expect((await readWorldReport(db, WORLD))?.builtVersion).toBe(3);
+    await recordWorldReport(db, WORLD, { ...PLAIN, builtVersion: 5 });
+    const after = await readWorldReport(db, WORLD);
+    expect(after?.builtVersion).toBe(5);
+    // The layout merge is untouched by it: a layout-less second report keeps the ground the first one stored.
+    expect(after?.layout?.ground).toEqual(ground(100));
   });
 });
 
@@ -551,6 +564,46 @@ describe('recordWorldReport — the SQL it emits', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/** The third column, and the SQL that carries it - pinned on the recording client because CI never runs the DDL. */
+describe('built_version', () => {
+  it('ensure adds built_version with ADD COLUMN IF NOT EXISTS and a default, after the layout columns', async () => {
+    resetMapOverlaySchemaMemo();
+    const db = makeFakeDb();
+    await ensureMapOverlaySchema(db);
+    expect(db.matching('ALTER TABLE map_world_reports').map((q) => flat(q.sql))).toEqual([
+      "ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS layout JSONB NOT NULL DEFAULT '{}'::jsonb",
+      'ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS layout_schema INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS built_version INTEGER NOT NULL DEFAULT 0',
+    ]);
+    resetMapOverlaySchemaMemo();
+  });
+
+  it('the upsert binds built_version as the eighth parameter, clamped, and replaces it outright - never under the layout CASE', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, builtVersion: 3.7 });
+    const q = db.only('INSERT INTO map_world_reports');
+    expect(flat(q.sql)).toContain('layout_schema, built_version, reported_at)');
+    expect(flat(q.sql)).toContain('$7, $8, NOW())');
+    expect(flat(q.sql)).toContain('built_version = EXCLUDED.built_version,');
+    expect(q.params[7]).toBe(3);
+    expect(q.params[6]).toBe(0);
+    // The same clamp as applied_version: floor 0, cap 2^31 - 1, never refuse (a forged 1e300 would refuse the whole row).
+    for (const [raw, clamped] of [[-1, 0], ['x', 0], [undefined, 0], [12, 12], [1e300, 2147483647], [2147483648, 2147483647]] as const) {
+      db.clear();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, builtVersion: raw as unknown as number });
+      expect(db.only('INSERT INTO map_world_reports').params[7], String(raw)).toBe(clamped);
+    }
+  });
+
+  it('readWorldReport reads it back, and 0 for a row written before the column', async () => {
+    const row = { applied_version: 2, objects: [], applied: [], unresolved: [], layout: {}, layout_schema: 0, reported_at: '2026-08-28T00:00:00.000Z' };
+    const five = makeFakeDb((sql) => (sql.startsWith('SELECT applied_version') ? [{ ...row, built_version: 5 }] : undefined));
+    expect((await readWorldReport(five, 'w'))?.builtVersion).toBe(5);
+    const old = makeFakeDb((sql) => (sql.startsWith('SELECT applied_version') ? [row] : undefined));
+    expect((await readWorldReport(old, 'w'))?.builtVersion).toBe(0);
   });
 });
 

@@ -282,6 +282,7 @@ function syntheticReport() {
   return {
     world: WORLD,
     appliedVersion: 0,
+    builtVersion: 0,
     objects: [CRATE, POST],
     applied: [],
     unresolved: [],
@@ -776,6 +777,47 @@ async function main() {
     assert(await evaluate(`[...document.querySelectorAll('[data-e2e="version-row"]')].some(r => r.textContent.includes('v${savedVersion}'))`), 'the version list shows the new version');
     await shot('07-saved');
     step('saved', msg);
+
+    /* ---- 7. remove a reported object, save, and see the REMOVE row survive a reload ---- */
+    await choose('[data-e2e="object-select"]', 'o:e2e:post');
+    await waitFor(async () => (await textOf('[data-e2e="sel-name"]'))?.includes('e2e:post'), { what: 'the selection panel to show e2e:post' });
+    await clickSel('[data-e2e="remove"]');
+    const removeRow = `[...document.querySelectorAll('[data-e2e="pending-row"]')].some(li => li.textContent.includes('e2e:post') && li.textContent.includes('REMOVE'))`;
+    await waitFor(() => evaluate(removeRow), { what: 'a REMOVE row for e2e:post' });
+    await waitFor(() => evaluate(`!${q('[data-e2e="save"]')}.disabled`), { what: 'Save to be enabled after the conflict pass' });
+    await clickSel('[data-e2e="save"]');
+    const msg2 = await waitFor(async () => {
+      const m = await textOf('[data-e2e="message"]');
+      /* Not step 6's message: save() clears it synchronously, but the poll must not read it for the frame it survives. */
+      if (m?.startsWith('Saved version') && m !== msg) return m;
+      if (m && !m.startsWith('Saved version')) { abortReason = `save refused: ${m}`; return false; }
+      return null;
+    }, { what: 'the second save message', timeout: 60000 });
+    assert(Number(/Saved version (\d+)/.exec(msg2)[1]) === savedVersion + 1, `second save: ${msg2}`);
+    /* The game's side of the remove, staged through the real report route: the saved document's remove entry,
+     * applied with `colliders: 0` ("hidden, but nothing dropped"), is what the report card must warn about; the
+     * applied and built versions are the one just saved, so both version lines read current after the reload. */
+    const current = await evaluate(`fetch('/api/admin/map/${WORLD}').then(r => r.json())`, true);
+    const removeEntry = (current.overlay?.entries ?? []).find((e) => e.kind === 'remove' && e.target?.name === 'e2e:post');
+    assert(removeEntry, `the saved document holds no remove of e2e:post: ${JSON.stringify(current.overlay?.entries ?? [])}`);
+    const applied = JSON.stringify({ ...syntheticReport(), appliedVersion: savedVersion + 1, builtVersion: savedVersion + 1, applied: [{ id: removeEntry.id, ok: true, colliders: 0 }] });
+    const reported = await evaluate(`fetch('/api/admin/map/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(applied)} }).then(async (r) => ({ status: r.status, text: await r.text() }))`, true);
+    assert(reported.status === 200, `report route answered ${reported.status}: ${reported.text}`);
+    /* The same reload-and-settle step 2 does: a new document has a new performance.timeOrigin. */
+    const t1 = await evaluate('performance.timeOrigin');
+    await call('Page.reload');
+    await waitFor(async () => (await evaluate('performance.timeOrigin')) !== t1, { what: 'the reloaded document' });
+    await waitForSelector(worldSel, 'the editor');
+    if (WORLD !== 'station') {
+      await waitFor(() => evaluate(`!${q(worldSel)}.disabled`), { what: 'the initial load to finish before switching world' });
+      await choose(worldSel, WORLD);
+      await waitFor(() => evaluate(`(() => { const el = ${q(worldSel)}; return el.value === ${JSON.stringify(WORLD)} && !el.disabled; })()`), { what: `the ${WORLD} load to finish` });
+    }
+    await waitFor(async () => /^Saved \(v\d+\)$/.test((await textOf('[data-e2e="save"]')) ?? ''), { what: 'the Save button to settle after the reload' });
+    await waitFor(() => evaluate(removeRow), { what: 'the REMOVE row after a reload' });
+    await waitFor(async () => (await textOf('[data-e2e="report-remove-warnings"]'))?.includes('may still block'), { what: 'the colliders: 0 warning on the report card' });
+    await shot('08-removed');
+    step('removed', `e2e:post removed, saved as v${savedVersion + 1}, still removed after a reload, and the card warns it may still block`);
   } catch (e) {
     report.failure ??= abortReason ?? e.message;
     report.pageConsole = pageLog;

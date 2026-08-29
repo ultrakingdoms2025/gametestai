@@ -188,17 +188,18 @@ test('no avenue legend is drawn across, and the plaza pads are on the record', a
   const avenue = [...partial.keys()].filter((k) => !k.startsWith('keepclear'));
   assert.deepEqual(avenue, [], `${avenue.length} avenue legend(s) are drawn across again - check the strip/legend offsets in _buildDeck`);
 
-  /* ── The plaza: a different placer, still wrong, recorded not hidden ──────
-   * `keepclear` pads come from the plaza decal scatter, which places by bearing
-   * and radius and rejects only against OTHER DECALS - never against the props
-   * that later stand on them. Twelve are partly under something, and one of
-   * them is the pad photographed with three shipping containers parked across
-   * its lettering.
+  /* ── The plaza: fixed too, and also held at zero ─────────────────────────
+   * The twelve `keepclear` pads that were partly covered were not placed as
+   * signs at all. `_buildDressing`'s near-field pass is described in its own
+   * note as "weighted onto stain / cable / dock cells, small and numerous",
+   * and cell 3 - KEEP CLEAR - was in that weighting array. One mark in eight
+   * of three hundred, so about thirty-seven LEGENDS were stamped through the
+   * near field at 0.7 to 3.3 m: too small to read, and dense enough to land
+   * under the props the same function scatters.
    *
-   * Pinned as a measurement rather than asserted to zero, because fixing it is
-   * a placement-ordering change (the scatter runs before the props it must
-   * avoid) and not a number to nudge. It cannot grow unnoticed in the meantime,
-   * and when it is fixed this band comes out. */
+   * Removing it took the recognised legend triangles from 184 to 104 and the
+   * partly-covered count from twelve to none. The station lost no readable
+   * sign - everything removed was illegible at the size it was drawn. */
   const plaza = [...partial.keys()].filter((k) => k.startsWith('keepclear'));
-  assert.ok(plaza.length <= 12, `${plaza.length} plaza KEEP CLEAR pads are partly drawn over, was 12 - something new is standing on the paint`);
+  assert.deepEqual(plaza, [], `${plaza.length} plaza KEEP CLEAR pads are partly drawn over`);
 });

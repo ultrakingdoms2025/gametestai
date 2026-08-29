@@ -9507,7 +9507,15 @@ export class StationWorld extends World {
       const th = rng() * Math.PI * 2;
       const rr = 9 + Math.sqrt(rng()) * 36;
       decals.push({
-        cell: [10, 11, 8, 10, 11, 7, 3, 10][Math.floor(rng() * 8)],
+        /* Texture cells only - stain, cable, dock and the scuff crosshatch, as
+         * the note above says. Cell 3 is KEEP CLEAR and was in this list: one
+         * mark in eight of three hundred, so about thirty-seven LEGENDS were
+         * being stamped through the near field at 0.7 to 3.3 m, which is too
+         * small to read and dense enough to land under the props this same
+         * function scatters. Twelve of them ended up partly covered, including
+         * the pad photographed with three containers across its lettering.
+         * A legend is a placed sign, not a density weight. */
+        cell: [10, 11, 8, 10, 11, 7, 7, 10][Math.floor(rng() * 8)],
         x: Math.cos(th) * rr,
         z: Math.sin(th) * rr,
         size: 0.7 + rng() * 2.6,

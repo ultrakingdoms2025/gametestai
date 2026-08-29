@@ -7,61 +7,78 @@ import { buildStation, THREE } from './world-kit.mjs';
  * THE STATION'S FIXED PEOPLE: ARE THEY STANDING ON ANYTHING?
  *
  * ═══════════════════════════════════════════════════════════════════════════
- *  WHAT THIS FILE IS, AND WHAT IT REPLACED
+ *  BOTH ANSWERS ARE YES, AND GETTING THERE TOOK TWO WRONG MEASUREMENTS
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * "Floating fixed people" was one of the reported defects, and the plan for it
- * (R2) was a build-time sweep that would settle every actor's FEET onto the
- * surface beneath them, with the authored y as a fallback.
+ * (R2) was a build-time sweep settling every actor's FEET onto the surface
+ * beneath them. Measured before writing it, and the plan did not survive:
+ * across all 1,887 fixed actors the worst foot error is **0.21 m**, exactly one
+ * is off by more than 15 cm, and none is sunk. The ambient crowd is the same,
+ * four of 135 over 15 cm. A feet-settling sweep would have moved almost
+ * nothing, passed its own gate, and left whatever the owner saw exactly where
+ * it was. That part stands, and the first test below is what keeps it true.
  *
- * Measured first, and the plan did not survive the measurement. Probing all
- * 1,887 fixed actors against the built collision world - from the feet DOWN,
- * which matters: an earlier probe searched from two metres above the head and
- * found the tables people were sitting UNDER, reporting 333 "sunk" actors that
- * were nothing of the kind - the worst foot-height error on the station is
- * **0.21 m**, exactly one actor is off by more than 15 cm, and none is sunk.
- * The ambient crowd is the same: four of 135 off by more than 15 cm.
+ * ── The first wrong measurement ───────────────────────────────────────────
+ * A probe that searched from two metres ABOVE the head downward, which finds
+ * the tables people are sitting under and calls them the floor: 333 imaginary
+ * "sunk" actors, up to 1.98 m. `Grounding.js` records the same trap at world
+ * scale - its surface walk was capped at 10 while the hub deck is the eleventh
+ * entry down a column, "which is the whole of the NPCs-on-the-station-ceiling
+ * defect". Probe from the feet.
  *
- * A sweep that settles feet would therefore have moved almost nothing, passed
- * its own gate, and left the visible defect exactly where it was. That is this
- * repository's own named disease - a gate measuring something the game does not
- * do - and the plan for this phase had already warned about it in the abstract:
- * "R2 lands, looks like it works, and leaves floating exactly the visible ones."
+ * ── The second, which nearly changed the world ────────────────────────────
+ * The next probe asked whether a SEATED actor has something drawn at hip
+ * height, and reported 172 of 834 sitting on nothing. It was wrong, and the
+ * bug was one number:
+ *
+ *     const SEATED = new Set([2, 3, 5]);   // "sit, eat, row"
+ *
+ * `ACT_ROW` is 7. **5 is `ACT_WALK`** (StationActors.js, the activity block).
+ * So the probe raycast under 127 walking figures asking why there was no bench
+ * at their hips, found floor plating, and called every pedestrian in the outer
+ * zones a defect. The remedy that nearly shipped was a bench under each of
+ * them - planks through walking animations, dropped across the ring corridor
+ * and the radial spokes that Habitation's own header says are never built into.
+ *
+ * With the set corrected: **707 genuinely seated figures, none of them sitting
+ * on nothing.** The zone authors had already put the furniture in, and every
+ * `sit` site carries an explicit `amount` matching real geometry - 0.62 and
+ * 0.68 on the hab bunks, 0.52 on the common-bay benches, 0.48 on the site
+ * benches in the works.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- *  WHERE THE FLOATING ACTUALLY IS
+ *  SO WHAT DID THE OWNER SEE?
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Not in the feet. In the POSE. An actor set to `sit`, `eat` or `row` is drawn
- * with its hips at `seatFrom(amount)` above the floor it stands on - 0.45 m by
- * default, the bench height the zones are built around - and nothing has ever
- * checked that a bench is actually there. 172 of the 834 seated actors are
- * posed sitting on nothing: hips 45-68 cm up, with the highest drawn surface
- * beneath them at 6-8 cm, which is floor plating.
- *
- * All 172 are in the outer zones; the hub has none.
+ * Not this. Both populations this file can reach are clean on both questions.
+ * Whatever "floating fixed people" refers to is elsewhere - the mobile NPCs,
+ * which are grounded by `src/npc/Grounding.js` and are not these actors; a
+ * world other than the station; or something a downward raycast cannot see.
+ * The next move is a playthrough with real key events, not a third raycast.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- *  WHY THIS IS A TEST AND NOT A BUILD STEP
+ *  WHY THE SEAT CHECK IS A TEST AND NOT A BUILD STEP
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * The check is a raycast against drawn geometry, because that is the only thing
- * that answers the question a player is actually asking - "is that person
- * sitting on something I can see?" Physics cannot answer it: a galley bench may
- * be visible and uncollided, and seventeen of the first twenty-four suspects
- * probed were exactly that - drawn, but with no collider at seat height. Those
- * are a different and much smaller problem.
- *
- * It costs 5.1 s over 834 actors with no acceleration structure, which is fine
- * once in a suite and would not be fine in a build whose longest single frame
- * is already 3,175 ms. So it measures; the fix is authored per zone.
+ * It raycasts DRAWN geometry, because that is the question a player is asking -
+ * "is that person sitting on something I can see?" Physics cannot answer it: a
+ * bench may be visible and uncollided, which is a different and much smaller
+ * problem. It costs about 5 s with no acceleration structure, fine once in a
+ * suite and not fine in a build whose longest single frame is already 3,175 ms.
  */
 
 /** Verbatim from `StationActors.seatFrom` - a pose is judged by the rule that draws it. */
 const seatFrom = (amount) => (amount === 1 || !(amount > 0.05) ? 0.45 : amount);
 
-/** `ACT_SIT`, `ACT_EAT`, `ACT_ROW` - the three activities drawn with the hips raised. */
-const SEATED = new Set([2, 3, 5]);
+/**
+ * `ACT_SIT` = 2, `ACT_EAT` = 3, `ACT_ROW` = 7 - the three activities `_pose`
+ * routes to `_poseSit`/`_poseRow`, the only two that raise the hips off the
+ * floor. NOT 5: that is `ACT_WALK`, whose hips are at walking height and which
+ * ignores `amount` entirely. An earlier version of this set said {2, 3, 5} and
+ * so asked why there was no bench under 127 pedestrians.
+ */
+const SEATED = new Set([2, 3, 7]);
 
 const _down = new THREE.Vector3(0, -1, 0);
 
@@ -124,16 +141,14 @@ test('a seated actor has something drawn to sit on', async () => {
   console.log(`  ${seated} seated actors, ${onNothing.length} with nothing drawn at seat height`);
   console.log(`  e.g. ${JSON.stringify(onNothing.slice(0, 3))}`);
 
-  /* Pinned as a MEASUREMENT with a band, the way the plan's conflict count is:
-   * the number is the state of the world, not a target, and it exists so that
-   * whichever way it is fixed - a bench under them, or the pose changed to
-   * `stand` - the fix is measured rather than asserted. Anything that moves it
-   * UP is a zone newly seating people on air.
+  /* ZERO, not a band.
    *
-   * All 172 are in the outer zones. The hub has none, which is worth keeping
-   * true on its own: it is the world every player starts in. */
-  assert.ok(onNothing.length <= 180, `${onNothing.length} actors sit on nothing, was 172 - a zone is seating people on air`);
+   * The band this used to carry (`<= 180, was 172`) was measuring the
+   * off-by-two described in the header, and once the set was corrected it would
+   * have allowed 180 real regressions through while reading green. A gate whose
+   * bound is inherited from a wrong measurement is worse than no gate: it looks
+   * like coverage. Every seated figure in this station has furniture under it
+   * today, so the honest assertion is that it stays that way. */
+  assert.deepEqual(onNothing, [], `${onNothing.length} seated actors have nothing drawn at hip height`);
 
-  const inHub = onNothing.filter((o) => Math.hypot(o.x, o.z) < 220);
-  assert.deepEqual(inHub, [], 'the hub - the world every player starts in - now seats someone on nothing');
 });

@@ -2809,17 +2809,25 @@ body {
    DEBUG PANEL (F3)
    ========================================================================== */
 .debug {
-  left: var(--hud-l);
-  /* Sits under the credits ledger, which now owns the top-left corner. */
-  top: calc(var(--hud-t) + 4.375rem);
-  /* Capped to the left column so a diagnostics panel can never reach across a
-     narrow screen and land on the minimap. `min()` on the floor keeps the
+  /* BOTTOM-RIGHT, which is the one corner of the HUD nothing else claims.
+     It sat under the credits ledger at top-left and overlapped it as soon as
+     the ledger had anything to say; every other anchor is taken - the minimap
+     owns top-right, the killfeed the column beneath it, the help chip
+     bottom-left and the weapon strip bottom-centre. Growing upward from the
+     bottom keeps it clear of the killfeed on any screen tall enough to show
+     both. */
+  right: var(--hud-r);
+  bottom: var(--hud-b);
+  /* Capped to one HUD column so a long diagnostics line can never reach across
+     a narrow screen into the weapon strip. `min()` on the floor keeps the
      shipped 244 px wherever the column is wider than that, which is every
      desktop. */
   min-width: min(15.25rem, var(--hud-col));
   max-width: var(--hud-col);
   padding: 10px 14px 12px;
-  clip-path: var(--clip-tr);
+  /* Cut corner faces inward, up and to the left, now that the panel is
+     anchored bottom-right. */
+  clip-path: var(--clip-tl);
   display: none;
 }
 

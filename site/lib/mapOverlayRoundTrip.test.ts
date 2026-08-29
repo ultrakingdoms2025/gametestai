@@ -197,7 +197,55 @@ describe('an overlay written by the editor applies in the game', () => {
     expect(spawned[0].contents).toEqual([
       { grant: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' }, qty: 1 },
     ]);
-    expect(spawned[0].opts).toEqual({ persistent: true, snap: false, tag: 'overlay:p2' });
+    /* Absent `snap` means snap: a placement an admin dragged on a 2D map is
+     * unreachable if it keeps a height they could not see. */
+    expect(spawned[0].opts).toEqual({ persistent: true, snap: true, tag: 'overlay:p2' });
+  });
+
+  it('a placement authored with snap:false reaches the game with its height intact', async () => {
+    /* The round trip is the point. `snap` is written by the editor, narrowed by
+     * `normaliseOverlayEntries` to the literal `false` only, stored, served, and
+     * read by the game as `entry.snap !== false`. Four places to drop a boolean,
+     * and until this case existed a rooftop placement could be silently levelled
+     * anywhere along the way - which is exactly what happened when the applier
+     * briefly derived it from `contents.length` instead. */
+    const spawned: Array<{ position: { x: number; y: number; z: number }; opts: Record<string, unknown> }> = [];
+    const document = served([
+      {
+        kind: 'place',
+        id: 'p9',
+        item: { source_key: 'pack_ammo:station', name: 'Ammo', config: { effect: 'grant_ammo', ammo_item: 'bullet', amount: 10 } },
+        position: { x: 3, y: 12.5, z: 4 },
+        quantity: 1,
+        snap: false,
+      },
+    ]);
+    // It survived normalisation as the literal false, not as a truthy remnant.
+    expect(document.entries[0]).toMatchObject({ kind: 'place', snap: false });
+
+    const b = bus();
+    const system = new MapOverlay({
+      bus: b,
+      physics: new Physics(b),
+      loot: {
+        spawn: (position: { x: number; y: number; z: number }, _contents: unknown, opts: Record<string, unknown>) => {
+          spawned.push({ position: { x: position.x, y: position.y, z: position.z }, opts });
+          return { id: 'L9' };
+        },
+        despawn: () => true,
+      },
+      fetch: (async () => ({ ok: true, status: 200, json: async () => document })) as unknown as typeof fetch,
+    });
+
+    const w = world();
+    b.emit('world:changed', { id: w.id, world: w });
+    await system.applying;
+
+    expect(system.report.unresolved).toEqual([]);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].opts).toMatchObject({ persistent: true, snap: false });
+    // And the authored height reached the spawn call untouched.
+    expect(spawned[0].position.y).toBe(12.5);
   });
 
   it('a v1 hidden move reaches the game as a remove: the object is hidden AND its collider leaves the physics', async () => {

@@ -142,6 +142,22 @@ export interface PlaceEntry {
   position: Vec3;
   rotationY?: number;
   quantity: number;
+  /**
+   * Should the pickup drop to the surface under `position`?
+   *
+   * Absent means yes, which is what every placement saved before this field
+   * existed wants — so adding it migrates nothing. Only an explicit `false`
+   * opts out, and it is stored only when false for the same reason: a document
+   * should not carry a key on every row to say "the default".
+   *
+   * It exists because both answers are right somewhere. An admin drags on a 2D
+   * map and cannot see height, so a placement that keeps its authored Y is
+   * usually just unreachable — auto-collect has a 1.7 m range. But a crate put
+   * on a rooftop ledge, a gantry or a mezzanine is deliberate, and snapping it
+   * drops it to the deck with nothing to say it moved. The game reads this as
+   * `entry.snap !== false` in `_applyPlace` (src/systems/MapOverlay.js).
+   */
+  snap?: boolean;
 }
 
 export type OverlayEntry = MoveEntry | RemoveEntry | PlaceEntry;
@@ -424,6 +440,12 @@ export function normaliseOverlayEntries(raw: unknown): NormalisedOverlay {
         quantity,
       };
       if (rotationY !== undefined) entry.rotationY = rotationY;
+      /* Stored only when false. Anything that is not the literal `false` -
+       * absent, true, null, 0, the string "false" - leaves the key off and the
+       * game snaps, so a malformed value can never quietly strand a pickup in
+       * the air. `normalise` stays idempotent because `false` round-trips to
+       * `false` and everything else round-trips to absent. */
+      if (r.snap === false) entry.snap = false;
       entries.push(entry);
       seen.add(id);
       continue;

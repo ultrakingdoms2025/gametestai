@@ -75,6 +75,40 @@ describe('normaliseOverlayEntries', () => {
     expect(e.quantity).toBe(1);
   });
 
+  /**
+   * `snap` is stored ONLY when it is the literal `false`.
+   *
+   * Absent means snap, which is what every placement saved before the field
+   * existed wants — so the field migrates nothing. Keeping the key off for the
+   * default also keeps documents small and `normalise` idempotent.
+   *
+   * The narrowness matters: the game reads `entry.snap !== false`, so any value
+   * that survives normalisation without BEING `false` lands on the reachable
+   * side. A truthy-looking string like `"false"` must not become an opt-out, or
+   * a hand-edited document strands a pickup in the air with nothing to say why.
+   */
+  it('stores snap only when it is exactly false', () => {
+    const { entries } = normaliseOverlayEntries([place({ snap: false })]);
+    expect((entries[0] as Extract<OverlayEntry, { kind: 'place' }>).snap).toBe(false);
+  });
+
+  it('leaves snap off for the default, and for anything that is not the boolean false', () => {
+    for (const raw of [undefined, true, null, 0, 1, '', 'false', 'no', {}, []]) {
+      const { entries, rejected } = normaliseOverlayEntries([place({ snap: raw })]);
+      expect(rejected, JSON.stringify(raw)).toEqual([]);
+      expect(entries[0], JSON.stringify(raw)).not.toHaveProperty('snap');
+    }
+  });
+
+  it('round-trips a stored snap:false through a second normalise', () => {
+    /* Idempotence, asserted rather than assumed: the save route normalises
+     * what the editor already normalised, so a field that survived once has to
+     * survive again unchanged. */
+    const once = normaliseOverlayEntries([place({ snap: false })]).entries;
+    const twice = normaliseOverlayEntries(once).entries;
+    expect(twice).toEqual(once);
+  });
+
   it('rejects an unknown kind rather than storing it', () => {
     const { entries, rejected } = normaliseOverlayEntries([{ kind: 'delete', id: 'x' }]);
     expect(entries).toEqual([]);

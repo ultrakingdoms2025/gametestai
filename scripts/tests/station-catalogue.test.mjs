@@ -198,14 +198,23 @@ test('the collision the world derives from its own geometry is unchanged', async
    * stream shared by every block in that loop, so a `continue` does not remove
    * one building, it re-rolls every building after it. Measured, a single
    * `continue` there cost 348315 found - a 6% RISE for a change meant to
-   * delete geometry. */
+   * delete geometry.
+   *
+   * ── And again, seven triangles, for the settle footprint fix ────────────
+   * 166927 -> 166934 boxed, 197648 -> 197641 kept, `found` unchanged. Sixteen
+   * dressing props stopped climbing onto planter and bench rims and now stand
+   * on the deck, so seven of their triangles fall inside an authored box that
+   * they used to sit above. Nothing entered or left the pass, which is what
+   * `found` holding still proves. Colliders 26761 -> 26772: `_solidifyProps`
+   * boxes a prop from where it ends up, and a prop that stops standing on a
+   * rim is boxed separately from the rim it used to share a column with. */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 364575, boxed: 166927, kept: 197648, planting: 1360 },
+    { found: 364575, boxed: 166934, kept: 197641, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
   assert.equal(chunks, 8605, 'the chunking changed');
-  assert.equal(physics.colliders.length, 26761, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26772, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

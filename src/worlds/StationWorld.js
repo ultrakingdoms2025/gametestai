@@ -3932,10 +3932,53 @@ export class StationWorld extends World {
           const cx = (world.min.x + world.max.x) / 2;
           const cz = (world.min.z + world.max.z) / 2;
 
-          // The authored floor, which covers the decks and everything else with
-          // a collider, for free.
-          let surf = this.physics.groundHeight(cx, cz, world.max.y + 0.6, h + 6);
-          if (surf === null) surf = -Infinity;
+          /* THE LOWEST SURFACE UNDER THE PROP'S FOOTPRINT, not the one
+           * under its centre.
+           *
+           * ── The defect this removes ─────────────────────────────────────
+           * Reported live: "i still am seeing objects inside planters - eg
+           * looking at 22.1, 0.1, -19.7 i can see a safety fence inside the
+           * planter". A single sample at the centre is what put it there.
+           *
+           * A planter tub and a kerbed bench are geometry like any other, so
+           * both the collider probe and the raycast find their rim exactly
+           * the way they find a plinth. A prop whose CENTRE fell over a
+           * 0.72 m rim was lifted 0.72 m and left standing on the planter,
+           * and the pass had no way to tell that from the case it exists for.
+           *
+           * The difference is not height, it is COVERAGE. A prop genuinely
+           * sunk into a plate has that plate under its whole base; a prop
+           * clipping a rim has deck under most of it. Sampling the opposite
+           * corners as well and taking the LOWEST answer separates them: a
+           * prop fully on a plinth still lifts onto it, a prop half over a
+           * rim stays on the deck it is mostly standing on.
+           *
+           * TWO corners, on the diagonal, not four - measured rather than
+           * chosen. Four costs 9,235 ms against a 3,523 ms baseline and stops
+           * 18 props climbing; the diagonal pair costs 6,368 ms and stops 16
+           * of the same 18. Ninety percent of the benefit for a little over
+           * half the extra, on a pass whose cost lands in background world
+           * prep.
+           *
+           * Sampling the corners of the collider probe ALONE was tried first
+           * and measured to change nothing at the reported spot - the lift
+           * there comes from the raycast, which takes the max and also only
+           * looked at the centre. Both halves have to agree on the question.
+           *
+           * A corner over nothing is not a floor at minus infinity: a prop at
+           * a deck edge or a stair lip must still be allowed to settle, so a
+           * null corner is simply no constraint. */
+          const surfAt = (px, pz) => {
+            let y = this.physics.groundHeight(px, pz, world.max.y + 0.6, h + 6);
+            if (near.length) {
+              origin.set(px, world.max.y - 0.02, pz);
+              rc.set(origin, down);
+              rc.far = h + 2.5;
+              const hit = rc.intersectObjects(near, false)[0];
+              if (hit && (y === null || hit.point.y > y)) y = hit.point.y;
+            }
+            return y;
+          };
 
           /* Only bother raycasting where something could plausibly be sunk
            * into: a candidate whose box contains this XZ and whose top is
@@ -3954,17 +3997,52 @@ export class StationWorld extends World {
           };
           if (cell) for (const n of cell) consider(n);
           for (const n of wide) consider(n);
-          if (near.length) {
-            origin.set(cx, world.max.y - 0.02, cz);
-            rc.set(origin, down);
-            rc.far = h + 2.5;
-            const hit = rc.intersectObjects(near, false)[0];
-            if (hit && hit.point.y > surf) surf = hit.point.y;
+
+          /* Centre first, corners only if it says LIFT.
+           *
+           * A corner can only ever LOWER the answer, so it can only turn a
+           * lift into a smaller lift or into none - it can never create one.
+           * That makes the cheap test exact as a reject: if the centre alone
+           * is not sunk, the footprint is not sunk either, and the four extra
+           * casts can be skipped outright.
+           *
+           * This is not a micro-optimisation, it is the difference between
+           * shipping this and not. Sampling five points unconditionally took
+           * the pass from 3,523 ms to 15,966 ms - and its own docstring above
+           * calls it "the longest single frame the station build produces" at
+           * 3,175 ms. Conditioned, the corners are paid for only by the ~170
+           * props that were going to move anyway. */
+          let surf = surfAt(cx, cz);
+          if (surf === null) continue;
+          /* Both of the pass's own rejects, applied on the CENTRE alone,
+           * before any corner cast is paid for.
+           *
+           * A corner can only LOWER the answer, so it can only turn a lift
+           * into a smaller lift or into none - never create one. The lower
+           * reject is therefore exact. The upper one is the pass's existing
+           * "not sunk into it, buried in it" rule, evaluated on exactly the
+           * value it has always been evaluated on, so nothing that used to be
+           * rejected starts moving.
+           *
+           * Not a micro-optimisation - the difference between shipping this
+           * and not. Five points unconditionally took the pass from 3,523 ms
+           * to 15,966 ms, and the docstring above calls it "the longest single
+           * frame the station build produces" at 3,175 ms. That cost lands in
+           * background world PREP, where this project has already had one
+           * desktop-freeze defect. */
+          const sink0 = surf - world.min.y;
+          if (sink0 <= 0.12 || sink0 >= h * 0.95) continue;
+          {
+            for (const [px, pz] of [
+              [world.min.x, world.min.z], [world.max.x, world.max.z],
+            ]) {
+              const g = surfAt(px, pz);
+              if (g !== null && g < surf) surf = g;
+            }
           }
-          if (surf === -Infinity) continue;
+          // Re-checked against the footprint answer, which is never higher.
           const sink = surf - world.min.y;
-          // Only ever lift, and only out of something it is genuinely inside.
-          if (sink <= 0.12 || sink >= h * 0.95) continue;
+          if (sink <= 0.12) continue;
           m.elements[13] += sink;        // translation Y, in the mesh's own frame
           o.setMatrixAt(i, m);
           dirty = true;

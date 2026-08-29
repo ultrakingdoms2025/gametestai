@@ -881,6 +881,46 @@ the hard part is that `Interiors` re-asserts absolute collider Y on every lift c
 `world:changed` race against the async applier, so a moved lift car's collider snaps back regardless of
 ownership. That is a systems-ordering fix, not an identity one.
 
+## 13. Phase 3 — the plan, in shadow. Delivered 2026-08-29
+
+`StationPlan` is built as the **first** step of `build()` — pure arithmetic over the layout constants, no
+collider, no geometry, no scene graph, which is the only reason it *can* be first and therefore true for
+every builder after it. 18,240 cells seeded from the same `ROAD_EDGE_HALF` that `avenueClearance` uses, in
+18 ms.
+
+**Nothing reads it back.** Every solid is recorded against it as a side effect of the collider call — never
+a second list a builder must remember to write — and no placement changes. A reservation model that begins
+by moving four thousand props is one whose first bug is indistinguishable from its first correct decision.
+
+### The number that decides Phase 4
+**186 conflicts: 20 carriageway, 80 plaza, 86 sightline**, attributed to the build phase that made each.
+They are not all defects, and the distinction is the deliverable:
+
+| kind | example |
+|---|---|
+| deliberate | a gateway dais stands on its own approach — it *is* the destination (26 + 18) |
+| a question being asked for the first time | the sightline rule lives only inside the dressing scatter, where it was written to keep **crates** out of a portal approach; asking architecture to honour it is new (habitat stacks clipping gateway 150 at bearing ~135, 25) |
+| genuinely marginal | a habitat tower corner at r 154 reaching the edge of avenue 120 — 26 m off centreline against a 9.9 m road half-width plus a 16 m half-diagonal (3) |
+
+### Two things had to be measured before the number meant anything
+- **The ground band** (0.45–6 m, the same one `_markOccupancy` documents). Without it the great dome —
+  a shallow cap a hundred metres up — reported 33 conflicts, and the promenade loop, which crosses every
+  avenue 10 m overhead *by design*, another 21. Fifty-four of the original count was noise burying signal.
+- **Attribution.** Setting `_planOwner` from the build step's own label is free and is the difference
+  between "186 conflicts" and a work list.
+
+### Gates
+Game **3622/3622**, contract **133/133**, build clean. Build time **5,885 / 6,185 ms** against a 6,107 ms
+baseline — inside the noise. The slicing pin covers `_buildPlan` (moved here from Phase 0, where the critic
+correctly said it would ship a red suite for three phases). The test pins that the plan **is** first and
+that `StationPlan` reaches for nothing it could not know yet — if it ever touches physics or the scene
+graph, "build it first" stops being possible and the guarantee is silently void.
+
+### One process note worth keeping
+The first draft of this test pinned **89** conflicts, read off a `tail -18` of the per-builder breakdown —
+the rows above the fold were never in the total. The real number was 186 the whole time. A number read off
+a truncated console is not a measurement, and the reminder is left in the test.
+
 ## 8. Decisions taken
 
 Owner, 2026-08-28: **D1 (b)** per-parcel names at a third segment; **D2 (a)** narrowed opt-in, invert nothing;

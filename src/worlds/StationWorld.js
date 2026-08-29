@@ -30,6 +30,7 @@ import {
   instanced, GeoBatch, chunkTriangles, chunkTrianglesBySpan,
   roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
   ROAD_ANGLES_DEG,
+  STRIP_ACROSS, STRIP_HALF_W, DECAL_SIZE, DECAL_GAP,
   GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
   gatewayCentre, gatewayFrameYaw, avenueClearance,
 } from './station/StationKit.js';
@@ -5099,18 +5100,33 @@ export class StationWorld extends World {
       for (let i = 0; i < segs; i++) {
         const r = R0 + 3 + i * 6;
         for (const s of [-1, 1]) {
-          const p = roadPos(deg, r, s * 6.57, 0.14, new THREE.Vector3());
+          const p = roadPos(deg, r, s * STRIP_ACROSS, 0.14, new THREE.Vector3());
           stripEntries.push([p.x, p.y, p.z, 0, yaw, 0, 1, 1, 1]);
         }
       }
 
-      // Floor decals along the avenue: chevrons, arrows, hold lines, numbers.
+      /* Floor decals along the avenue: chevrons, arrows, hold lines, numbers.
+       *
+       * ── Why the offset is derived and not chosen ──────────────────────────
+       * It used to be a flat +/-5.4. A 4.2 m legend centred there spans 3.3 to
+       * 7.5 m across the carriageway, and the inset light strip spans 6.36 to
+       * 6.78 - so the strip ran straight THROUGH every decal on both sides of
+       * every avenue, 5 mm proud of it (0.14 against 0.135), painting over
+       * whichever end it crossed. The reported symptom was WALKWAY reading as
+       * "ALKWAY": the leading letter was under the strip, not missing.
+       *
+       * Two numbers had to agree and nothing made them. They are derived from
+       * each other now: a decal sits as far outboard as it can while keeping
+       * its whole width inboard of the strip's inner edge, with `DECAL_GAP` of
+       * dark deck left between the two so they read as separate marks rather
+       * than as one that happens not to touch. Move the strip and the decals
+       * follow; make a legend wider and it moves in. */
+      const off = STRIP_ACROSS - STRIP_HALF_W - DECAL_SIZE / 2 - DECAL_GAP;
       for (let i = 0; i < 9; i++) {
         const r = R0 + 10 + i * (L / 9);
         const cell = [0, 1, 3, 4, 8, 12, 13, 14, 2][i % 9];
-        const off = i % 2 ? 5.4 : -5.4;
-        const p = roadPos(deg, r, off, 0.135, new THREE.Vector3());
-        decalCells.push({ cell, x: p.x, z: p.z, size: 4.2, yaw });
+        const p = roadPos(deg, r, i % 2 ? off : -off, 0.135, new THREE.Vector3());
+        decalCells.push({ cell, x: p.x, z: p.z, size: DECAL_SIZE, yaw });
       }
       this._mmPath(
         [
@@ -5124,7 +5140,7 @@ export class StationWorld extends World {
     }
 
     // Long axis is local Z, which the avenue yaw maps onto the carriageway.
-    const strips = instanced(boxGeo(0.42, 0.1, 5.4, 3), M.emCyan, stripEntries, { cast: false, recv: false });
+    const strips = instanced(boxGeo(STRIP_HALF_W * 2, 0.1, 5.4, 3), M.emCyan, stripEntries, { cast: false, recv: false });
     g.add(strips);
 
     /* --- Traffic-lane wear ------------------------------------------

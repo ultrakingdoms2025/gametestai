@@ -1307,6 +1307,26 @@ export function zoneYaw(deg, localYaw = 0) {
  */
 export const ROAD_EDGE_HALF = ROAD_W / 2 + 0.45 + 0.45;
 
+/**
+ * The avenue's inset light strip, and the legends painted inboard of it.
+ *
+ * These four are together because two of them have to agree and, until they
+ * were derived from each other, nothing made them. The strip stood at 6.57
+ * across with a 0.42 m width; the legends were centred at a flat 5.4 with a
+ * 4.2 m cell, so each legend spanned 3.3-7.5 and the strip cut through it at
+ * 6.36-6.78 - and 5 mm proud of it, so the strip won. Every avenue decal on
+ * both sides of all six avenues had one end painted over. It read as a word
+ * with its first letter missing.
+ *
+ * `_buildDeck` now derives the legend offset from the strip, so the two cannot
+ * drift apart again: move the strip and the legends follow.
+ */
+export const STRIP_ACROSS = 6.57;
+export const STRIP_HALF_W = 0.21;
+export const DECAL_SIZE = 4.2;
+/** Dark deck left between a legend's edge and the strip, so they read apart. */
+export const DECAL_GAP = 0.35;
+
 /** Bearings of the avenues. One list, so a clearance cannot be measured
  *  against a different set of roads than the one that gets built. Frozen
  *  because `StationWorld` now assigns it straight to `this.roadAngles` and a

@@ -1,0 +1,1170 @@
+[
+ {
+  "name": "hatchleaf:dock_dray_engine:a",
+  "position": {
+   "x": 34.29,
+   "y": 2.6,
+   "z": -148.19
+  }
+ },
+ {
+  "name": "hatchleaf:dock_dray_engine:b",
+  "position": {
+   "x": 33.71,
+   "y": 2.6,
+   "z": -148.19
+  }
+ },
+ {
+  "name": "hatchleaf:dock_dray_hatch:a",
+  "position": {
+   "x": 39.275,
+   "y": 2.6,
+   "z": -151.76
+  }
+ },
+ {
+  "name": "hatchleaf:dock_dray_hatch:b",
+  "position": {
+   "x": 39.275,
+   "y": 2.6,
+   "z": -153.24
+  }
+ },
+ {
+  "name": "hatchleaf:dock_kestrel_hatch:a",
+  "position": {
+   "x": -65.625,
+   "y": 1.96,
+   "z": -141.235
+  }
+ },
+ {
+  "name": "hatchleaf:dock_kestrel_hatch:b",
+  "position": {
+   "x": -65.625,
+   "y": 1.96,
+   "z": -141.765
+  }
+ },
+ {
+  "name": "hatchleaf:dock_pike_hatch:a",
+  "position": {
+   "x": -31.575,
+   "y": 1.9,
+   "z": -150.86
+  }
+ },
+ {
+  "name": "hatchleaf:dock_pike_hatch:b",
+  "position": {
+   "x": -31.575,
+   "y": 1.9,
+   "z": -151.34
+  }
+ },
+ {
+  "name": "ship-bastion:accent",
+  "position": {
+   "x": 38.657,
+   "y": 2.7,
+   "z": -67.393
+  }
+ },
+ {
+  "name": "ship-bastion:dark",
+  "position": {
+   "x": 40.325,
+   "y": 0,
+   "z": -77.2
+  }
+ },
+ {
+  "name": "ship-bastion:deckg",
+  "position": {
+   "x": 40.359,
+   "y": 6.04,
+   "z": -63.563
+  }
+ },
+ {
+  "name": "ship-bastion:glow",
+  "position": {
+   "x": 34.437,
+   "y": 2.68,
+   "z": -78.283
+  }
+ },
+ {
+  "name": "ship-bastion:hazard",
+  "position": {
+   "x": 40.359,
+   "y": 6.2,
+   "z": -64.134
+  }
+ },
+ {
+  "name": "ship-bastion:hull",
+  "position": {
+   "x": 40.359,
+   "y": 2.7,
+   "z": -66.978
+  }
+ },
+ {
+  "name": "ship-bastion:signs",
+  "position": {
+   "x": 40.479,
+   "y": 3.6,
+   "z": -67.971
+  }
+ },
+ {
+  "name": "ship-bastion:tarp",
+  "position": {
+   "x": 43.879,
+   "y": 6.85,
+   "z": -96.167
+  }
+ },
+ {
+  "name": "ship-bastion:trim",
+  "position": {
+   "x": 40.32,
+   "y": 0,
+   "z": -70.708
+  }
+ },
+ {
+  "name": "ship-dray-in:accent",
+  "position": {
+   "x": 34,
+   "y": 2.584,
+   "z": -151.628
+  }
+ },
+ {
+  "name": "ship-dray-in:crate",
+  "position": {
+   "x": 34.245,
+   "y": 2.595,
+   "z": -151.493
+  }
+ },
+ {
+  "name": "ship-dray-in:danger",
+  "position": {
+   "x": 34,
+   "y": 3.44,
+   "z": -152.704
+  }
+ },
+ {
+  "name": "ship-dray-in:dark",
+  "position": {
+   "x": 34,
+   "y": 2.6,
+   "z": -151.6
+  }
+ },
+ {
+  "name": "ship-dray-in:glow",
+  "position": {
+   "x": 34.18,
+   "y": 3.812,
+   "z": -152.558
+  }
+ },
+ {
+  "name": "ship-dray-in:tarp",
+  "position": {
+   "x": 34,
+   "y": 2.6,
+   "z": -152.192
+  }
+ },
+ {
+  "name": "ship-dray-in:trim",
+  "position": {
+   "x": 34,
+   "y": 2.612,
+   "z": -151.79
+  }
+ },
+ {
+  "name": "ship-dray-in:warn",
+  "position": {
+   "x": 34.778,
+   "y": 3.16,
+   "z": -152
+  }
+ },
+ {
+  "name": "ship-dray:accent",
+  "position": {
+   "x": 32.99,
+   "y": 2.35,
+   "z": -147.225
+  }
+ },
+ {
+  "name": "ship-dray:crate",
+  "position": {
+   "x": 30.6,
+   "y": 6.16,
+   "z": -160.4
+  }
+ },
+ {
+  "name": "ship-dray:dark",
+  "position": {
+   "x": 37.613,
+   "y": -0.053,
+   "z": -153.2
+  }
+ },
+ {
+  "name": "ship-dray:deckg",
+  "position": {
+   "x": 38.205,
+   "y": 0.093,
+   "z": -153
+  }
+ },
+ {
+  "name": "ship-dray:glass",
+  "position": {
+   "x": 34,
+   "y": 4.383,
+   "z": -153.076
+  }
+ },
+ {
+  "name": "ship-dray:glow",
+  "position": {
+   "x": 33.575,
+   "y": 2.64,
+   "z": -146.375
+  }
+ },
+ {
+  "name": "ship-dray:hazard",
+  "position": {
+   "x": 38.117,
+   "y": 0.107,
+   "z": -153
+  }
+ },
+ {
+  "name": "ship-dray:hull",
+  "position": {
+   "x": 34,
+   "y": 2,
+   "z": -154
+  }
+ },
+ {
+  "name": "ship-dray:lamp",
+  "position": {
+   "x": 34,
+   "y": 10.74,
+   "z": -149.485
+  }
+ },
+ {
+  "name": "ship-dray:signs",
+  "position": {
+   "x": 34,
+   "y": 4,
+   "z": -146
+  }
+ },
+ {
+  "name": "ship-dray:trim",
+  "position": {
+   "x": 33.384,
+   "y": 1.007,
+   "z": -153.527
+  }
+ },
+ {
+  "name": "ship-kestrel-in:accent",
+  "position": {
+   "x": -68,
+   "y": 1.919,
+   "z": -142.95
+  }
+ },
+ {
+  "name": "ship-kestrel-in:crate",
+  "position": {
+   "x": -68,
+   "y": 1.96,
+   "z": -143.05
+  }
+ },
+ {
+  "name": "ship-kestrel-in:danger",
+  "position": {
+   "x": -68.059,
+   "y": 2.8,
+   "z": -143.782
+  }
+ },
+ {
+  "name": "ship-kestrel-in:dark",
+  "position": {
+   "x": -68,
+   "y": 1.96,
+   "z": -142.721
+  }
+ },
+ {
+  "name": "ship-kestrel-in:glow",
+  "position": {
+   "x": -68,
+   "y": 2.42,
+   "z": -143.937
+  }
+ },
+ {
+  "name": "ship-kestrel-in:tarp",
+  "position": {
+   "x": -68,
+   "y": 1.96,
+   "z": -142.63
+  }
+ },
+ {
+  "name": "ship-kestrel-in:trim",
+  "position": {
+   "x": -68,
+   "y": 1.96,
+   "z": -143.33
+  }
+ },
+ {
+  "name": "ship-kestrel-in:warn",
+  "position": {
+   "x": -68.005,
+   "y": 2.834,
+   "z": -143.052
+  }
+ },
+ {
+  "name": "ship-kestrel:accent",
+  "position": {
+   "x": -68,
+   "y": 1.676,
+   "z": -139.463
+  }
+ },
+ {
+  "name": "ship-kestrel:dark",
+  "position": {
+   "x": -67.791,
+   "y": 0.84,
+   "z": -141.92
+  }
+ },
+ {
+  "name": "ship-kestrel:deckg",
+  "position": {
+   "x": -66.631,
+   "y": 1.276,
+   "z": -142.95
+  }
+ },
+ {
+  "name": "ship-kestrel:glass",
+  "position": {
+   "x": -68,
+   "y": 4,
+   "z": -145.25
+  }
+ },
+ {
+  "name": "ship-kestrel:glow",
+  "position": {
+   "x": -68,
+   "y": 1.801,
+   "z": -144.24
+  }
+ },
+ {
+  "name": "ship-kestrel:hazard",
+  "position": {
+   "x": -67.78,
+   "y": 1.276,
+   "z": -140.5
+  }
+ },
+ {
+  "name": "ship-kestrel:hull",
+  "position": {
+   "x": -68,
+   "y": 1.56,
+   "z": -144.2
+  }
+ },
+ {
+  "name": "ship-kestrel:signs",
+  "position": {
+   "x": -68,
+   "y": 2.85,
+   "z": -144.6
+  }
+ },
+ {
+  "name": "ship-kestrel:trim",
+  "position": {
+   "x": -68,
+   "y": 0.872,
+   "z": -145.439
+  }
+ },
+ {
+  "name": "ship-pike-in:accent",
+  "position": {
+   "x": -34.004,
+   "y": 1.859,
+   "z": -156.139
+  }
+ },
+ {
+  "name": "ship-pike-in:crate",
+  "position": {
+   "x": -33.815,
+   "y": 1.9,
+   "z": -155.95
+  }
+ },
+ {
+  "name": "ship-pike-in:danger",
+  "position": {
+   "x": -34.061,
+   "y": 2.552,
+   "z": -154.372
+  }
+ },
+ {
+  "name": "ship-pike-in:dark",
+  "position": {
+   "x": -34,
+   "y": 1.9,
+   "z": -156.03
+  }
+ },
+ {
+  "name": "ship-pike-in:glow",
+  "position": {
+   "x": -34,
+   "y": 2.36,
+   "z": -158.5
+  }
+ },
+ {
+  "name": "ship-pike-in:hazard",
+  "position": {
+   "x": -34,
+   "y": 1.915,
+   "z": -158.25
+  }
+ },
+ {
+  "name": "ship-pike-in:tarp",
+  "position": {
+   "x": -33.652,
+   "y": 1.915,
+   "z": -155.1
+  }
+ },
+ {
+  "name": "ship-pike-in:trim",
+  "position": {
+   "x": -34,
+   "y": 1.9,
+   "z": -155.701
+  }
+ },
+ {
+  "name": "ship-pike-in:warn",
+  "position": {
+   "x": -33.982,
+   "y": 2.54,
+   "z": -155.933
+  }
+ },
+ {
+  "name": "ship-pike:accent",
+  "position": {
+   "x": -34,
+   "y": 1.74,
+   "z": -156.51
+  }
+ },
+ {
+  "name": "ship-pike:dark",
+  "position": {
+   "x": -33.881,
+   "y": -0.141,
+   "z": -151.963
+  }
+ },
+ {
+  "name": "ship-pike:deckg",
+  "position": {
+   "x": -33.727,
+   "y": 0.181,
+   "z": -152.195
+  }
+ },
+ {
+  "name": "ship-pike:glass",
+  "position": {
+   "x": -34,
+   "y": 3.8,
+   "z": -156.9
+  }
+ },
+ {
+  "name": "ship-pike:glow",
+  "position": {
+   "x": -34,
+   "y": 2.012,
+   "z": -156.51
+  }
+ },
+ {
+  "name": "ship-pike:hazard",
+  "position": {
+   "x": -34,
+   "y": 1.273,
+   "z": -152.05
+  }
+ },
+ {
+  "name": "ship-pike:hull",
+  "position": {
+   "x": -34,
+   "y": 1.58,
+   "z": -157
+  }
+ },
+ {
+  "name": "ship-pike:signs",
+  "position": {
+   "x": -34,
+   "y": 2.6,
+   "z": -159.6
+  }
+ },
+ {
+  "name": "ship-pike:trim",
+  "position": {
+   "x": -34.283,
+   "y": 0.889,
+   "z": -154.833
+  }
+ },
+ {
+  "name": "ship:dock_dray_engine",
+  "position": {
+   "x": 34,
+   "y": 2.6,
+   "z": -148.19
+  }
+ },
+ {
+  "name": "ship:dock_dray_hatch",
+  "position": {
+   "x": 39.275,
+   "y": 2.6,
+   "z": -152.5
+  }
+ },
+ {
+  "name": "ship:dock_dray_lift",
+  "position": {
+   "x": 32.1,
+   "y": 2.44,
+   "z": -150.8
+  }
+ },
+ {
+  "name": "ship:dock_kestrel_hatch",
+  "position": {
+   "x": -65.625,
+   "y": 1.96,
+   "z": -141.5
+  }
+ },
+ {
+  "name": "ship:dock_pike_hatch",
+  "position": {
+   "x": -31.575,
+   "y": 1.9,
+   "z": -151.1
+  }
+ },
+ {
+  "name": "yard",
+  "position": {
+   "x": 0.754,
+   "y": -7.095,
+   "z": -61.002
+  }
+ },
+ {
+  "name": "yard-office:crate",
+  "position": {
+   "x": -61.536,
+   "y": 0,
+   "z": 40.8
+  }
+ },
+ {
+  "name": "yard-office:emAmber",
+  "position": {
+   "x": -58,
+   "y": 2.8,
+   "z": 41
+  }
+ },
+ {
+  "name": "yard-office:steelDark",
+  "position": {
+   "x": -59.475,
+   "y": 0,
+   "z": 41
+  }
+ },
+ {
+  "name": "yard:apron",
+  "position": {
+   "x": 0,
+   "y": 0,
+   "z": 47.5
+  }
+ },
+ {
+  "name": "yard:crate",
+  "position": {
+   "x": -11.881,
+   "y": -2.2,
+   "z": -66.582
+  }
+ },
+ {
+  "name": "yard:emAmber",
+  "position": {
+   "x": 0,
+   "y": -1.16,
+   "z": -60.48
+  }
+ },
+ {
+  "name": "yard:emCyan",
+  "position": {
+   "x": 0,
+   "y": -1.158,
+   "z": -61.012
+  }
+ },
+ {
+  "name": "yard:emGreen",
+  "position": {
+   "x": 0,
+   "y": -1.71,
+   "z": -59.465
+  }
+ },
+ {
+  "name": "yard:emLaunch",
+  "position": {
+   "x": 0,
+   "y": 0.01,
+   "z": -139.875
+  }
+ },
+ {
+  "name": "yard:emPier",
+  "position": {
+   "x": 0,
+   "y": 0,
+   "z": -141.862
+  }
+ },
+ {
+  "name": "yard:emRed",
+  "position": {
+   "x": 0,
+   "y": 2.085,
+   "z": -23.245
+  }
+ },
+ {
+  "name": "yard:emSodium",
+  "position": {
+   "x": 0,
+   "y": -0.29,
+   "z": -61.9
+  }
+ },
+ {
+  "name": "yard:floor",
+  "position": {
+   "x": 0,
+   "y": -2.8,
+   "z": -61
+  }
+ },
+ {
+  "name": "yard:glass",
+  "position": {
+   "x": 0,
+   "y": 0.06,
+   "z": -61
+  }
+ },
+ {
+  "name": "yard:grate",
+  "position": {
+   "x": 0,
+   "y": -2.043,
+   "z": -55.225
+  }
+ },
+ {
+  "name": "yard:hazard",
+  "position": {
+   "x": 0,
+   "y": -1.55,
+   "z": -55.3
+  }
+ },
+ {
+  "name": "yard:office-door",
+  "position": {
+   "x": -53.445,
+   "y": 0.22,
+   "z": 41
+  }
+ },
+ {
+  "name": "yard:office-interior",
+  "position": {
+   "x": -59.661,
+   "y": 0,
+   "z": 40.8
+  }
+ },
+ {
+  "name": "yard:paint",
+  "position": {
+   "x": 0,
+   "y": -2.18,
+   "z": -70.5
+  }
+ },
+ {
+  "name": "yard:paintApron",
+  "position": {
+   "x": 0,
+   "y": 0.148,
+   "z": 47
+  }
+ },
+ {
+  "name": "yard:plate",
+  "position": {
+   "x": 0,
+   "y": 0,
+   "z": -23
+  }
+ },
+ {
+  "name": "yard:roof",
+  "position": {
+   "x": 0,
+   "y": 26,
+   "z": 12
+  }
+ },
+ {
+  "name": "yard:ship-bastion",
+  "position": {
+   "x": 39.645,
+   "y": 0,
+   "z": -70.874
+  }
+ },
+ {
+  "name": "yard:ship-bastion:interior",
+  "position": {
+   "x": 0,
+   "y": 0,
+   "z": 0
+  }
+ },
+ {
+  "name": "yard:ship-dray",
+  "position": {
+   "x": 37.467,
+   "y": -0.053,
+   "z": -153.35
+  }
+ },
+ {
+  "name": "yard:ship-dray:interior",
+  "position": {
+   "x": 34.68,
+   "y": 2.584,
+   "z": -151.79
+  }
+ },
+ {
+  "name": "yard:ship-kestrel",
+  "position": {
+   "x": -67.883,
+   "y": 0.84,
+   "z": -144.575
+  }
+ },
+ {
+  "name": "yard:ship-kestrel:interior",
+  "position": {
+   "x": -68,
+   "y": 1.919,
+   "z": -143.232
+  }
+ },
+ {
+  "name": "yard:ship-pike",
+  "position": {
+   "x": -34,
+   "y": -0.141,
+   "z": -154.833
+  }
+ },
+ {
+  "name": "yard:ship-pike:interior",
+  "position": {
+   "x": -34,
+   "y": 1.859,
+   "z": -155.98
+  }
+ },
+ {
+  "name": "yard:signs",
+  "position": {
+   "x": -4.755,
+   "y": -1.025,
+   "z": -55.515
+  }
+ },
+ {
+  "name": "yard:steel",
+  "position": {
+   "x": 0,
+   "y": -7.095,
+   "z": -60.425
+  }
+ },
+ {
+  "name": "yard:steelDark",
+  "position": {
+   "x": 0.773,
+   "y": -5,
+   "z": -61.002
+  }
+ },
+ {
+  "name": "yard:tarp",
+  "position": {
+   "x": -39.15,
+   "y": 0.7,
+   "z": -31.327
+  }
+ },
+ {
+  "name": "yard:void",
+  "position": {
+   "x": -0.319,
+   "y": -1499.861,
+   "z": 0.993
+  }
+ },
+ {
+  "name": "yard:void:carnelian",
+  "position": {
+   "x": 772.271,
+   "y": -329.044,
+   "z": -816.137
+  }
+ },
+ {
+  "name": "yard:void:carnelian:air",
+  "position": {
+   "x": 772.271,
+   "y": -314.705,
+   "z": -816.137
+  }
+ },
+ {
+  "name": "yard:void:carnelian:surface",
+  "position": {
+   "x": 772.271,
+   "y": -329.044,
+   "z": -816.137
+  }
+ },
+ {
+  "name": "yard:void:cathedra",
+  "position": {
+   "x": -400.478,
+   "y": 115.885,
+   "z": -1187.537
+  }
+ },
+ {
+  "name": "yard:void:cathedra:air",
+  "position": {
+   "x": -400.478,
+   "y": 130.38,
+   "z": -1187.537
+  }
+ },
+ {
+  "name": "yard:void:cathedra:surface",
+  "position": {
+   "x": -400.478,
+   "y": 115.885,
+   "z": -1187.537
+  }
+ },
+ {
+  "name": "yard:void:ceraunus",
+  "position": {
+   "x": -369.514,
+   "y": 520.369,
+   "z": -886.835
+  }
+ },
+ {
+  "name": "yard:void:ceraunus:ring",
+  "position": {
+   "x": -369.514,
+   "y": 632.396,
+   "z": -886.835
+  }
+ },
+ {
+  "name": "yard:void:ceraunus:surface",
+  "position": {
+   "x": -369.514,
+   "y": 520.369,
+   "z": -886.835
+  }
+ },
+ {
+  "name": "yard:void:cinder",
+  "position": {
+   "x": -197.951,
+   "y": -517.265,
+   "z": -800.8
+  }
+ },
+ {
+  "name": "yard:void:cinder:air",
+  "position": {
+   "x": -197.951,
+   "y": -497.087,
+   "z": -800.8
+  }
+ },
+ {
+  "name": "yard:void:cinder:surface",
+  "position": {
+   "x": -197.951,
+   "y": -517.265,
+   "z": -800.8
+  }
+ },
+ {
+  "name": "yard:void:erenmark",
+  "position": {
+   "x": 751.673,
+   "y": 555.591,
+   "z": 868.312
+  }
+ },
+ {
+  "name": "yard:void:erenmark:corona",
+  "position": {
+   "x": 751.673,
+   "y": 555.591,
+   "z": 868.312
+  }
+ },
+ {
+  "name": "yard:void:erenmark:surface",
+  "position": {
+   "x": 751.673,
+   "y": 577.63,
+   "z": 868.312
+  }
+ },
+ {
+  "name": "yard:void:lathe",
+  "position": {
+   "x": -91.372,
+   "y": 943.498,
+   "z": -523.739
+  }
+ },
+ {
+  "name": "yard:void:lathe:surface",
+  "position": {
+   "x": -91.372,
+   "y": 943.498,
+   "z": -523.739
+  }
+ },
+ {
+  "name": "yard:void:sallow",
+  "position": {
+   "x": -36.94,
+   "y": -1100.912,
+   "z": -558.859
+  }
+ },
+ {
+  "name": "yard:void:sallow:air",
+  "position": {
+   "x": -36.94,
+   "y": -1093.122,
+   "z": -558.859
+  }
+ },
+ {
+  "name": "yard:void:sallow:surface",
+  "position": {
+   "x": -36.94,
+   "y": -1100.912,
+   "z": -558.859
+  }
+ },
+ {
+  "name": "yard:void:shoal",
+  "position": {
+   "x": -633.534,
+   "y": -561.153,
+   "z": -648.666
+  }
+ },
+ {
+  "name": "yard:void:shoal:air",
+  "position": {
+   "x": -633.534,
+   "y": -537.026,
+   "z": -648.666
+  }
+ },
+ {
+  "name": "yard:void:shoal:surface",
+  "position": {
+   "x": -633.534,
+   "y": -561.153,
+   "z": -648.666
+  }
+ },
+ {
+  "name": "yard:void:sirocco",
+  "position": {
+   "x": 457.041,
+   "y": -765.008,
+   "z": -558.173
+  }
+ },
+ {
+  "name": "yard:void:sirocco:air",
+  "position": {
+   "x": 457.041,
+   "y": -751.338,
+   "z": -558.173
+  }
+ },
+ {
+  "name": "yard:void:sirocco:surface",
+  "position": {
+   "x": 457.041,
+   "y": -765.008,
+   "z": -558.173
+  }
+ },
+ {
+  "name": "yard:void:tessera",
+  "position": {
+   "x": 880.534,
+   "y": -213.079,
+   "z": -281.022
+  }
+ },
+ {
+  "name": "yard:void:tessera:surface",
+  "position": {
+   "x": 880.534,
+   "y": -213.079,
+   "z": -281.022
+  }
+ },
+ {
+  "name": "yard:void:verdigris",
+  "position": {
+   "x": 335.237,
+   "y": 477.802,
+   "z": -864.046
+  }
+ },
+ {
+  "name": "yard:void:verdigris:air",
+  "position": {
+   "x": 335.237,
+   "y": 490.922,
+   "z": -864.046
+  }
+ },
+ {
+  "name": "yard:void:verdigris:surface",
+  "position": {
+   "x": 335.237,
+   "y": 477.802,
+   "z": -864.046
+  }
+ },
+ {
+  "name": "yard:void:vitrine",
+  "position": {
+   "x": 167.608,
+   "y": -20.584,
+   "z": -1026.601
+  }
+ },
+ {
+  "name": "yard:void:vitrine:air",
+  "position": {
+   "x": 167.608,
+   "y": -0.465,
+   "z": -1026.601
+  }
+ },
+ {
+  "name": "yard:void:vitrine:surface",
+  "position": {
+   "x": 167.608,
+   "y": -20.584,
+   "z": -1026.601
+  }
+ }
+]

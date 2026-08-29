@@ -1051,7 +1051,12 @@ export class NPCManager {
       return s / 4294967296;
     };
 
-    const home = this._snapToGround(spec.position);
+    /* A wolf is 0.7 m at the shoulder and fits under a service plate a person
+     * does not. `resolveSpot` walks a character off a column whose standing
+     * volume is inside geometry, and judging a pack by a person's 1.6 m of
+     * clearance would march it out from under every gantry it was authored
+     * beneath - so a beast is measured by its own body. */
+    const home = this._snapToGround(spec.position, undefined, def.shoulderHeight);
     if (!home) return out;
 
     const asked = Number.isFinite(spec.count) ? Math.floor(spec.count) : rollPackSize(def, rnd);
@@ -1066,7 +1071,7 @@ export class NPCManager {
       const a = (i / count) * Math.PI * 2 + rnd() * 0.8;
       const r = i === 0 ? 0 : spread * (0.4 + rnd() * 0.6);
       _v1.set(home.x + Math.cos(a) * r, home.y + 1.5, home.z + Math.sin(a) * r);
-      const pos = this._snapToGround(_v1);
+      const pos = this._snapToGround(_v1, undefined, def.shoulderHeight);
       if (!pos) continue;
       const beast = this._createBeast({
         species: def.id,
@@ -1927,10 +1932,10 @@ export class NPCManager {
    * @param {THREE.Vector3} p authored spawn point
    * @param {THREE.Vector3} [out]
    */
-  _snapToGround(p, out) {
+  _snapToGround(p, out, standHeight) {
     if (!p) return null;
     const v = out ?? new THREE.Vector3();
-    const spot = resolveSpot(this.physics, p, v);
+    const spot = resolveSpot(this.physics, p, v, standHeight);
     if (spot) {
       // A spawn resolved into the river is a character that starts its life
       // underwater and has no way out - steering can only stop them walking

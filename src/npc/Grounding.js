@@ -199,6 +199,17 @@ export function pickSurface(stack, hintY) {
  */
 const BODY_SAMPLES = [0.15, 0.5, 1.0, 1.6];
 
+/**
+ * Shoulder height of the character these samples describe.
+ *
+ * A wolf is 0.7 m at the shoulder and fits under a service plate a person does
+ * not. Judging one by the other's clearance would walk packs out from under
+ * gantries they were authored beneath, so anything shorter than a person says
+ * so - `BeastSpecies` already carries `shoulderHeight` "used as the capsule
+ * height" for exactly this measurement.
+ */
+const HUMANOID_HEIGHT = 1.6;
+
 /** Scratch for `standingClear` alone. */
 const _scOrigin = new THREE.Vector3();
 
@@ -227,9 +238,11 @@ const _scOrigin = new THREE.Vector3();
  * emits box colliders, and all five defects this was written for were inside
  * one.
  */
-export function standingClear(physics, x, y, z) {
+export function standingClear(physics, x, y, z, standHeight = HUMANOID_HEIGHT) {
   if (!physics?.containsPoint) return true;
   for (const dy of BODY_SAMPLES) {
+    // The ankle sample always runs: whatever the body is, its feet are in it.
+    if (dy > 0.15 && dy > standHeight) break;
     if (physics.containsPoint(_scOrigin.set(x, y + dy, z))) return false;
   }
   return true;
@@ -271,13 +284,14 @@ export function standingClear(physics, x, y, z) {
  * @param {any} physics
  * @param {THREE.Vector3} p authored point (`p.y` is the hint)
  * @param {THREE.Vector3} [out]
+ * @param {number} [standHeight] shoulder height of whoever is standing here
  * @returns {THREE.Vector3|null} null only when the whole neighbourhood is empty
  */
-export function resolveSpot(physics, p, out) {
+export function resolveSpot(physics, p, out, standHeight = HUMANOID_HEIGHT) {
   if (!p) return null;
   const v = out ?? new THREE.Vector3();
   const direct = resolveSurfaceY(physics, p.x, p.z, p.y);
-  if (direct !== null && standingClear(physics, p.x, direct, p.z)) {
+  if (direct !== null && standingClear(physics, p.x, direct, p.z, standHeight)) {
     return v.set(p.x, direct, p.z);
   }
   for (const r of [1.5, 3, 6, 12]) {
@@ -286,7 +300,7 @@ export function resolveSpot(physics, p, out) {
       const x = p.x + Math.cos(a) * r;
       const z = p.z + Math.sin(a) * r;
       const y = resolveSurfaceY(physics, x, z, p.y);
-      if (y !== null && standingClear(physics, x, y, z)) return v.set(x, y, z);
+      if (y !== null && standingClear(physics, x, y, z, standHeight)) return v.set(x, y, z);
     }
   }
   /* Nowhere clear within 12 m. The authored column at least has a floor, so

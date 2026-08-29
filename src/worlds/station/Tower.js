@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { boxGeo, cylGeo, uvScale, instanced, GeoBatch } from './StationKit.js';
+import { boxGeo, cylGeo, uvScale, instanced, GeoBatch, slugLabel } from './StationKit.js';
 import { CENTRE } from '../lod/DistanceLod.js';
 
 /**
@@ -425,6 +425,30 @@ export function stringCourseRuns(w, d, wallT = WALL_T, out = STRING_COURSE_OUT) 
 export function buildTower(world, B, g, spec, rng) {
   const M = world.mat;
   const { x, z, yaw, w, d } = spec;
+
+  /* The editor addresses this building and everything inside it BY NAME, so the
+   * name has to be an identity rather than a measurement of where the building
+   * stands. `spec.label` is authored by every caller and is what the tower is
+   * called in the fiction; see `slugLabel` for what the coordinate-baked names
+   * this replaced cost. Refused rather than defaulted: a tower with no label
+   * would take the empty id, and the second one would collide with it. */
+  const towerId = slugLabel(spec.label);
+  if (!towerId) throw new Error(`buildTower: spec.label is required and must slug to something (got ${JSON.stringify(spec.label)})`);
+  /* Unique, not merely non-empty. `slugLabel` collapses every non-alphanumeric
+   * run to one `-`, so "Block D // Handed Over", "Block-D Handed Over" and
+   * "block d handed over!" are the same id - and a collision does not announce
+   * itself anywhere downstream: `_catalogue` de-duplicates by name
+   * (`!seen.has(name)`), so the second tower mints nothing and retires nothing,
+   * the fixture pin sees no delta, and a count assertion only fails if the
+   * total happens to change. The re-plan adds towers, which is exactly when
+   * two labels start rhyming, so the invariant is enforced where it is cheap. */
+  /* Reset per build in `StationWorld.build`; `??=` only covers a caller that
+   * never went through it (the zone-tower path in a unit test). */
+  world._towerIds ??= new Set();
+  if (world._towerIds.has(towerId)) {
+    throw new Error(`buildTower: two towers slug to "${towerId}" - ${JSON.stringify(spec.label)} collides with one already built. Labels must be distinct after slugging; see slugLabel in StationKit.js.`);
+  }
+  world._towerIds.add(towerId);
   const floors = Math.max(7, spec.floors | 0);
   const body = spec.body ?? 'panel';
   const accent = spec.accent ?? 'emCyan';
@@ -498,7 +522,7 @@ export function buildTower(world, B, g, spec, rng) {
    */
   const I = new GeoBatch();
   const ig = new THREE.Group();
-  ig.name = `tower-interior-${Math.round(x)}-${Math.round(z)}`;
+  ig.name = `tower-interior-${towerId}`;
   g.add(ig);
   const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
     I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
@@ -1047,7 +1071,7 @@ export function buildTower(world, B, g, spec, rng) {
    * shell is opaque, the glazing is a 0.55-opacity band on each storey, and the
    * doorway is 3.2 m wide seen through a 6.2 m canopy.
    */
-  const interiorMeshes = I.flush(ig, M, `tower-int-${Math.round(x)}-${Math.round(z)}`, {
+  const interiorMeshes = I.flush(ig, M, `tower-int-${towerId}`, {
     cast: false, recv: true, glassWindow: { cast: false, recv: false },
   });
   for (const mesh of interiorMeshes) {

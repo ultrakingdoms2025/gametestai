@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { pointLight } from '../gfx/WorldLight.js';
 import { World } from './World.js';
 import { makeRules } from './WorldRules.js';
-import { GeoBatch, boxGeo, uvScale, instanced, RAMP_PROXY_FLAG, RAMP_PROXY_NAME } from './station/StationKit.js';
+import { GeoBatch, boxGeo, uvScale, instanced, markRampProxy } from './station/StationKit.js';
 import { DistanceLod, CENTRE } from './lod/DistanceLod.js';
 import { buildLorePersona } from '../content/Lore.js';
 import { buildYardTextures, buildYardMaterials, YARD_SIGN, yardSignUV } from './dock/YardTextures.js';
@@ -536,8 +536,7 @@ export class DockWorld extends World {
      * renderer — the boot shader rehearsal clears it across a whole world
      * group for three frames — so anything that identifies a ramp proxy by
      * `visible === false` reports none at all inside that window. */
-    proxy.name = RAMP_PROXY_NAME;
-    proxy.userData[RAMP_PROXY_FLAG] = true;
+    markRampProxy(proxy);
     proxy.position.set(cx, cy, cz);
     proxy.rotation.set(0, yaw, 0, 'YXZ');
     proxy.rotateX(-pitch);

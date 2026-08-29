@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { boxGeo, RAMP_PROXY_FLAG, RAMP_PROXY_NAME } from '../station/StationKit.js';
+import { boxGeo, markRampProxy } from '../station/StationKit.js';
 
 /**
  * LODESTAR YARD — the ship builder.
@@ -845,8 +845,7 @@ export class ShipBuild {
      * renderer, and the boot shader rehearsal clears it across a whole world
      * group for three frames, so anything identifying a proxy by
      * `visible === false` finds none at all inside that window. */
-    proxy.name = RAMP_PROXY_NAME;
-    proxy.userData[RAMP_PROXY_FLAG] = true;
+    markRampProxy(proxy);
     proxy.position.copy(mid);
     proxy.rotation.set(0, a, 0, 'YXZ');
     proxy.rotateX(-pitch);
@@ -1009,7 +1008,14 @@ export class ShipBuild {
       const rib = alongX ? boxGeo(0.09, h - 0.30, T + 0.06, 1) : boxGeo(T + 0.06, h - 0.30, 0.09, 1);
       rib.translate(alongX ? s * (leafLen * 0.22) : 0, 0, alongX ? 0 : s * (leafLen * 0.22));
       const leaf = new THREE.Mesh(mergeGeometries([slab, nose, rib], false), mat);
-      leaf.name = `hatchleaf:${id}`;
+      /* One name per LEAF, not per hatch. A hatch has two, and both used to
+       * carry `hatchleaf:${id}` - so the map editor's catalogue offered a
+       * single row for two nodes, its de-duplication kept the shallowest, and
+       * the applier's depth-first `getObjectByName` resolved to whichever it
+       * reached first. Moving that row moved one leaf and left the other where
+       * it was, reporting ok: true. `s` is -1 then +1 across the pair, which
+       * makes `a` the leaf toward -X/-Z and `b` its opposite. */
+      leaf.name = `hatchleaf:${id}:${s < 0 ? 'a' : 'b'}`;
       leaf.castShadow = leaf.receiveShadow = true;
       pivot.add(leaf);
       g.add(pivot);

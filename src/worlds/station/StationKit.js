@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+/* The editor's opt-out flag, imported rather than restated: `markRampProxy`
+ * below is the only place these three properties are set together. */
+import { NOT_EDITABLE } from '../../systems/mapEditable.js';
 
 /**
  * Shared vocabulary for the Aether Nexus Station and everything bolted onto it.
@@ -59,6 +62,67 @@ export const DEG = Math.PI / 180;
 export const RAMP_PROXY_FLAG = 'rampProxy';
 /** Human-readable counterpart, so a proxy is identifiable in a scene dump. */
 export const RAMP_PROXY_NAME = 'ramp-proxy';
+
+/**
+ * A stable, readable id for an authored thing, slugged from the name its
+ * builder already gave it.
+ *
+ * ── Why a name may not be a measurement ───────────────────────────────────
+ * The admin map editor addresses objects BY NAME: a saved document carries
+ * `target: { name: '…' }` and the applier resolves it with a single
+ * `getObjectByName`. A miss is skipped with reason `name` and the world builds
+ * perfectly well without it, so a name that changes is a saved edit that
+ * quietly stops applying.
+ *
+ * Tower interiors used to name themselves `tower-interior-${round(x)}-${round(z)}`,
+ * which is not an identity - it is a MEASUREMENT of where the tower happened to
+ * stand. Any change that shifts a tower renames it and everything under it:
+ * 180 of the station's 756 catalogue names were keyed that way, 24% of the
+ * whole address space, and reconciling the two `ROAD_W` values alone would have
+ * moved most of them.
+ *
+ * Every caller already had the answer. `spec.label` is authored - "Habitat
+ * Stack N1", "Refectory Block", "Block D // Handed Over" - and is what the
+ * building is called in the fiction. Slugging that gives a name that survives
+ * the building being moved, which is the whole point.
+ *
+ * Runs of anything that is not a letter or a digit collapse to one `-`, so
+ * `Block D // Handed Over` is `block-d-handed-over`. Returns '' for a label
+ * with nothing sluggable in it, which callers must treat as an error rather
+ * than as a name: an empty id would collide with the next empty one.
+ *
+ * @param {string} label
+ * @returns {string}
+ */
+export function slugLabel(label) {
+  return String(label ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Stamp a mesh as a ramp collision proxy: named for a scene dump, flagged for
+ * `rampProxiesIn`, and withheld from the map editor's object picker.
+ *
+ * One function rather than three copies of two lines, for the reason the note
+ * above `RAMP_PROXY_FLAG` already gives about producers and consumers - and
+ * because the third property is the one a copy would forget. `RAMP_PROXY_NAME`
+ * is a single string shared by every proxy in a world, so before it was
+ * withheld the editor offered ONE row that resolved to whichever proxy the
+ * traversal happened to reach first; moving it separated the thing you walk on
+ * from the ramp you can see. Station, the yard and every ship use this, so the
+ * rule is fixed in one place for all three.
+ *
+ * @param {any} mesh
+ * @returns {any} the same mesh
+ */
+export function markRampProxy(mesh) {
+  mesh.name = RAMP_PROXY_NAME;
+  mesh.userData[RAMP_PROXY_FLAG] = true;
+  mesh.userData[NOT_EDITABLE] = true;
+  return mesh;
+}
 
 /**
  * Every tilted collision proxy under `root`, however it is parented.

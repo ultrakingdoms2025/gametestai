@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { forceDrawable } from '../../src/gfx/RehearsalDraw.js';
 import { rampProxies } from '../../src/dev/StationAudit.js';
 import {
-  RAMP_PROXY_FLAG, RAMP_PROXY_NAME, rampProxiesIn,
+  RAMP_PROXY_FLAG, RAMP_PROXY_NAME, rampProxiesIn, markRampProxy,
 } from '../../src/worlds/station/StationKit.js';
 
 /**
@@ -36,12 +36,19 @@ import {
  * collection can be handed a scene graph shaped like one.
  */
 
-/** Exactly what `StationWorld._ramp` builds, without needing a StationWorld. */
+/**
+ * Exactly what `StationWorld._ramp` builds, without needing a StationWorld.
+ *
+ * Stamped through `markRampProxy` rather than by hand. It sets THREE
+ * properties - name, the audit's flag, and the map editor's picker opt-out -
+ * and a fixture that set two of them would drift from the thing it claims to
+ * be "exactly", silently, the moment a fourth is added. That is the argument
+ * the helper's own docstring makes for existing.
+ */
 function proxy(x, y, z, pitch = 0.53) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.5, 17));
   m.visible = false;
-  m.name = RAMP_PROXY_NAME;
-  m.userData[RAMP_PROXY_FLAG] = true;
+  markRampProxy(m);
   m.position.set(x, y, z);
   m.rotateX(-pitch);
   m.updateWorldMatrix(true, false);

@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, uvScale } from './StationKit.js';
+/* The map editor's opt-out. These eleven meshes are the world's whole fixed
+ * population in one instanced buffer each: a remove of `StationActors:head`
+ * would decapitate 1,887 people with a green row, and a move would translate
+ * all of them and drag every collider inside a 1,235 m box, uncapped. They are
+ * not objects an admin can mean to move. */
+import { NOT_EDITABLE } from '../../systems/mapEditable.js';
 
 /**
  * Multi-part instanced figures for the four outer zones.
@@ -541,6 +547,7 @@ export class StationActors {
     const mk = (geo, mat, name) => {
       const m = new THREE.InstancedMesh(geo, mat, n);
       m.name = `StationActors:${name}`;
+      m.userData[NOT_EDITABLE] = true;
       /* No shadow casting, and the reason is measured rather than assumed.
        *
        * These eleven meshes hold every actor on the map - about 1,900 figures

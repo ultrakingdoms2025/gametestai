@@ -166,7 +166,12 @@ function collectProps(world, opts) {
       if (excludeMeshes.has(o)) { skip(skipped, 'moving-machinery (escalator/travelator treads)', 1); return; }
 
       const mat = Array.isArray(o.material) ? o.material[0] : o.material;
-      const key = keyOf.get(mat) ?? (o.name || '').split(':')[1] ?? '';
+      /* Material decides, not mesh name - the same rule the world itself uses
+     * (`StationWorld._collisionSoup`). This read the second colon segment of
+     * the MESH NAME as a fallback, exactly as the world used to; an instrument
+     * that classifies by a different rule than the thing it measures reports
+     * on a world nobody is playing. Deleted in both places together. */
+    const key = keyOf.get(mat) ?? '';
       if (isNonPropKey(key)) {
         skip(skipped, `non-solid-material-key:${key || '(none)'}`, o.isInstancedMesh ? o.count : 1);
         return;

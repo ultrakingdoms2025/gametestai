@@ -55,6 +55,7 @@ import {
   radToDeg,
   removeFor,
   removeWarnings,
+  moveWarnings,
   rowLevel,
   rowsWithVerdicts,
   selectedEntry,
@@ -429,6 +430,38 @@ describe('versionStatus', () => {
     expect(versionStatus(0, 0, 3)).toEqual({ applied: '(behind — enter the world in game)', built: '(behind — reload the world in game)' });
     // Nothing saved yet: 0 everywhere is current.
     expect(versionStatus(0, 0, 0)).toEqual({ applied: '(current)', built: '(current)' });
+  });
+});
+
+describe('moveWarnings', () => {
+  /* A move has the same two failures a remove has, and warned about neither
+   * until collider ownership existed. Zero colliders on a named target is the
+   * invisible-wall case - the mesh went to the new place and the collision
+   * stayed at the old one, on a green row. */
+  const doc = [{ _key: 'k', kind: 'move', id: 'm', target: { name: 'crate' }, position: { x: 0, y: 0, z: 0 } }] as never;
+
+  it('warns when a move carried no collision at all', () => {
+    expect(moveWarnings([{ id: 'm', ok: true, colliders: 0 }], doc)).toEqual([
+      { id: 'm', text: 'moved, but no collision came with it: there may be an invisible wall where it was' },
+    ]);
+  });
+
+  it('mentions a wide move without calling it a failure', () => {
+    /* With ownership a large count is the ANSWER, not a symptom - a hab stack
+     * owns hundreds - so the text asks the admin to look, it does not accuse. */
+    expect(moveWarnings([{ id: 'm', ok: true, colliders: 40 }], doc)).toEqual([
+      { id: 'm', text: 'moved 40 colliders with it — check nothing else came along' },
+    ]);
+  });
+
+  it('says nothing about a normal move, or about an entry the game refused', () => {
+    expect(moveWarnings([{ id: 'm', ok: true, colliders: 3 }], doc)).toEqual([]);
+    expect(moveWarnings([{ id: 'm', ok: false, colliders: 0 }], doc)).toEqual([]);
+  });
+
+  it('ignores removes, which removeWarnings owns', () => {
+    const rm = [{ _key: 'k', kind: 'remove', id: 'r', target: { name: 'crate' } }] as never;
+    expect(moveWarnings([{ id: 'r', ok: true, colliders: 0 }], rm)).toEqual([]);
   });
 });
 

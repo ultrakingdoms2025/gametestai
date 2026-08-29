@@ -177,7 +177,10 @@ test('every phase measured over 100 ms takes a breathe and calls it', async () =
     'async _solidifyProps(breathe = noBreath) {',
     'async _solidifyStructure(breathe = noBreath) {',
     'async _collisionSoup(',
-    'async _dropEnclosedTriangles(soup, tol = 0.03, breathe = noBreath) {',
+    /* Widened when collider ownership landed: the drop compacts an owner
+     * array in step with the triangles, so a survivor keeps the owner its
+     * source had and `_solidifyStructure` can chunk per owner. */
+    'async _dropEnclosedTriangles(soup, tol = 0.03, breathe = noBreath, ownerIn = null, ownerOut = null) {',
   ]) {
     assert.match(
       body(signature), /await breathe\(\)/,

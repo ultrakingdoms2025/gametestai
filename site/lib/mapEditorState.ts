@@ -398,6 +398,36 @@ export function removeWarnings(applied: ReadonlyArray<AppliedOutcome>, entries: 
   return out;
 }
 
+/**
+ * The same two questions asked of an applied MOVE, which nothing asked before.
+ *
+ * A remove that dropped nothing has always warned, because hiding a mesh and
+ * leaving its wall is the defect the applier exists to prevent. A move has
+ * exactly the same failure and it was silent: the mesh goes to the new place,
+ * the collision stays at the old one, and the row reads `ok: true`.
+ *
+ * The upper warning changed meaning with collider ownership and says so. When
+ * the world knows whose a collider is, a large count is the ANSWER — a hab
+ * stack owns hundreds — so it is not a problem to report; it is only worth
+ * mentioning because an admin who expected to nudge a bench should notice.
+ * When nothing owns the name the applier now REFUSES past 200 with `span`,
+ * which arrives in the unresolved list rather than here.
+ */
+export function moveWarnings(applied: ReadonlyArray<AppliedOutcome>, entries: Draft[]): RemoveWarning[] {
+  const out: RemoveWarning[] = [];
+  const byId = new Map<string, Draft>();
+  for (const d of entries) if (!byId.has(d.id)) byId.set(d.id, d);
+  for (const a of applied) {
+    if (!a.ok) continue;
+    const e = byId.get(a.id);
+    if (!e || e.kind !== 'move') continue;
+    const n = a.colliders ?? 0;
+    if (n > WIDE_REMOVE_COLLIDERS) out.push({ id: a.id, text: `moved ${n} colliders with it — check nothing else came along` });
+    else if (n === 0 && targetName(e.target) !== null) out.push({ id: a.id, text: 'moved, but no collision came with it: there may be an invisible wall where it was' });
+  }
+  return out;
+}
+
 /** A place draft for a catalogue item at a point. The config is COPIED (see `mapOverlaySchema.ts`). */
 export function placeAt(
   item: { source_key: string; name: string; config: GrantConfig },

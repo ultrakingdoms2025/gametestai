@@ -234,6 +234,42 @@ export class Collider {
     /** Blocks movement. Set false for pure triggers/raycast targets. */
     this.solid = opts.solid ?? true;
 
+    /**
+     * Which named world object this collider belongs to, or null when nothing
+     * claimed it.
+     *
+     * ── Why a collider needs to know ─────────────────────────────────────────
+     * A world's visuals and its collision are separate structures: `Physics`
+     * stores baked WORLD-SPACE geometry with no back-reference to the
+     * `Object3D` it came from. That is deliberate and it is what makes the
+     * broadphase cheap. But the map editor has to answer "which colliders are
+     * this object's?" for every move and every remove, and with no
+     * back-reference it could only GUESS - by geometry.
+     *
+     * The two guesses it makes disagree, and both are wrong in their own
+     * direction. A remove takes colliders FULLY INSIDE the object's box, so it
+     * misses anything overhanging and refuses outright past 200 (`span`,
+     * because a district Group's box is the union of everything in it). A move
+     * takes colliders whose CENTRE is in the box, uncapped - which on the
+     * station meant 236 of 744 named objects would drag more colliders than a
+     * remove is even allowed to consider, and `space` would drag all 26,352 in
+     * the world.
+     *
+     * An owner id ends the guessing where it is known. It is the NAME of the
+     * nearest named ancestor - the same string the editor addresses the object
+     * by, which is why the names had to be made stable first. Colliders derived
+     * from drawn geometry carry it; hand-authored ones mostly do not yet, and
+     * null is the honest answer there: it means "fall back to geometry", not
+     * "belongs to nobody".
+     *
+     * Never write this after registration. The grid indexes by position, not by
+     * owner, so ownership is metadata the broadphase does not read - but the
+     * editor's undo does, and a collider that changed hands mid-session could
+     * not be put back.
+     * @type {string|null}
+     */
+    this.ownerId = opts.ownerId ?? null;
+
     if (type === 'heightfield') {
       /* A regular grid of surface heights, treated as a solid volume from the
        * surface down to `baseY`.
@@ -509,6 +545,19 @@ export class Physics {
 
   /** @param {Collider} collider */
   add(collider) {
+    /* Idempotent, because `remove` swap-pops by the `_index` entry: a collider
+     * added twice has ONE index, so removing it once leaves the duplicate in
+     * `colliders` with no index at all - permanently solid, unremovable, and
+     * reported ABSENT by `has()`. The editor's undo rests on
+     * `physics.remove(collider) === true` meaning "it was registered here", so
+     * a ghost is exactly the shape of bug it cannot recover from.
+     *
+     * Nothing dedupes upstream: `World.track` pushes into a plain array and
+     * `WorldManager._activate` re-adds every element unconditionally after
+     * `physics.clear()`, so a single double-`track()` would re-create the
+     * double registration on every world entry. */
+    if (this._index.has(collider)) return collider;
+
     this.colliders.push(collider);
     this._index.set(collider, this.colliders.length - 1);
     if (collider.type === 'heightfield') this.heightfields.push(collider);

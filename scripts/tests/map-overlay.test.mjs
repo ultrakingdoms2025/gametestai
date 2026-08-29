@@ -183,6 +183,108 @@ async function activate({ bus, physics, system }, world, { settle = true } = {})
 const registeredAs = (physics, world) => physics.colliders.map((c) => world.colliders.indexOf(c)).sort();
 
 /* ------------------------------------------------------------------ */
+/* Collider ownership                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHOSE COLLIDERS ARE THESE?
+ *
+ * `Physics` stores baked world-space geometry with no back-reference to the
+ * `Object3D` it came from, so the applier could only ever answer that by
+ * geometry - and its two answers disagreed. A remove took what was FULLY
+ * INSIDE the object's box and refused past 200 with `span`; a move took what
+ * had its CENTRE in the box, with no cap at all. Measured on the real station:
+ * 236 of 744 named objects would drag more colliders on a move than a remove
+ * is allowed even to consider, and `space` - a row near the top of the admin's
+ * picker - would drag all 26,352 in the world on a green row.
+ *
+ * `Collider.ownerId` ends the guessing where the world knows the answer. These
+ * four cases pin the rule: ownership wins, it is exempt from the cap because
+ * it is not a guess, the guess is now capped on BOTH sides, and a refused move
+ * moves nothing rather than half.
+ */
+
+test('a move claims what the object OWNS, not what its box happens to contain', async () => {
+  const rig = setup(doc([{ id: 'm1', kind: 'move', target: { name: 'crate.alpha' }, position: { x: 60, y: 0, z: 60 } }]));
+
+  /* The barn's collider is nowhere near the crate, so geometry would never
+   * claim it - but the world says it is the crate's. Ownership must win, or
+   * "whose is this" is still being decided by proximity. */
+  solid(rig.physics, rig.world);
+  rig.world.colliders[0].ownerId = 'crate.alpha';
+  rig.world.colliders[1].ownerId = 'crate.alpha';
+  const barnBefore = rig.world.colliders[1].center.clone();
+
+  await activate(rig, rig.world);
+
+  assert.equal(rig.system.report.applied[0].colliders, 2, 'both owned colliders should have moved');
+  assert.notDeepEqual(rig.world.colliders[1].center.toArray(), barnBefore.toArray(), 'the far collider was owned and should have come along');
+});
+
+test('an owned remove is exempt from the cap that refuses a guess', async () => {
+  const rig = setup(doc([{ id: 'r1', kind: 'remove', target: { name: 'barn.main' } }]));
+
+  /* More owned colliders than `MAX_REMOVE_COLLIDERS`. The cap exists because
+   * containment is a guess - "200 inside this box" means the box is too big to
+   * reason about, not that the object is large. When the world has said whose
+   * they are, refusing would hide the mesh and leave every wall it stands for,
+   * which is the exact defect `span` exists to prevent. */
+  solid(rig.physics, rig.world);
+  const extra = [];
+  for (let i = 0; i < 250; i++) {
+    const c = rig.physics.addBox(-30 + i * 0.01, 0, 0, 0.4, 0.4, 0.4);
+    c.ownerId = 'barn.main';
+    extra.push(c);
+  }
+  rig.world.colliders.push(...extra);
+
+  await activate(rig, rig.world);
+
+  assert.deepEqual(rig.system.report.unresolved, [], 'an owned remove must not be refused as `span`');
+  assert.ok(rig.system.report.applied[0].colliders >= 250, `dropped only ${rig.system.report.applied[0].colliders}`);
+  assert.equal(rig.world.barn.visible, false);
+});
+
+test('an unowned move whose guess is too wide is refused as `span`, and moves nothing', async () => {
+  const rig = setup(doc([{ id: 'm1', kind: 'move', target: { name: 'barn.main' }, position: { x: 0, y: 0, z: 0 } }]));
+
+  /* Nothing owns the name, and the barn's box holds far more collider centres
+   * than the cap. Before this existed the move took all of them silently. */
+  solid(rig.physics, rig.world);
+  for (let i = 0; i < 250; i++) {
+    rig.world.colliders.push(rig.physics.addBox(-30, 0, 0, 0.2, 0.2, 0.2));
+  }
+  const before = rig.world.barn.position.clone();
+
+  await activate(rig, rig.world);
+
+  assert.deepEqual(rig.system.report.applied, [], 'nothing should have applied');
+  assert.deepEqual(rig.system.report.unresolved, [{ id: 'm1', reason: 'span' }]);
+  /* The mesh must NOT have moved. A mesh translated away from the collision it
+   * stands for is the invisible wall this whole file exists to prevent, and a
+   * half-applied move is worse than a refused one. */
+  assert.deepEqual(rig.world.barn.position.toArray(), before.toArray());
+});
+
+test('registering a collider twice is a no-op, so it can still be removed', async () => {
+  const rig = setup(doc([]));
+  const c = rig.physics.addBox(5, 0, 5, 1, 1, 1);
+  const n = rig.physics.colliders.length;
+
+  /* `remove` swap-pops by the `_index` entry, and a collider added twice has
+   * ONE index - so the second copy would survive removal with no index at all:
+   * permanently solid, unremovable, and reported ABSENT by `has()`. The
+   * editor's undo rests on `remove(c) === true` meaning "it was registered
+   * here", so a ghost is the one shape of bug it cannot recover from. */
+  rig.physics.add(c);
+  assert.equal(rig.physics.colliders.length, n, 'a second add should not register it again');
+
+  assert.equal(rig.physics.remove(c), true);
+  assert.equal(rig.physics.has(c), false, 'one remove must fully unregister it');
+  assert.equal(rig.physics.colliders.includes(c), false, 'a ghost copy survived');
+});
+
+/* ------------------------------------------------------------------ */
 /* Fetching                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1146,9 +1248,60 @@ test('a placement spawns a persistent pickup holding the item the catalogue gran
   const p = rig.loot.spawned[0];
   assert.deepEqual(p.contents, [{ itemId: 'bullet', qty: 120 }]);
   assert.equal(p.opts.persistent, true);
-  assert.equal(p.opts.snap, false);
+  /* Absent `snap` means snap. An admin drags on a 2D map and cannot see
+   * height, so the reachable answer is the default; `snap: false` below is
+   * how a rooftop placement opts out. */
+  assert.equal(p.opts.snap, true);
   assert.equal(p.position.x, 5);
   assert.equal(p.position.z, 5);
+});
+
+/**
+ * `snap` — the one thing a placement could not say until now.
+ *
+ * The field exists because both answers are right somewhere. Auto-collect has a
+ * 1.7 m range and an admin dragging on a 2D map cannot see height, so a
+ * placement that keeps its authored Y is usually just unreachable — which is
+ * why the default is to snap. But a crate on a rooftop ledge, a gantry or a
+ * mezzanine is deliberate, and snapping it drops it to the deck silently.
+ *
+ * It briefly shipped as `snap: contents.length > 0`, against a `contents` built
+ * one line earlier as a ternary between two single-element array literals. That
+ * is always true, so every placement snapped and the "visual-only items keep
+ * their height" branch the comment described could never run. These three cases
+ * are what would have caught it: a `false` that is honoured, a `true` that is,
+ * and the absent default — asserted separately rather than inferred from one.
+ */
+test('an explicit `snap: false` keeps a placement at the height the admin authored', async () => {
+  const rig = setup(doc([{ ...placeAmmo, snap: false }]));
+  await enter(rig);
+
+  assert.equal(rig.loot.spawned.length, 1);
+  assert.equal(rig.loot.spawned[0].opts.snap, false);
+  /* And it is still a real placement in every other respect - the opt-out must
+   * not quietly change what the pickup holds or whether it persists. */
+  assert.deepEqual(rig.loot.spawned[0].contents, [{ itemId: 'bullet', qty: 120 }]);
+  assert.equal(rig.loot.spawned[0].opts.persistent, true);
+});
+
+test('an explicit `snap: true` is the same as leaving it out', async () => {
+  const rig = setup(doc([{ ...placeAmmo, snap: true }]));
+  await enter(rig);
+  assert.equal(rig.loot.spawned[0].opts.snap, true);
+});
+
+test('only the literal false opts out - a malformed snap still snaps', async () => {
+  /* The applier reads `entry.snap !== false`, so anything a hand-edited or
+   * replayed document can carry that is not the boolean - the STRING "false",
+   * null, 0, the number - lands on the reachable side. A malformed value must
+   * never be the one that strands a pickup in the air where an admin cannot
+   * see why. The site normaliser drops these before they are stored; this is
+   * the game's own guard for a document that reached it anyway. */
+  for (const bad of ['false', 0, null, undefined, '', 'no']) {
+    const rig = setup(doc([{ ...placeAmmo, snap: bad }]));
+    await enter(rig);
+    assert.equal(rig.loot.spawned[0].opts.snap, true, `snap: ${JSON.stringify(bad)} should still snap`);
+  }
 });
 
 test('a placement resolves a spell by its marketplace source key', async () => {
@@ -1260,7 +1413,10 @@ test('a placed mount upgrade spawns one persistent pickup whose contents carry t
     { grant: { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' }, qty: 1 },
   ]);
   assert.equal(p.opts.persistent, true);
-  assert.equal(p.opts.snap, false);
+  /* Absent `snap` means snap. An admin drags on a 2D map and cannot see
+   * height, so the reachable answer is the default; `snap: false` below is
+   * how a rooftop placement opts out. */
+  assert.equal(p.opts.snap, true);
   assert.equal(p.opts.tag, 'overlay:p5');
   assert.deepEqual([p.position.x, p.position.y, p.position.z], [12, 2, -4]);
 });

@@ -16,7 +16,7 @@ import {
   DECK_R, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
   OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
   WALKWAY, WALKWAY_DECK_TOP, walkwayStairFlight, walkwayRailRuns,
-  RAMP_PROXY_FLAG, RAMP_PROXY_NAME,
+  markRampProxy,
   ZONES, ZONE_R, ZONE_CENTRE_R, LINK_LEN,
   DOME_R, DOME_WALL_H, DOME_APEX, domeHeightAt, WORLD_R,
   CHUNK_TRIS, PLANTING_TRIS, PLANTING_SPAN, collideCeilingAt,
@@ -1875,6 +1875,12 @@ export class StationWorld extends World {
    * with the prop count, not because it is slow today.
    */
   async build(onProgress) {
+    /* Fresh every build, not lazily on first use. `buildTower` refuses a tower
+     * id it has already seen, and a world is REBUILT in place on a volatile
+     * rebuild - so a Set that survived the previous build would make every
+     * tower in the second one collide with itself. */
+    this._towerIds = new Set();
+
     /* One `breathe` per phase, closed over that phase's own progress fraction
      * and label so a phase never has to know where in the build it sits. */
     const slice = onProgress?.slice;
@@ -3056,6 +3062,7 @@ export class StationWorld extends World {
       if (o.isInstancedMesh && o.visible && o.geometry) meshes.push(o);
     });
     for (const o of meshes) {
+      const propOwner = this._ownerNameOf(o);
       if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
       const bb = o.geometry.boundingBox;
       const lx = bb.max.x - bb.min.x, ly = bb.max.y - bb.min.y, lz = bb.max.z - bb.min.z;
@@ -3094,7 +3101,10 @@ export class StationWorld extends World {
         }
         if (this._alreadySolid(centre.x, centre.z, base, centre.y + hy)) continue;
 
-        this._solidRot(centre.x, centre.y, centre.z, hx, hy, hz, e.y);
+        /* The prop's collider belongs to the InstancedMesh that drew it -
+         * unambiguous, unlike the geometric guess, and the same name the
+         * editor addresses that mesh by. */
+        this._solidRot(centre.x, centre.y, centre.z, hx, hy, hz, e.y, propOwner);
         added++;
       }
     }
@@ -3254,14 +3264,39 @@ export class StationWorld extends World {
    */
   async _solidifyStructure(breathe = noBreath) {
     const t0 = performance.now();
-    const soup = await this._collisionSoup(undefined, breathe);
+    const soupOwners = [];
+    const soup = await this._collisionSoup(undefined, breathe, soupOwners);
     const extracted = soup.length / 9;
-    const kept = await this._dropEnclosedTriangles(soup, 0.03, breathe);
-    const chunks = chunkTriangles(kept, CHUNK_TRIS);
-    for (const positions of chunks) {
-      await breathe();
-      this.track(this.physics.addTriangleSoup(positions));
+    const keptOwners = [];
+    const kept = await this._dropEnclosedTriangles(soup, 0.03, breathe, soupOwners, keptOwners);
+
+    /* Chunked PER OWNER, so no chunk ever mixes two objects' triangles.
+     *
+     * That is the whole point of the pass: a collider that knows whose it is
+     * lets the map editor's move and remove claim exactly the right ones,
+     * instead of guessing by geometry - a guess that made 236 of 744 named
+     * objects drag more colliders on a move than a remove is even allowed to
+     * consider, and `space` drag all 26,352 in the world.
+     *
+     * `keptOwners` is still in source order (`_collisionSoup` emits mesh by
+     * mesh and the drop compacts in step), so the runs are contiguous and this
+     * slices rather than sorts. The cost is one partial chunk per owner at
+     * worst - measured at 401 owners against 8,192 chunks, so about 5%.
+     */
+    let chunkCount = 0;
+    let runStart = 0;
+    for (let i = 1; i <= keptOwners.length; i++) {
+      if (i < keptOwners.length && keptOwners[i] === keptOwners[runStart]) continue;
+      const ownerId = keptOwners[runStart];
+      const run = kept.subarray(runStart * 9, i * 9);
+      for (const positions of chunkTriangles(run, CHUNK_TRIS)) {
+        await breathe();
+        this.track(this.physics.addTriangleSoup(positions, { ownerId }));
+        chunkCount++;
+      }
+      runStart = i;
     }
+    const chunks = { length: chunkCount };
     const planters = await this._solidifyPlanting(breathe);
 
     console.info(
@@ -3337,15 +3372,64 @@ export class StationWorld extends World {
    * carry. Transparent, non-depth-writing and additive materials are holograms
    * and glow cards, which have no business being solid.
    *
+   * ── That sentence used to be false, and is now true ──────────────────────
+   * The key was read as `keyOf.get(m) ?? (o.name || '').split(':')[1] ?? ''` -
+   * so for any material outside `this.mat` the MESH NAME decided after all,
+   * through its second colon segment. The docstring above denied it and had
+   * done since the line was written.
+   *
+   * It was latent rather than harmless, and not for the reason it looks: every
+   * station flush passes the world material table, so `keyOf.get(m)` hits and
+   * the fallback was unreached for merged batches. (Only the station runs this
+   * pass at all - it is defined here, not on `World`.) It fired only for meshes
+   * whose material is outside `this.mat`, which are exactly the ones
+   * `_nameStrayMaterials` names LATER, after this pass has run - and measured
+   * on the built world, all 80 of them are unnamed, so the fallback yielded ''
+   * for every mesh that could reach it.
+   *
+   * The trap it set is what removed it. The map editor addresses objects by
+   * mesh name, so the editor's address space and the collision model were one
+   * string: the first time a re-authored builder gave such a mesh a name whose
+   * second segment happened to be in `NON_SOLID_KEYS`, `PROXY_KEYS` or started
+   * with `em`, the NAME would have made the geometry walk-through, silently.
+   * It was already wrong on its own terms for zone batches - `zone:gym:panel`
+   * yields `gym`, not `panel`. A material with no key in the table now falls to
+   * '' and is judged on that: the DEFAULT predicate accepts '' (it is in
+   * neither exclusion set and does not start with `em`), and
+   * `_solidifyPlanting`'s own `(k) => PROXY_KEYS.has(k)` rejects it. Both are
+   * what the old fallback already decided for these meshes, which is why the
+   * structure and planting figures are unchanged to the triangle.
+   *
    * @param {(key: string) => boolean} [wantKey]
    * @param {() => Promise<void>} [breathe] mid-pass yield; see `build`. Asked
    *   once per mesh, because a mesh is the unit that costs anything here - the
    *   station's merged batches run to tens of thousands of triangles each and
    *   the pass walks 328,654 of them in total.
    */
+  /**
+   * The named object a mesh belongs to, for collider ownership.
+   *
+   * The nearest named ancestor, stopping at `world.group` - so a `GeoBatch`
+   * mesh answers with its own `label:materialKey`, and an anonymous mesh under
+   * a named district answers with the district. Null when nothing up the chain
+   * is named, which is the honest answer: it means "the editor must fall back
+   * to guessing by geometry", not "belongs to nobody".
+   *
+   * The same walk `_nameStrayMaterials` does for ablation labels, and
+   * deliberately so - a collider and the material that draws it should not
+   * disagree about whose they are.
+   */
+  _ownerNameOf(o) {
+    for (let n = o; n && n !== this.group; n = n.parent) {
+      if (n.name) return n.name;
+    }
+    return null;
+  }
+
   async _collisionSoup(
     wantKey = (k) => !NON_SOLID_KEYS.has(k) && !PROXY_KEYS.has(k) && !k.startsWith('em'),
     breathe = noBreath,
+    ownerOut = null,
   ) {
     const keyOf = new Map();
     for (const [k, m] of Object.entries(this.mat ?? {})) if (m?.isMaterial) keyOf.set(m, k);
@@ -3367,8 +3451,17 @@ export class StationWorld extends World {
     for (const o of meshes) {
       const m = Array.isArray(o.material) ? o.material[0] : o.material;
       if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) continue;
-      const key = keyOf.get(m) ?? (o.name || '').split(':')[1] ?? '';
+      const key = keyOf.get(m) ?? '';
       if (!wantKey(key)) continue;
+
+      /* Which named object these triangles belong to: the nearest named
+       * ancestor, which for a `GeoBatch` mesh is the mesh itself
+       * (`label:materialKey`). That is the SAME string the map editor
+       * addresses the object by, which is why the names had to be made stable
+       * before this could mean anything. Null for geometry nobody named -
+       * honest, and it makes the editor fall back to its geometric guess
+       * rather than claim ownership it does not have. */
+      const owner = ownerOut ? this._ownerNameOf(o) : null;
 
       const geo = o.geometry;
       const pos = geo.getAttribute('position');
@@ -3394,6 +3487,7 @@ export class StationWorld extends World {
         if (cy > collideCeilingAt(cx, cz)) continue;
         if (this._insideSelfCollided(cx, cy, cz)) continue;
         tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+        if (ownerOut) ownerOut.push(owner);
       }
     }
     return new Float32Array(tris);
@@ -3414,7 +3508,7 @@ export class StationWorld extends World {
    * Its own grid, rather than `physics.query`, because that allocates a dedup
    * `Set` per call and this asks a quarter of a million questions.
    */
-  async _dropEnclosedTriangles(soup, tol = 0.03, breathe = noBreath) {
+  async _dropEnclosedTriangles(soup, tol = 0.03, breathe = noBreath, ownerIn = null, ownerOut = null) {
     const CELL = 16;
     const grid = new Map();
     const cellKey = (i, j) => (i + 4096) * 16384 + (j + 4096);
@@ -3465,6 +3559,12 @@ export class StationWorld extends World {
         enclosed(soup[o + 6], soup[o + 7], soup[o + 8])
       ) continue;
       keep.set(soup.subarray(o, o + 9), w);
+      /* Owners are compacted in step with the triangles, so a survivor keeps
+       * the owner its source had. The loop visits triangles in source order
+       * and appends in that order, so the result stays grouped by owner the
+       * way `_collisionSoup` emitted it - which is what lets
+       * `_solidifyStructure` slice runs instead of sorting. */
+      if (ownerIn && ownerOut) ownerOut.push(ownerIn[i]);
       w += 9;
     }
     return keep.subarray(0, w);
@@ -3851,10 +3951,18 @@ export class StationWorld extends World {
     return moved;
   }
 
-  /** Y-rotated solid volume - buildings, walkway segments, kerbs. */
-  _solidRot(x, y, z, hx, hy, hz, ry) {
+  /**
+   * Y-rotated solid volume - buildings, walkway segments, kerbs.
+   *
+   * `ownerId` is optional and almost always absent: most callers are authoring
+   * a piece of structure that is not itself a named object, and null is the
+   * honest answer there (the map editor falls back to its geometric guess).
+   * `_solidifyProps` passes one, because an instanced prop's collider belongs
+   * unambiguously to the InstancedMesh that drew it.
+   */
+  _solidRot(x, y, z, hx, hy, hz, ry, ownerId = null) {
     return this.track(
-      this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), ry)
+      this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), ry, ownerId ? { ownerId } : undefined)
     );
   }
 
@@ -3878,8 +3986,7 @@ export class StationWorld extends World {
     const pitch = Math.atan2(rise, run);
     const proxy = new THREE.Mesh(new THREE.BoxGeometry(width, 0.5, len));
     proxy.visible = false;
-    proxy.name = RAMP_PROXY_NAME;
-    proxy.userData[RAMP_PROXY_FLAG] = true;
+    markRampProxy(proxy);
     proxy.position.set(x, y, z);
     proxy.rotation.set(0, yaw, 0, 'YXZ');
     proxy.rotateX(-pitch);

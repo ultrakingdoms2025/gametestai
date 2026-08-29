@@ -17,6 +17,7 @@ import {
   placementY,
   removeFor,
   removeWarnings,
+  moveWarnings,
   rowsWithVerdicts,
   selectedEntry,
   selectedPosition,
@@ -277,7 +278,10 @@ export function MapEditorPanel() {
    * dropped, or more than one prop owns (decision B) — matched by id against
    * the document on this page (`removeWarnings`). On the DEFERRED document,
    * like the conflicts pass: a drag frame must not re-walk the report. */
-  const warnings = useMemo(() => removeWarnings(report?.applied ?? [], deferredEntries), [report, deferredEntries]);
+  const warnings = useMemo(
+    () => [...removeWarnings(report?.applied ?? [], deferredEntries), ...moveWarnings(report?.applied ?? [], deferredEntries)],
+    [report, deferredEntries]
+  );
   /* The report card's unresolved list with each entry's label beside its id
    * (`unresolvedLines`), on the deferred document for the same reason. */
   const refusals = useMemo(() => unresolvedLines(report?.unresolved ?? [], deferredEntries), [report, deferredEntries]);
@@ -418,6 +422,27 @@ export function MapEditorPanel() {
   function setQuantity(key: string, value: string) {
     const quantity = Math.max(1, Math.min(99, Math.floor(num(value)) || 1));
     edit((list) => list.map((e) => (e._key === key && e.kind === 'place' ? ({ ...e, quantity } as Draft) : e)));
+  }
+
+  /**
+   * Whether this placement drops to the surface under it when the world loads.
+   *
+   * The default is to drop, and the default is stored as ABSENT rather than as
+   * `snap: true` — the normaliser keeps the key only when it is `false`, so
+   * unchecking is the only thing that writes anything. Matching that here
+   * means the draft an admin is looking at is byte-identical to what will be
+   * saved, and toggling twice leaves no trace.
+   */
+  function setSnap(key: string, dropToGround: boolean) {
+    edit((list) =>
+      list.map((e) => {
+        if (e._key !== key || e.kind !== 'place') return e;
+        const next = { ...e } as Draft & { snap?: boolean };
+        if (dropToGround) delete next.snap;
+        else next.snap = false;
+        return next as Draft;
+      })
+    );
   }
 
   async function save() {
@@ -626,13 +651,35 @@ export function MapEditorPanel() {
                 />
               </label>
             ) : null}
+            {/* Every placement, mount upgrades included: a tier on a gantry is
+                as deliberate as a crate on one. Checked is the default and
+                stores nothing; unchecking is what writes `snap: false`. */}
+            {selEntry?.kind === 'place' ? (
+              <label style={{ ...label, marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <input
+                  data-e2e="snap"
+                  type="checkbox"
+                  checked={selEntry.snap !== false}
+                  disabled={busy}
+                  onChange={(e) => setSnap(selEntry._key, e.target.checked)}
+                />
+                <span>
+                  Drop to the ground
+                  <span style={{ display: 'block', color: dim, fontSize: 11, fontWeight: 400 }}>
+                    {selEntry.snap === false
+                      ? 'Keeps the height you placed it at. Nothing will lower it, so check it is reachable.'
+                      : 'Falls to the surface under it on load, so it is always within reach. Uncheck for a rooftop or a gantry.'}
+                  </span>
+                </span>
+              </label>
+            ) : null}
           </section>
 
           <section style={card}>
             <h2 style={{ margin: '0 0 10px', fontSize: 15 }}>Place a marketplace item</h2>
             <p style={{ margin: '0 0 10px', color: dim, fontSize: 12 }}>
               Choose an item, then click empty ground on the map. Y is the lowest surface under the click; pick
-              another layer in the selection panel for a rooftop.
+              another layer in the selection panel for a rooftop, and untick “Drop to the ground” so it stays there.
             </p>
             <div style={{ display: 'grid', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
               {catalogue.length === 0 ? (

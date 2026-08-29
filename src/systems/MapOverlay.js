@@ -4,6 +4,7 @@ import { consumableItemFor, mountPowerGrantFor } from './Marketplace.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
 import { versionOf } from './overlayVersion.js';
+import { isNotEditable } from './mapEditable.js';
 
 /**
  * The admin map editor's placement overlay, applied to a world the game built.
@@ -87,6 +88,12 @@ const LOOKUP_ABORT_MS = 10000;
  */
 const MAX_CATALOGUE = 2000;
 
+/* The editor's picker opt-out. A leaf module for the reason `overlayVersion.js`
+ * gives about itself: worlds need this and nothing else of the applier, and
+ * importing it from here would drag this file's whole graph into StationKit and
+ * its forty-odd importers. Re-exported so this file's own readers are unchanged. */
+export { NOT_EDITABLE, isNotEditable } from './mapEditable.js';
+
 /**
  * Never placeable, whatever a catalogue row says.
  *
@@ -125,6 +132,24 @@ const REMOVE_TOLERANCE = 0.10;
  * and the floor with it until the next save.
  */
 const MAX_REMOVE_COLLIDERS = 200;
+
+/**
+ * The move side's mirror of `MAX_REMOVE_COLLIDERS`, for the same reason and
+ * with the same number.
+ *
+ * This sweep had no cap at all. A remove refused a box holding more than 200
+ * collider centres as "a district, not a prop"; a move took them all and said
+ * nothing. Measured on the station before ownership existed: 236 of 744 named
+ * objects were over that line on a move, 6 of them over ten thousand, and
+ * `space` - a row near the TOP of the admin's picker, because the catalogue is
+ * breadth-first - would have dragged all 26,352 colliders in the world on one
+ * drag, reporting ok: true.
+ *
+ * Only the GUESS is capped. A move whose target owns its colliders is exempt,
+ * because then the count is the answer rather than a symptom of a box being
+ * too big to reason about.
+ */
+const MAX_MOVE_COLLIDERS = 200;
 
 /** The sampler's ray. Two scratch vectors, reused for every cast of every cell. */
 const _rayOrigin = new THREE.Vector3();
@@ -851,7 +876,18 @@ export class MapOverlay {
       // Sweep FIRST, on the untouched box: the second `_anchor` below
       // overwrites `_box`. The sweep reads collider centres only, never the
       // object, so it does not care that the object has not moved yet.
-      colliders = this._moveColliders(_box, _delta);
+      colliders = this._moveColliders(_box, _delta, name);
+      if (colliders < 0) {
+        /* The guess was too wide to trust - more than `MAX_MOVE_COLLIDERS`
+         * centres inside the box, and nothing owns the name. Refused with the
+         * SAME reason a remove uses for the same judgement (`span`), and
+         * nothing is moved: a mesh translated away from the collision it
+         * stands for is the invisible wall this whole file exists to prevent,
+         * and a partial move would be worse than either. The undo entry
+         * pushed above is a no-op restore, which is correct - nothing moved. */
+        unresolved.push({ id: String(entry.id ?? ''), reason: 'span' });
+        return;
+      }
       this._translateWorld(target, _delta);
 
       if (Number.isFinite(entry.rotationY)) {
@@ -918,14 +954,63 @@ export class MapOverlay {
    * `userData` exactly as the world authored them, which constructing a
    * replacement would silently drop.
    */
-  _moveColliders(box, delta) {
+  /**
+   * The colliders a named object OWNS, or null when nothing claims that name.
+   *
+   * ── Why this exists beside two geometric guesses ─────────────────────────
+   * `Physics` stores baked world-space geometry with no back-reference to the
+   * `Object3D` it came from, so "which colliders are this object's?" could
+   * only ever be answered by geometry - and the two answers disagree. A remove
+   * takes what is FULLY INSIDE the object's box, missing overhangs and
+   * refusing past `MAX_REMOVE_COLLIDERS`; a move takes what has its CENTRE in
+   * the box, uncapped. Measured on the station, that let 236 of 744 named
+   * objects drag more colliders on a move than a remove is allowed even to
+   * consider, and `space` drag all 26,352 in the world, on a green row.
+   *
+   * `Collider.ownerId` ends the guessing where the world knows the answer:
+   * `StationWorld` chunks its geometry-derived collision per owner and tags
+   * each prop's box with the mesh that drew it. Not everything carries one -
+   * hand-authored structure mostly does not - and null here means exactly
+   * that: fall back to the geometric test, do not claim ownership.
+   *
+   * Returns null (not an empty array) when NO collider carries the name, so a
+   * caller can tell "this object owns nothing" from "nobody has claimed this
+   * name" and pick the fallback deliberately.
+   */
+  _collidersOwnedBy(name) {
+    const physics = this.physics;
+    if (!physics || !name) return null;
+    const owned = [];
+    for (const collider of physics.colliders) {
+      if (collider?.ownerId === name) owned.push(collider);
+    }
+    return owned.length ? owned : null;
+  }
+
+  _moveColliders(box, delta, name = null) {
     const physics = this.physics;
     if (!physics || delta.lengthSq() === 0) return 0;
 
-    const moving = [];
-    for (const collider of physics.colliders) {
-      if (!collider || collider.type === 'heightfield') continue;
-      if (box.containsPoint(collider.center)) moving.push(collider);
+    /* Ownership first. When the world tagged these colliders, this is not a
+     * guess and there is nothing to cap: the object owns what it owns, and a
+     * move that carried fewer would leave a wall behind - the exact defect the
+     * applier was written to prevent. */
+    let moving = this._collidersOwnedBy(name);
+
+    if (!moving) {
+      /* Nobody claimed the name, so fall back to the geometric guess - and cap
+       * it, which this sweep never did. `MAX_MOVE_COLLIDERS` mirrors the
+       * remove side's refusal for the same reason: a box that contains
+       * thousands of collider centres is a district, not a prop, and dragging
+       * a district's collision on one click is worse than not dragging at all.
+       * Refusing is reported as 0 moved, which the editor already surfaces. */
+      moving = [];
+      for (const collider of physics.colliders) {
+        if (!collider || collider.type === 'heightfield') continue;
+        if (!box.containsPoint(collider.center)) continue;
+        moving.push(collider);
+        if (moving.length > MAX_MOVE_COLLIDERS) return -1;
+      }
     }
     if (moving.length === 0) return 0;
 
@@ -1034,7 +1119,7 @@ export class MapOverlay {
     // changes: it is what decides which colliders are this object's.
     target.updateWorldMatrix(true, false);
     _box.setFromObject(target);
-    const dropping = this._collidersInside(_box);
+    const dropping = this._collidersInside(_box, name);
     if (dropping === null) {
       unresolved.push({ id: String(entry.id ?? ''), reason: 'span' });
       return;
@@ -1079,9 +1164,22 @@ export class MapOverlay {
    * trigger inside a removed prop belongs to the prop, exactly as
    * `_moveColliders` takes it along with the prop.
    */
-  _collidersInside(box) {
+  _collidersInside(box, name = null) {
     const physics = this.physics;
     if (!physics) return [];
+    /* Ownership first, and EXEMPT from `MAX_REMOVE_COLLIDERS`.
+     *
+     * The cap exists because containment is a guess: a district Group's box is
+     * the union of everything in it, so "200 colliders inside" means "this box
+     * is too big to reason about", not "this object is large". When the world
+     * has tagged the colliders, the count is not a guess - it is the answer -
+     * and refusing it would hide a mesh while leaving the wall it stands for,
+     * which is precisely what `span` exists to avoid. The editor still warns
+     * above `WIDE_REMOVE_COLLIDERS`, which is the right place for "are you
+     * sure": a number the admin can see, not a refusal they cannot override. */
+    const owned = this._collidersOwnedBy(name);
+    if (owned) return owned;
+
     _padded.copy(box).expandByScalar(REMOVE_TOLERANCE);
     const inside = [];
     for (const collider of physics.colliders) {
@@ -1190,14 +1288,34 @@ export class MapOverlay {
 
     /* `persistent` exempts it from the fade timer and from pool recycling — a
      * placed item is a feature of the map, not litter from a firefight, and must
-     * still be there when the player comes back. For COLLECTIBLE items (those with
-     * contents), snap to ground so players can reach them. For visual-only items
-     * (no contents), preserve authored height like a rooftop crate. Both match
-     * how `Interiors` places authored world caches. */
-    const hasContents = contents && contents.length > 0;
+     * still be there when the player comes back, exactly as `Interiors` places
+     * authored world caches.
+     *
+     * ── `snap`, and why it is the document's decision ────────────────────────
+     * A placement is unreachable if it hangs above the floor: auto-collect has a
+     * 1.7 m range and an admin dragging on a 2D map cannot see height. So the
+     * DEFAULT is to snap - `Loot.spawn` casts `groundHeight(x, z, y + 1.6, 6)`
+     * and takes the surface it finds.
+     *
+     * But snapping unconditionally is also wrong, and was briefly shipped that
+     * way: a crate authored onto a rooftop ledge, a gantry or a mezzanine falls
+     * to the deck, and nothing anywhere says it moved. That version read
+     * `snap: contents.length > 0` against a `contents` built one line above as a
+     * ternary between two SINGLE-ELEMENT array literals - always true, so the
+     * "visual-only items keep their height" case its own comment described could
+     * never run.
+     *
+     * So it is a field the document carries. Absent means snap, which is what
+     * every placement saved before the field existed wants and needs no
+     * migration; only an explicit `false` opts out, and only an admin who has
+     * decided the height is deliberate writes one.
+     *
+     * Note what the probe can still do even when snapping is wanted: the window
+     * is 7.6 m tall, so a surface up to 1.6 m ABOVE the authored point wins, and
+     * a placement over a void finds nothing and stays where it was authored. */
     const pickup = this.loot.spawn(new THREE.Vector3(p.x, p.y, p.z), contents, {
       persistent: true,
-      snap: hasContents,  // Snap collectible items to ground; preserve height for visual-only items
+      snap: entry.snap !== false,
       tag: `overlay:${entry.id}`,
     });
 
@@ -1263,8 +1381,16 @@ export class MapOverlay {
       const node = queue.shift();
       if (!node) continue;
       const name = typeof node.name === 'string' ? node.name.trim() : '';
+      /* Skipped, not renamed: see `NOT_EDITABLE`. The subtree is still walked -
+       * a node the editor should not offer can still contain one it should. */
+      const offerable = !isNotEditable(node);
+      /* A withheld name is RESERVED, not merely skipped: `seen` takes it either
+       * way, so a second node carrying the same string cannot be offered under
+       * it. Without that, one `ramp-proxy` could be withheld and a different
+       * one offered, and the row would resolve to neither reliably. */
       if (name && node !== world.group && !seen.has(name)) {
         seen.add(name);
+        if (!offerable) { if (node.children) for (const child of node.children) queue.push(child); continue; }
         this._anchor(node, at);
         out.push({
           name,

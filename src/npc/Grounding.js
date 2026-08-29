@@ -189,8 +189,84 @@ export function pickSurface(stack, hintY) {
 }
 
 /**
+ * Where up a standing body to ask "is there geometry inside me?" - ankle, shin,
+ * waist, shoulder.
+ *
+ * Four samples, not a capsule sweep, because the question is cheap and blunt:
+ * anything solid enough to swallow a character is wider than 45 cm of vertical
+ * gap. Sampling only the feet would have missed the one case here whose legs
+ * are clear and whose head is inside a counter.
+ */
+const BODY_SAMPLES = [0.15, 0.5, 1.0, 1.6];
+
+/** Scratch for `standingClear` alone. */
+const _scOrigin = new THREE.Vector3();
+
+/**
+ * Is there a person-shaped hole at (x, z) for somebody whose feet are at `y`?
+ *
+ * ── Why this cannot evict somebody from a place they belong ───────────────
+ * The obvious worry about rejecting occupied columns is the world that puts
+ * people INDOORS on purpose - the medieval residency, the citadel's oasis - and
+ * a sweep of each of those would only ever be an enumeration. The argument is
+ * better than the enumeration and it is one line: `containsPoint` skips
+ * anything with `solid` false, so a true here means the PLAYER CAPSULE WOULD BE
+ * EJECTED from that point. Nowhere a character can legitimately stand is inside
+ * a solid collider, in any world, because a character that tried would be
+ * depenetrated out of it on its first integrated frame. An enterable building
+ * has walls, not a filled shell; if it had a filled shell nobody could be
+ * inside it anyway. That is why this is safe to put in the shared funnel rather
+ * than behind a station-only flag.
+ *
+ * ── The blind spot, stated because a gate nobody distrusts is dangerous ────
+ * `Physics.containsPoint` branches on `box` and `heightfield` and has no case
+ * for `mesh`, the triangle soup `_collisionSoup` registers - a body embedded in
+ * something that exists only as soup reads clear here. So this is a LOWER bound
+ * on burial, and it is worth having anyway because the props and platforms that
+ * actually swallowed characters on the station are boxes: `_solidifyStructure`
+ * emits box colliders, and all five defects this was written for were inside
+ * one.
+ */
+export function standingClear(physics, x, y, z) {
+  if (!physics?.containsPoint) return true;
+  for (const dy of BODY_SAMPLES) {
+    if (physics.containsPoint(_scOrigin.set(x, y + dy, z))) return false;
+  }
+  return true;
+}
+
+/**
  * Resolve an authored spawn onto a real, standable surface, searching outward
- * if the exact column has no floor at all.
+ * if the exact column has no floor at all - or has one that is inside a prop.
+ *
+ * ── Why an OCCUPIED column takes the same escape as an empty one ──────────
+ * This used to search outward only when `resolveSurfaceY` came back null, which
+ * is "there is no floor here at all". That is the rarer half of the problem.
+ * The half that shipped is a column with a perfectly good floor that something
+ * solid is already standing on, and from the character's point of view the two
+ * are the same defect: reported live as "npc that are part in the ground, feet
+ * can not be seen".
+ *
+ * On the station, five spawns and twelve patrol waypoints resolved inside
+ * geometry, and they are two different mistakes wearing one symptom. Meret
+ * Duhamel resolved onto the deck at 0.11 - the RIGHT floor - twenty centimetres
+ * inside a 0.4 m square post. The Rogue Security Unit at (72.8, -63.1) resolved
+ * to 0 inside a cargo container whose lid is the 2.95 m surface directly above
+ * its head. Neither is fixable by choosing a different surface in the column,
+ * which is why this is here and not in `pickSurface`: the answer is to stand
+ * somewhere else, and "somewhere else" is exactly what the ring search below
+ * already knew how to find.
+ *
+ * `NPCManager._snapToGround` has always promised in its docstring that a spawn
+ * is placed "so nothing ever spawns embedded in geometry or hovering above it".
+ * This is the half of that sentence that was not true.
+ *
+ * ── Why the buried point is still returned when the search fails ──────────
+ * `_snapToGround` treats null as "keep the authored height"; `spawnForWorld`
+ * treats a null from further up as "skip this character entirely". A quest
+ * giver standing in a wall is a defect a player can walk around. A quest giver
+ * who does not exist is one they cannot. So a column with a floor always yields
+ * a position, and the gate - not the runtime - is what keeps it clear.
  *
  * @param {any} physics
  * @param {THREE.Vector3} p authored point (`p.y` is the hint)
@@ -201,16 +277,21 @@ export function resolveSpot(physics, p, out) {
   if (!p) return null;
   const v = out ?? new THREE.Vector3();
   const direct = resolveSurfaceY(physics, p.x, p.z, p.y);
-  if (direct !== null) return v.set(p.x, direct, p.z);
+  if (direct !== null && standingClear(physics, p.x, direct, p.z)) {
+    return v.set(p.x, direct, p.z);
+  }
   for (const r of [1.5, 3, 6, 12]) {
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       const x = p.x + Math.cos(a) * r;
       const z = p.z + Math.sin(a) * r;
       const y = resolveSurfaceY(physics, x, z, p.y);
-      if (y !== null) return v.set(x, y, z);
+      if (y !== null && standingClear(physics, x, y, z)) return v.set(x, y, z);
     }
   }
+  /* Nowhere clear within 12 m. The authored column at least has a floor, so
+   * stand on it rather than deleting the character - see the note above. */
+  if (direct !== null) return v.set(p.x, direct, p.z);
   return null;
 }
 

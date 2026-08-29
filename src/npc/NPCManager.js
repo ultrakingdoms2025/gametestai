@@ -1103,7 +1103,9 @@ export class NPCManager {
    */
   spawnBeast(spec) {
     if (!spec?.position) return null;
-    const pos = this._snapToGround(spec.position);
+    // Its own shoulder, not a person's - see `spawnBeastGroup`. This path and
+    // the respawn below were the two that still measured a wolf against 1.6 m.
+    const pos = this._snapToGround(spec.position, undefined, beastDef(spec.species)?.shoulderHeight);
     if (!pos) return null;
     const beast = this._createBeast({ ...spec, position: pos });
     // The same audit `spawnForWorld` runs over the whole cast at the end.
@@ -2314,7 +2316,11 @@ export class NPCManager {
         best = c;
       }
     }
-    const snapped = this._snapToGround(best);
+    /* A beast is filed as a hostile and goes through this queue, so a pack
+     * that spawned correctly under a gantry would have been relocated the
+     * first time one of them died. `def` is the species record on a BeastNPC
+     * and undefined on a humanoid, which is exactly the fallback we want. */
+    const snapped = this._snapToGround(best, undefined, npc?.def?.shoulderHeight);
     return snapped ?? best;
   }
 

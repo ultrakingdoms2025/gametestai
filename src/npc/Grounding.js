@@ -220,23 +220,45 @@ const _scOrigin = new THREE.Vector3();
  * The obvious worry about rejecting occupied columns is the world that puts
  * people INDOORS on purpose - the medieval residency, the citadel's oasis - and
  * a sweep of each of those would only ever be an enumeration. The argument is
- * better than the enumeration and it is one line: `containsPoint` skips
- * anything with `solid` false, so a true here means the PLAYER CAPSULE WOULD BE
- * EJECTED from that point. Nowhere a character can legitimately stand is inside
- * a solid collider, in any world, because a character that tried would be
- * depenetrated out of it on its first integrated frame. An enterable building
- * has walls, not a filled shell; if it had a filled shell nobody could be
- * inside it anyway. That is why this is safe to put in the shared funnel rather
- * than behind a station-only flag.
+ * better than the enumeration: `containsPoint` skips anything with `solid`
+ * false, so a true here means the capsule solver has something to say about
+ * that point. Nowhere a character can legitimately stand is inside a solid
+ * collider, because a character that tried would be depenetrated on its first
+ * integrated frame. An enterable building has walls, not a filled shell; if it
+ * had a filled shell nobody could be inside it anyway.
+ *
+ * Stated once, precisely, because the obvious phrasing overclaims: the push is
+ * not always OUTWARD. Measured against `resolveCapsule` on the seventeen
+ * flagged station stances, nine resolve DOWNWARD (-0.38, -0.15, -0.05 m) - the
+ * character sinks rather than being expelled. That does not weaken the rule,
+ * it sharpens it: a point the solver has to correct at all is not a place to
+ * put somebody, whichever way it corrects them.
  *
  * ── The blind spot, stated because a gate nobody distrusts is dangerous ────
  * `Physics.containsPoint` branches on `box` and `heightfield` and has no case
- * for `mesh`, the triangle soup `_collisionSoup` registers - a body embedded in
- * something that exists only as soup reads clear here. So this is a LOWER bound
- * on burial, and it is worth having anyway because the props and platforms that
- * actually swallowed characters on the station are boxes: `_solidifyStructure`
- * emits box colliders, and all five defects this was written for were inside
- * one.
+ * for `mesh`, so a body embedded in triangle soup reads clear here. On the
+ * station that is 8,038 of 26,198 colliders - 30.7% by count - and it is the
+ * only world with any soup at all.
+ *
+ * It stays a blind spot ON PURPOSE, and this is the part worth reading before
+ * anybody "fixes" it. A soup has no interior - `Physics.resolveCapsule` says so
+ * where it handles one - so there is no correct point-in-solid test to write.
+ * Any `mesh` branch would have to be a proximity test, and a proximity test
+ * returns TRUE for somebody standing ON a mesh floor: 21.6% of resolved station
+ * deck surfaces are soup, so the ring search would start evicting characters
+ * off perfectly good paving. The narrow miss is the right trade.
+ *
+ * And it is narrow, because the soup is thin SURFACES - aprons, roads, plazas,
+ * railings - not swallowing volumes. Over 1,500 random deck columns only 5
+ * (0.33%) carry a body-height mesh obstruction this cannot see. The volumes
+ * that actually swallow characters are boxes, and they come from
+ * `_solidifyProps`, the planting proxies, and the hand-written massing in
+ * `_solid` / `_solidRot` - NOT from `_solidifyStructure`, which emits soup.
+ * (An earlier draft of this comment named `_solidifyStructure` as the box
+ * source. It was wrong, and it reached a right conclusion for a wrong reason,
+ * which is the more dangerous kind of comment.) All five defects this was
+ * written for were inside boxes: a building shell, a walkway slab, a cargo
+ * container, a platform, and a lamp post.
  */
 export function standingClear(physics, x, y, z, standHeight = HUMANOID_HEIGHT) {
   if (!physics?.containsPoint) return true;
@@ -294,20 +316,73 @@ export function resolveSpot(physics, p, out, standHeight = HUMANOID_HEIGHT) {
   if (direct !== null && standingClear(physics, p.x, direct, p.z, standHeight)) {
     return v.set(p.x, direct, p.z);
   }
+  /* Any floor found on the way out, clear or not. This is the old behaviour's
+   * answer and it is kept as a floor of last resort: without it, a column with
+   * NO floor whose whole neighbourhood is occupied would return null where it
+   * used to return a standable-if-crowded point, and `_snapToGround` turns a
+   * null into the unresolved authored height - a character left in the air.
+   * Nothing in any world reaches this today; it exists so nothing can. */
+  let anyFloorX = 0, anyFloorY = 0, anyFloorZ = 0, anyFloor = false;
+  const hint = direct !== null ? direct : p.y;
+
   for (const r of [1.5, 3, 6, 12]) {
+    /* Score the WHOLE ring rather than taking the first bearing that happens
+     * to be clear. Two things are wrong with first-wins, and both were
+     * measured on the seventeen station stances this search moves:
+     *
+     *   It changes FLOOR without being asked. `resolveSurfaceY` re-picks a
+     *   surface at every sample, so a bearing whose column is a mezzanine puts
+     *   a deck character on the mezzanine - and bearing 0 is not a better
+     *   answer than bearing 3, it is just the one tried first. Preferring the
+     *   sample nearest the height already resolved keeps a character on the
+     *   floor it was authored on when any bearing offers one.
+     *
+     * Preferring by height fixed three of the four floor changes on the
+     * station. The two that remain - Rooke Ilesanmi +1.85 m onto the promenade
+     * and Breaker Frame +2.20 m onto a plinth - are right: no bearing on their
+     * rings offers a clear deck, because at those columns the raised structure
+     * IS the ground.
+     *
+     * ── Connectivity was tried here and taken back out ───────────────────
+     * The step can still cross a wall - on a plaza 12 m clears a curtain wall,
+     * and two of the seventeen station steps do. A hip-height sweep between
+     * the two columns rejects exactly those, and it was written, measured and
+     * removed, because it makes the worst case worse rather than better.
+     *
+     * The character that most needs relocating is the one sealed inside
+     * something, and for that character crossing a wall is not the bug, it is
+     * the ONLY way out. Hask Merrow is authored inside his own shop unit -
+     * `StationWorld` documents what that does to him - and every ray out of a
+     * four-walled room hits a wall, so the test rejected the 6 m step onto the
+     * pavement and pushed him to 12 m, twice as far, for a reason that was
+     * true of the room and not of the step. Aiming the ray at the candidate
+     * instead was worse again: a step UP crosses the riser of the very deck it
+     * lands on, so Rooke's 3 m onto the promenade became 12 m across the strip.
+     *
+     * A step onto the wrong side of a wall is a placement to fix at source. It
+     * belongs in the gate, where a human reads it, not in a runtime rule that
+     * pays for a rare improvement with a common regression. */
+    let bestX = 0, bestY = 0, bestZ = 0, bestScore = Infinity, found = false;
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       const x = p.x + Math.cos(a) * r;
       const z = p.z + Math.sin(a) * r;
       const y = resolveSurfaceY(physics, x, z, p.y);
-      if (y !== null && standingClear(physics, x, y, z, standHeight)) return v.set(x, y, z);
+      if (y === null) continue;
+      if (!anyFloor) { anyFloor = true; anyFloorX = x; anyFloorY = y; anyFloorZ = z; }
+      if (!standingClear(physics, x, y, z, standHeight)) continue;
+      const score = Math.abs(y - hint);
+      if (score < bestScore) { bestScore = score; bestX = x; bestY = y; bestZ = z; found = true; }
     }
+    if (found) return v.set(bestX, bestY, bestZ);
   }
   /* Nowhere clear within 12 m. The authored column at least has a floor, so
    * stand on it rather than deleting the character - see the note above. */
   if (direct !== null) return v.set(p.x, direct, p.z);
+  if (anyFloor) return v.set(anyFloorX, anyFloorY, anyFloorZ);
   return null;
 }
+
 
 /**
  * Is this character standing somewhere a person could actually stand?

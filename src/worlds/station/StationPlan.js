@@ -276,6 +276,42 @@ export class StationPlan {
     return Math.abs(dx * c - dz * s) <= hx && Math.abs(dx * s + dz * c) <= hz;
   }
 
+  /**
+   * Which seeded role a footprint would land on - WITHOUT claiming it.
+   *
+   * `claim` is the reporting path: it records the conflict and marks the cells,
+   * so a builder cannot use it to ask a question before deciding. This is the
+   * question. It is the same rasterise-and-test scan, minus the bookkeeping,
+   * and it exists so a placement loop can get out of a road rather than build
+   * across it and be counted afterwards.
+   *
+   * `only` narrows it to one role. That matters: the plan seeds carriageways,
+   * plazas AND sightlines, and refusing every block that clips a sightline
+   * would delete most of the backdrop the gateways are silhouetted against.
+   * A building standing in a road is a defect; a building at the edge of a
+   * sightline is a composition question.
+   *
+   * @param {string|null} [only] restrict to this role
+   * @returns {string|null} the role hit, or null
+   */
+  roleUnder(x, z, hx, hz, yaw = 0, only = null) {
+    const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+    const ex = hx * c + hz * s;
+    const ez = hx * s + hz * c;
+    const gx0 = Math.floor((x - ex) / OCC_CELL), gx1 = Math.floor((x + ex) / OCC_CELL);
+    const gz0 = Math.floor((z - ez) / OCC_CELL), gz1 = Math.floor((z + ez) / OCC_CELL);
+    if ((gx1 - gx0 + 1) * (gz1 - gz0 + 1) > MAX_CLAIM_CELLS) return null;
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const role = this._role.get(occCellKey(gx, gz));
+        if (!role || (only && role !== only)) continue;
+        // Same true-rect test `claim` uses, so the two agree on what a hit is.
+        if (this._rectCovers(x, z, hx, hz, yaw, (gx + 0.5) * OCC_CELL, (gz + 0.5) * OCC_CELL)) return role;
+      }
+    }
+    return null;
+  }
+
   /** The role seeded at a world position, or null. */
   roleAt(x, z) {
     return this._role.get(occCellKey(Math.floor(x / OCC_CELL), Math.floor(z / OCC_CELL))) ?? null;

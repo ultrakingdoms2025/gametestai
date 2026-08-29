@@ -168,14 +168,44 @@ test('the collision the world derives from its own geometry is unchanged', async
    * DOWN, 8192 -> 8038, because a spatially coherent owner packs better than
    * an arbitrary median slice; the 401 partial chunks that per-owner splitting
    * costs are more than paid for. `physics.colliders` follows chunks exactly
-   * (26352 -> 26198, the same 154). */
+   * (26352 -> 26198, the same 154).
+   *
+   * ── Re-taken: the gateway flanks moved off the carriageways ─────────────
+   * 328702 -> 364575 found, 144631 -> 166927 boxed, 184071 -> 197648 kept,
+   * 8038 -> 8605 chunks, 26198 -> 26761 colliders. Deliberate, owner-approved,
+   * and it is THREE BUILDINGS rather than a change to any existing one.
+   *
+   * Note the collider total no longer tracks chunks exactly: +567 chunks but
+   * +563 colliders. The old note above said it "follows chunks exactly", which
+   * was true of Phase 2's change and is not a law - four of the new chunks
+   * carry no box of their own. Both figures are measured, not derived.
+   *
+   * `_buildSkyline` places the gateway backdrop flanks at `base +- 25`, and
+   * with roads every 60 degrees and bases at 90 and 270 that is five degrees
+   * off a carriageway for all four - 9.94 m of perpendicular offset at r = 114
+   * for a block reaching 13 m, so each one crosses the centreline of an 18 m
+   * road. Reported live: "a large multi storey building that goes halfway into
+   * the road". They are now nudged clear in two-degree steps.
+   *
+   * The +11% is the honest price and it is worth stating why it is a RISE for
+   * a fix that moves things. Three of the four flanks were being dropped for a
+   * second reason - they clashed with the habitat stacks - so once they step
+   * off the avenue they stop clashing and build, which is what the loop always
+   * intended ("the portal still reads against architecture from the plaza").
+   * The skyline gains 44,498 triangles of its own and the rest follows.
+   *
+   * Nudged rather than skipped for a reason worth keeping: `rng` is ONE seeded
+   * stream shared by every block in that loop, so a `continue` does not remove
+   * one building, it re-rolls every building after it. Measured, a single
+   * `continue` there cost 348315 found - a 6% RISE for a change meant to
+   * delete geometry. */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 328702, boxed: 144631, kept: 184071, planting: 1360 },
+    { found: 364575, boxed: 166927, kept: 197648, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8038, 'the chunking changed');
-  assert.equal(physics.colliders.length, 26198, 'the collider total changed');
+  assert.equal(chunks, 8605, 'the chunking changed');
+  assert.equal(physics.colliders.length, 26761, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

@@ -34,7 +34,7 @@ import {
   GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
   gatewayCentre, gatewayFrameYaw, avenueClearance,
 } from './station/StationKit.js';
-import { StationPlan } from './station/StationPlan.js';
+import { StationPlan, ROLE } from './station/StationPlan.js';
 import { StationActors } from './station/StationActors.js';
 import { loadCrowdAssets, crowdParts } from './station/CrowdAssets.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
@@ -8323,6 +8323,28 @@ export class StationWorld extends World {
     // Gateway backdrop: a pair flanking each axis, plus a taller mass set well
     // behind it, so the portal still reads against architecture from the plaza
     // while the axis itself stays open all the way to the hull.
+    /* `base +- 25` is FIVE DEGREES off a carriageway, for both bases and both
+     * signs, and that is a rule rather than bad luck: roads run every 60
+     * degrees and the gateway bases are 90 and 270, so the four flanks land on
+     * 65, 115, 245 and 295. At r = 114 that is 9.94 m of perpendicular offset
+     * for a block reaching about 13 m, so the block crosses the centreline of
+     * an 18 m road. Reported live as "a large multi storey building that goes
+     * halfway into the road", seen from (40.4, -77.2): the flank at 295.
+     *
+     * Three of the four were ALREADY being dropped for an unrelated reason -
+     * they clash with the habitat stacks - which is why only one of them ever
+     * reached a screenshot, and why this read as a one-off placement rather
+     * than a rule.
+     *
+     * The offset is deliberately NOT retuned here. 18 degrees clears the road
+     * arithmetically, and measured it also stops the other three clashing, so
+     * all four blocks appear and the world gains 19,613 collision triangles
+     * and three 26 x 22 x 30 m masses around two gateways. That is a
+     * composition change, and this loop's own note above says those "should be
+     * made with the frame in front of you rather than arithmetically". The
+     * guard below removes the defect without making it; a flank pair for the
+     * four newer gateways is the open piece of work, and it is the same one
+     * that note already records. */
     for (const base of [90, 270]) {
       for (const off of [-25, 25]) {
         specs.push({ deg: base + off, r: 114, w: 26, d: 22, floors: 6 + (off > 0 ? 2 : 0) });
@@ -8334,8 +8356,43 @@ export class StationWorld extends World {
       // Keep clear of the window sector's promenade.
       const wrapped = ((s.deg + 180) % 360) - 180;
       if (Math.abs(wrapped) < 22 && s.r > 140) continue;
-      const p = roadPos(s.deg, s.r, 0, 0, new THREE.Vector3());
-      const yaw = -s.deg * DEG + Math.PI;
+      /* Off the carriageway first, by MOVING rather than dropping.
+       *
+       * `base +- 25` is five degrees off a road, for both gateway bases and
+       * both signs, and that is a rule rather than bad luck: roads run every
+       * 60 degrees and the bases are 90 and 270, so the flanks land on 65,
+       * 115, 245 and 295. At r = 114 that is 9.94 m of perpendicular offset
+       * for a block reaching about 13 m, so the block crosses the centreline
+       * of an 18 m road. Reported live as "a large multi storey building that
+       * goes halfway into the road", seen from (40.4, -77.2).
+       *
+       * ── Why it is nudged and not `continue`d ────────────────────────────
+       * Because `rng` is one seeded stream shared by every block in this loop,
+       * and `_block` draws from it. Skipping a spec does not remove one
+       * building, it re-rolls EVERY BUILDING AFTER IT - measured, a single
+       * `continue` here moved the skyline from 49,056 collision triangles to
+       * 72,530, a 6% rise in the whole world's derived collision, for a change
+       * that was supposed to delete geometry. A nudge keeps one `_block` call
+       * per surviving spec and leaves the stream, and therefore the rest of
+       * the skyline, exactly as it was.
+       *
+       * Two degrees at a time, out to twenty, taking the first bearing that is
+       * clear. The flank at 295 needs eight of them; nothing else moves. */
+      let deg = s.deg;
+      if (this.plan) {
+        const hx = s.w / 2, hz = s.d / 2;
+        for (let t = 0; t <= 20; t += 2) {
+          for (const sign of (t === 0 ? [1] : [1, -1])) {
+            const cand = s.deg + t * sign;
+            const q = roadPos(cand, s.r, 0, 0, _v2);
+            if (!this.plan.roleUnder(q.x, q.z, hx, hz, -cand * DEG + Math.PI, ROLE.CARRIAGEWAY)) {
+              deg = cand; t = 999; break;
+            }
+          }
+        }
+      }
+      const p = roadPos(deg, s.r, 0, 0, new THREE.Vector3());
+      const yaw = -deg * DEG + Math.PI;
       /* Backdrop may not stand in a building you can walk into.
        *
        * ── The defect this removes ─────────────────────────────────────────
@@ -8385,7 +8442,6 @@ export class StationWorld extends World {
         const gap = Math.hypot(Math.max(0, lx), Math.max(0, lz));
         if (gap < blockR) { clash = true; break; }
       }
-      if (clash) continue;
       this._block(B, {
         x: p.x, z: p.z, yaw, w: s.w, d: s.d, floors: s.floors, rng,
         body: rng() < 0.4 ? 'panelWarm' : 'panel',

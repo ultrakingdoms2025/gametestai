@@ -33,6 +33,7 @@ import {
   GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
   gatewayCentre, gatewayFrameYaw, avenueClearance,
 } from './station/StationKit.js';
+import { StationPlan } from './station/StationPlan.js';
 import { StationActors } from './station/StationActors.js';
 import { loadCrowdAssets, crowdParts } from './station/CrowdAssets.js';
 import { buildOuterRing, LINK_MOUTH_HALF_DEG } from './station/OuterRing.js';
@@ -1888,6 +1889,10 @@ export class StationWorld extends World {
 
     const step = async (f, label, fn) => {
       onProgress?.(f, label);
+      /* Which phase is authoring, so a plan conflict names the builder that
+       * made it rather than a bare coordinate. Free, and it is the difference
+       * between "439 conflicts" and a work list. */
+      this._planOwner = label;
       await yieldFrame();
       await fn.call(this, breathe(f, label));
     };
@@ -1924,6 +1929,7 @@ export class StationWorld extends World {
      * and every figure is the procedural one the whole test suite measures. */
     await Promise.all([loadHeroAssets(), loadCrowdAssets()]);
 
+    await step(0.02, 'Setting out the plan', this._buildPlan);
     await step(0.22, 'Opening the sky', this._buildSpace);
     await step(0.32, 'Raising the pressure hull', this._buildHull);
     await step(0.42, 'Laying the deck and avenues', this._buildDeck);
@@ -3176,6 +3182,32 @@ export class StationWorld extends World {
 
 
   /**
+   * Set out what the deck is FOR, before anything is built on it.
+   *
+   * FIRST, and before `_buildTextures`, because that is the only position from
+   * which it is true for every builder that follows. It is pure arithmetic over
+   * the layout constants - it reads no collider, no geometry and no scene graph
+   * - so there is nothing here that could accidentally consult the half-built
+   * world, and nothing for the ordering to get wrong.
+   *
+   * `breathe` is taken and called for the slicing pin's sake and for honesty
+   * about the shape of a build step, though the pass is short: seeding the six
+   * avenues, six approaches and the plaza is about thirty thousand cell writes.
+   *
+   * Nothing reads the plan back in this phase. See `StationPlan` for why that
+   * is deliberate.
+   */
+  async _buildPlan(breathe = noBreath) {
+    const t0 = performance.now();
+    this.plan = new StationPlan().seedCirculation(this.roadAngles ?? undefined);
+    await breathe();
+    console.info(
+      `[station] plan set out: ${this.plan.stats.cellsSeeded} cells reserved ` +
+      `(${Math.round(performance.now() - t0)}ms)`
+    );
+  }
+
+  /**
    * Collide the station's structure from the triangles it actually drew.
    *
    * ── Why this exists ───────────────────────────────────────────────────────
@@ -3961,6 +3993,11 @@ export class StationWorld extends World {
    * unambiguously to the InstancedMesh that drew it.
    */
   _solidRot(x, y, z, hx, hy, hz, ry, ownerId = null) {
+    /* Recorded as a SIDE EFFECT of authoring the solid, never as a second list
+     * a builder has to remember to write - which is the whole reason
+     * `Gym.scope()` works and a hand-kept keep-out table would not. Nothing
+     * reads it back yet; see `StationPlan`. */
+    this.plan?.claim(x, z, y - hy, y + hy, hx, hz, ry, ownerId ?? this._planOwner ?? null);
     return this.track(
       this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), ry, ownerId ? { ownerId } : undefined)
     );

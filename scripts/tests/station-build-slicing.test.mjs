@@ -176,6 +176,9 @@ test('every phase measured over 100 ms takes a breathe and calls it', async () =
     'async _settleScatter(groups, breathe = noBreath) {',
     'async _solidifyProps(breathe = noBreath) {',
     'async _solidifyStructure(breathe = noBreath) {',
+    /* The plan is a build step like any other: it takes a breathe and calls
+     * it, even though seeding is short. Added with the phase that wrote it. */
+    'async _buildPlan(breathe = noBreath) {',
     'async _collisionSoup(',
     /* Widened when collider ownership landed: the drop compacts an owner
      * array in step with the triangles, so a survivor keeps the owner its

@@ -798,6 +798,19 @@ export class NPC {
     this.velocity.y += this._gravity * dt;
     this.velocity.x *= Math.exp(-6 * dt);
     this.velocity.z *= Math.exp(-6 * dt);
+    /* The SAME terminal velocity the living body has, and for the same reason
+     * its comment gives: a metres-per-step limit that keeps a 0.33 m capsule
+     * from tunnelling through a floor. A corpse is that capsule.
+     *
+     * It was omitted here, and the omission compounds with `auditGrounding`
+     * returning early on the dead - a corpse has no watchdog, so nothing
+     * recovers what the clamp fails to stop. Measured over a 120 m drop onto a
+     * 0.3 m floor: the living body clamps at -33.0 m/s and lands at t=1.53 s;
+     * the corpse reached -72.2 m/s. Stepped at `SIM_MAX_STEP` (0.4 s), which is
+     * what an LOD-banded corpse is stepped at, the living body tunnels to
+     * -10.56 m and is caught by its own recovery while the corpse reached
+     * -4458 m and was still accelerating. */
+    if (this.velocity.y < -40) this.velocity.y = -40;
     this.position.addScaledVector(this.velocity, dt);
     const res = this.physics.resolveCapsule(this.position, this.radius, this.height * 0.5);
     if (res.grounded && this.velocity.y < 0) this.velocity.y = 0;
@@ -808,6 +821,15 @@ export class NPC {
     this._sampleGround(dt);
     // Corpses sink through mesh terrain just as easily as the living do.
     this._followGround(dt);
+    /* And out of the world entirely. The living body has this; the dead one
+     * did not, and the dead one is the one with no watchdog behind it. A
+     * corpse below the floor of the world is gone either way - this at least
+     * stops it integrating forever. */
+    if (this.position.y < -60) {
+      this.position.copy(this.spawnPoint);
+      this.velocity.set(0, 0, 0);
+      this._sampleGround(dt, true);
+    }
     this.moveSpeed = 0;
   }
 

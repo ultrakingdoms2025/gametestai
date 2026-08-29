@@ -32,6 +32,29 @@ const _e1 = new THREE.Euler();
 const _down = new THREE.Vector3(0, -1, 0);
 const _up = new THREE.Vector3(0, 1, 0);
 const _fwd = new THREE.Vector3(0, 0, -1);
+
+/** The world-space fall direction, `die()` only. */
+const _dv1 = new THREE.Vector3();
+/**
+ * How far from the feet the head ends up once the body has toppled.
+ *
+ * Measured, not assumed: driving the real `_updateDeath` to rest puts a point
+ * 1.5 m up the standing body 1.48-1.50 m out from the feet. That is the column
+ * whose ground decides whether the corpse lies on the floor or inside it.
+ */
+const DEATH_REACH = 1.45;
+/**
+ * How far the topple may be cut back on rising ground.
+ *
+ * 0.55 rad is 31.5 degrees off vertical - a body slumped against a steep bank,
+ * which is the most a fall should ever be allowed to read as. Past that it
+ * stops looking like a corpse and starts looking like somebody standing up, so
+ * a slope steeper than about 50 degrees gets a body lying partly in it rather
+ * than a body on its feet. That is the better of the two wrong pictures.
+ */
+const DEATH_MIN_FALL = 0.55;
+/** Just shy of flat, so a body on falling ground lies down rather than hangs. */
+const DEATH_MAX_FALL = 1.62;
 // `_poseSeatedLegs` owns these exclusively: it calls solveTwoBone and
 // basisQuat, both of which consume _v1.._v6 and _q1.._q3 internally, so reusing
 // the shared scratch here would silently corrupt the second leg it solves.
@@ -541,6 +564,57 @@ export class NPCAnimator {
     return this._tmpMat.copy(this.h.root.matrixWorld).invert();
   }
 
+  /**
+   * How far the body may topple here, given what it would be toppling ONTO.
+   *
+   * ── The defect ────────────────────────────────────────────────────────────
+   * Reported live: "if i kill them near stairs, they fall down behind the
+   * stairs". `_updateDeath` topples the whole rig about a horizontal axis
+   * through the FEET and makes no collision query of any kind - the animator's
+   * only raycast is in `_poseLegs`, and `update()` returns straight after
+   * `_updateDeath`, so on a corpse it is unreachable. The single concession to
+   * the ground is a flat +0.13 m lift.
+   *
+   * Measured by driving the real `_updateDeath` to rest: the topple settles at
+   * 81-90 degrees in 0.80 s and the head ends 1.48-1.50 m out from the feet,
+   * having dropped 1.15-1.38 m. On flat ground the 0.13 m is right. On a
+   * flight it is not - the tread 1.45 m along is over a metre HIGHER - so the
+   * body ends about a metre inside the staircase. And it is the ordinary shot
+   * that does it: `applyDamage` builds the impact direction as
+   * (npc.position - source.position), so a target standing ABOVE the player
+   * always topples INTO the flight.
+   *
+   * ── Why the ANGLE and not the direction ──────────────────────────────────
+   * Turning the fall to find flat ground was written first and measured wrong.
+   * A staircase has no flat bearing: across the flight is off the side and a
+   * 1.6 m drop, down-flight is a metre below, and the 45 degree compromise it
+   * actually chose still landed the head 0.80 m inside the steps. A body on
+   * stairs does not need a flat spot - it needs to lie ALONG the slope.
+   *
+   * So the direction is left exactly as the shot implied, and the fall stops
+   * where the body meets the surface instead. The slope over one body length
+   * is atan(rise / reach), which for the two flights this game builds is 39-42
+   * degrees - not the 62 an earlier draft got by reaching for asin. Ninety
+   * degrees minus that is a body sprawled up the steps, which is what it
+   * should look like.
+   *
+   * Falling ground widens the limit rather than narrowing it, capped just shy
+   * of flat, so a body toppling down-flight lies flatter instead of hanging.
+   */
+  _deathFallLimit(dirWorld, base) {
+    const phys = this.physics;
+    if (!phys?.groundHeight) return base;
+    this.h.root.updateMatrixWorld(true);
+    const m = this.h.root.matrixWorld.elements;
+    const fx = m[12], fy = m[13], fz = m[14];
+    const g = phys.groundHeight(fx + dirWorld.x * DEATH_REACH, fz + dirWorld.z * DEATH_REACH, fy + 3, 7);
+    // No floor within the probe at all - an edge. Leave the fall alone; a body
+    // draped over a drop is the animation working, not a burial.
+    if (g == null) return base;
+    const slope = Math.atan2(g - fy, DEATH_REACH);
+    return clamp(base - slope, DEATH_MIN_FALL, DEATH_MAX_FALL);
+  }
+
   /** Begin the collapse. Idempotent. */
   die(dirWorld, isHeadshot = false) {
     if (this.dead) return;
@@ -551,17 +625,23 @@ export class NPCAnimator {
     this.sinking = false;
 
     // Fall away from the shot, with a random bias so bodies never stack alike.
-    const inv = this._invRoot4();
-    _v1.copy(dirWorld ?? _fwd).transformDirection(inv).setY(0);
-    if (_v1.lengthSq() < 1e-6) _v1.set(0, 0, -1);
-    _v1.normalize();
+    _dv1.copy(dirWorld ?? _fwd).setY(0);
+    if (_dv1.lengthSq() < 1e-6) _dv1.set(0, 0, -1);
+    _dv1.normalize();
     const jitter = (this._rnd() - 0.5) * 0.9;
     _e1.set(0, jitter, 0);
     _q1.setFromEuler(_e1);
-    _v1.applyQuaternion(_q1);
+    _dv1.applyQuaternion(_q1);
+
+    // Into the rig's frame, which is where the topple is applied.
+    _v1.copy(_dv1).transformDirection(this._invRoot4()).setY(0);
+    if (_v1.lengthSq() < 1e-6) _v1.set(0, 0, -1);
+    _v1.normalize();
     // Topple axis is horizontal and perpendicular to the fall direction.
     this.deathAxis.crossVectors(_up, _v1).normalize();
-    this.deathFallLimit = 1.42 + this._rnd() * 0.16;
+    // Stop where the body meets the ground it is falling onto, which on flat
+    // ground is exactly where it always stopped. @see _deathFallLimit
+    this.deathFallLimit = this._deathFallLimit(_dv1, 1.42 + this._rnd() * 0.16);
 
     // Limp target pose: joints go slack with a little randomness.
     const t = {};

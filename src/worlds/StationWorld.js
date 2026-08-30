@@ -9039,9 +9039,61 @@ export class StationWorld extends World {
       const STEP_UP = 0.35;
       const APPROACH_R = 26;
       if (baseY - y > STEP_UP) {
+        /* COVERAGE, not proximity.
+         *
+         * ── The defect this removes ─────────────────────────────────────
+         * Reported live at (-29.8, 0, 16.9): "i see a sitting man not on the
+         * bench but floating above it and a standing man next to him also
+         * floating", and again nearby. Both figures are 19.7 and 21.2 m from
+         * the gateway at (-47, 27) - inside `APPROACH_R` - and inside that
+         * radius the lift was honoured UNCONDITIONALLY. So a figure standing
+         * over a bench was snapped to the bench TOP.
+         *
+         * For the standing variant that reads as a man stood on a bench. For
+         * the seated one it is worse: `_crowdSeatedGeo` measures from the
+         * figure's own feet, exactly as the standing geometry does, so a
+         * seated figure whose base is put on the bench top has its hips a
+         * seat-height ABOVE the bench - floating, which is precisely what was
+         * reported.
+         *
+         * The exemption itself was right in intent - a gateway approach really
+         * does rise, and the note below explains why height alone cannot tell
+         * a tread from a roof. But "near a gateway" is not the same question
+         * as "is this rise the ground". A gateway tread is broad and a bench
+         * is not, so ask about COVERAGE instead: sample the support under the
+         * figure's own footprint, and honour the lift only where it holds all
+         * the way across. That is the same discriminator the set-dressing
+         * settle uses for props, and for the same reason.
+         *
+         * Proximity is still consulted, but only to widen the tolerance: on an
+         * approach a tread may legitimately be a step up from one corner to
+         * another, so a corner is allowed to sit one STEP_UP below the centre
+         * there and nowhere else. */
         const onApproach = GATEWAY_CENTRES
           .some(([px, pz]) => Math.hypot(x - px, z - pz) < APPROACH_R);
-        if (!onApproach) {
+        const FOOT = 0.3;
+        let lowest = baseY;
+        for (const [dx, dz] of [[-FOOT, -FOOT], [FOOT, -FOOT], [-FOOT, FOOT], [FOOT, FOOT]]) {
+          const c = this.physics.groundHeight(x + dx, z + dz, y + 4.0, 12.0);
+          if (c !== null && c < lowest) lowest = c;
+        }
+        /* A SEATED figure is never lifted onto what it is sitting on.
+         *
+         * `_crowdSeatedGeo` measures from the figure's own feet, exactly as the
+         * standing geometry does - the pose raises the hips, not the origin. So
+         * a seated figure whose base is snapped to a bench TOP has its hips a
+         * seat-height above the bench, which is the "sitting man not on the
+         * bench but floating above it" that was reported. Its base belongs on
+         * the FLOOR it is sitting beside, and the bench is what its hips meet.
+         *
+         * Coverage cannot answer this one: a bench is easily wide enough to
+         * cover a seated figure's footprint, so the check below passes and the
+         * lift is honoured. The variant is the discriminator, not the geometry.
+         * A seated figure on a mezzanine is still correct - its authored `y` is
+         * the mezzanine and the re-probe finds that floor, not the deck. */
+        const seated = variant === 3;
+        const holds = seated ? false : onApproach;
+        if (!holds) {
           const floor = this.physics.groundHeight(x, z, y + STEP_UP, 12.0);
           baseY = floor === null ? y : floor;
         }

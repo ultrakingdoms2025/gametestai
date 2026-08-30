@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { installHeadlessDom, THREE } from './world-kit.mjs';
 installHeadlessDom();
 const { GeoBatch } = await import('../../src/worlds/station/StationKit.js');
-const { collectParts, containsPoint, trianglesOf, fractionInside } =
+const { collectParts, containsPoint, trianglesOf, fractionInside, isMarking } =
   await import('../../src/dev/GeoParts.js');
 
 /**
@@ -80,4 +80,23 @@ test('a sign threaded through a post reads as buried; one mounted on it does not
   const good = fractionInside(mounted, post);
   assert.ok(bad > 0.25, `a sign through the post should read buried, got ${bad.toFixed(2)}`);
   assert.equal(good, 0, `a sign mounted on the post should read clear, got ${good.toFixed(2)}`);
+});
+
+test('paint is not an object, but an upright plane is', () => {
+  /* THE FALSE POSITIVE THAT COST TWO ROUNDS. A floor decal lying on a raised
+   * planter rim is geometrically inside it, so exact containment reports 100%
+   * and is right and useless. At the planter site the owner reported,
+   * (23.6, -20.2), 29 pieces read as >= 25% inside another and 23 were paint.
+   *
+   * The discriminator is HEIGHT and not the smallest dimension, because a sign
+   * face is a plane too - and an upright one is an object. Getting that wrong
+   * in the other direction would blind the buried-sign gate completely. */
+  const decal = piece(new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), 0, 0.05, 0);
+  assert.equal(isMarking(decal), true, 'a flat quad lying on the floor is paint');
+
+  const signFace = piece(new THREE.PlaneGeometry(5, 2.6), 0, 3, 0);
+  assert.equal(isMarking(signFace), false, 'an upright plane 2.6 m tall is an object');
+
+  const kerb = piece(new THREE.BoxGeometry(4, 0.2, 1), 0, 0.1, 0);
+  assert.equal(isMarking(kerb), false, 'a 20 cm kerb is thin, and is still a thing you trip on');
 });

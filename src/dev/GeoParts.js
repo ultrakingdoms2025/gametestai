@@ -98,6 +98,41 @@ export function collectParts(root) {
   return out;
 }
 
+/**
+ * How thin a piece must be before it is paint rather than an object.
+ *
+ * 15 cm. A kerb is 20; a floor decal, a shadow blob, a painted bay and a
+ * hazard stripe are all authored at 0 to 5 cm.
+ */
+export const MARKING_H = 0.15;
+
+/**
+ * Is this piece painted ON a surface rather than standing on one?
+ *
+ * ── The false positive this exists to kill ────────────────────────────────
+ *
+ * A floor decal lying on a raised planter rim is, geometrically, entirely
+ * inside that rim - so an exact containment test reports it at 100% and is
+ * right, and useless. Measured at the planter site the owner reported,
+ * (23.6, -20.2): 29 pieces read as >= 25% inside another, and 23 of them were
+ * paint. Requiring thickness left 6, and the top one was the defect - a 2.5 m
+ * barrier 39% inside the rim.
+ *
+ * This is the SAME false positive the abandoned drawn-geometry probe had
+ * already handled - its note describes rejecting "the floor decal pierced by
+ * its own floor" - and that increment 3 re-introduced by not carrying the
+ * lesson across. It is in the library now, and not in a probe, so the next
+ * gate built on `fractionInside` inherits it.
+ *
+ * HEIGHT, not the smallest dimension. A sign face is a plane too, and a plane
+ * standing upright is an object: `dressing:signs#4` is 4.1 x 2.6 x 3.1, so it
+ * survives this test and the buried-sign gate still sees it. Only pieces that
+ * are flat IN Y are paint.
+ */
+export function isMarking(part, minH = MARKING_H) {
+  return (part.box.max.y - part.box.min.y) < minH;
+}
+
 /** An address a human can read in a report: `dressing:hazard#412`. */
 export function addressOf(part) {
   return `${part.mesh}#${part.index}`;

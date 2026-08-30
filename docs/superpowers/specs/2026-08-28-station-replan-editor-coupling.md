@@ -1862,3 +1862,75 @@ test now walks whatever is there and asserts only what a type cannot say: no ent
 giving the admin the same sentence.
 
 **Site: 947 tests, typecheck clean. Game: +5 for the report side.**
+
+## 17. The carriageway ratchet: 21 → 12, and three of them were people
+
+Four groups closed. Three were placement; one was not a placement defect at all.
+
+### Hand-authored coordinates in a road (4)
+
+`Erecting Gateway Plaza` ×3 were three of the six **dropped-freight pallets**, authored by eye around the
+plaza before the plan existed. `Scattering set dressing` ×1 was one of the eight **hologram ad masts**.
+Each sits on an avenue's carriageway *and* registers a solid there, so the freight was not merely visible
+in the road, it blocked it. Each moved the shortest distance `roleUnder` says clears — four metres for the
+pallets, eight along its own bearing for the mast. The other three pallets and seven masts were already
+clear and are untouched.
+
+### A pipe farm laid across a service road (2)
+
+`Stacking the cargo yard` ×2 were **pressure vessels**. The farm is a row of six at offsets
+−50 −30 −10 10 30 50, and a 3.4 m tank at ±10 reaches 6.6 m from the centreline of an 18 m road. This is
+the *same defect* the straddle gantry four lines above was fixed for, in the same pass — the row crosses
+the road, and the only question was whether it leaves a gap. It does now (±15, by the arithmetic the
+gantry's note works through plus the rasterisation margin it learned the hard way), and the pipe runs
+between tanks are cut to the spans they actually cross rather than five identical 20 m pipes with two
+ending in mid-air. Photographed: the avenue runs clear between the tanks with the pipe bridging over it.
+
+### `dressing` ×3 were people, and there were 202 of them
+
+`_solidifyProps` sweeps **every instanced mesh** in the world and boxes anything at least 0.4 m on each
+axis that is standing on something. A crowd figure is 0.78 × 1.62 × 0.48 and is standing on the deck.
+**202 of them had a static collider**, three standing in an avenue.
+
+A static box would be wrong even if they stood still — you walk *through* ambient crowd. It is worse than
+wrong here: the crowd animates, and `crowdBase` records every figure's spawn position precisely so the
+instance matrices can move away from it. Every one of those 202 boxes was a **phantom wall in a public
+concourse with nobody standing in it**.
+
+Fixed at the sweep, by a `movingInstances` flag the animator sets rather than a material test in the
+sweep: the sweep is world-agnostic and runs over the zones too, and the rule it needs — *instances that
+move cannot hold a static collider* — is a fact owned by the thing that moves them.
+
+⚠ **And a negative control had been resting on one of those people.**
+
+`station-minigames.test.mjs` pins a point the hub flood must **not** reach, "so that loosening the flood
+fails a test rather than quietly re-admitting the whole class of defect". Bearing 255 at r = 46 became
+reachable, without the flood being touched. A/B settled it: restore the crowd colliders and the point is
+sealed again; remove them and it is not. One of those figures was standing in the gap of the queue-barrier
+line at z = −41 that closed that pocket.
+
+Re-taking a negative control is exactly the move it exists to prevent, and it was done here on the only
+ground that permits it — **the wall it depended on was itself a defect, proved by experiment**. The
+replacement is drawn from the 596 cells the flood still refuses that pass every local check, and the
+assertion message now tells the next person to A/B before touching the line.
+
+### What the pins say
+
+`colliders 26,912 → 26,711` (−201). Triangles **found** is unchanged, which is the check that this removed
+colliders and not geometry; 24 moved from *boxed* to *kept* — structure those figures had been standing in
+front of — and one extra planting proxy is a plant whose collision column a figure had been sharing.
+
+### What remains, and why it is not a nudge
+
+The twelve left are the two groups this gate has always recorded as design decisions:
+
+- **`Opening the commercial strip` ×4** — the observation promenade's deck and balustrade at r = 158 cross
+  bearing 0, and every avenue is drawn as road out to 188. A player walking out avenue 0 meets a
+  balustrade. The fix is to stop the avenue at the promenade or open a gap on the axis; both are
+  composition choices about the hero window sector.
+- **`link:*` ×2 each** — every link crosses a carriageway at its mouth, symmetrically. A link mouth is how
+  a player leaves the hub, so something has to cross the avenue there. What is missing is a way for the
+  plan to *say* "crossing", not geometry to move.
+
+**Hub state:** props inside structure 0, props in rooms 0, backdrop intrusions 0, block-on-block 0,
+skyline placements clean 16/16, block/interior 1, carriageway **12**.

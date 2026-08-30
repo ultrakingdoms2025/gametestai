@@ -75,7 +75,36 @@ import { buildStation } from './world-kit.mjs';
  * straight through them. The terrace moved 24 m off the avenue centreline, so
  * it is now a garden beside the road rather than bollards in it. All ten
  * planters survive; refusing the occupied bearings would have left two. */
-const CEILING = 21;
+/* 21 -> 12 on 2026-08-30. Nine in four groups, and one of them was not a
+ * placement defect at all.
+ *
+ * `Erecting Gateway Plaza` 3 and `Scattering set dressing` 1 were hand-authored
+ * coordinates: three of the six dropped-freight pallets, and one of the eight
+ * hologram ad masts, standing on an avenue's carriageway. Each moved the
+ * shortest distance that `roleUnder` says clears - four metres for the pallets,
+ * eight along its own bearing for the mast.
+ *
+ * `Stacking the cargo yard` 2 were pressure vessels. The pipe farm is a row of
+ * six laid ACROSS a service road at offsets -50 -30 -10 10 30 50, and a 3.4 m
+ * tank at +-10 reaches 6.6 m from the centreline of an 18 m road - the same
+ * defect the straddle gantry above it was fixed for, in the same pass, four
+ * lines apart. The row leaves the avenue a gap now, and the pipe runs between
+ * the tanks are cut to the spans they actually cross.
+ *
+ * `dressing` 3 WERE PEOPLE. `_solidifyProps` sweeps every instanced mesh and
+ * boxes anything at least 0.4 m on each axis that is standing on something,
+ * and a crowd figure is - 202 of them had a static collider, three of those
+ * standing in an avenue. The crowd ANIMATES, so every one of those boxes was a
+ * phantom wall in a public concourse with nobody in it. Fixed at the sweep, by
+ * a `movingInstances` flag the animator sets: the rule is "instances that move
+ * cannot hold a static collider", which is a fact the thing that moves them
+ * owns, and this sweep runs over every world.
+ *
+ * The twelve that remain are the two groups this file has always said are
+ * design decisions rather than nudges - the promenade across the window
+ * sector's axis, and the four link mouths. Lower it when one of those is
+ * decided; never raise it. */
+const CEILING = 12;
 
 /**
  * Conflicts by the build step that caused them.
@@ -126,11 +155,7 @@ const CEILING = 21;
  * see the note on CEILING. Everything above them is byte-identical to the
  * split this file has pinned since the link ownership increment. */
 const BY_OWNER = {
-  'Erecting Gateway Plaza': 3,
   'Opening the commercial strip': 4,
-  'Scattering set dressing': 1,
-  'Stacking the cargo yard': 2,
-  dressing: 3,
   'link:canteen': 2,
   'link:construction': 2,
   'link:gym': 2,

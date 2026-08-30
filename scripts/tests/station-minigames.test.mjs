@@ -268,14 +268,37 @@ test('a body can walk the hub deck from the freight kiosk to every rim kiosk', a
   }
 
   /* THE NEGATIVE CONTROL. A reachability gate that passes everything is not a
-   * gate, and this one has already rejected three points that every geometric
-   * check called perfect. Bearing 255 at r = 46 was the third: flat, clear,
-   * 1.9 m of headroom, eight walkable neighbours — and the flood out of the
-   * freight kiosk does not get to it. Kept here so that loosening the flood
-   * fails a test rather than quietly re-admitting the whole class of defect. */
-  const dead = idx(Math.cos((255 * Math.PI) / 180) * 46, Math.sin((255 * Math.PI) / 180) * 46);
+   * gate, and this one has already rejected four points that every geometric
+   * check called perfect: flat, clear, 1.9 m of headroom, eight walkable
+   * neighbours — and the flood out of the freight kiosk does not get to them.
+   * Kept here so that loosening the flood fails a test rather than quietly
+   * re-admitting the whole class of defect.
+   *
+   * ── RE-TAKEN 2026-08-30, AND THE REASON MATTERS ──────────────────────────
+   *
+   * The previous control was bearing 255 at r = 46, and it became REACHABLE
+   * without this flood being touched. The cause was found by A/B rather than
+   * assumed: `_solidifyProps` had been giving the ambient crowd static
+   * colliders — 202 of them — and one of those figures was standing in the gap
+   * of the queue-barrier line at z = -41 that sealed that pocket. Restore the
+   * crowd colliders and the point is unreachable again; remove them and it is
+   * not.
+   *
+   * So the control had been resting on a PERSON, and one who walks: the crowd
+   * animates away from the position those boxes were cut at. Re-taking a
+   * negative control is normally the move it exists to prevent, and it is done
+   * here on the only ground that permits it — the wall it depended on was a
+   * defect, proved by experiment, and removing it is the fix. If this one ever
+   * goes reachable, do the same A/B before touching this line.
+   *
+   * (-40.5, -18) is the same KIND of point, chosen from the 596 cells the
+   * flood still refuses that pass every local check: outside the gateway ring,
+   * eight walkable neighbours, no headroom obstruction. */
+  const dead = idx(-40.5, -18);
   assert.notEqual(seen[dead[1] * N + dead[0]], 2,
-    'bearing 255 at r=46 is now reachable — the hub flood has been loosened and proves nothing');
+    '(-40.5, -18) is now reachable — the hub flood has been loosened and proves nothing. '
+    + 'Before re-taking this point, A/B the change: the last time it moved, the cause was a collider '
+    + 'that should never have existed.');
 });
 
 /* ================================================================== */

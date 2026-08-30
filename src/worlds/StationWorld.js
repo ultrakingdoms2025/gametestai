@@ -3074,7 +3074,13 @@ export class StationWorld extends World {
      * instances in the order the note above reasons about. */
     const meshes = [];
     this.group.traverse((o) => {
-      if (o.isInstancedMesh && o.visible && o.geometry) meshes.push(o);
+      /* `movingInstances`: a mesh whose instance matrices are rewritten every
+       * frame cannot hold a static collider - the box would stay where the
+       * instance was when this pass ran. The ambient crowd is the case that
+       * found it (202 boxed figures, three of them standing in a road), and
+       * the flag is set by the animator rather than tested for by material
+       * here, because this sweep runs over every world. */
+      if (o.isInstancedMesh && o.visible && o.geometry && !o.userData.movingInstances) meshes.push(o);
     });
     for (const o of meshes) {
       const propOwner = this._ownerNameOf(o);
@@ -6130,7 +6136,23 @@ export class StationWorld extends World {
         if (i < 4) D.at('emAmber', boxGeo(1.86, 0.05, 0.05, 1), sx2 + 0.95, 0.92, sz2, qyaw);
       }
     }
-    for (const [fx, fz, fy] of [[-20, 34, 0.4], [22, 36, -1.2], [-24, -34, 2.0], [18, -37, 0.7], [34, 8, 1.5], [-35, -6, -0.6]]) {
+    /* THREE OF THESE SIX WERE IN A ROAD.
+     *
+     * Dropped freight is meant to read as the residue of a used space, and it
+     * was authored by eye around the plaza before the plan existed. (22, 36),
+     * (-24, -34) and (18, -37) each put a 2 m pallet and two crates on an
+     * avenue's carriageway - which `_solidRot` below then registers as a
+     * solid, so the freight is not only visibly in the road, it BLOCKS it.
+     *
+     * Moved the shortest distance that clears: four metres each, to
+     * (23, 32.1), (-20, -34) and (19, -33.1), which are the first bearings at
+     * that radius where `roleUnder` says no carriageway. Nudged rather than
+     * dropped for the usual reason - all six carry the composition, and three
+     * pallets round a plaza reads as tidied rather than used - and safe to
+     * edit in place because nothing in this loop draws from `rng`.
+     *
+     * The other three were already clear and are untouched. */
+    for (const [fx, fz, fy] of [[-20, 34, 0.4], [23, 32.1, -1.2], [-20, -34, 2.0], [19, -33.1, 0.7], [34, 8, 1.5], [-35, -6, -0.6]]) {
       D.at('panelWarm', boxGeo(2.6, 0.26, 1.7, 1.4), fx, 0.13, fz, fy);
       D.at('crate', boxGeo(1.5, 1.5, 1.5, 1.6), fx - 0.2, 1.0, fz, fy + 0.2);
       D.at('crate', boxGeo(1.2, 1.2, 1.2, 1.4), fx + 0.5, 2.35, fz + 0.2, fy - 0.5);
@@ -8289,9 +8311,32 @@ export class StationWorld extends World {
     B.localAt('panelDark', boxGeo(3.4, 3.0, 3.4, 2), gp.x, 0, gp.z, gYaw, -10, legH - 0.5, 0);
     B.localAt('glassWindow', new THREE.PlaneGeometry(3.0, 1.8), gp.x, 0, gp.z, gYaw, -10, legH - 0.3, -1.75, Math.PI);
 
-    // Pipe farm and pressure vessels along the outer edge.
-    for (let i = 0; i < 6; i++) {
-      const q = roadPos(deg, 176, -50 + i * 20, 0, new THREE.Vector3());
+    /* Pipe farm and pressure vessels along the outer edge.
+     *
+     * ── THE ROW CROSSES AN AVENUE, SO IT LEAVES A GAP FOR IT ─────────────
+     *
+     * The offsets were `-50 + i * 20`, giving -50 -30 -10 10 30 50 - and a
+     * 3.4 m tank at +-10 reaches 6.6 m from the centreline of an 18 m road,
+     * with `_solid` making it a wall. Two of the twenty-one carriageway
+     * conflicts, and the second half of the same defect the gantry above was
+     * fixed for: this whole farm is a line laid ACROSS a service road, and
+     * the only question was whether it leaves the road a gap.
+     *
+     * 15 m, by the arithmetic the gantry's note works through and then the
+     * margin it learned the hard way: `ROAD_EDGE_HALF` is 9.9 and the tank's
+     * half-extent is 3.4, so 13.3 is the minimum a point calculation gives -
+     * and the plan rasterises to cell centres, so a metre under that is inside
+     * its resolution and the gate still sees the cell. 15 clears both with
+     * margin the grid can see.
+     *
+     * An ARRAY rather than arithmetic, because the row is no longer evenly
+     * spaced and the pipe runs between the tanks have to follow: each link is
+     * now cut to the gap it actually spans, so the two either side of the road
+     * are a 15 m pipe and a 30 m pipe rather than five identical 20 m ones
+     * with two of them ending in mid air. Nothing here draws from `rng`. */
+    const TANK_OFFS = [-50, -30, -15, 15, 30, 50];
+    for (let i = 0; i < TANK_OFFS.length; i++) {
+      const q = roadPos(deg, 176, TANK_OFFS[i], 0, new THREE.Vector3());
       const tank = new THREE.CylinderGeometry(3.2, 3.2, 9, 18);
       uvScale(tank, 14, 3);
       B.at('panel', tank, q.x, 4.5, q.z);
@@ -8301,12 +8346,13 @@ export class StationWorld extends World {
       B.at('hazard', new THREE.CylinderGeometry(3.4, 3.6, 1.4, 18), q.x, 0.7, q.z);
       B.at('emRed', boxGeo(1.4, 0.14, 0.2, 1), q.x, 6.5, q.z - 3.3);
       this._solid(q.x, 5, q.z, 3.4, 5, 3.4);
-      if (i < 5) {
-        const link = new THREE.CylinderGeometry(0.45, 0.45, 20, 8);
+      if (i < TANK_OFFS.length - 1) {
+        const span = TANK_OFFS[i + 1] - TANK_OFFS[i];
+        const link = new THREE.CylinderGeometry(0.45, 0.45, span, 8);
         link.rotateZ(Math.PI / 2);
-        uvScale(link, 8, 3);
-        B.at('copper', link, (q.x + roadPos(deg, 176, -50 + (i + 1) * 20, 0, _v2).x) / 2, 7.5,
-          (q.z + roadPos(deg, 176, -50 + (i + 1) * 20, 0, _v2).z) / 2, -deg * DEG + Math.PI / 2);
+        uvScale(link, (span * 8) / 20, 3);
+        const nq = roadPos(deg, 176, TANK_OFFS[i + 1], 0, _v2);
+        B.at('copper', link, (q.x + nq.x) / 2, 7.5, (q.z + nq.z) / 2, -deg * DEG + Math.PI / 2);
       }
     }
 
@@ -9593,6 +9639,25 @@ export class StationWorld extends World {
     }
 
     if (meshes.length) {
+      /* PEOPLE ARE NOT PROPS, AND THESE ONES WALK.
+       *
+       * `_solidifyProps` sweeps every instanced mesh in the world and boxes
+       * anything at least 0.4 m on each axis that is standing on something -
+       * which a crowd figure is. Measured: 202 of them had a static collider,
+       * and the three carriageway conflicts under the `dressing` label were
+       * figures standing in an avenue and being boxed there.
+       *
+       * A static box would be wrong even if they stood still, because you walk
+       * THROUGH ambient crowd rather than into it. It is worse than wrong here:
+       * the loop below records every figure's spawn position in `crowdBase`
+       * and animates the instance matrices away from it, so each collider is a
+       * phantom wall in a public concourse with nobody standing in it.
+       *
+       * Flagged on the mesh rather than tested by material in the sweep: the
+       * sweep is world-agnostic and runs over the zones too, and the rule it
+       * needs is "instances that move", which is a fact the thing that MOVES
+       * them owns. Set here, beside the animation that makes it true. */
+      for (const { mesh } of meshes) mesh.userData.movingInstances = true;
       this._anim.crowdMeshes = meshes;
       this._anim.crowdPhase = new Float32Array(entries.length);
       this._anim.crowdBase = new Float32Array(entries.length * 4);
@@ -10666,14 +10731,21 @@ export class StationWorld extends World {
      * through the middle of a lit display whether or not a door opens onto
      * it. Moved on the second look.
      *
-     * Both moved round the SAME RING rather than to the first clear patch:
+     * A THIRD stood in a carriageway. `[-40, 14, 62]` put its mast, and the
+     * 14 m collider that goes with it, on an avenue - a pole in the road
+     * rather than beside it. Eight metres in along the same bearing, to
+     * (-36, 55), is the shortest move that clears; swept nearest-first, it is
+     * the first candidate of any at that bearing or within forty degrees of
+     * it.
+     *
+     * All three moved round the SAME RING rather than to the first clear patch:
      * the eight are a composition spread around the plaza, and radius and
      * district are what that composition is made of. Sixteen degrees for
      * the first and eight for the second, each swept from -40 to +40 to
      * find a bearing where the mast column and the whole plate volume are
      * both empty and no room encloses either. */
     const adSpots = [
-      [56, 12, 26], [-40, 14, 62], [70, 16, -48], [-64, 13, -40],
+      [56, 12, 26], [-36, 14, 55], [70, 16, -48], [-64, 13, -40],
       [106, 15, 39], [-96, 15, 30], [30, 18, -92], [3, 16, 99],
     ];
     for (let i = 0; i < adSpots.length; i++) {

@@ -251,7 +251,7 @@ test('the collision the world derives from its own geometry is unchanged', async
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 372148, boxed: 170739, kept: 201409, planting: 1360 },
+    { found: 372148, boxed: 170715, kept: 201433, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
   assert.equal(chunks, 8765, 'the chunking changed');
@@ -308,8 +308,22 @@ test('the collision the world derives from its own geometry is unchanged', async
    * contribute their own surfaces AND give back the surfaces they were
    * swallowing. Nine fewer colliders, because a block that no longer overlaps
    * a district no longer needs a box where the two met.
+   *
+   * -- And 202 of the colliders were PEOPLE --------------------------------
+   * colliders 26912 -> 26711, -201; boxed 170739 -> 170715, kept 201409 ->
+   * 201433, planting 1360 -> 1361. `_solidifyProps` sweeps every instanced
+   * mesh and boxes anything 0.4 m on a side that is standing on something -
+   * and the ambient crowd is. The crowd ANIMATES away from those positions, so
+   * each box was a phantom wall in a public concourse with nobody in it, and
+   * three of them stood in a carriageway.
+   *
+   * The 24 triangles that moved from "boxed" to "kept" are structure those
+   * figures had been standing in front of. The extra planting proxy is the
+   * same event: a plant whose column a figure was sharing now needs its own.
+   * Total found is UNCHANGED, which is the check that this removed colliders
+   * and not geometry.
    */
-  assert.equal(physics.colliders.length, 26912, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26711, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

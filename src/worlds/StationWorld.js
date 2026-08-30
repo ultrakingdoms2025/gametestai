@@ -8107,17 +8107,20 @@ export class StationWorld extends World {
      * and r = 155, which is the gantry's own `span / 2` either side of its
      * centre at r = 132.
      *
-     * 11.0 m is `ROAD_EDGE_HALF` (9.9 - the carriageway plus its kerb strips)
-     * plus the leg's own 0.8 m half-extent, plus 0.3 to spare. 10.4 was tried
-     * first and left three of the four still conflicting: the leg is a BOX,
-     * not a point, and at 10.4 its inboard face still reached 9.6 - inside the
-     * kerb. The gate caught that, which is what it is for. The crossbeam grows with the gap, or
+     * 11.6 m, arrived at by measuring twice. `ROAD_EDGE_HALF` is 9.9 - the
+     * carriageway plus its kerb strips - and the leg's own half-extent is 0.8,
+     * so 10.7 is the arithmetic minimum. 10.4 was tried first and cleared one
+     * leg of four, because I had sized the clearance for a POINT and the leg is
+     * a box. 11.0 cleared three of four: the plan rasterises to cell centres,
+     * so 0.3 m of margin is inside its resolution and the last leg still landed
+     * on a seeded cell. 11.6 clears all four with margin the grid can actually
+     * see. Both times the gate is what said so. The crossbeam grows with the gap, or
      * it would stop reaching the legs it ties together.
      *
      * Nothing here draws from `rng` - the container loops above have already
      * finished with it - so unlike the skyline flanks this moves four legs and
      * nothing else. */
-    const legAcross = 11.0;
+    const legAcross = 11.6;
     for (const s of [-1, 1]) {
       for (const t of [-1, 1]) {
         B.localAt('hazard', boxGeo(1.4, legH, 1.4, 2), gp.x, 0, gp.z, gYaw, s * span / 2, legH / 2, t * legAcross);

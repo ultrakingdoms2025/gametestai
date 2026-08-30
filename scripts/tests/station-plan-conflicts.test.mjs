@@ -41,30 +41,49 @@ import { buildStation } from './world-kit.mjs';
  * Measured 2026-08-29, after the gateway flanks were nudged off the avenues
  * and the cargo straddle gantry's legs were moved outboard of the kerb.
  *
- * 20 -> 17. Lowering it is the point of the file; it has now happened twice.
+ * 20 -> 17 -> 16. Lowering it is the point of the file.
  */
-const CEILING = 17;
+const CEILING = 16;
 
 /**
  * Conflicts by the build step that caused them.
  *
- * `Erecting Gateway Plaza` 3 - at r = 41-42, where the avenues meet the plaza
- *   and the two roles necessarily abut.
- * `Opening the commercial strip` 4 - shopfronts flanking avenue 0 at r = 158
- *   and 174, the street the player walks down.
- * `Stacking the cargo yard` 1 - was 4. Three were the straddle gantry's legs,
- *   which stood at 7 m across an 18 m road and pinched it by two metres each
- *   side; they now stand outboard of the kerb and the road passes between them,
- *   which is what a straddle crane is for. The survivor at (45, -99.9) is not a
- *   leg and not a container from the stacking loop - it is unidentified.
- * `Stacking habitat blocks` 3 - avenue 120.
- * `Spanning the great dome` 2 and `Raising the pressure hull` 1 - at r = 204
- *   to 247, where the road runs out at the hull. These may be correct as
- *   built; the road has to end somewhere.
- * `Calibrating Traffic Control` 1, `dressing` 2.
+ * TRACED, 2026-08-29, by monkey-patching `claim` to keep a stack whenever it
+ * returns 'carriageway'. Every one of the sixteen now names the line that
+ * places it, so the next person starts from a work list and not a number.
  *
- * `Raising the outer skyline` is absent, and that is the point of the file:
- * it had one until the flanks were nudged clear.
+ * `Opening the commercial strip` 4 - StationWorld.js:7378 and :7384, the
+ *   window promenade's raised deck and its balustrade. NOT a misplaced
+ *   building: the promenade is an arc from r = 158 to 190 spanning +-48
+ *   degrees, and bearing 0 is inside that arc, while every avenue - bearing 0
+ *   included - is DRAWN as road out to `DECK_R - 12` = 188. So a player
+ *   walking out avenue 0 meets a balustrade and a 2 m deck at r = 158. The fix
+ *   is a design decision about the hero window sector - stop the avenue at the
+ *   promenade, or open a gap on the axis - and not a nudge.
+ *
+ * `Erecting Gateway Plaza` 3 - StationWorld.js:6028, at r = 41-42, where the
+ *   plaza and the avenues meet and the two roles necessarily abut.
+ *
+ * `Stacking habitat blocks` 3 - StationWorld.js:7779, the tower footprints on
+ *   avenue 120. `off` is `ROAD_W / 2 + 6 + d / 2` with d = 22, so 26 m, and a
+ *   24 x 22 tower reaches back inside the kerb.
+ *
+ * `Spanning the great dome` 2 - StationWorld.js:10431, at r = 247 on avenue
+ *   180, which is the outer ring's link mouth. `Raising the pressure hull` 1 -
+ *   :5047, at r = 204. Both are where the road runs out at the hull and may be
+ *   correct as built; look before touching.
+ *
+ * `dressing` 2 - StationWorld.js:3114, `_solidifyProps` boxing scattered
+ *   props. One of them, at (44.1, -96.9), appeared the moment the skyline
+ *   flank stopped occupying that patch of avenue: the scatter had always been
+ *   willing to put a crate there and the building was what stopped it.
+ *
+ * `Calibrating Traffic Control` 1 - StationWorld.js:7999.
+ *
+ * `Stacking the cargo yard` is absent, and so is
+ `Raising the outer skyline`.
+ * Each had conflicts until this session moved them, which is the point of the
+ * file.
  */
 const BY_OWNER = {
   'Calibrating Traffic Control': 1,
@@ -73,7 +92,6 @@ const BY_OWNER = {
   'Raising the pressure hull': 1,
   'Spanning the great dome': 2,
   'Stacking habitat blocks': 3,
-  'Stacking the cargo yard': 1,
   dressing: 2,
 };
 

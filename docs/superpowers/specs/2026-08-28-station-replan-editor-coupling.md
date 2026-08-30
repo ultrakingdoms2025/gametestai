@@ -1287,3 +1287,84 @@ run. Re-measured over the *same twenty-one framings*, the original tree reads **
 and the fix reads **246**. This is the third time in this repository's history that a program counter has
 been compared across runs that were not comparable; the rule stands — same views, same order, same run
 shape, or the number means nothing.
+
+---
+
+## 15. Phase 7 — started 2026-08-30. The gate first, because half of it did not exist
+
+### The prerequisite is still missing, and it is a live editor hazard
+
+§11 records the build-identity banner as "now a **prerequisite for Phase 7**". **It does not exist.** What
+exists is the *document*-version integer (`builtVersion` / `built_version`) and the two version lines in
+`MapEditorPanel.tsx`. There is no hash of the catalogue name set or of `world.bounds` anywhere in the
+tree, and **the editor does not refuse to snap against a stale grid** — `MapEditorPanel.tsx:343` falls back
+to the drag origin's `y` when the grid is missing or undecodable, silently. That is D5 unimplemented, and
+it is a hazard today, independent of Phase 7.
+
+### The per-release gate was 3½ of 7. It is now 7½ of 7
+
+| gate item | before | now |
+|---|---|---|
+| `{name, position}` pin, intended deltas only | ✅ | ✅ |
+| named nodes under 2,000 | ✅ | ✅ (744) |
+| venue gate green | ✅ | ✅ |
+| `warmPrograms` within margin **and above a lower bound** | ⚠️ upper only | ✅ `frame-gaps-program-gate.test.mjs` |
+| move of largest name → `colliders` within one chunk | ❌ | ✅ `station-move-colliders.test.mjs` |
+| zero `stale-name` / `out-of-bounds` over the stored document | ❌ | ✅ `check-stored-overlays.mjs` + `stored-overlay-judgement.test.mjs` |
+| relic id set stable or reconciled | ❌ | ✅ `station-relic-ids.test.mjs` |
+
+**Each gate was watched failing before it was trusted**, and three of them turned out to be unbuildable in
+the obvious shape:
+
+- **`warmPrograms` guarded the wrong direction.** Upper bound only, when the spec had already written down
+  that "the realistic hazard is a drop". And the reason it had never been unit-tested was structural:
+  `frame-gaps.mjs` called `main()` unconditionally, so *importing it launched Chrome*. Entry-guarded, and
+  the comparison extracted to `programGateVerdict`.
+- **"Within one chunk" has no meaning on the move side.** Chunks pack structure collision; a move drags
+  collider *objects*. Pinned as an exact 756-name table instead — 531 would move colliders, 144 would
+  refuse with `span`. A tolerance would let a name drift every release until it had doubled.
+- **The stored-document check cannot be a `npm test`.** Both codes are properties of database rows, CI has
+  no credentials, and a committed snapshot would rot. It is a read-only release step; only its *judgement*
+  is unit-tested. Run 2026-08-30: 1 head document, 9 entries, 0 name-targeted, both codes zero.
+- **A relic count assertion would have been vacuous.** `want` sits exactly at the `MAX_PER_WORLD` ceiling
+  (the clamp binds, not the area term), so 120 candidates are offered to a budget of 110 and `placed`
+  stays 110 however many roofs a re-author retires or mints. Only identities can move, so the pin is on
+  identities.
+
+### The foundation: the plan could not see half the station
+
+`_solid` — 1,530 hand-authored axis-aligned colliders — had never claimed into the plan; only `_solidRot`
+did. Phase 7 re-authors placement *against the plan*, so this was load-bearing. One line:
+
+| | before | after |
+|---|---|---|
+| claims | 11,429 | 12,959 |
+| carriageway conflicts | 18 | **30** |
+| pieces inside backdrop blocks | 16 | **9** |
+
+**Twelve conflicts became visible and none of them moved** — habitat blocks ×9, cargo yard ×2, dressing ×1.
+The nine habitat claims are the largest single group and are the work to go and do. Two ratchets were
+raised, on the one ground that permits it: the measurement got better, not the world worse.
+
+It also exposed that **the dome half of the overhead canary has been vacuous** since the zone/link
+ownership increment re-labelled those conflicts to `link:<id>` — the regex was pinned against owner
+strings that had stopped existing, and the assertion kept passing on `0 <= 8`.
+
+### The Hub's own defects, now measurable
+
+The two barrier sites resolve to one cause: **the dressing scatter places props inside plaza props.**
+`dressing:hazard#27`, a 2.5 m barrier, is 39% inside `plaza-props:trim#189`, a planter rim; a bollard
+cluster (`dressing:trimDark#213/214`, `chrome#106/107`) is inside `plaza-props:trim#149`. Now that
+`_solid` claims, `occupancyUnder` can see the plaza props — the same query the skyline solve uses.
+
+⚠ **A false-positive class the exact test needs and did not have:** zero-height pieces. Painted floor
+decals and shadow blobs lying on a raised rim read as 100% "inside" it — 29 hits at the planter site
+collapsed to 6 once thickness was required. This is the same false positive the abandoned drawn-geometry
+probe had explicitly handled and that increment 3 re-introduced. `MINH` is in the probe; it belongs in
+`GeoParts` before the next gate is built on it.
+
+### Next
+
+Re-author the Hub against the plan, behind the gate above: the dressing-in-plaza-props defects, the nine
+habitat carriageway claims, the 16 remaining backdrop pieces and the 3 buried signs. The prerequisite
+(build-identity banner, D5) should land before any release that *renames*, which none of the above does.

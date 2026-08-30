@@ -1175,3 +1175,42 @@ count: the mounts are rotated wall panels whose AABBs are larger than the panels
 sign reads as buried — the fixed pylons are still in the list. Separating the two needs the piece's actual
 triangles, which the spans make possible and which no instrument has used yet. **That is the next
 increment, and it is the one that turns identity into a general placement gate.**
+
+### Increment 3 — exact geometry. This is the gate (b) was for. Delivered 2026-08-30
+
+Identity gave addresses; it did not give a gate. Every measurement above was in bounding boxes, and boxes
+lie in both directions — they found the buried signs and could not confirm the fix, and a station-wide
+sweep returned 47 candidates that could not be called defects. That is §5's collider lesson one level
+down. The spans are what make it answerable, because they can hand back **the actual triangles**.
+
+`trianglesOf(part)` reads a piece's world-space triangles out of the merged buffer; `containsPoint` is ray
+parity; `fractionInside(a, b)` samples a's surface against b's solid.
+
+| | boxes | exact |
+|---|---|---|
+| sign faces vs mounts | 135 candidate pairs | **3 defects**, in ~40 ms |
+| across the pylon fix | unusable — non-zero either way | **16 before → 3 after** |
+
+**Two bugs the tests caught before any station number was taken from them**, both of the kind that fails
+silently as "no defects found" — the most expensive way for a gate to be wrong:
+
+1. **The specialised ray was wrong on edges.** One axis-aligned ray answered *outside* for the centre of a
+   box. `BoxGeometry` splits each face into two triangles and the face centre lies exactly on the shared
+   diagonal, so the ray hits an edge and the crossing count is decided by the last bit of a float. It
+   passed at the origin and failed at (10, 5, −3) — the signature of an edge case, not a formula error.
+   Fixed with three oblique directions, voted: any ray landing on an edge is outvoted by two that do not.
+2. **Sampling vertices measured the wrong thing.** A 5 m sign threaded straight through a 2 m post reported
+   **0.00** inside, correctly and uselessly: all four corners are outside it, and the buried part is the
+   middle. Vertices are the worst possible probe for "is this inside that", because they are by definition
+   the extremes. Replaced with fixed interior barycentric samples per triangle — fixed and not random,
+   because a gate that returns a different number each run cannot be ratcheted.
+
+**The three that remain, named rather than tuned away.** `dressing:signs#6` 42% inside the lit shopfront
+glazing beside the pylon at (118, 47) — present at 50% before the pylon fix, so it is that sign's
+placement and not the mounting depth; and `plaza-props:signs#5` 33% and 17% inside two fronds of the
+foliage in front of it. `station-sign-mounting.test.mjs` ratchets at 3.
+
+**What this unlocks.** The same three functions answer the question for any pair of pieces, not just signs.
+The 20 carriageway conflicts, the crates in the building corner at (26.5, −153.6), and the barrier sites
+at (23.6, −20.2) and (21.2, 13.6) are all now measurable exactly rather than as candidate lists — which is
+what Phase 7 needs to re-author a district and prove it did not make things worse.

@@ -54,3 +54,66 @@ test('no pylon sign is threaded through its post', async () => {
   }
   assert.deepEqual(buried, [], 'a sign face inside its own post is unreadable from either side');
 });
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * AND THE SAME QUESTION, ASKED OF EVERY SIGN IN THE STATION, EXACTLY.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+const { collectParts: parts2, fractionInside } = await import('../../src/dev/GeoParts.js');
+
+/** Fraction of a face's sampled surface that must be inside to count. */
+const BURIED = 0.15;
+/** Exact buried faces today. Lower it when you clear one. */
+const CEILING = 3;
+
+test('no sign face is buried in the thing it is mounted on', async () => {
+  /* THIS IS THE GATE THE IDENTITY WORK WAS FOR.
+   *
+   * The same sweep in bounding boxes returns 135 candidate pairs and cannot
+   * say which are defects: a mount is usually a rotated wall panel, and a
+   * rotated panel's box is bigger than the panel, so a correctly flush sign
+   * reads exactly like a buried one. Sampling the face's actual surface
+   * against the mount's actual triangles - which the GeoBatch spans made
+   * possible - takes those 135 to 3, in about 40 ms.
+   *
+   * Measured across the pylon fix: 16 buried faces before, 3 after.
+   *
+   * The three that remain are real and named below rather than tuned away:
+   *   dressing:signs#6    42%  the concourse sign clips the lit shopfront
+   *                            glazing beside the pylon at (118, 47). Present
+   *                            before the pylon fix at 50%, so it is that
+   *                            sign's placement, not the mounting depth.
+   *   plaza-props:signs#5 33%  and 17% in a second frond - a plaza sign
+   *                            standing inside the foliage in front of it.
+   */
+  const { world } = await buildStation();
+  const all = parts2(world.group);
+  const size = new THREE.Vector3();
+  const solids = all.filter((p) => {
+    if (p.instanced || p.mesh.endsWith(':signs')) return false;
+    p.box.getSize(size);
+    /* Floors, hull rings and dome beams contain everything and are not what a
+     * sign is mounted on. Four triangles is the minimum that can enclose a
+     * volume, below which ray parity is meaningless. */
+    return Math.max(size.x, size.z) <= 12 && size.y >= 0.5 && p.tris >= 4;
+  });
+  const faces = all.filter((p) => p.mesh.endsWith(':signs') && !p.instanced);
+  assert.ok(faces.length > 150, `expected the station's sign faces, found ${faces.length}`);
+
+  const buried = [];
+  for (const f of faces) {
+    for (const s of solids) {
+      if (s.piece !== null && s.piece === f.piece) continue;   // its own housing
+      if (!f.box.intersectsBox(s.box)) continue;
+      const frac = fractionInside(f, s);
+      if (frac > BURIED) {
+        f.box.getCenter(size);
+        buried.push(`${(frac * 100).toFixed(0)}% of ${f.mesh}#${f.index} (${f.piece}) is inside `
+          + `${s.mesh}#${s.index} at ${size.x.toFixed(0)},${size.y.toFixed(1)},${size.z.toFixed(0)}`);
+      }
+    }
+  }
+  assert.ok(buried.length <= CEILING,
+    `${buried.length} buried sign faces, ceiling ${CEILING}. Lower it when you clear one.\n  `
+    + buried.join('\n  '));
+});

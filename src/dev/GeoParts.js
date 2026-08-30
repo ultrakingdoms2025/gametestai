@@ -61,7 +61,7 @@ export function collectParts(root) {
         o.getMatrixAt(i, _m);
         const box = gb.clone().applyMatrix4(_m).applyMatrix4(o.matrixWorld);
         if (!Number.isFinite(box.min.x)) continue;
-        out.push({ mesh: o.name, index: i, owner: null, piece: null, box, tris, instanced: true });
+        out.push({ mesh: o.name, obj: o, index: i, owner: null, piece: null, box, tris, instanced: true });
       }
       return;
     }
@@ -79,6 +79,9 @@ export function collectParts(root) {
       box.applyMatrix4(o.matrixWorld);
       out.push({
         mesh: o.name,
+        obj: o,
+        start: s,
+        count: n,
         index: i,
         owner: p.owners[p.ownerOf[i]],
         piece: p.pieces[p.pieceOf[i]],
@@ -173,4 +176,157 @@ export function overlappingPairs(parts, { minOverlap = 0.05, sameThing } = {}) {
     }
   }
   return pairs.sort((p, q) => q.volume - p.volume);
+}
+
+/* ── EXACT GEOMETRY ────────────────────────────────────────────────────────
+ *
+ * Everything above works in bounding boxes, and boxes lie in both directions.
+ * They FOUND the signs driven through the avenue pylons and could not CONFIRM
+ * the fix: a sign face is a rotated plane, so its AABB overlaps the post's
+ * whether or not the plane does, and the post's own AABB is 2.8 m wide because
+ * it is a 2.0 m square turned 37 degrees. A station-wide box sweep of 191 sign
+ * faces returned 47 "buried" candidates that cannot be called defects, because
+ * a correctly flush sign on a rotated wall panel reads exactly the same way.
+ *
+ * This is the spec's own collider lesson one level down - "a box is a
+ * conservative approximation of drawn geometry" - and the spans are what make
+ * it answerable, because they can hand back the actual triangles.
+ */
+
+/** The world-space triangles of one piece. 9 floats per triangle. */
+export function trianglesOf(part) {
+  const o = part.obj, g = o.geometry;
+  const pos = g.getAttribute('position'), idx = g.index;
+  const m = _m.identity();
+  if (part.instanced) {
+    o.getMatrixAt(part.index, m);
+    m.premultiply(o.matrixWorld);
+  } else {
+    m.copy(o.matrixWorld);
+  }
+  const from = part.instanced ? 0 : part.start;
+  const to = part.instanced ? idx.count : part.start + part.count;
+  const out = new Float32Array((to - from) * 3);
+  let w = 0;
+  for (let k = from; k < to; k++) {
+    _v.fromBufferAttribute(pos, idx.getX(k)).applyMatrix4(m);
+    out[w++] = _v.x; out[w++] = _v.y; out[w++] = _v.z;
+  }
+  return out;
+}
+
+/**
+ * Is `p` inside the closed surface `tri`?
+ *
+ * Ray parity: count the triangles a ray from `p` crosses, odd means inside.
+ * Only meaningful for a CLOSED piece - a box is closed, a sign face is a single
+ * plane and nothing is ever inside it, which is the right answer. An open shell
+ * gives a meaningless parity, so callers filter to pieces with enough triangles
+ * to be a solid, and the limit is stated rather than hidden.
+ *
+ * ── Why three oblique rays and not one along +X ───────────────────────────
+ *
+ * The first version cast one axis-aligned ray, and it was WRONG in the way that
+ * costs most: it answered "outside" for the centre of a box, so a gate built on
+ * it would have reported no defects and been believed. `BoxGeometry` splits
+ * every face into two triangles, and the centre of a face lies exactly on the
+ * shared diagonal - so the ray hits an edge, and whether that counts as nought,
+ * one or two crossings is decided by the last bit of a float. It happened to
+ * pass at the origin and fail at (10, 5, -3), which is the signature of an edge
+ * case rather than a formula error.
+ *
+ * Oblique directions make an exact edge hit vanishingly unlikely, and three of
+ * them voted make it irrelevant: any single ray that lands on an edge is
+ * outvoted by two that do not.
+ */
+const RAYS = [
+  [0.7211, 0.5117, 0.4671],
+  [-0.4523, 0.8117, 0.3701],
+  [0.3389, -0.4517, 0.8253],
+];
+
+function crossingsAlong(tri, px, py, pz, dx, dy, dz) {
+  let n = 0;
+  for (let i = 0; i < tri.length; i += 9) {
+    const ax = tri[i], ay = tri[i + 1], az = tri[i + 2];
+    const e1x = tri[i + 3] - ax, e1y = tri[i + 4] - ay, e1z = tri[i + 5] - az;
+    const e2x = tri[i + 6] - ax, e2y = tri[i + 7] - ay, e2z = tri[i + 8] - az;
+    /* h = d x e2 */
+    const hx = dy * e2z - dz * e2y;
+    const hy = dz * e2x - dx * e2z;
+    const hz = dx * e2y - dy * e2x;
+    const det = e1x * hx + e1y * hy + e1z * hz;
+    if (det > -1e-12 && det < 1e-12) continue;
+    const inv = 1 / det;
+    const sx = px - ax, sy = py - ay, sz = pz - az;
+    const u = inv * (sx * hx + sy * hy + sz * hz);
+    if (u < 0 || u > 1) continue;
+    /* q = s x e1 */
+    const qx = sy * e1z - sz * e1y;
+    const qy = sz * e1x - sx * e1z;
+    const qz = sx * e1y - sy * e1x;
+    const v = inv * (dx * qx + dy * qy + dz * qz);
+    if (v < 0 || u + v > 1) continue;
+    const t = inv * (e2x * qx + e2y * qy + e2z * qz);
+    if (t > 1e-9) n++;
+  }
+  return n;
+}
+
+export function containsPoint(tri, px, py, pz) {
+  let votes = 0;
+  for (const [dx, dy, dz] of RAYS) {
+    if ((crossingsAlong(tri, px, py, pz, dx, dy, dz) & 1) === 1) votes++;
+  }
+  return votes >= 2;
+}
+
+/**
+ * How much of piece `a`'s SURFACE is inside piece `b`, from 0 to 1.
+ *
+ * ── Why surface samples and not vertices ──────────────────────────────────
+ *
+ * The first version sampled `a`'s vertices and reported 0.00 for a sign
+ * threaded straight through a post - correctly, and uselessly. A 5 m sign on a
+ * 2 m post has all four corners outside it; the buried part is the middle, and
+ * a vertex sample never looks there. Vertices are the worst possible probe for
+ * "is this piece inside that one", because they are by definition its extremes.
+ *
+ * So each triangle is sampled at fixed interior barycentric points. Fixed, not
+ * random, because a gate that returns a different number each run cannot be
+ * ratcheted - and this repository has been bitten by an unseeded sampler
+ * before.
+ */
+const BARY = [
+  [1 / 3, 1 / 3, 1 / 3],
+  [0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6],
+  [0.5, 0.4, 0.1], [0.1, 0.5, 0.4],
+];
+
+export function fractionInside(a, b, bTris) {
+  const at = trianglesOf(a);
+  const tris = bTris ?? trianglesOf(b);
+  /* Fewer than four triangles cannot enclose a volume, so parity is
+   * meaningless and 0 is the honest answer rather than a plausible number. */
+  if (tris.length < 9 * 4) return 0;
+
+  const triCount = at.length / 9;
+  /* Stride over triangles so a 5,000-triangle piece costs about the same as a
+   * twelve-triangle one. Reported through the sample count, not hidden. */
+  const step = Math.max(1, Math.ceil(triCount / 48));
+  let inside = 0, n = 0;
+  for (let t = 0; t < triCount; t += step) {
+    const i = t * 9;
+    const ax = at[i], ay = at[i + 1], az = at[i + 2];
+    const bx = at[i + 3], by = at[i + 4], bz = at[i + 5];
+    const cx = at[i + 6], cy = at[i + 7], cz = at[i + 8];
+    for (const [w0, w1, w2] of BARY) {
+      n++;
+      if (containsPoint(tris,
+        ax * w0 + bx * w1 + cx * w2,
+        ay * w0 + by * w1 + cy * w2,
+        az * w0 + bz * w1 + cz * w2)) inside++;
+    }
+  }
+  return n ? inside / n : 0;
 }

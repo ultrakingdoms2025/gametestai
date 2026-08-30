@@ -1399,3 +1399,36 @@ piece to its author by shape and material is not identification** — the spans 
 a build step, and neither of those is a call site. Recording the `at()` call site in the part table would
 have answered this in one query, and is the obvious next increment for `GeoParts` if this triage
 continues.
+
+### Sourced and fixed, same day: the call-site increment paid for itself immediately
+
+`GeoBatch` can now record **where a piece was authored** — `setTraceCallSites(true)` before a build, and
+every part carries the first three frames outside StationKit. Asked about the barrier the section above
+could not source, it answered in one query: `StationWorld.js:9633 ← 9831 ← 10387`. **9831 is a scatter
+loop dispatching by kind — a third call site the grep that found the other two had missed**, because it
+sat outside the line range searched.
+
+Off by default and asserted: a stack capture per authored piece is ~700 ms on a 37,923-piece build, which
+a debugging session should pay and a player never should. The default has its own case, because a leaked
+`true` would fail nothing else in the suite — the world would build correctly, look identical, and simply
+be slower for everyone.
+
+**The fix.** `_buildNearField`'s scatter tested `legal(x, z)` — radius band, gateway bubbles, road
+centrelines, all geometry it computed itself — and never what the plaza built at 0.50. Its two sibling
+loops in the same pass have always used `_footprintClear`. Real dressing-inside-structure defects
+**18 → 10**.
+
+⚠ **And the shared-`rng` trap caught me a second time in one day.** The first attempt used `continue`,
+which does not remove one prop — it re-rolls every prop after it. Measured: a crowd figure 0.78 m off its
+footing, a prop slid across an avenue legend, two gates failing that have nothing to do with planters, and
+73 props lost because the same try budget filled a smaller quota. `_buildSkyline` documents this trap a
+few hundred lines away. **Nudge, never skip** is now written at both sites.
+
+One ripple was authored data rather than scatter: a nudged trolley put Wen Halloway's waypoint 2 0.18 m
+inside its collider. The waypoint moved, not the trolley — hand-authored data is the safer half to adjust,
+and 0.9 m is inside the jitter band that route's own note already claims to survive.
+
+**Still open in the Hub:** 10 real dressing-inside-structure cases (plaza-props ×6, commercial ×3,
+residential ×1), the nine habitat carriageway claims, 16 backdrop pieces, 3 buried signs. And the
+`hull:*` host class needs adding to a stated allow-list before any of this becomes a gate rather than a
+probe.

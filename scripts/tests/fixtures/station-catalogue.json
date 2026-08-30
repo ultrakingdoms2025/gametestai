@@ -890,9 +890,9 @@
  {
   "name": "dressing:hazard",
   "position": {
-   "x": -0.088,
+   "x": 4.082,
    "y": -0.892,
-   "z": 32.245
+   "z": 23.556
   }
  },
  {
@@ -930,9 +930,9 @@
  {
   "name": "dressing:polish",
   "position": {
-   "x": -0.748,
+   "x": 9.759,
    "y": 0.105,
-   "z": 16.292
+   "z": 7.216
   }
  },
  {
@@ -2850,113 +2850,113 @@
  {
   "name": "skyline",
   "position": {
-   "x": -25.324,
+   "x": -12.628,
    "y": 0,
-   "z": -5.435
+   "z": -3.762
   }
  },
  {
   "name": "skyline:copper",
   "position": {
-   "x": -29.037,
+   "x": -10.975,
    "y": 0.4,
-   "z": -7.548
+   "z": -24.739
   }
  },
  {
   "name": "skyline:emAmber",
   "position": {
-   "x": -23.397,
+   "x": -14.039,
    "y": 3.29,
-   "z": -7.477
+   "z": -8.802
   }
  },
  {
   "name": "skyline:emCyan",
   "position": {
-   "x": -23.042,
+   "x": -13.979,
    "y": 3.2,
-   "z": -7.479
+   "z": -8.806
   }
  },
  {
   "name": "skyline:emRed",
   "position": {
-   "x": -23.295,
+   "x": -13.762,
    "y": 28.34,
-   "z": -1.013
+   "z": 1.64
   }
  },
  {
   "name": "skyline:glassWindow",
   "position": {
-   "x": -24.964,
+   "x": -12.49,
    "y": 1.83,
-   "z": -5.492
+   "z": -3.799
   }
  },
  {
   "name": "skyline:grate",
   "position": {
-   "x": -27.662,
+   "x": -12.436,
    "y": 1.997,
-   "z": -4.14
+   "z": -6.853
   }
  },
  {
   "name": "skyline:hazard",
   "position": {
-   "x": -24.259,
+   "x": -13.627,
    "y": 2,
-   "z": -7.312
+   "z": -14.351
   }
  },
  {
   "name": "skyline:panel",
   "position": {
-   "x": -21.176,
+   "x": -8.679,
    "y": 0.9,
-   "z": -35.06
+   "z": -43.922
   }
  },
  {
   "name": "skyline:panelDark",
   "position": {
-   "x": -25.014,
+   "x": -12.522,
    "y": 0,
-   "z": -5.48
+   "z": -3.805
   }
  },
  {
   "name": "skyline:panelWarm",
   "position": {
-   "x": -34.973,
+   "x": -20.407,
    "y": 0.9,
-   "z": 2.981
+   "z": -3.792
   }
  },
  {
   "name": "skyline:room",
   "position": {
-   "x": -24.968,
+   "x": -12.495,
    "y": 1.98,
-   "z": -5.504
+   "z": -3.794
   }
  },
  {
   "name": "skyline:rubber",
   "position": {
-   "x": -28.812,
+   "x": -10.793,
    "y": 2.12,
-   "z": -7.776
+   "z": -25.01
   }
  },
  {
   "name": "skyline:trim",
   "position": {
-   "x": -25.393,
+   "x": -12.628,
    "y": 0,
-   "z": -5.435
+   "z": -3.762
   }
  },
  {

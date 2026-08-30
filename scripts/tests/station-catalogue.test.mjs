@@ -251,10 +251,10 @@ test('the collision the world derives from its own geometry is unchanged', async
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 369200, boxed: 169612, kept: 199588, planting: 1360 },
+    { found: 372148, boxed: 170739, kept: 201409, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8766, 'the chunking changed');
+  assert.equal(chunks, 8765, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -293,8 +293,23 @@ test('the collision the world derives from its own geometry is unchanged', async
    * box; standing clear, or gone, the geometry around it stops sharing its
    * collision column. The +1 collider is the net of one vent no longer built
    * and two props that stopped sharing a column with what they stood in.
+   *
+   * -- And the backdrop skyline came off the station: 1,008 -> 0 ---------
+   * 369200 -> 372148 found, 199588 -> 201409 kept, 8766 -> 8765 chunks,
+   * colliders 26921 -> 26912. The largest move in this pass and the largest
+   * number: three of the sixteen backdrop blocks changed bearing or radius
+   * once the radial search could step INWARD as well as out, and a fourth
+   * advertising mast moved off a shopfront.
+   *
+   * +2,948 found and +1,821 kept for geometry that was only rearranged, and
+   * the reason is the one this file has recorded four times now at smaller
+   * scale: a 27 m block standing on the promenade had everything under it
+   * counted as already inside a box. Blocks that stand on open deck instead
+   * contribute their own surfaces AND give back the surfaces they were
+   * swallowing. Nine fewer colliders, because a block that no longer overlaps
+   * a district no longer needs a box where the two met.
    */
-  assert.equal(physics.colliders.length, 26921, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26912, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

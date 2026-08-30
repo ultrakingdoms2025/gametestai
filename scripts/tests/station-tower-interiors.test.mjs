@@ -43,9 +43,21 @@ import { collectParts } from '../../src/dev/GeoParts.js';
  * that frame. The corroboration below is what stops the registry being
  * trusted blindly: a footprint that has drifted from the geometry it claims
  * to describe would let anything through.
+ *
+ * ── And then a shop ──────────────────────────────────────────────────────
+ *
+ * The registry began as the fourteen towers, and a steam vent immediately
+ * landed in the floor slab of commercial unit -1:3 at (134, -21) - one of the
+ * three in `OPEN_SHOPS`, so a room with a door. The class was never "towers";
+ * it is "volumes the station encloses", and the twelve commercial units are
+ * now in it too. Only the towers have a scene node of their own, so the
+ * corroboration below runs on the entries that name a group and requires at
+ * least six of them; a unit drawn into the shared commercial batch is taken
+ * on trust rather than being given a group it does not need, because inventing
+ * scene structure to satisfy a test puts the test in the world.
  */
 
-test('no scattered prop stands inside an enterable tower', async () => {
+test('no scattered prop stands inside a room the station encloses', async () => {
   const { world } = await buildStation();
   const rooms = world._rooms ?? [];
 
@@ -62,9 +74,12 @@ test('no scattered prop stands inside an enterable tower', async () => {
   const groups = new Map();
   world.group.traverse((o) => { if (/^tower-interior-/.test(o.name ?? '')) groups.set(o.name, o); });
   const box = new THREE.Box3();
-  for (const r of rooms) {
-    const g = groups.get(r.name);
-    assert.ok(g, `room ${r.name} has no interior group`);
+  const corroborated = rooms.filter((r) => r.group);
+  assert.ok(corroborated.length >= 6,
+    `expected at least six rooms to name a scene node, found ${corroborated.length}`);
+  for (const r of corroborated) {
+    const g = groups.get(r.group);
+    assert.ok(g, `room ${r.name} names a group ${r.group} that does not exist`);
     box.setFromObject(g);
     assert.ok(Number.isFinite(box.min.x), `room ${r.name} has an empty interior group`);
     assert.ok(r.x > box.min.x && r.x < box.max.x && r.z > box.min.z && r.z < box.max.z,
@@ -102,7 +117,8 @@ test('no scattered prop stands inside an enterable tower', async () => {
     }
   }
 
-  console.log(`  ${rooms.length} enterable rooms, ${found.length} dressing pieces standing in them`);
+  console.log(`  ${rooms.length} rooms (${corroborated.length} with a scene node), `
+    + `${found.length} dressing pieces standing in them`);
   for (const line of found) console.log(`    ${line}`);
   assert.equal(found.length, 0,
     `set dressing is standing inside rooms the player can walk into:\n  ${found.join('\n  ')}`);

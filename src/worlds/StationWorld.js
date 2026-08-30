@@ -1886,6 +1886,7 @@ export class StationWorld extends World {
      * accumulate two generations of footprints and refuse ground that is
      * now open. */
     this._rooms = [];
+    this._skylinePlacement = [];
 
     /* One `breathe` per phase, closed over that phase's own progress fraction
      * and label so a phase never has to know where in the build it sits. */
@@ -7261,6 +7262,31 @@ export class StationWorld extends World {
           B.localAt('trim', boxGeo(1.0, 5.4, 0.7, 2), p.x, 0, p.z, yaw, sx * (width / 2 - 0.5), 2.7, -depth / 2);
         }
 
+        /* A SHOP IS A ROOM TOO.
+         *
+         * `_rooms` began as the habitat towers, and a steam vent promptly
+         * landed in the floor slab authored on the next line - unit -1:3 at
+         * (134, -21), which is one of the three in `OPEN_SHOPS` and so a room
+         * the player walks into through a door. Registered here for the same
+         * reason towers are: the scatter passes cannot see a room, because
+         * emptiness is what a room is.
+         *
+         * ALL TWELVE, not just the three in `OPEN_SHOPS`. The shells are
+         * built as separate walls precisely so the interiors stay visible
+         * through the glazing from the avenue, so a sealed unit is not an
+         * unseen one - it is a lit display you look into and cannot enter.
+         * The open/sealed distinction decides whether a player can stand in
+         * there; it has never decided whether they can see in.
+         *
+         * No `group`: these are drawn into the shared commercial batch and
+         * have no scene node of their own, so the gate corroborates the
+         * footprints that name one and takes these on trust. That is the
+         * right way round - a tower interior IS a group, and inventing one
+         * here to satisfy a test would put test structure in the world. */
+        (this._rooms ??= []).push({
+          x: p.x, z: p.z, hx: width / 2, hz: depth / 2, yaw, name: `commercial-unit-${side}-${i}`, group: null,
+        });
+
         // --- Interior: floor, back panelling, ceiling wash, furniture -----
         B.localAt('panelDark', boxGeo(width - 1, 0.2, depth - 1, 2), p.x, 0, p.z, yaw, 0, 0.1, 0);
         B.localAt('emWhite', boxGeo(width - 3, 0.16, 0.5, 1), p.x, 0, p.z, yaw, 0, height - 1.0, 1.5);
@@ -8586,13 +8612,34 @@ export class StationWorld extends World {
      * than circumscribed circles: two 28 m blocks 42 m apart read as clashing
      * under circles while their rectangles are clear, and over-refusal here is
      * what pushed the first attempt at this into a worse arrangement. */
-    /* A drawn block overhangs its w x d spec by about two metres a side -
-     * trim, sills and balconies that _block adds outside the nominal box.
-     * block:1 is authored 20 x 18 and measures 27.9 m across. Using the spec
-     * dimensions here let two blocks pass the separation test and still
-     * overlap once drawn, which is how the first run of this search produced
-     * three block-on-block overlaps where there had been none. */
-    const BLOCK_OVERHANG = 2.5;
+    /* A drawn block overhangs its w x d spec - trim, sills and balconies that
+     * _block adds outside the nominal box. block:1 is authored 20 x 18 and
+     * measures 28.0 x 27.6. Using the spec dimensions here let two blocks pass
+     * the separation test and still overlap once drawn, which is how the first
+     * run of this search produced three block-on-block overlaps where there
+     * had been none.
+     *
+     * ── 3.0 AND NOT 5.0, WHICH IS WHAT THE OVERHANG ACTUALLY MEASURES ────
+     *
+     * The honest margin looks like 4-5 m a side. It is not, because this
+     * number does not only separate blocks from each other - tightening it
+     * spends the search's freedom, and what the search buys with that freedom
+     * is keeping blocks OFF THE STATION. Swept against all three measures:
+     *
+     *   2.5 / 3.0   0 pieces inside blocks, 2 block/interior, 2 AABB pairs
+     *   3.5        10 pieces inside blocks, 2 block/interior, 1 AABB pair
+     *   4.0         7 pieces inside blocks, 2 block/interior, 1 AABB pair
+     *   5.0         8 pieces inside blocks, 3 block/interior, 0 AABB pairs
+     *
+     * Past about 3 the separation test starts pushing blocks onto districts,
+     * and a block standing in the commercial strip is a worse defect than two
+     * bounding boxes clipping corners - measured exactly, both of the pairs
+     * at 3.0 are corners the boxes clip and the buildings do not, zero pieces
+     * inside in either direction. Inflating the occupancy and role footprints
+     * to the drawn extent as well was tried and was worse again: blocks
+     * scattered up to 50 degrees off their bearings and three kept residual
+     * occupancy. */
+    const BLOCK_OVERHANG = 3.0;
     const placed = [];
     /* ---- PASS 1: SOLVE, most constrained first --------------------------
      *
@@ -8675,6 +8722,15 @@ export class StationWorld extends World {
        * measured to move the skyline from 49,056 collision triangles to
        * 72,530 by re-rolling every block after it. */
       const hx = s.w / 2, hz = s.d / 2;
+      /* The SPEC's circumscribed circle, plus a hand's breadth - NOT the drawn
+       * extent, which is 3 m a side larger and would be the honest figure.
+       * Measured: reaching with `BLOCK_OVERHANG` here clears BOTH remaining
+       * block/interior clashes and puts 103 pieces of block:13 inside
+       * block:14 instead. That is the trade this whole method is balanced on,
+       * and it is the same one `BLOCK_OVERHANG` is set by - freedom spent
+       * keeping blocks out of one thing is freedom lost keeping them out of
+       * another. A block inside a backdrop block is worse than a backdrop
+       * block clipping a keep-out margin. */
       const blockR = Math.hypot(hx + 0.4, hz + 0.4);
       const clashesAt = (x, z) => {
         for (const fp of this._selfCollided) {
@@ -8695,7 +8751,23 @@ export class StationWorld extends World {
       };
 
       let best = null;
-      for (const dr of [0, 8, 16, 24, 32, -8]) {
+      /* INWARD AS FAR AS OUTWARD, and it was the missing half.
+       *
+       * The list used to be [0, 8, 16, 24, 32, -8]: five steps out and one
+       * step in. That asymmetry left `block:2` with nowhere to go - its best
+       * candidate anywhere still had 13.8% of its footprint on the station,
+       * standing on the observation promenade's balustrade at r = 158. Every
+       * other block found clean ground; that one had the window sector on one
+       * side and the ring's neighbours on the other, and the only way out was
+       * DOWN a radius, which the list would not let it take.
+       *
+       * Adding -16, -24, -32 took the whole skyline to zero occupancy, and
+       * two other blocks improved as a side effect: block:1 came back from 58
+       * degrees off its authored bearing to 6, and block:10 from 46 to 10.
+       * They had been swinging that far round the ring for want of a step
+       * inward. Appended rather than reordered, so a block that already found
+       * a clean spot at dr = 0 breaks out before it ever sees these. */
+      for (const dr of [0, 8, 16, 24, 32, -8, -16, -24, -32]) {
         for (let t = 0; t <= 60; t += 2) {
           for (const sign of (t === 0 ? [1] : [1, -1])) {
             const cand = s.deg + t * sign;
@@ -8724,9 +8796,32 @@ export class StationWorld extends World {
       const yaw = -deg * DEG + Math.PI;
       placed.push({ x: p.x, z: p.z, hw: hx + BLOCK_OVERHANG, hd: hz + BLOCK_OVERHANG, yaw });
       solved.set(si, { p, yaw });
-      /* A block that could not get clear anywhere is recorded rather than
-       * silently left standing in somebody's lobby. */
-      if (best.score >= 100) (this._skylineUnplaced ??= []).push({ piece: si, x: p.x, z: p.z, score: best.score });
+      /* ── WHAT THE SEARCH DECIDED, FOR EVERY BLOCK, ALWAYS ──────────────
+       *
+       * This used to record only `score >= 100`, and nothing read it - which
+       * is the same shape as the `clash` flag this method computed for
+       * twenty-six lines and never consulted. A record with no reader is not
+       * a safeguard.
+       *
+       * Recorded at PLACEMENT TIME because the aftermath cannot be measured.
+       * Ask `occupancyUnder` about a finished block's footprint and it
+       * answers 1.000 - the block's own mass, the canopy over it and the
+       * dressing around it have all claimed that ground since. A test the
+       * subject has contaminated is no test, the same trap the avenue lamps
+       * set for `_footprintClear`. These three flags are what the search saw
+       * when it still had a choice, and `station-skyline-clash.test.mjs`
+       * asserts all sixteen are clean. */
+      const cyBest = -deg * DEG + Math.PI;
+      (this._skylinePlacement ??= []).push({
+        piece: si,
+        authored: s.deg,
+        deg,
+        dr: best.dr,
+        score: best.score,
+        road: !!this.plan?.roleUnder(p.x, p.z, hx, hz, cyBest, ROLE.CARRIAGEWAY),
+        occ: this.plan?.occupancyUnder(p.x, p.z, hx, hz, cyBest) ?? 0,
+        clash: clashesAt(p.x, p.z),
+      });
     }
 
     /* ---- PASS 2: DRAW, in spec order so the rng stream is unchanged ----- */
@@ -10547,29 +10642,39 @@ export class StationWorld extends World {
     /* ── EIGHT HAND-AUTHORED SPOTS, AND ONE OF THEM WAS IN A ROOM ──────
      *
      * Each spot draws a 14 m mast from y = 0 up to the plate, with a solid
-     * of the same height, and the list knows nothing about what stands at
-     * those coordinates. Six of the eight cross structure. Five of the six
+     * of the same height, and the list knew nothing about what stood at
+     * those coordinates. Six of the eight crossed structure. Four of the six
      * are fine and were photographed to establish that: a mast rising
-     * through a shop roof or a promenade deck and topping out above it
+     * through a promenade deck or a cargo stack and topping out above it
      * reads as a mast on a roof, which is what a projector mast is.
      *
-     * The eighth was not. `[-24, 16, 96]` stood at the middle of
+     * TWO WERE NOT, and both were inside something the station encloses.
+     *
+     * `[-24, 16, 96]` stood at the middle of
      * `tower-interior-habitat-stack-s1` (x -36..-11.7, z 76.9..106.8), so
      * the mast ran up through four storeys of a room the player can walk
      * into, carrying a 1 m square collider and a 9 x 4.5 m advertising
-     * plate with it. An ENTERABLE VOLUME is the one place where "inside"
-     * needs no argument - see station-tower-interiors.test.mjs, which now
-     * holds this.
+     * plate with it.
      *
-     * Moved 16 degrees round the same ring rather than to the first clear
-     * patch: the eight are a composition spread around the plaza, and
-     * radius and district are what that composition is made of. (3, 99) is
-     * the same distance out, the same northern sightline, and swept from
-     * -40 to +40 degrees it is one of only two bearings where the mast
-     * column and the whole plate volume are both empty. */
+     * `[110, 15, 24]` ran floor to roof through commercial unit 1:2 - the
+     * HELIOS OPTICS shopfront - putting its projector cone 92% inside the
+     * roof slab. That one was photographed from the street and ACCEPTED
+     * first: it reads as a mast on a shop roof, and the unit is sealed. The
+     * shop shells are built as separate walls precisely so their interiors
+     * stay visible through the glazing, so "sealed" was never the same as
+     * "unseen" - a pole through the middle of a lit display is a pole
+     * through the middle of a lit display whether or not a door opens onto
+     * it. Moved on the second look.
+     *
+     * Both moved round the SAME RING rather than to the first clear patch:
+     * the eight are a composition spread around the plaza, and radius and
+     * district are what that composition is made of. Sixteen degrees for
+     * the first and eight for the second, each swept from -40 to +40 to
+     * find a bearing where the mast column and the whole plate volume are
+     * both empty and no room encloses either. */
     const adSpots = [
       [56, 12, 26], [-40, 14, 62], [70, 16, -48], [-64, 13, -40],
-      [110, 15, 24], [-96, 15, 30], [30, 18, -92], [3, 16, 99],
+      [106, 15, 39], [-96, 15, 30], [30, 18, -92], [3, 16, 99],
     ];
     for (let i = 0; i < adSpots.length; i++) {
       const [ax, ay, az] = adSpots[i];

@@ -35,17 +35,23 @@ import { collectParts, fractionInside, isDesignedContainer } from '../../src/dev
  *
  * ── Why a ratchet ─────────────────────────────────────────────────────────
  *
- * ONE remains, and it was photographed before it was accepted. The hologram
- * projector cone at (110, 13.8, 24) sits 92% inside the roof slab of the
- * HELIOS OPTICS unit, because the ad mast's fourteen metres are drawn from
- * y = 0 with no knowledge of what stands there. Shot from three headings it
- * reads as a projector mast on a shop roof, which is what it is meant to be,
- * and the unit is not in `OPEN_SHOPS` - the mast crosses a sealed volume no
- * player can enter. Left at the honest measurement rather than tuned away:
- * dropping the bar to hide a 92% would blind this file to everything.
+ * ZERO, and it took an accepted finding being overturned to get there.
  *
- * The vent grate that used to be the second one is gone - it was scatter, and
- * the steam-vent loop now asks what is already there.
+ * The last one was the hologram projector cone at (110, 13.8, 24), 92% inside
+ * the roof slab of the HELIOS OPTICS unit, because the ad mast's fourteen
+ * metres are drawn from y = 0 with no knowledge of what stands there. It was
+ * photographed from three headings, judged to read as a projector mast on a
+ * shop roof, and ACCEPTED - the unit is not in `OPEN_SHOPS`, so the mast
+ * crossed a sealed volume.
+ *
+ * Then the room registry reached the shops and named it again, and the
+ * argument did not survive the second look: the shop shells are built as
+ * separate walls specifically so their interiors stay visible through the
+ * glazing, so sealed never meant unseen. Three street framings had photographed
+ * the fascia. The mast moved eight degrees round its ring.
+ *
+ * The vent grate that used to be the second one is gone too - it was scatter,
+ * and the steam-vent loop now asks what is already there.
  *
  * ── What this gate cannot see, and what covers it ────────────────────────
  *
@@ -61,7 +67,7 @@ import { collectParts, fractionInside, isDesignedContainer } from '../../src/dev
  * putting props inside the world again.
  */
 
-const CEILING = 1;
+const CEILING = 0;
 /** Below this in ANY dimension the piece is paint, not an object. */
 const FLAT = 0.15;
 

@@ -545,7 +545,7 @@ export function buildTower(world, B, g, spec, rng) {
    * eight CENTIMETRES inside the claimed outline, standing beside a base you
    * are meant to be able to stand beside. A plinth is a step; the room is the
    * shell. Walls included, because a prop inside a wall is a defect too. */
-  (world._rooms ??= []).push({ x, z, hx: w / 2, hz: d / 2, yaw, name: ig.name });
+  (world._rooms ??= []).push({ x, z, hx: w / 2, hz: d / 2, yaw, name: ig.name, group: ig.name });
   const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
     I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
 

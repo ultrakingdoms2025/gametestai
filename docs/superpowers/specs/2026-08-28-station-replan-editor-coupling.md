@@ -1677,3 +1677,103 @@ into "the loop never runs" before the instrument was pointed at `process.stderr`
 
 **Hub state:** 1 prop embedded (accepted, photographed), 0 props in rooms, 9 backdrop pieces, 1 buried
 sign (accepted), 2 skyline clashes, 21 carriageway conflicts.
+
+### The backdrop skyline: 1,008 → 0, and it was a missing minus sign
+
+The scored search had already taken it from 1,008 to 3. The three were one thing — the observation
+promenade's balustrade, inside `block:2` — and `block:2` was the only one of sixteen whose best candidate
+anywhere still stood on the station: **13.8 % occupancy, score 87.3**, which fell under the `>= 100`
+threshold the code used to decide whether to record a failure at all.
+
+The cause was an asymmetry nobody had looked at: the radial offsets were `[0, 8, 16, 24, 32, -8]` — five
+steps outward, one step in. `block:2` had the window sector on one side and the ring's neighbours on the
+other, and its only way out was **down** a radius. Adding `-16, -24, -32` took every block to zero
+occupancy at placement time, and two others improved as a side effect: `block:1` came back from 58° off
+its authored bearing to 6°, `block:10` from 46° to 10°. They had been swinging that far round the ring for
+want of a step inward.
+
+Photographed before/after at `hull-outward` and `dome-inside`: the hub silhouette from outside the dome is
+unchanged, and inside, a hologram ad that used to float against a hole in the backdrop now reads against
+massing — which is the skyline's stated purpose. Draw calls ±3, triangles ±500, **shader programs
+identical**.
+
+#### The gate that could be trusted, and the two that could not
+
+Adding the inward steps immediately failed the sibling gate: `block:1 × block:2` at 783 m³ and
+`block:10 × block:16` at 3,354 m³ of overlap — the same failure mode as the first attempt at this, which
+produced 17,598 m³.
+
+⚠ **Both were AABB artefacts.** Measured exactly: **zero** of 300 `block:1` pieces inside `block:2` and
+zero of 367 the other way, from 78 candidate box pairs; zero of 364 and zero of 353 for the second, from
+238. At bearings of 39/27 and 325/329 degrees these are corners the boxes clip and the buildings do not.
+**Fifth false positive of this pass from a box standing in for a rotated thing** — and this one would have
+blocked the fix that cleared 1,008 intrusions. The gate now pre-filters with the box and decides with
+`fractionInside`; the defect it was written for survives untouched, because a block 20.8 m inside another
+has hundreds of pieces inside it, not corners.
+
+⚠ **And `BLOCK_OVERHANG` is a measured trade, not a margin to maximise.** The drawn block overhangs its
+`w × d` spec by 4–5 m a side (block:1 is authored 20 × 18 and measures 28.0 × 27.6), so the honest
+separation margin looks like 5. Swept against all three measures:
+
+| overhang | pieces inside blocks | block/interior | block-on-block (AABB) |
+|---|---|---|---|
+| 2.5 / 3.0 | **0** | 2 | 2 (both artefacts) |
+| 3.5 | 10 | 2 | 1 |
+| 4.0 | 7 | 2 | 1 |
+| 5.0 | 8 | 3 | 0 |
+
+Past ~3 the separation test starts pushing blocks *onto the station*, which is a worse defect than two
+boxes clipping corners. Inflating the occupancy and role footprints to the drawn extent as well was tried
+and was worse still — blocks scattered up to 50° off their bearings and three kept residual occupancy.
+
+#### The third test is the only one that can be trusted
+
+Both gates above measure the **aftermath**, and the aftermath of a placement cannot be measured cleanly:
+ask `occupancyUnder` about a finished block's footprint and it answers **1.000** whatever happened, because
+the block's own mass, the canopy above it and the dressing around it have all claimed that ground since.
+That is the same contamination the avenue lamps set for `_footprintClear`, one scale up.
+
+`_buildSkyline` now records what the search saw *while it still had a choice* — road, occupancy and clash
+per block — and the new test asserts all sixteen are clean. It replaces `_skylineUnplaced`, which kept only
+`score >= 100` and **had no reader at all**: the same shape as the `clash` flag this method computed for
+twenty-six lines and never consulted. Mutation-tested by restoring the old radial list, which names
+`block:2` at 0.138 exactly.
+
+### And a shop is a room
+
+Moving the skyline moved the dressing — placement passes are coupled through physics, the finding this
+document already records — and a steam vent landed in the **floor slab of commercial unit -1:3**, one of
+the three in `OPEN_SHOPS`. The class was never "towers"; it is *volumes the station encloses*, and the
+twelve commercial units are in it now too.
+
+Which promptly overturned an accepted finding. The projector cone at (110, 13.8, 24) had been photographed
+from three headings, judged to read as a mast on a shop roof, and accepted because the unit is sealed. But
+**the shop shells are built as separate walls specifically so their interiors stay visible through the
+glazing** — sealed never meant unseen, and three street framings had photographed the fascia. A pole
+through the middle of a lit display is a pole through the middle of a lit display whether or not a door
+opens onto it. The mast moved eight degrees round its ring.
+
+⚠ **And the backdrop gate had been counting floor paint since it was written.** Two `polish` deck patches
+turned up under `block:1` after the mast moved. `isMarking` — flat in **Y** only, the same test the sign
+gate uses — excludes a hidden deck decal while keeping the promenade balustrade's upright glazing, which is
+exactly what this gate exists to find. Invisible at a ceiling of 16; only a pin at zero could see it.
+
+### The block/interior ratchet: circles, and a trade that has to be refused
+
+The last skyline gate compared two **circumscribed circles** — the coarsest instrument in the family. A
+28 m square block's circle reaches 19.8 m from its centre where the block reaches 14, so it accuses
+everything in corners the block does not occupy. Of the two it reported, `block:3` against the habitat
+keep-out at (−98.5, 118.6) is **clear by separating axis** with 0.9 m of circle overlap — the sixth
+artefact of this pass. `block:13` against (−68.5, 66.7) is real: 4.9 m of genuine rectangle overlap.
+Rectangles now, ceiling **2 → 1**.
+
+⚠ **And the remaining one must stay.** Making `clashesAt` reach with the drawn extent instead of the spec's
+circle clears *both* interior clashes — and puts **103 pieces of `block:13` inside `block:14`**. Measured
+exactly, not by box. That is the same failure the first attempt at this file produced at 17,598 m³, and it
+is the trade the whole method is balanced on: freedom spent keeping blocks out of one thing is freedom lost
+keeping them out of another. A backdrop block inside another backdrop block reads as one broken building; a
+backdrop block clipping a keep-out margin does not. Refused, and recorded at the line.
+
+**Hub state:** props inside structure **0**, props in rooms **0**, backdrop intrusions **0**, block-on-block
+**0**, skyline placements on clean ground **16 of 16**, block/interior **1** (was 8). Remaining: 21
+carriageway conflicts, 1 buried sign (accepted).

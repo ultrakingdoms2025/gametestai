@@ -1432,3 +1432,31 @@ and 0.9 m is inside the jitter band that route's own note already claims to surv
 residential ×1), the nine habitat carriageway claims, 16 backdrop pieces, 3 buried signs. And the
 `hull:*` host class needs adding to a stated allow-list before any of this becomes a gate rather than a
 probe.
+
+### The containment gate, and the artefact that inverts the fraction
+
+The probe became a gate (`station-prop-containment.test.mjs`), and the thing that made it one is not the
+exact test — it is the **explicit list of designed containers**. `isDesignedContainer` holds two patterns,
+`^hull:` and `:hullIn$`, and each is a claim that a host is a VOLUME rather than an OBJECT. Emptying the
+list takes the count from 4 straight back to 25 as the hull pillars reappear, which is the mutation that
+matters: it shows the list is load-bearing and measured rather than decoration.
+
+**Then the gate was found to be judging people.** Six of its first ten findings were crowd figures. They
+were sourced by extending call-site tracing to `instanced()` — the merged half had it, the instanced half
+did not, and eight of the ten were instanced — which named `StationWorld.js:9389` / `:9404` in one query.
+The ambient crowd is added to the dressing *group*, so its meshes inherit `dressing:instanced` and read as
+props. It is excluded by MATERIAL now, not by name, because it has its own footing gate and two gates
+judging one population by different rules is how a defect gets argued about instead of fixed. Population
+1,180 → 772; the crowd was a third of what the file called "dressing". Ceiling 10 → 4.
+
+⚠ **THE FINDING WORTH CARRYING FORWARD.** A planter rim is an **annulus**, so ray parity calls its hollow
+centre "inside" — a figure standing correctly on the planter deck reads at **100%**, while the real defect
+this gate was written for, a barrier embedded in the rim, reads at **39%**. In a ring-shaped host a
+*higher* fraction is evidence of the hollow-centre artefact rather than of a worse defect. That is the
+opposite of the intuition a percentage invites, and any future threshold on this measure has to know it.
+It is the same shape of error as the hull pillars, reached from a different direction, and it is now the
+fourth time the architectural question — *should* A be inside B — has had to be answered per host class by
+hand.
+
+**Still open in the Hub:** 4 props genuinely embedded (63%, 64%, 65%, 92%), the nine habitat carriageway
+claims, 16 backdrop pieces, 3 buried signs.

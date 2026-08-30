@@ -1032,6 +1032,14 @@ export function instanced(geo, mat, entries, opts = {}) {
    */
   im.computeBoundingSphere();
   im.frustumCulled = opts.cull ?? true;
+  /* The same call site a merged piece gets, for the same reason: an
+   * instanced prop is addressable by mesh and index and has always been,
+   * but neither of those names the LINE that scattered it. Eight of the
+   * ten props left standing inside structure are instanced, and none of
+   * them could be sourced until this existed. Off by default with the
+   * merged half - one boolean test per instanced mesh, of which the
+   * station builds a few hundred rather than 37,923. */
+  if (TRACE_CALL_SITES) im.userData.site = callSite();
   return im;
 }
 

@@ -35,22 +35,40 @@ import { collectParts, fractionInside, isDesignedContainer } from '../../src/dev
  *
  * ── Why a ratchet ─────────────────────────────────────────────────────────
  *
- * Ten remain, in four host groups, and each needs its own investigation: the
- * near-field fix cleared eight of eighteen and the rest come from other
- * placement paths. Zero would fail on arrival and be disabled within a day.
+ * Four remain, and all four read between 63% and 92% - partial embedding,
+ * which is what a real defect looks like here. Zero would fail on arrival
+ * and be disabled within a day.
  * Lower it when you clear one; a rise means a placement pass started putting
  * props inside the world again.
  */
 
-const CEILING = 10;
+const CEILING = 4;
 /** Below this in ANY dimension the piece is paint, not an object. */
 const FLAT = 0.15;
 
-const isDressing = (p) => p.owner === 'Scattering set dressing' || p.owner === 'dressing'
-  || (p.instanced && /dressing/.test(p.mesh));
+/* The ambient crowd is added to the dressing GROUP, so its instanced meshes
+ * inherit the name `dressing:instanced` and read as props. They are people,
+ * they have their own footing gate in station-actors.test.mjs, and judging
+ * them here was actively wrong: six of the ten this file first reported were
+ * crowd figures standing ON a raised planter deck. A planter rim is an
+ * ANNULUS, so ray parity calls the hollow centre inside it - photographed at
+ * (13, 22) and the figure is standing correctly on the planter, inside the
+ * ring of the rim.
+ *
+ * Note which direction that false positive points: those read at 100%, while
+ * the real defect this file was written for - a barrier embedded in a rim -
+ * read at 39%. In ring-shaped hosts a HIGHER fraction is evidence of the
+ * hollow-centre artefact, not of a worse defect. */
+const CROWD_MATS = new Set();
+const isCrowd = (p) => p.instanced && CROWD_MATS.has(Array.isArray(p.obj.material) ? p.obj.material[0] : p.obj.material);
+
+const isDressing = (p) => !isCrowd(p) && (p.owner === 'Scattering set dressing' || p.owner === 'dressing'
+  || (p.instanced && /dressing/.test(p.mesh)));
 
 test('no scattered prop stands inside authored structure', async () => {
   const { world } = await buildStation();
+  CROWD_MATS.clear();
+  for (const k of ['crowd', 'skin']) if (world.mat?.[k]) CROWD_MATS.add(world.mat[k]);
   const all = collectParts(world.group);
   const size = new THREE.Vector3(), c = new THREE.Vector3();
 
@@ -68,7 +86,7 @@ test('no scattered prop stands inside authored structure', async () => {
   });
   const hosts = street.filter((p) => !isDressing(p) && p.tris >= 4 && !isDesignedContainer(p));
 
-  assert.ok(props.length > 800, `expected the station's dressing, found ${props.length} volumetric pieces`);
+  assert.ok(props.length > 600, `expected the station's dressing, found ${props.length} volumetric pieces`);
   assert.ok(hosts.length > 10000, `expected the station's structure, found ${hosts.length} hosts`);
 
   const inside = [];

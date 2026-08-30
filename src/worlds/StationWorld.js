@@ -7895,8 +7895,27 @@ export class StationWorld extends World {
       this._mmPath([[a.p.x, a.p.z], [b.p.x, b.p.z]], 'rgba(140,200,240,0.35)', 3, false);
     }
 
-    // A small green terrace between the blocks - the only plants on the ring.
-    const parkP = roadPos(deg, 172, 0, 0, new THREE.Vector3());
+    /* A small green terrace between the blocks - the only plants on the ring.
+     *
+     * OFF THE CENTRELINE BY -24 m, and that is a change of intent worth
+     * stating. It used to sit on the avenue: the note below says the disc
+     * "caps the end of the avenue and so shares its plane with the
+     * carriageway", and for a FLAT disc with no collider that is fine.
+     *
+     * The ring around it is not flat. Ten 1.5 m planters at radius 12, each
+     * with its own `_solid`, and photographed at (-86, 152) the cyan lane
+     * dashes and LOAD ZONE paint ran straight through them - bollards in a
+     * lane the player walks down, and every one of this build step's nine
+     * carriageway claims.
+     *
+     * Refusing the occupied bearings cleared the road and left TWO planters
+     * of twenty; sliding them along the ring left four. Both delete the only
+     * planting on the ring to fix a placement, which is the wrong trade. The
+     * offset keeps all twenty and clears the road, at the cost of the disc
+     * no longer capping the avenue - a garden beside the road rather than at
+     * the end of it. -24 m against a 9.9 m carriageway half-width and a
+     * 12 m ring radius leaves the nearest planter -36.0 m clear of the kerb. */
+    const parkP = roadPos(deg, 172, -24, 0, new THREE.Vector3());
     // `plazaOnDeck`, not `plaza`: this disc caps the end of the avenue and so
     // shares its plane with the carriageway. See the material for why.
     const park = new THREE.Mesh(uvScale(new THREE.CircleGeometry(16, 40), 3, 3), M.plazaOnDeck);

@@ -2966,6 +2966,7 @@ export class StationWorld extends World {
   _solid(cx, cy, cz, hx, hy, hz, ownerId = null) {
     // Owner from the build step, on the same terms as `_solidRot` above.
     const owner = ownerId ?? this._planOwner ?? null;
+    this.plan?.claim(cx, cz, cy - hy, cy + hy, hx, hz, 0, owner);
     return this.track(this.physics.addBox(cx, cy, cz, hx, hy, hz, owner ? { ownerId: owner } : {}));
   }
 

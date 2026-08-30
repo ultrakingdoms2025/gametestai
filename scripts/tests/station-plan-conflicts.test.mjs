@@ -48,7 +48,27 @@ import { buildStation } from './world-kit.mjs';
  * hid seven that were. The count a broken instrument produces is not a
  * baseline, so this one is re-taken rather than defended.
  */
-const CEILING = 18;
+/* 18 -> 30 on 2026-08-30, and NOT because anything moved into a road.
+ *
+ * `_solid` - the hand-authored axis-aligned collider call - had never claimed
+ * into the plan; only `_solidRot` did. The plan was therefore blind to 1,530
+ * solids, and the twelve conflicts below were standing in avenues the whole
+ * time with no instrument able to see them:
+ *
+ *    Stacking habitat blocks  9
+ *    Stacking the cargo yard  2
+ *    Scattering set dressing  1
+ *
+ * The other eighteen are unchanged and still break down exactly as before:
+ * Gateway Plaza 3, commercial strip 4, dressing 3, and two per link across all
+ * four links - the symmetric pattern each link makes where it meets a
+ * carriageway at its mouth.
+ *
+ * Raising a ratchet is normally forbidden and it is being done here on the one
+ * ground that permits it: the measurement got better, not the world worse. The
+ * nine habitat claims are the largest single group and are the work to go and
+ * do. Lower it when you fix one; never raise it for any other reason. */
+const CEILING = 30;
 
 /**
  * Conflicts by the build step that caused them.
@@ -95,9 +115,15 @@ const CEILING = 18;
  * by the plan: gantry legs at 7 m across an 18 m road, and a skyline flank
  * five degrees off an avenue with 13 m of reach at 9.94 m of offset.
  */
+/* The three entries below the fold are the newly VISIBLE ones, not new ones -
+ * see the note on CEILING. Everything above them is byte-identical to the
+ * split this file has pinned since the link ownership increment. */
 const BY_OWNER = {
   'Erecting Gateway Plaza': 3,
   'Opening the commercial strip': 4,
+  'Scattering set dressing': 1,
+  'Stacking habitat blocks': 9,
+  'Stacking the cargo yard': 2,
   dressing: 3,
   'link:canteen': 2,
   'link:construction': 2,

@@ -130,8 +130,15 @@ test('the station, measured against its own plan', async () => {
    * Left here because it is the cheapest possible reminder that a number read
    * off a truncated console is not a measurement.) */
   assert.equal(s.cellsSeeded, 18240, 'the seeded circulation changed shape');
-  assert.ok(s.conflicts <= 200, `${s.conflicts} conflicts, was 186 - something new is standing on the circulation`);
-  assert.ok(s.conflicts >= 150, `${s.conflicts} conflicts, was 186 - if this improved, re-take the number and say what fixed it`);
+  /* 186 -> 733 on 2026-08-30. `_solid` began claiming into the plan, so the
+   * plan finally sees the 1,530 axis-aligned solids it had never been told
+   * about. The rise is in what is MEASURED, not in what is built: plaza
+   * 77 -> 477, sightline 89 -> 226, carriageway 18 -> 30. A plaza conflict is
+   * mostly a monument or a planter standing on its own plaza, which is what a
+   * plaza is for; the carriageway count is the one that names defects, and it
+   * has its own ratchet in station-plan-conflicts.test.mjs. */
+  assert.ok(s.conflicts <= 800, `${s.conflicts} conflicts, was 733 - something new is standing on the circulation`);
+  assert.ok(s.conflicts >= 650, `${s.conflicts} conflicts, was 733 - if this improved, re-take the number and say what fixed it`);
 
   /* The dome and the promenade loop must contribute nothing. Both cross the
    * circulation by design - the loop is 10 m up and spans every avenue - and
@@ -152,6 +159,30 @@ test('the station, measured against its own plan', async () => {
    * ring's link mouths where the road runs out at the hull, not the 33 and 21
    * the band was introduced to remove. Whether they are correct as built is
    * open; see station-plan-conflicts.test.mjs. */
+  /* Re-taken 8 -> 12 on 2026-08-30, and TWO things are worth knowing.
+   *
+   * First, what the twelve are. `_solid` began claiming into the plan, and the
+   * promenade loop's SUPPORT COLUMNS reach the ground - so they claim it, and
+   * they land in gateway sightlines because the loop encircles at r = 72 and
+   * crosses every avenue by design. All twelve sit at r = 71.9-72.0, which is
+   * the column line to three significant figures. The band is intact: what it
+   * exists to stop is the loop DECK ten metres up claiming ground, and that
+   * was 21 conflicts when it happened. Twelve columns is not that.
+   *
+   * Second, and more useful: THE DOME HALF OF THIS CANARY HAS BEEN VACUOUS.
+   * It reads 0 and has since the zone/link ownership increment re-scoped
+   * world._planOwner, because the eight conflicts the note above describes
+   * ("at r = 247, the outer ring's link mouths") are now owned by link:<id>
+   * and no longer match /dome/. The regex was pinned against owner strings
+   * that stopped existing, and the assertion kept passing on 0 <= 8. Those
+   * eight are still measured - by owner, in station-plan-conflicts.test.mjs -
+   * so nothing is unwatched, but this half of this canary is not what is
+   * watching them. */
   const overhead = world.plan.conflicts.filter((c) => /dome|promenade/i.test(c.owner ?? ''));
-  assert.ok(overhead.length <= 8, `overhead structure is claiming ground again: ${JSON.stringify(overhead.slice(0, 4))}`);
+  assert.ok(overhead.length <= 12, `overhead structure is claiming ground again: ${JSON.stringify(overhead.slice(0, 4))}`);
+  assert.ok(
+    overhead.every((c) => Math.hypot(c.x, c.z) > 60),
+    'an overhead owner is claiming ground INSIDE the promenade ring - that is the deck, not a column, '
+    + 'and it is what the ground band exists to prevent',
+  );
 });

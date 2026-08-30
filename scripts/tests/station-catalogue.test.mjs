@@ -229,10 +229,17 @@ test('the collision the world derives from its own geometry is unchanged', async
    * cost of the blocks being somewhere real, and it is the cheap direction:
    * 1,008 pieces of the station stopped being inside scenery for 758
    * triangles.
+   *
+   * -- Re-taken again: the plan learned about axis-aligned solids ----------
+   * 170349 -> 170273 boxed, 198387 -> 198463 kept; found and chunks
+   * unchanged. `_solid` began claiming into the plan, which moved seven more
+   * backdrop blocks off the station (16 -> 9 pieces swallowed), and 76
+   * triangles that had been inside a box are now surfaces. Same direction and
+   * same reason as the entry above.
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 368736, boxed: 170349, kept: 198387, planting: 1360 },
+    { found: 368736, boxed: 170273, kept: 198463, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
   assert.equal(chunks, 8617, 'the chunking changed');

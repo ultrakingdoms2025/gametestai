@@ -51,7 +51,12 @@ import {
   moveEntryFor,
   pendingRows,
   placeAt,
-  placementY,
+  REFUSAL_TEXT,
+  buildBlocksEditing,
+  buildMatch,
+  buildWords,
+  snapMove,
+  snapPlace,
   radToDeg,
   removeFor,
   removeWarnings,
@@ -117,6 +122,74 @@ describe('snappedY', () => {
     // … but a destination on the hole is null, and so is a source on it.
     expect(snappedY(holed, { x: 0, y: 0, z: 0 }, 8, 0)).toBeNull();
     expect(snappedY(holed, { x: 8, y: 0, z: 0 }, 0, 0)).toBeNull();
+  });
+});
+
+/* `snappedY` returned `number | null` and was RIGHT. The drag that called it
+ * wrote `?? from.y`, so a prop dragged over a hole in the grid kept the drag
+ * origin's height and the document recorded it as a snap. The refusal has to
+ * name which END failed, because the two mean different things to whoever is
+ * holding the mouse: no sample under the destination is "drag it somewhere
+ * else", no sample under the object is "this one cannot be dragged at all". */
+describe('snapMove refuses instead of guessing', () => {
+  it('says which end has no ground', () => {
+    const holed = slope();
+    for (let j = 0; j < 3; j++) holed.heights[j * 3 + 2] = NO_SAMPLE;
+    expect(snapMove(holed, { x: 0, y: 0, z: 0 }, 2, 0)).toEqual({ y: 0.5, refusal: null });
+    expect(snapMove(holed, { x: 0, y: 0, z: 0 }, 8, 0)).toEqual({ y: null, refusal: 'no-ground-at-target' });
+    expect(snapMove(holed, { x: 8, y: 0, z: 0 }, 0, 0)).toEqual({ y: null, refusal: 'no-ground-at-origin' });
+  });
+  it('says so when there is no grid at all, which is the case the fallback hid best', () => {
+    expect(snapMove(null, { x: 0, y: 7, z: 0 }, 1, 1)).toEqual({ y: null, refusal: 'no-grid' });
+  });
+  it('agrees with snappedY wherever there IS an answer', () => {
+    const g = slope();
+    expect(snapMove(g, { x: 0, y: 0.5, z: 0 }, 4, 0).y).toBe(snappedY(g, { x: 0, y: 0.5, z: 0 }, 4, 0));
+  });
+});
+
+/**
+ * D5. `builtVersion` is a DOCUMENT version and cannot answer this: a redeploy
+ * that re-authors a district leaves the stored ground grid describing surfaces
+ * that no longer exist while every version number stays put.
+ */
+describe('buildMatch', () => {
+  it('is ok only when the layout names the build that is deployed', () => {
+    expect(buildMatch('abc', 'abc')).toBe('ok');
+    expect(buildMatch('abc', 'def')).toBe('stale');
+  });
+  /* THE TWO UNKNOWNS ARE NOT "ok", AND THEY ARE NOT EACH OTHER. A layout
+   * stored before the column existed cannot be checked; a page that could not
+   * fetch the stamp cannot check anything. Naming them separately is what lets
+   * the banner tell an admin which one to fix - walk the world, or look at the
+   * deploy - and what stops either being read as evidence of staleness. */
+  it('distinguishes an unstamped layout from a page that cannot read the deploy', () => {
+    expect(buildMatch(null, 'abc')).toBe('layout-unknown');
+    expect(buildMatch(undefined, 'abc')).toBe('layout-unknown');
+    expect(buildMatch('', 'abc')).toBe('layout-unknown');
+    expect(buildMatch('abc', null)).toBe('deploy-unknown');
+    expect(buildMatch(null, null)).toBe('layout-unknown');
+  });
+  /* Only a KNOWN mismatch stops an admin working. Refusing every edit on every
+   * row stored before this existed would get the check disabled within a day,
+   * and it would be refusing on no evidence. */
+  it('blocks editing on a known mismatch and on nothing else', () => {
+    expect(buildBlocksEditing('stale')).toBe(true);
+    for (const m of ['ok', 'layout-unknown', 'deploy-unknown'] as const) {
+      expect(buildBlocksEditing(m), m).toBe(false);
+    }
+  });
+  it('words every verdict, and only the mismatch is an error', () => {
+    for (const m of ['ok', 'stale', 'layout-unknown', 'deploy-unknown'] as const) {
+      expect(buildWords(m, 'abcdef1234').text, m).toMatch(/\S/);
+    }
+    expect(buildWords('stale', 'abcdef1234').level).toBe('error');
+    expect(buildWords('ok', 'abcdef1234').level).toBe('ok');
+    expect(buildWords('layout-unknown', null).level).toBe('warn');
+    expect(buildWords('deploy-unknown', 'abcdef1234').level).toBe('warn');
+    // Short enough to sit in a banner, and it says what to DO about it.
+    expect(buildWords('ok', 'abcdef1234').text).toContain('abcdef1');
+    expect(buildWords('stale', 'abcdef1234').text).toMatch(/in game as admin/);
   });
 });
 
@@ -518,7 +591,7 @@ describe('placeAt', () => {
   });
 });
 
-describe('placementY', () => {
+describe('snapPlace', () => {
   /** 2×2 samples, two layers. Cell (0,0): a roof at 6 m over a deck at 1 m, deck FIRST in the bytes; cell (0,1): the same two surfaces, roof first; cell (1,0): one surface at 2 m; cell (1,1): unsampled. */
   function domed(): DecodedGround {
     const nx = 2, nz = 2, layers = 2;
@@ -533,20 +606,44 @@ describe('placementY', () => {
   it('is the LOWEST surface under the click: under the dome a placement lands on the deck, not the roof', () => {
     const g = domed();
     expect(layersAt(g, 0, 0)).toEqual([6, 1]);
-    expect(placementY(g, 0, 0)).toBe(1);
-    expect(placementY(g, 4, 0)).toBe(2);
+    expect(snapPlace(g, 0, 0)).toEqual({ y: 1, refusal: null });
+    expect(snapPlace(g, 4, 0)).toEqual({ y: 2, refusal: null });
     // a single-layer grid: that layer (the slope is 1 m at x = 4)
-    expect(placementY(slope(), 4, 0)).toBe(1);
+    expect(snapPlace(slope(), 4, 0)).toEqual({ y: 1, refusal: null });
   });
   it('"lowest" is not "last": the mirrored cell, roof first in the bytes, lands on the same deck', () => {
     const g = domed();
-    expect(placementY(g, 0, 4)).toBe(1);
-    expect(placementY(g, 0, 4)).toBe(placementY(g, 0, 0));
+    expect(snapPlace(g, 0, 4)).toEqual({ y: 1, refusal: null });
+    expect(snapPlace(g, 0, 4)).toEqual(snapPlace(g, 0, 0));
   });
-  it('is 0 with no grid, off the grid, and where the grid has no sample', () => {
-    expect(placementY(null, 0, 0)).toBe(0);
-    expect(placementY(domed(), 4, 4)).toBe(0); // cell (1,1): NO_SAMPLE in both layers
-    expect(placementY(domed(), 50, 50)).toBe(0); // off the grid
+  /* COMPLETENESS is the compiler's job - `REFUSAL_TEXT` is a
+   * `Record<SnapRefusal, string>`, so a new reason without words does not
+   * build. This walks whatever is there rather than a hand-written list,
+   * because the hand-written list was itself the thing that went stale: adding
+   * `stale-layout` failed this test on its literal, not on the table.
+   *
+   * What is left for runtime is what a type cannot say - that no entry is
+   * blank, and that no two reasons give the admin the same sentence, which
+   * would make one of them undiagnosable. */
+  it('every refusal has its own non-empty words', () => {
+    const all = Object.entries(REFUSAL_TEXT);
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    for (const [reason, text] of all) expect(text, reason).toMatch(/\S/);
+    expect(new Set(all.map(([, t]) => t)).size).toBe(all.length);
+  });
+  /* This test used to read `is 0 with no grid, off the grid, and where the grid
+   * has no sample`, and it passed - `placementY` ended `?? 0` and a placement
+   * the editor could not justify was authored at y = 0. The fallback was not
+   * an oversight, it was PINNED: the strongest form of the defect, because the
+   * suite then defended it against anyone who changed it.
+   *
+   * Zero is the worst possible guess here. It is not obviously wrong the way a
+   * NaN or a 10,000 would be - it sits near the station deck, so a placement
+   * that failed looked exactly like one that worked. */
+  it('refuses rather than guessing: no grid, off the grid, and an unsampled cell', () => {
+    expect(snapPlace(null, 0, 0)).toEqual({ y: null, refusal: 'no-grid' });
+    expect(snapPlace(domed(), 4, 4)).toEqual({ y: null, refusal: 'no-ground-at-target' }); // (1,1): NO_SAMPLE
+    expect(snapPlace(domed(), 50, 50)).toEqual({ y: null, refusal: 'no-ground-at-target' }); // off the grid
   });
 });
 

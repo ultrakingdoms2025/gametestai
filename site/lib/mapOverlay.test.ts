@@ -577,6 +577,7 @@ describe('built_version', () => {
       "ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS layout JSONB NOT NULL DEFAULT '{}'::jsonb",
       'ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS layout_schema INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS built_version INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE map_world_reports ADD COLUMN IF NOT EXISTS build_id TEXT',
     ]);
     resetMapOverlaySchemaMemo();
   });
@@ -585,8 +586,8 @@ describe('built_version', () => {
     const db = makeFakeDb();
     await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, builtVersion: 3.7 });
     const q = db.only('INSERT INTO map_world_reports');
-    expect(flat(q.sql)).toContain('layout_schema, built_version, reported_at)');
-    expect(flat(q.sql)).toContain('$7, $8, NOW())');
+    expect(flat(q.sql)).toContain('layout_schema, built_version, build_id, reported_at)');
+    expect(flat(q.sql)).toContain('$7, $8, $9, NOW())');
     expect(flat(q.sql)).toContain('built_version = EXCLUDED.built_version,');
     expect(q.params[7]).toBe(3);
     expect(q.params[6]).toBe(0);
@@ -604,6 +605,55 @@ describe('built_version', () => {
     expect((await readWorldReport(five, 'w'))?.builtVersion).toBe(5);
     const old = makeFakeDb((sql) => (sql.startsWith('SELECT applied_version') ? [row] : undefined));
     expect((await readWorldReport(old, 'w'))?.builtVersion).toBe(0);
+  });
+});
+
+/**
+ * D5: WHICH BUILD OF THE GAME WALKED THIS WORLD.
+ *
+ * `built_version` answers "which overlay document did this world consume" and
+ * says nothing at all about the geometry, so a redeploy that re-authors a
+ * district leaves the stored ground grid describing surfaces that are gone
+ * while every version number stays put. The editor snapped against that grid;
+ * the save route judged positions against the same grid; the two agreed with
+ * each other and both were wrong.
+ *
+ * The identity is nullable on purpose. "This build cannot say" and "a
+ * different build" are different answers, and only one of them should stop an
+ * admin editing.
+ */
+describe('build_id', () => {
+  it('is bound ninth and replaced outright, including with null', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, buildId: 'deadbeef' });
+    const q = db.only('INSERT INTO map_world_reports');
+    expect(q.params[8]).toBe('deadbeef');
+    expect(flat(q.sql)).toContain('build_id = EXCLUDED.build_id,');
+  });
+
+  /* A build with no git history stamps `unknown`, which every such build
+   * shares - so it names nothing, and storing it would let the editor compare
+   * one anonymous build against another and call them the same. */
+  it('refuses anything that is not an identity: blank, unknown, and non-strings', async () => {
+    for (const raw of ['', '   ', 'unknown', '  unknown  ', 42, null, undefined, {}, ['a']] as const) {
+      const db = makeFakeDb();
+      await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, buildId: raw as unknown as string });
+      expect(db.only('INSERT INTO map_world_reports').params[8], JSON.stringify(raw)).toBeNull();
+    }
+  });
+
+  it('caps a hostile identity rather than refusing the row', async () => {
+    const db = makeFakeDb();
+    await recordWorldReport(db, 'test-overlay-sql', { ...PLAIN, buildId: 'z'.repeat(5000) });
+    expect(db.only('INSERT INTO map_world_reports').params[8]).toBe('z'.repeat(64));
+  });
+
+  it('readWorldReport reads it back, and null for a row written before the column', async () => {
+    const row = { applied_version: 2, objects: [], applied: [], unresolved: [], layout: {}, layout_schema: 0, built_version: 0, reported_at: '2026-08-28T00:00:00.000Z' };
+    const withId = makeFakeDb((sql) => (sql.startsWith('SELECT applied_version') ? [{ ...row, build_id: 'c0ffee' }] : undefined));
+    expect((await readWorldReport(withId, 'w'))?.buildId).toBe('c0ffee');
+    const old = makeFakeDb((sql) => (sql.startsWith('SELECT applied_version') ? [row] : undefined));
+    expect((await readWorldReport(old, 'w'))?.buildId).toBeNull();
   });
 });
 

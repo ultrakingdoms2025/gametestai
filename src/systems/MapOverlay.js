@@ -58,6 +58,30 @@ const READ_ENDPOINT = '/api/game/map-overlay';
 /** Where an admin's own client reports what it found and did. */
 const REPORT_ENDPOINT = '/api/admin/map/report';
 
+/**
+ * The deployed bundle's own stamp, written beside it by
+ * `site/scripts/bundle-game.mjs`.
+ *
+ * ── Why the editor needs this (spec D5) ────────────────────────────────────
+ *
+ * A layout report - the minimap shapes and the sampled ground grid the editor
+ * snaps against - describes the world AS BUILT WHEN AN ADMIN LAST WALKED IT.
+ * A redeploy that re-authors a district leaves that grid describing geometry
+ * that no longer exists, and until now nothing compared the two: the editor
+ * went on snapping props onto surfaces from the previous build, silently, and
+ * the save route judged those positions against the same stale grid, so it
+ * agreed. Phase 7 re-authors a district per release, which is exactly the
+ * schedule that turns this from a hazard into a certainty.
+ *
+ * `commit` is the identity rather than a hash of the geometry. It is
+ * conservative in the safe direction - two commits with identical station
+ * geometry read as different, and the cost of that false alarm is an admin
+ * walking back into the world for a few seconds - and it is EXACT, because
+ * both sides read this same file. A geometry hash would need the game and the
+ * site to agree on what to hash, which is a second thing to keep in step.
+ */
+const BUILD_STAMP = '/game/build.json';
+
 /** The document shape this build reads (site/lib/mapOverlaySchema.ts MAP_OVERLAY_SCHEMA); pinned across the boundary by map-overlay.test.mjs. */
 const OVERLAY_SCHEMA = 2;
 
@@ -242,7 +266,8 @@ export class MapOverlay {
    * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
    *   loot?: import('./Loot.js').LootSystem, engine?: { onFrameUpdate(fn: (dt:number) => void): () => void },
    *   mounts?: { sellsPower(mount:string, power:string): boolean, getPowers(mount:string): Record<string, number> },
-   *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string }} ctx
+   *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string,
+   *   buildStamp?: string }} ctx
    *   `engine` ticks the ground sampler; `mounts` is read - never written - so
    *   a placed mount upgrade can be refused for a power the mount does not
    *   sell and withheld from a rider who already owns it; `forceLayout` (the
@@ -250,7 +275,7 @@ export class MapOverlay {
    *   posts; `now` is the sampler's clock, injectable so a test can own the
    *   frame.
    */
-  constructor({ bus, physics, loot, engine, mounts, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint } = {}) {
+  constructor({ bus, physics, loot, engine, mounts, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint, buildStamp } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.loot = loot ?? null;
@@ -258,6 +283,10 @@ export class MapOverlay {
     this.forceLayout = forceLayout === true;
     this.endpoint = endpoint ?? READ_ENDPOINT;
     this.reportEndpoint = reportEndpoint ?? REPORT_ENDPOINT;
+    this.buildStamp = buildStamp ?? BUILD_STAMP;
+    /** The deployed bundle's commit, read once and remembered; null until read, and null forever if it cannot be. */
+    this._buildId = null;
+    this._buildIdRead = null;
     this._fetch = fetchImpl ?? (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
     this._now = typeof now === 'function' ? now : () => performance.now();
 
@@ -624,9 +653,44 @@ export class MapOverlay {
     return report;
   }
 
+  /**
+   * The deployed bundle's commit, read once per session.
+   *
+   * READ ONCE AND CACHED, including the failure: a build with no stamp beside
+   * it - a source checkout served by vite, a bundle built before this existed -
+   * must not re-fetch a 404 on every report. The promise is the cache, so two
+   * reports racing on the same visit make one request.
+   *
+   * A missing or unreadable stamp yields null and the report simply omits the
+   * field, which the site reads as "this build cannot say". That is the right
+   * failure: the editor then has no identity to compare and says so, rather
+   * than comparing against an empty string and calling everything stale.
+   */
+  async _buildIdOf() {
+    if (this._buildId !== null) return this._buildId;
+    this._buildIdRead ??= (async () => {
+      if (!this._fetch) return null;
+      try {
+        const res = await this._fetch(this.buildStamp, { cache: 'no-store' });
+        if (!res?.ok) return null;
+        const stamp = typeof res.json === 'function' ? await res.json() : null;
+        const commit = stamp && typeof stamp === 'object' ? stamp.commit : null;
+        // 'unknown' is what the bundler writes for a checkout with no git
+        // history. It is not an identity - every such build would claim to be
+        // the same one - so it is refused here rather than compared later.
+        return typeof commit === 'string' && commit && commit !== 'unknown' ? commit.slice(0, 64) : null;
+      } catch {
+        return null;
+      }
+    })();
+    this._buildId = await this._buildIdRead;
+    return this._buildId;
+  }
+
   async _reportBack(report, world, ground = null) {
     if (!this._fetch) return;
     try {
+      const buildId = await this._buildIdOf();
       const body = {
         world: report.world,
         appliedVersion: report.version,
@@ -640,6 +704,11 @@ export class MapOverlay {
         objects: report.objects,
         applied: report.applied,
         unresolved: report.unresolved,
+        // Which BUILD of the game walked this world, so the editor can tell
+        // whether the grid it is snapping against describes the geometry that
+        // is deployed now. Omitted, not nulled, when this build cannot say:
+        // the site distinguishes "a different build" from "no idea".
+        ...(buildId ? { buildId } : {}),
         // The layout fields every report carries, and - on the second
         // report of a visit only - the sampled ground.
         ...this._layoutFields(world),

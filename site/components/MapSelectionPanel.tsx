@@ -66,6 +66,8 @@ export interface MapSelectionPanelProps {
   entries: Draft[];
   selected: Selected;
   ground: DecodedGround | null;
+  /** The stored layout describes a build that is no longer deployed (D5). Readouts still show; nothing may SNAP. */
+  staleLayout?: boolean;
   /** Conflicts for the entry the selection maps to (empty when there is no entry yet). */
   conflicts: Conflict[];
   disabled: boolean;
@@ -95,7 +97,7 @@ function isCoord(v: string): boolean {
 }
 
 export default function MapSelectionPanel(props: MapSelectionPanelProps) {
-  const { objects, entries, selected, ground, conflicts, disabled, onSelect, onCommit, onReset, onRemoveEntry, onRemove } = props;
+  const { objects, entries, selected, ground, staleLayout, conflicts, disabled, onSelect, onCommit, onReset, onRemoveEntry, onRemove } = props;
   const listId = useId();
 
   const objectNames = useMemo(() => new Set(objects.map((o) => o.name)), [objects]);
@@ -139,7 +141,12 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
   function setAxis(axis: 'x' | 'z', value: string) {
     setForm((f) => {
       const next = { ...f, [axis]: value };
-      if (snap && current && isCoord(next.x) && isCoord(next.z)) {
+      /* Not against a grid from a build that is no longer deployed. The
+       * readouts below still show what that grid says, with the banner over
+       * them saying whose grid it is - but nothing AUTHORS a height from it.
+       * Refusing to display would hide the only evidence an admin has;
+       * refusing to snap is what stops a wrong number reaching the document. */
+      if (snap && !staleLayout && current && isCoord(next.x) && isCoord(next.z)) {
         const y = snappedY(ground, current, num(next.x), num(next.z));
         if (y !== null) next.y = String(round(y, 3));
       }
@@ -152,6 +159,7 @@ export default function MapSelectionPanel(props: MapSelectionPanelProps) {
    * free move sits on it. With no sample under the object the lift is
    * unknown, and the pick does nothing rather than guess, as the snap does. */
   function pickLayer(h: number) {
+    if (staleLayout) return;
     const lift = selected?.kind === 'object' && current ? authoredLift(ground, current) : 0;
     if (lift === null) return;
     setForm((f) => ({ ...f, y: String(round(h + lift, 3)) }));

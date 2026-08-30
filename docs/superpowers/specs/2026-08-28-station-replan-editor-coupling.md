@@ -1777,3 +1777,88 @@ backdrop block clipping a keep-out margin does not. Refused, and recorded at the
 **Hub state:** props inside structure **0**, props in rooms **0**, backdrop intrusions **0**, block-on-block
 **0**, skyline placements on clean ground **16 of 16**, block/interior **1** (was 8). Remaining: 21
 carriageway conflicts, 1 buried sign (accepted).
+
+## 16. D5 — build identity, and two silent fallbacks the editor had been shipping
+
+§15 recorded the build-identity banner as a Phase 7 prerequisite that **did not exist**. It does now, and
+looking for it turned up something worse than a missing feature: the editor was already answering
+questions it could not answer.
+
+### Two `??` operators that authored positions nobody chose
+
+`snappedY` returned `number | null` and did so correctly. Its three callers did not agree about what the
+null meant:
+
+| caller | what it did with "no answer" |
+|---|---|
+| `MapSelectionPanel.setAxis` | left the typed Y alone ✅ |
+| `MapSelectionPanel.pickLayer` | did nothing rather than guess ✅ |
+| `MapEditorPanel` drag | `?? from.y` — kept the drag **origin's** height |
+| `MapEditorPanel` place | `placementY` ends `?? 0` — authored at **y = 0** |
+
+Neither is visible at the call site as anything but a `??`, which is why both survived review. The
+selection panel's own comment even says the layer pick "does nothing rather than guess, **as the snap
+does**" — of the four callers, the two that guessed were the two that wrote to the document.
+
+⚠ **And zero is the worst available guess.** It is not obviously wrong the way a NaN or a 10,000 would be —
+it sits near the station deck, so a placement the editor could not justify looked exactly like one that
+worked.
+
+⚠ **The fallback was PINNED.** `it('is 0 with no grid, off the grid, and where the grid has no sample')`
+asserted it as intended behaviour. That is the strongest form of this defect: the suite was defending it
+against anyone who changed it.
+
+The fix is to make the refusal a **value**: `Snapped = { y, refusal: null } | { y: null, refusal }`. To get
+a number out you have to look at `refusal` first. The reasons are named separately —
+`no-ground-at-origin` and `no-ground-at-target` mean different things to whoever is holding the mouse:
+one is "drag it somewhere else", the other is "this one cannot be dragged at all".
+
+### The identity is the bundle's commit, and both sides read the same file
+
+`builtVersion` is a **document** version. It says nothing about geometry, so a redeploy that re-authors a
+district leaves the stored ground grid describing surfaces that are gone while every version number stays
+put — and the save route judges positions against that same grid, so it agrees. Phase 7 re-authors a
+district per release, which turns this from a hazard into a schedule.
+
+`site/scripts/bundle-game.mjs` already stamps `build.json` with the commit. The game reads it and reports
+`buildId`; a `build_id TEXT` column stores it; the editor page reads the *same file* off the deployed
+bundle and compares. No clock comparison, no hash both ends must compute identically — the two agree
+exactly when nothing has been redeployed since an admin last walked the world.
+
+Chosen over a geometry hash deliberately: commit is **conservative in the safe direction** (two commits
+with identical station geometry read as different, and the cost is an admin walking back into the world for
+a few seconds) and it is **exact**, because it is one artefact rather than two derivations that must be
+kept in step.
+
+⚠ **Four answers, not two.** `ok` / `stale` / `layout-unknown` / `deploy-unknown`. A layout stored before
+the column existed, or reported by a checkout with no git history, has *no identity* — and so does a page
+that could not fetch the stamp. **An unknown is not evidence of staleness**, and only `stale` stops an
+admin working: refusing every edit on every pre-existing row would get the check disabled within a day.
+`'unknown'`, which the bundler stamps for a repo with no history, is refused at the store for the same
+reason — every such build shares it, so it identifies nothing and would read as a *match*.
+
+Nullable, not `'' NOT NULL`, and replaced **including with null**: keeping a previous build's id when the
+current one cannot name itself would let the editor compare the deployed commit against a build that did
+not report that row.
+
+### Where the check lives
+
+Staleness and the grid are asked **separately** — the grid can answer perfectly and still be describing a
+build that no longer exists. Same shape as `_inRoom` versus `_footprintClear` on the world side: a fallback
+would have been wrong, because the stale grid answers.
+
+Only the grid-dependent operations are refused — the drag, the placement, the coordinate field's snap and
+the layer picker. A remove, or a typed position, does not consult the ground and still works.
+
+⚠ **And the readouts stay.** The selection panel still shows what the stale grid says under a prop, with
+the banner above it naming whose grid it is. Refusing to *display* would hide the only evidence an admin
+has for deciding what to do; refusing to *snap* is what stops a wrong number reaching the document. Those
+are different acts and only one of them writes.
+
+⚠ **My own completeness test went stale on its first outing.** `every refusal has words` enumerated the
+three reasons by hand, so adding `stale-layout` failed it on the literal rather than on the table.
+Completeness is the compiler's job — `REFUSAL_TEXT` is a `Record<SnapRefusal, string>` — so the runtime
+test now walks whatever is there and asserts only what a type cannot say: no entry blank, no two reasons
+giving the admin the same sentence.
+
+**Site: 947 tests, typecheck clean. Game: +5 for the report side.**

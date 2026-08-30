@@ -89,6 +89,8 @@ export interface WorldReport {
   appliedVersion: number;
   /** The overlay version the world's BUILD consumed (spec §7); 0 when none. Stored beside `appliedVersion`, replaced on every report. */
   builtVersion: number;
+  /** The game bundle's commit when this report was made (D5); null when that build could not say. */
+  buildId?: string | null;
   objects: CatalogueObject[];
   applied: AppliedOutcome[];
   unresolved: UnresolvedOutcome[];
@@ -96,7 +98,7 @@ export interface WorldReport {
 }
 
 /** Layout fields a report may carry, typed `unknown` because they are validated HERE, not in the route; a failed layout still records the catalogue and keeps the prior layout. */
-export interface ReportedLayoutFields { layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown }
+export interface ReportedLayoutFields { layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown; buildId?: unknown }
 
 export interface StoredWorldReport extends WorldReport { reportedAt: string; layout: WorldLayout | null }
 
@@ -175,6 +177,24 @@ export function ensureMapOverlaySchema(db: Db): Promise<void> {
       await db.query(`
         ALTER TABLE map_world_reports
           ADD COLUMN IF NOT EXISTS built_version INTEGER NOT NULL DEFAULT 0
+      `);
+      /* D5: WHICH BUILD OF THE GAME WALKED THIS WORLD.
+       *
+       * `built_version` is a document version - it answers "which overlay did
+       * this world consume". It says nothing about the GEOMETRY, so a redeploy
+       * that re-authors a district leaves the stored ground grid describing
+       * surfaces that no longer exist while every version number stays put.
+       * The editor snapped against that grid and the save route judged
+       * positions against it, so the two agreed with each other and both were
+       * wrong.
+       *
+       * TEXT and nullable, not '' NOT NULL: a build that cannot say which
+       * commit it is (a source checkout with no git history) must read as "no
+       * idea" and not as "the empty build", which every such deploy would
+       * share. The editor treats the two differently. */
+      await db.query(`
+        ALTER TABLE map_world_reports
+          ADD COLUMN IF NOT EXISTS build_id TEXT
       `);
     })().catch((err) => {
       // A failed ensure must not be remembered as done, or every later request
@@ -436,10 +456,33 @@ function layoutPatch(worldId: string, report: ReportedLayoutFields): { patch: Pa
  * answered: the objects, applied and unresolved lists are always stored, so the route answers 200 whatever the layout
  * did, and the returned `ReportOutcome` is how the game learns that its map did not land.
  */
+/**
+ * A build identity, or null.
+ *
+ * Validated HERE and nowhere else, like the layout fields: the route forwards
+ * whatever the client sent. Anything that is not a non-empty string is null,
+ * and 'unknown' - what `bundle-game.mjs` stamps for a checkout with no git
+ * history - is null too, because it is a name every such build shares and so
+ * identifies nothing. 64 code points is well past a git SHA and short enough
+ * that a hostile client cannot use the column as storage.
+ */
+export function buildIdOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = cutCodePoints(value.trim(), 64);
+  return id && id !== 'unknown' ? id : null;
+}
+
+/* `Omit<..., 'buildId'>`: on the way IN it is one of the `unknown` fields the
+ * store validates, like the layout ones, because the route is a forwarder and
+ * what arrives is a browser's JSON. On the way OUT - `StoredWorldReport`, and
+ * the panel - it is `string | null`, which is what `buildIdOf` guarantees. The
+ * intersection would otherwise narrow the input to the output's type and make
+ * the route responsible for validating it, which is the split this file exists
+ * to avoid. */
 export async function recordWorldReport(
   db: Db,
   worldId: string,
-  report: WorldReport & ReportedLayoutFields
+  report: Omit<WorldReport, 'buildId'> & ReportedLayoutFields
 ): Promise<ReportOutcome> {
   await ensureMapOverlaySchema(db);
 
@@ -474,8 +517,8 @@ export async function recordWorldReport(
 
   await db.query(
     `INSERT INTO map_world_reports
-       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, built_version, reported_at)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, NOW())
+       (world_id, applied_version, objects, applied, unresolved, layout, layout_schema, built_version, build_id, reported_at)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, NOW())
      ON CONFLICT (world_id) DO UPDATE
        SET applied_version = EXCLUDED.applied_version,
            objects         = EXCLUDED.objects,
@@ -494,6 +537,10 @@ export async function recordWorldReport(
            layout_schema   = GREATEST(map_world_reports.layout_schema, EXCLUDED.layout_schema),
            -- A report says what its build consumed; it does not merge. Plain replace, outside the layout CASE.
            built_version   = EXCLUDED.built_version,
+           -- Replaced too, INCLUDING with null. A build that cannot name itself must clear a
+           -- previous build's id rather than inherit it: keeping the old one would let the
+           -- editor compare the deployed commit against a build that did not report this row.
+           build_id        = EXCLUDED.build_id,
            reported_at     = NOW()`,
     [
       worldId,
@@ -504,6 +551,7 @@ export async function recordWorldReport(
       JSON.stringify(patch),
       patch.schema === LAYOUT_SCHEMA ? LAYOUT_SCHEMA : 0,
       clampVersion(report.builtVersion),
+      buildIdOf(report.buildId),
     ]
   );
   return outcome;
@@ -512,7 +560,7 @@ export async function recordWorldReport(
 export async function readWorldReport(db: Db, worldId: string): Promise<StoredWorldReport | null> {
   await ensureMapOverlaySchema(db);
   const r = await db.query(
-    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, built_version, reported_at
+    `SELECT applied_version, objects, applied, unresolved, layout, layout_schema, built_version, build_id, reported_at
        FROM map_world_reports WHERE world_id = $1`,
     [worldId]
   );
@@ -521,6 +569,7 @@ export async function readWorldReport(db: Db, worldId: string): Promise<StoredWo
   return {
     appliedVersion: Number(row.applied_version ?? 0),
     builtVersion: Number(row.built_version ?? 0),
+    buildId: buildIdOf(row.build_id),
     objects: Array.isArray(row.objects) ? (row.objects as CatalogueObject[]) : [],
     applied: Array.isArray(row.applied) ? (row.applied as AppliedOutcome[]) : [],
     unresolved: Array.isArray(row.unresolved) ? (row.unresolved as UnresolvedOutcome[]) : [],

@@ -99,9 +99,13 @@ export async function GET(request: Request, ctx: { params: Promise<{ world: stri
     // rides BESIDE it (a 700 KB grid is not catalogue), and `reportedAt` is lifted so the editor can show the map's age.
     // `reportedAt` is when the game last REPORTED — any report, including the immediate one that carries no
     // ground yet — not when the layout last changed; the editor's banner says "reported N min ago", which is that.
-    // The annotation is load bearing: a SEVENTH field on this literal is a type error, not a wider `report`.
+    // The annotation is load bearing: an EIGHTH field on this literal is a type error, not a wider `report`.
+    // `buildId` was the seventh (D5): which build of the game walked this world, so the editor can tell
+    // whether the grid it snaps against describes the geometry that is deployed now. Null is a real answer
+    // here and means "that build could not say", which the editor must not read as "a different build".
     const report: WorldReport | null = stored && {
-      appliedVersion: stored.appliedVersion, builtVersion: stored.builtVersion, objects: stored.objects, applied: stored.applied,
+      appliedVersion: stored.appliedVersion, builtVersion: stored.builtVersion, buildId: stored.buildId ?? null,
+      objects: stored.objects, applied: stored.applied,
       unresolved: stored.unresolved, reportedAt: stored.reportedAt,
     };
     return NextResponse.json({ world, overlay, versions, report, layout: stored?.layout ?? null, reportedAt: stored?.reportedAt ?? null });

@@ -209,7 +209,8 @@ describe('GET /api/admin/map/[world]', () => {
 
   /**
    * `layout` is lifted BESIDE `report`, not left inside it: the panel that reads `report` today
-   * must see exactly the six fields it now reads (stage 2 added `builtVersion`), so the test pins the absence as well as the presence.
+   * must see exactly the SEVEN fields it now reads (stage 2 added `builtVersion`, D5 added `buildId`),
+   * so the test pins the absence as well as the presence.
    */
   it('returns the stored layout and its age from the one report read, beside an unchanged report', async () => {
     signedInAs(ADMIN);
@@ -217,13 +218,14 @@ describe('GET /api/admin/map/[world]', () => {
       schema: 1, bounds: { min: { x: -10, y: 0, z: -10 }, max: { x: 10, y: 5, z: 10 } }, shapes: [],
       ground: { originX: -10, originZ: -10, step: 20, nx: 2, nz: 2, layers: 1, heightsCm: encodeHeights(new Int16Array(4)) },
     };
-    const report = { appliedVersion: 2, builtVersion: 1, objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
+    const report = { appliedVersion: 2, builtVersion: 1, buildId: 'abc123', objects: [{ name: 'crate', position: { x: 0, y: 0, z: 0 } }], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z' };
     store.readWorldReport.mockResolvedValue({ ...report, layout });
     const body = await (await get()).json();
     expect(body.layout).toEqual(layout);
     expect(body.reportedAt).toBe(report.reportedAt);
     expect(body.report).toEqual(report);
     expect(body.report.builtVersion).toBe(1);
+    expect(body.report.buildId).toBe('abc123');
     expect(body.report.layout).toBeUndefined();
     expect(store.readWorldReport).toHaveBeenCalledTimes(1);
   });
@@ -234,6 +236,19 @@ describe('GET /api/admin/map/[world]', () => {
     store.readWorldReport.mockResolvedValue({ appliedVersion: 2, builtVersion: 0, objects: [], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z', layout: null });
     const body = await (await get()).json();
     expect(body.report.builtVersion).toBe(0);
+  });
+
+  /* NULL, not undefined, and the difference is the whole point of D5. A row
+   * written before the column existed, or by a build with no git history, has
+   * no identity - and the editor must read that as "this cannot be checked"
+   * rather than as "a different build", which is what `undefined` dropping out
+   * of the JSON would leave it guessing at. */
+  it('forwards a missing buildId as null, so "cannot say" is distinguishable from "different build"', async () => {
+    signedInAs(ADMIN);
+    store.readWorldReport.mockResolvedValue({ appliedVersion: 2, builtVersion: 0, objects: [], applied: [], unresolved: [], reportedAt: '2026-08-27T10:00:00.000Z', layout: null });
+    const body = await (await get()).json();
+    expect(body.report.buildId).toBeNull();
+    expect('buildId' in body.report).toBe(true);
   });
 });
 

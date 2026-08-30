@@ -14,14 +14,18 @@ import {
   moveEntryFor,
   pendingRows,
   placeAt,
-  placementY,
   removeFor,
   removeWarnings,
   moveWarnings,
   rowsWithVerdicts,
   selectedEntry,
   selectedPosition,
-  snappedY,
+  REFUSAL_TEXT,
+  buildBlocksEditing,
+  buildMatch,
+  buildWords,
+  snapMove,
+  snapPlace,
   unresolvedLines,
   upsertMoveFor,
   versionStatus,
@@ -32,7 +36,7 @@ import { hiddenItemsText, partitionPlaceable } from '@/lib/mapPlaceable';
 import MapCanvas from './MapCanvas';
 import MapPendingList from './MapPendingList';
 import MapSelectionPanel from './MapSelectionPanel';
-import { card, coord, dim, input, label, statusColour, subtle, warnColour } from './mapEditorStyles';
+import { card, coord, dim, errorColour, input, label, statusColour, subtle, warnColour } from './mapEditorStyles';
 
 /**
  * The map editor.
@@ -154,6 +158,29 @@ export function MapEditorPanel() {
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(t);
+  }, []);
+
+  /* THE DEPLOYED GAME'S OWN STAMP (D5).
+   *
+   * Read from the bundle this site serves, which is the SAME FILE the game
+   * reads to stamp its layout report - so the two agree exactly when nothing
+   * has been redeployed since an admin last walked the world, and no clock,
+   * schema or hash has to be kept in step.
+   *
+   * Once per mount, not per world: it describes the deploy, not the world. A
+   * failure leaves it null, which reads as "cannot check" rather than "stale":
+   * an unknown is not evidence. */
+  const [deployedBuild, setDeployedBuild] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch('/game/build.json', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        const c = j && typeof j === 'object' ? (j as { commit?: unknown }).commit : null;
+        if (live && typeof c === 'string' && c && c !== 'unknown') setDeployedBuild(c);
+      })
+      .catch(() => {});
+    return () => { live = false; };
   }, []);
 
   /* Escape disarms a placement. The hint's Cancel button is the pointer's
@@ -338,9 +365,31 @@ export function MapEditorPanel() {
       dragFromRef.current = selectedPosition(objects, entries, target) ?? { x, y: 0, z };
     }
     const from = dragFromRef.current;
+    /* REFUSED, not guessed.
+     *
+     * This was `snappedY(ground, from, x, z) ?? from.y`: a drag over a hole in
+     * the grid, or in a world with no grid at all, silently kept the drag
+     * ORIGIN's height and wrote it to the document as though the editor had
+     * snapped it. Nothing said so - not the mark, not the pending row, not the
+     * save route, which judges a position against the same grid that had no
+     * answer. That is D5 of the spec's decision list, and it was a live hazard
+     * rather than only a Phase 7 prerequisite.
+     *
+     * The drag simply does not commit. The mark stays where it was, which is
+     * the honest picture of what the document says, and the message line says
+     * why. `dragFromRef` is still cleared on `end`, so the next drag starts
+     * clean rather than measuring its lift from an abandoned gesture. */
+    /* Two questions, asked separately - the grid may answer perfectly and
+     * still be describing a build that no longer exists. */
+    const snap = stale ? ({ y: null, refusal: 'stale-layout' } as const) : snapMove(ground, from, x, z);
+    if (snap.refusal) {
+      setMessage(REFUSAL_TEXT[snap.refusal]);
+      if (phase === 'end') dragFromRef.current = null;
+      return;
+    }
     /* Stored at the three places the schema keeps, so the conflicts this
      * page computes are computed on the document the server will see. */
-    const position: Vec3 = { x: round(x, 3), y: round(snappedY(ground, from, x, z) ?? from.y, 3), z: round(z, 3) };
+    const position: Vec3 = { x: round(x, 3), y: round(snap.y, 3), z: round(z, 3) };
     edit((list) => {
       if (target.kind === 'object') {
         return upsertMoveFor(list, target.name, position, moveEntryFor(list, target.name)?.rotationY, newKey);
@@ -398,9 +447,20 @@ export function MapEditorPanel() {
 
   function placeHere(x: number, z: number) {
     if (!placeItem) return;
-    // Y from the LOWEST layer under the click (spec §8, `placementY`); the
-    // layer picker in the selection panel is how a rooftop is chosen deliberately.
-    const y = placementY(ground, x, z);
+    /* Y from the LOWEST layer under the click (spec §8); the layer picker in
+     * the selection panel is how a rooftop is chosen deliberately.
+     *
+     * This ended `?? 0` - a placement with no grid, or on a cell the grid does
+     * not sample, was authored at y = 0. Zero is worse than an obvious guess:
+     * it is a specific, plausible-looking number that happens to sit near the
+     * station deck, so the defect would have looked like a placement that
+     * worked. Refused now, the same as a drag. */
+    const snap = stale ? ({ y: null, refusal: 'stale-layout' } as const) : snapPlace(ground, x, z);
+    if (snap.refusal) {
+      setMessage(REFUSAL_TEXT[snap.refusal]);
+      return;
+    }
+    const y = snap.y;
     const draft = placeAt(
       {
         source_key: placeItem.source_key ?? placeItem.id,
@@ -528,6 +588,10 @@ export function MapEditorPanel() {
     }
   }
 
+  const match = buildMatch(report?.buildId, deployedBuild);
+  const stale = buildBlocksEditing(match);
+  const buildLine = buildWords(match, report?.buildId);
+
   const groundSummary = ground
     ? `${ground.nx}×${ground.nz} ground samples, ${ground.layers} layer${ground.layers === 1 ? '' : 's'}`
     : 'no ground grid yet';
@@ -542,6 +606,13 @@ export function MapEditorPanel() {
             · {layout.shapes.length} shape{layout.shapes.length === 1 ? '' : 's'} · {groundSummary}
           </span>
         ) : null}
+        <span
+          data-e2e="build-identity"
+          data-level={buildLine.level}
+          style={{ color: buildLine.level === 'error' ? errorColour : buildLine.level === 'warn' ? warnColour : dim }}
+        >
+          · {buildLine.text}
+        </span>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.35fr 1fr', gap: 20, alignItems: 'start' }}>
@@ -627,6 +698,7 @@ export function MapEditorPanel() {
               entries={entries}
               selected={selected}
               ground={ground}
+              staleLayout={stale}
               conflicts={selConflicts}
               disabled={busy}
               onSelect={setSelected}

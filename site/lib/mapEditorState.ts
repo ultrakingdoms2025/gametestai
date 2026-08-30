@@ -85,12 +85,141 @@ export function authoredLift(ground: DecodedGround | null, from: Vec3): number |
   return here === null ? null : from.y - here;
 }
 
-export function snappedY(ground: DecodedGround | null, from: Vec3, toX: number, toZ: number): number | null {
-  if (!ground) return null;
-  const there = groundAt(ground, toX, toZ, from.y);
+/**
+ * Why the editor cannot answer "what height does this get".
+ *
+ * `no-grid`      the world has no ground grid at all - nobody has entered it
+ *                in game as admin since the last deploy.
+ * `no-ground-at-origin`  there is no sample under where the prop IS, so its
+ *                authored sink or lift is unknown.
+ * `no-ground-at-target`  there is no sample under where it is going.
+ */
+export type SnapRefusal = 'no-grid' | 'no-ground-at-origin' | 'no-ground-at-target' | 'stale-layout';
+
+/**
+ * A height, or the reason there is not one. Never both, and never a number
+ * the caller has to know is a guess.
+ *
+ * ── Why this is a union and not `number | null` ────────────────────────────
+ *
+ * `snappedY` returned `number | null` and did so correctly. Its callers did
+ * not. `MapSelectionPanel` checked the null and left a typed Y alone;
+ * `MapEditorPanel` wrote `snappedY(...) ?? from.y` for a drag and
+ * `placementY(...)`, which ends `?? 0`, for a placement - so a drag over a
+ * hole in the grid silently kept the drag ORIGIN's height, and a placement
+ * with no grid silently produced **y = 0**, which is a specific, wrong,
+ * entirely plausible-looking number that the save route then wrote to the
+ * document as if somebody had chosen it.
+ *
+ * Neither fallback is visible at the call site as anything but a `??`, which
+ * is why both survived review, and why the selection panel's own comment says
+ * the layer pick "does nothing rather than guess, as the snap does" - of the
+ * three callers, the two that guessed were the two that mattered. The refusal
+ * is a VALUE now: to get a number out you have to look at `refusal` first.
+ *
+ * This is D5 of the spec's decision list - "enforced or trusted" - on the
+ * editor side.
+ */
+export type Snapped = { y: number; refusal: null } | { y: null; refusal: SnapRefusal };
+
+const REFUSED = (refusal: SnapRefusal): Snapped => ({ y: null, refusal });
+
+/** What to tell the admin. Complete over `SnapRefusal`, so a new reason cannot ship unworded. */
+export const REFUSAL_TEXT: Record<SnapRefusal, string> = {
+  'no-grid': 'No ground grid for this world yet — enter it in game as admin before moving anything.',
+  'no-ground-at-origin': 'No ground under this object, so its height above the surface is unknown. Type a Y instead.',
+  'no-ground-at-target': 'No ground sampled there. Move it somewhere the grid covers, or type a Y.',
+  'stale-layout': 'The game has been redeployed since this layout was reported — enter the world in game as admin to re-sample it.',
+};
+
+/**
+ * Where a dragged prop lands: the surface at the destination plus the sink or
+ * lift it was authored with. See the snap rule at the top of this file.
+ */
+export function snapMove(ground: DecodedGround | null, from: Vec3, toX: number, toZ: number): Snapped {
+  if (!ground) return REFUSED('no-grid');
   const lift = authoredLift(ground, from);
-  if (there === null || lift === null) return null;
-  return there + lift;
+  if (lift === null) return REFUSED('no-ground-at-origin');
+  const there = groundAt(ground, toX, toZ, from.y);
+  if (there === null) return REFUSED('no-ground-at-target');
+  return { y: there + lift, refusal: null };
+}
+
+/**
+ * Where a NEW prop lands: the lowest surface under the click, because a
+ * placement has no authored lift to keep (spec §8). The layer picker in the
+ * selection panel is how a rooftop is chosen deliberately.
+ */
+export function snapPlace(ground: DecodedGround | null, x: number, z: number): Snapped {
+  if (!ground) return REFUSED('no-grid');
+  const y = layersAt(ground, x, z).at(-1);
+  return y === undefined ? REFUSED('no-ground-at-target') : { y, refusal: null };
+}
+
+/** The height alone, for a caller that only wants to leave a typed Y untouched. */
+export function snappedY(ground: DecodedGround | null, from: Vec3, toX: number, toZ: number): number | null {
+  return snapMove(ground, from, toX, toZ).y;
+}
+
+/**
+ * ── D5: DOES THIS LAYOUT DESCRIBE THE GAME THAT IS DEPLOYED? ──────────────
+ *
+ * The stored layout - the minimap shapes and the sampled ground grid this
+ * editor snaps against - describes the world AS BUILT WHEN AN ADMIN LAST
+ * WALKED IT. A redeploy that re-authors a district leaves that grid describing
+ * surfaces that no longer exist, and nothing compared the two: the editor went
+ * on snapping props onto the previous build's roofs, and the save route judged
+ * those positions against the same stale grid, so it agreed. Phase 7 re-authors
+ * a district per release, which turns this from a hazard into a schedule.
+ *
+ * `builtVersion` cannot answer it - that is a DOCUMENT version and says nothing
+ * about geometry. The identity is the game bundle's commit, stamped into
+ * `build.json` by `bundle-game.mjs`, reported by the game when it walks a world
+ * and read straight off the deployed bundle by this page. Both sides read the
+ * same artefact, so they agree exactly when nothing has been redeployed since.
+ *
+ * FOUR ANSWERS, NOT TWO. "I cannot tell" is not "it is fine": a layout stored
+ * before this existed, or reported by a build with no git history, has no
+ * identity, and neither does a page that could not fetch the stamp. Both are
+ * reported as themselves so the banner can say which, and neither blocks
+ * editing - refusing every edit on every pre-existing row would get this
+ * disabled within a day, and an unknown is not evidence of staleness.
+ */
+export type BuildMatch = 'ok' | 'stale' | 'layout-unknown' | 'deploy-unknown';
+
+export function buildMatch(layoutBuild: string | null | undefined, deployedBuild: string | null | undefined): BuildMatch {
+  if (!layoutBuild) return 'layout-unknown';
+  if (!deployedBuild) return 'deploy-unknown';
+  return layoutBuild === deployedBuild ? 'ok' : 'stale';
+}
+
+/** Whether grid-dependent edits - a drag, a placement - may be committed at all. */
+export function buildBlocksEditing(match: BuildMatch): boolean {
+  return match === 'stale';
+}
+
+export interface BuildWords { level: 'ok' | 'warn' | 'error'; text: string }
+
+/**
+ * What the banner says. `stale` is the only `error`, and it is worded as an
+ * instruction rather than a diagnosis: an admin who reads "the game has been
+ * redeployed" still has to be told that walking back into the world fixes it.
+ */
+export function buildWords(match: BuildMatch, layoutBuild: string | null | undefined): BuildWords {
+  switch (match) {
+    case 'ok':
+      return { level: 'ok', text: `build ${String(layoutBuild).slice(0, 7)}` };
+    case 'stale':
+      return {
+        level: 'error',
+        text: `the game has been redeployed since this layout was reported (${String(layoutBuild).slice(0, 7)})`
+          + ' — enter the world in game as admin to re-sample it. Dragging and placing are off until then.',
+      };
+    case 'layout-unknown':
+      return { level: 'warn', text: 'this layout does not say which build reported it — walk the world in game to stamp it' };
+    default:
+      return { level: 'warn', text: 'could not read the deployed build stamp, so the layout cannot be checked' };
+  }
 }
 
 export type GroundStatus = GroundVerdict | 'ok';
@@ -454,9 +583,6 @@ export function placeAt(
  * 0 where the grid has no sample: the placement then sits on the origin
  * plane and the conflict pass says `no-ground`, which is the honest verdict.
  */
-export function placementY(ground: DecodedGround | null, x: number, z: number): number {
-  return layersAt(ground, x, z).at(-1) ?? 0;
-}
 
 /** The document entry a selection edits: an object's pending move, or the entry itself. */
 export function selectedEntry(entries: Draft[], selected: Selected): Draft | undefined {

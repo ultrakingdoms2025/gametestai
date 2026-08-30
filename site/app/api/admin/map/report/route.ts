@@ -53,7 +53,7 @@ export async function POST(request: Request) {
 
   let body: {
     world?: unknown; appliedVersion?: unknown; builtVersion?: unknown; objects?: unknown; applied?: unknown; unresolved?: unknown;
-    layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown;
+    layoutSchema?: unknown; bounds?: unknown; shapes?: unknown; ground?: unknown; buildId?: unknown;
   };
   try {
     body = JSON.parse(text);
@@ -84,6 +84,11 @@ export async function POST(request: Request) {
       objects: Array.isArray(body.objects) ? (body.objects as never[]) : [],
       applied: Array.isArray(body.applied) ? (body.applied as never[]) : [],
       unresolved: Array.isArray(body.unresolved) ? (body.unresolved as never[]) : [],
+      // Which build of the game walked this world (D5). Forwarded raw, like
+      // the layout fields and for the same reason: the store, not the route,
+      // decides what counts as an identity - and 'unknown', which a checkout
+      // with no git history stamps, is not one.
+      buildId: body.buildId,
       layoutSchema: body.layoutSchema,
       bounds: body.bounds,
       shapes: body.shapes,

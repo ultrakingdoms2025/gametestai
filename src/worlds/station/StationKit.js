@@ -151,6 +151,24 @@ export function rampProxiesIn(root) {
 /* ------------------------------------------------------------------ */
 
 export const DECK_R = 200;      // walkable hub deck radius
+
+/**
+ * How far out the avenues are actually SURFACED.
+ *
+ * Twelve metres short of the deck rim, so the road stops before the edge
+ * rather than running off it. This used to live as a bare `DECK_R - 12` inside
+ * `_buildDeck` while `StationPlan` seeded its carriageway role all the way to
+ * `DECK_R` - and those twelve metres of road that nobody had ever surfaced
+ * were counted as carriageway by every conflict query. All eight of the link
+ * mouth conflicts, which the plan-conflicts gate had recorded as an open design
+ * question ("something has to cross the avenue there"), were geometry crossing
+ * a road that is not there.
+ *
+ * One constant, imported by both, because the answer to "how long is an
+ * avenue" cannot be allowed to differ between the thing that draws it and the
+ * thing that describes it.
+ */
+export const ROAD_R1 = DECK_R - 12;
 export const HULL_R = 202;      // hub structural hull radius
 export const WALL_H = 48;       // hub window / hull wall height
 export const CEIL_Y = 62;       // hub overhead deck plate

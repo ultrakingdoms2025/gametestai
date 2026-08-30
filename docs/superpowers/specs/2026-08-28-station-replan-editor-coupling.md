@@ -1934,3 +1934,44 @@ The twelve left are the two groups this gate has always recorded as design decis
 
 **Hub state:** props inside structure 0, props in rooms 0, backdrop intrusions 0, block-on-block 0,
 skyline placements clean 16/16, block/interior 1, carriageway **12**.
+
+## 18. The eight link-mouth conflicts were a road that isn't there
+
+`station-plan-conflicts` had recorded the four link mouths as an **open design question**: "every link
+crosses a carriageway at its mouth, symmetrically… a link mouth is how a player leaves the hub, so
+something has to cross the avenue there."
+
+It had a measurement answer, not a composition one.
+
+`_buildDeck` surfaces every avenue to `DECK_R - 12` — the road stops twelve metres short of the deck rim
+rather than running off it. `StationPlan` seeded its carriageway role all the way to `DECK_R`. **The links
+cross the avenues exactly there, at the rim, in twelve metres of road that has never existed.** 12 → 4,
+and the four that remain are the promenade, which really is a composition decision.
+
+A role claimed where nothing is built is not a conservative over-claim. It is a false one, and it had four
+builders answering for a road nobody laid. `ROAD_R1` is now a single constant imported by the thing that
+draws the surface and the thing that describes it, with `the plan's carriageway ends where the avenue
+surface ends` pinning the two behaviourally so a re-derivation can't separate them again. The denominator
+moved with it — 18,240 seeded cells to 17,560, and 680 is exactly 6 avenues × 12 m × 19.8 m over a 1.5 m
+grid.
+
+### ⚠ And the instrument has a blind spot I walked straight into
+
+`roleUnder` and `claim` both confirm a hit by asking whether the claim's true rotated rectangle covers a
+**cell centre**. On a 1.5 m grid, a claim under `OCC_CELL / 2` = 0.75 m of half-extent can sit squarely in
+a road and slip between the centres.
+
+I proved it the expensive way. The ad mast claims 0.5 m square. Having moved it *off* an avenue, I moved
+it **onto another one** — because the sweep that placed it asked `roleUnder` at the mast's own 0.5 and got
+the raster's answer rather than the road's. Asked at 1.2 the picture is uniform carriageway from the plaza
+to `ROAD_R1`; asked at 0.5, **two of the six avenues report no carriageway anywhere along their
+centreline** and the other four report a patchwork. My own new extent test was written at 0.5 and failed
+for that reason, which is the only thing that caught it.
+
+So a zero in that gate would mean *"nothing bigger than a grid cell stands in a road"*, which is not the
+same sentence. Recorded at the gate, with the rule that anything measuring against this plan uses
+half-extents of at least 0.75 — and the real fix, testing the rect against the cell's **extent** rather
+than its centre, noted as something that changes every count in the file and is not to be done in passing.
+
+**Carriageway conflicts: 21 → 4.** Remaining: the observation promenade crossing avenue 0's axis, which
+needs the frame in front of you.

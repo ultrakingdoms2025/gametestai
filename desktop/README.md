@@ -43,8 +43,10 @@ npx electron-builder --win zip --config.directories.output="C:\Users\$env:USERNA
 ```
 
 The general Windows build creates an installer and portable executable. The
-AppX identity is currently `AetherNexus`; replace it with the identity assigned
-by Microsoft Partner Center before the final Store submission if required.
+AppX configuration uses the identity and publisher assigned by Microsoft
+Partner Center for the Aether Nexus product. If Partner Center assigns a new
+identity, update `appx.identityName`, `appx.applicationId`, and `appx.publisher`
+before rebuilding; do not edit the generated `.appx` file.
 
 ## Distribution note
 

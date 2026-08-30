@@ -13,7 +13,7 @@ import { PORTAL_DISC_OFFSET_Y } from '../systems/Portals.js';
  * two copies of `boxGeo` would have drifted inside a week. */
 import {
   DEG,
-  DECK_R, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
+  DECK_R, ROAD_R1, HULL_R, WALL_H, CEIL_Y, PLAZA_R, ROAD_W, LOOP_R, LOOP_Y, PORTAL_R,
   OCULUS_R, WINDOW_HALF, GATEWAY_DECK_Y, PYLON_OFF,
   WALKWAY, WALKWAY_DECK_TOP, walkwayStairFlight, walkwayRailRuns,
   markRampProxy,
@@ -5243,7 +5243,10 @@ export class StationWorld extends World {
      * than the one that gets built is worse than no clearance at all. */
     this.roadAngles = ROAD_ANGLES_DEG;
     const R0 = PLAZA_R - 3;
-    const R1 = DECK_R - 12;
+    /* Imported, not re-derived: `StationPlan` seeds its carriageway role over
+     * exactly this span, and the twelve metres by which the two used to differ
+     * were counted as road by every conflict query. */
+    const R1 = ROAD_R1;
     const L = R1 - R0;
     const stripEntries = [];
     const decalCells = [];
@@ -10733,10 +10736,16 @@ export class StationWorld extends World {
      *
      * A THIRD stood in a carriageway. `[-40, 14, 62]` put its mast, and the
      * 14 m collider that goes with it, on an avenue - a pole in the road
-     * rather than beside it. Eight metres in along the same bearing, to
-     * (-36, 55), is the shortest move that clears; swept nearest-first, it is
-     * the first candidate of any at that bearing or within forty degrees of
-     * it.
+     * rather than beside it. (-46, 57) is six degrees round the same ring and
+     * the nearest bearing that clears.
+     *
+     * IT WAS MOVED TWICE. The first attempt went to (-36, 55) on a sweep that
+     * asked `roleUnder` with the mast's own 0.5 m half-extents - and
+     * `roleUnder` only reports a role where the query rect covers a CELL
+     * CENTRE, so on a 1.5 m grid a 1 m square misses more often than it hits.
+     * That sweep was reading the raster, not the road, and (-36, 55) is on the
+     * carriageway too. Anything below `OCC_CELL / 2` = 0.75 measures the grid;
+     * this one was swept at 1.2.
      *
      * All three moved round the SAME RING rather than to the first clear patch:
      * the eight are a composition spread around the plaza, and radius and
@@ -10745,7 +10754,7 @@ export class StationWorld extends World {
      * find a bearing where the mast column and the whole plate volume are
      * both empty and no room encloses either. */
     const adSpots = [
-      [56, 12, 26], [-36, 14, 55], [70, 16, -48], [-64, 13, -40],
+      [56, 12, 26], [-46, 14, 57], [70, 16, -48], [-64, 13, -40],
       [106, 15, 39], [-96, 15, 30], [30, 18, -92], [3, 16, 99],
     ];
     for (let i = 0; i < adSpots.length; i++) {

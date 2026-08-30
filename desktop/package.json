@@ -29,7 +29,10 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -41,8 +44,10 @@
       "artifactName": "Aether-Nexus-${version}-portable-${arch}.${ext}"
     },
     "appx": {
-      "identityName": "AetherNexus",
-      "publisherDisplayName": "Aether Nexus",
+      "identityName": "AETHERNEXUS.AETHERNEXUS",
+      "applicationId": "AETHERNEXUS",
+      "publisher": "CN=913BC31F-41D3-482F-9D90-7462984A0343",
+      "publisherDisplayName": "AETHER NEXUS",
       "artifactName": "Aether-Nexus-${version}-store-${arch}.${ext}"
     }
   }

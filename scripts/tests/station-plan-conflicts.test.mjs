@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildStation } from './world-kit.mjs';
+import { ROAD_R1 } from '../../src/worlds/station/StationKit.js';
 
 /**
  * WHAT STILL STANDS IN A ROAD — A RATCHET, NOT A CLEAN BILL.
@@ -29,6 +30,27 @@ import { buildStation } from './world-kit.mjs';
  * `ROAD_EDGE_HALF` = 9.9 m, which is the 18 m carriageway plus its two 0.45 m
  * kerb strips - so a conflict is geometry standing on the road or its kerb,
  * not merely near it.
+ *
+ * ── WHAT THIS GATE CANNOT SEE: A CLAIM SMALLER THAN A CELL ──────────────
+ *
+ * `roleUnder` and `claim` both confirm a hit by asking whether the claim's
+ * true rotated rectangle covers a CELL CENTRE - `(gx + 0.5) * OCC_CELL`. On a
+ * 1.5 m grid that means a claim under `OCC_CELL / 2` = 0.75 m of half-extent
+ * can sit squarely in a road and slip between the centres, and the count above
+ * will not include it.
+ *
+ * Measured, not theorised: the hologram ad mast claims 0.5 m square, and after
+ * being moved OFF an avenue it was moved onto another one - because the sweep
+ * that placed it asked `roleUnder` at the mast's own 0.5 and got the raster's
+ * answer rather than the road's. Asked at 1.2 the picture is uniform; asked at
+ * 0.5 two of the six avenues report no carriageway anywhere along their
+ * centreline and the other four report a patchwork.
+ *
+ * So a ZERO here would mean "nothing bigger than a grid cell stands in a
+ * road", which is not the same sentence. Anything measuring against this plan
+ * must use half-extents of at least 0.75, and the fix - testing the rect
+ * against the cell's EXTENT rather than its centre - would change every count
+ * in this file and is not a thing to do in passing.
  *
  * ── The by-owner list is the work list ───────────────────────────────────
  * It is asserted, not just printed, because the useful regression is not "the
@@ -104,7 +126,28 @@ import { buildStation } from './world-kit.mjs';
  * design decisions rather than nudges - the promenade across the window
  * sector's axis, and the four link mouths. Lower it when one of those is
  * decided; never raise it. */
-const CEILING = 12;
+/* 12 -> 4 on 2026-08-30, and this one is an INSTRUMENT correction, which is
+ * the second time this file has had to record one.
+ *
+ * The eight `link:*` conflicts were never real. Every avenue is SURFACED to
+ * `DECK_R - 12` - twelve metres short of the deck rim, so the road stops before
+ * the edge rather than running off it - and this plan seeded its carriageway
+ * role all the way to `DECK_R`. The links cross the avenues exactly there, at
+ * the rim, in twelve metres of road that has never existed.
+ *
+ * So the open design question this file recorded - "a link mouth is how a
+ * player leaves the hub, so something has to cross the avenue there" - had a
+ * measurement answer rather than a composition one: they do not cross a road.
+ * A role claimed where nothing is built is not a conservative over-claim, it is
+ * a false one, and it had been making four builders answer for a road nobody
+ * laid. `ROAD_R1` is now one constant imported by the builder that draws the
+ * surface and the plan that describes it, and `the plan's road ends where the
+ * road ends` below pins the two together behaviourally so a re-derivation
+ * cannot separate them again.
+ *
+ * The denominator moved with it - 18,240 seeded cells to 17,560 - which is the
+ * check that this removed the right cells and not a swathe of the hub. */
+const CEILING = 4;
 
 /**
  * Conflicts by the build step that caused them.
@@ -156,10 +199,6 @@ const CEILING = 12;
  * split this file has pinned since the link ownership increment. */
 const BY_OWNER = {
   'Opening the commercial strip': 4,
-  'link:canteen': 2,
-  'link:construction': 2,
-  'link:gym': 2,
-  'link:habitation': 2,
 };
 
 test('nothing new stands in a carriageway', async () => {
@@ -180,6 +219,36 @@ test('nothing new stands in a carriageway', async () => {
 
   assert.deepEqual(byOwner, BY_OWNER,
     'the per-builder split changed - a builder that was clean is no longer clean, or one you fixed is not in the list');
+});
+
+/**
+ * THE PLAN'S ROAD ENDS WHERE THE ROAD ENDS.
+ *
+ * The two used to be written twice - `_buildDeck` surfaced the avenues to
+ * `DECK_R - 12` and this plan seeded them to `DECK_R` - and twelve metres of
+ * carriageway that nobody had ever laid were counted as road by every conflict
+ * query in the file above. Eight of the twenty-one conflicts were geometry
+ * crossing it.
+ *
+ * They share `ROAD_R1` now, so this is a behavioural pin rather than a second
+ * copy of the number: carriageway just inside the end, none just outside it,
+ * on every avenue. A re-derivation on either side fails here rather than
+ * quietly inventing road again.
+ */
+test(`the plan's carriageway ends where the avenue surface ends`, async () => {
+  const { world } = await buildStation();
+  const plan = world.plan;
+  for (const deg of world.roadAngles) {
+    const t = (deg * Math.PI) / 180;
+    /* 1.2, not the 0.5 this was first written with. `roleUnder` reports a role
+     * only where the query rect covers a CELL CENTRE, so a footprint under
+     * `OCC_CELL / 2` = 0.75 answers about the raster rather than the road: at
+     * 0.5 this test reported avenues 0 and 180 as having no carriageway
+     * ANYWHERE and the other four as a patchwork. */
+    const on = (r) => plan.roleUnder(Math.cos(t) * r, Math.sin(t) * r, 1.2, 1.2, 0, 'carriageway');
+    assert.ok(on(ROAD_R1 - 4), `avenue ${deg} has no carriageway 4 m inside its own end`);
+    assert.ok(!on(ROAD_R1 + 6), `avenue ${deg} claims carriageway 6 m PAST the surface it is drawn on`);
+  }
 });
 
 test('the plan still sees the whole station, so a zero would mean something', async () => {

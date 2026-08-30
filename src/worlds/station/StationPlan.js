@@ -1,6 +1,6 @@
 import {
   DEG, OCC_CELL, occCellKey,
-  PLAZA_R, DECK_R, ROAD_EDGE_HALF, ROAD_ANGLES_DEG,
+  PLAZA_R, DECK_R, ROAD_R1, ROAD_EDGE_HALF, ROAD_ANGLES_DEG,
   GATEWAY_BEARINGS_DEG,
 } from './StationKit.js';
 
@@ -174,12 +174,19 @@ export class StationPlan {
       }
     }
 
-    // The six avenues, from the plaza edge to the deck rim.
+    /* The six avenues, from the plaza edge to WHERE THE ROAD ENDS.
+     *
+     * `ROAD_R1`, not `DECK_R`: the surface is laid to `DECK_R - 12` and this
+     * loop used to seed twelve metres past it. A role claimed where nothing is
+     * built is not a conservative over-claim, it is a false one - it made the
+     * conflict gate report geometry standing on bare deck as standing in a
+     * road, which is how the four link mouths came to be recorded as an open
+     * design question. */
     for (const deg of roadAngles) {
       const t = deg * DEG;
       const ux = Math.cos(t), uz = Math.sin(t);
       const px = -uz, pz = ux;                 // across the carriageway
-      for (let along = PLAZA_R - 3; along <= DECK_R; along += STEP) {
+      for (let along = PLAZA_R - 3; along <= ROAD_R1; along += STEP) {
         for (let across = -ROAD_EDGE_HALF; across <= ROAD_EDGE_HALF; across += STEP) {
           this._seed(ux * along + px * across, uz * along + pz * across, ROLE.CARRIAGEWAY);
         }

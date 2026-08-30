@@ -129,7 +129,20 @@ test('the station, measured against its own plan', async () => {
    * per-builder breakdown - the rows above the fold were never in the total.
    * Left here because it is the cheapest possible reminder that a number read
    * off a truncated console is not a measurement.) */
-  assert.equal(s.cellsSeeded, 18240, 'the seeded circulation changed shape');
+  /* 18,240 -> 17,560 on 2026-08-30, and DOWN is the direction that needs the
+   * explanation here, because fewer reserved cells is a weaker gate.
+   *
+   * The avenues are surfaced to `DECK_R - 12` and this plan had been seeding
+   * their carriageway role all the way to `DECK_R`: twelve metres of road, on
+   * six avenues, that nobody had ever laid. It was not a conservative
+   * over-claim - it made `station-plan-conflicts` report geometry standing on
+   * bare deck as standing in a road, and all eight of the link-mouth conflicts
+   * it had recorded as an open design question were exactly that.
+   *
+   * The two share `ROAD_R1` now. 680 cells is 6 avenues x 12 m x 19.8 m over a
+   * 1.5 m grid, which is the arithmetic check that this removed the twelve
+   * metres and not a swathe of the hub. */
+  assert.equal(s.cellsSeeded, 17560, 'the seeded circulation changed shape');
   /* 186 -> 733 on 2026-08-30. `_solid` began claiming into the plan, so the
    * plan finally sees the 1,530 axis-aligned solids it had never been told
    * about. The rise is in what is MEASURED, not in what is built: plaza

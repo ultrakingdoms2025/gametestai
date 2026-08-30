@@ -1460,3 +1460,35 @@ hand.
 
 **Still open in the Hub:** 4 props genuinely embedded (63%, 64%, 65%, 92%), the nine habitat carriageway
 claims, 16 backdrop pieces, 3 buried signs.
+
+### The nine habitat road claims: one feature, and every fix is a composition call
+
+Sourced in one query now that `instanced()` is traced too. **All nine are the same two lines** —
+`StationWorld.js:7911` and `:7912`, a ring of ten planters (a 1.5 m `panelDark` cylinder plus an `emGreen`
+sphere, each with its own `_solid`) at radius 12 around the "small green terrace between the blocks — the
+only plants on the ring".
+
+Photographed at (−86, 152): **cyan lane dashes and LOAD ZONE paint run straight through the ring.** They
+are not decorative kerbing; they are 1.5 m bollards with colliders standing in a lane the player walks
+down. The defect is real.
+
+**But every fix that respects the road removes the feature**, and the author's own comment says the
+placement is deliberate — *"this disc caps the end of the avenue and so shares its plane with the
+carriageway"*. A flat disc on a road is fine. Measured, with the park centre on the avenue centreline and
+a carriageway half-width of 9.9 m against a ring radius of 12:
+
+| attempt | carriageway claims | planters surviving (2 parks × 10) |
+|---|---|---|
+| as built | 9 | 20 |
+| refuse occupied bearings | **0** | 2 |
+| slide along the ring, ±⅓ of the gap | **0** | 4 |
+
+So the terrace is essentially built *on* the avenue, and the three honest options are (a) accept the
+planting is lost and the road reads correctly, (b) accept bollards in a marked lane, or (c) move the park
+off the centreline with `roadPos`'s `off` argument — which clears the road and keeps the feature, but
+contradicts the stated intent that it caps the avenue. **Reverted pending that decision; it is art, not
+correctness.**
+
+One thing this loop did settle: it is the one place in the file where a `continue` is free, because `th` is
+`(i / 10) * TAU` and nothing in it draws from `rng`. Both the skyline and the near-field scatter had to
+nudge for exactly the opposite reason.

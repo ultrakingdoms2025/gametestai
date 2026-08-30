@@ -251,10 +251,10 @@ test('the collision the world derives from its own geometry is unchanged', async
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 369192, boxed: 169614, kept: 199578, planting: 1360 },
+    { found: 369200, boxed: 169612, kept: 199588, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8765, 'the chunking changed');
+  assert.equal(chunks, 8766, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -277,8 +277,24 @@ test('the collision the world derives from its own geometry is unchanged', async
    * lit window panel of fourteen is no longer built, because the pylon at
    * (118, 47) stands where it was. A 26-triangle fall for the last of the
    * buried signs.
+   *
+   * -- And nothing is scattered inside a room any more -----------------
+   * 369192 -> 369200 found, 199578 -> 199588 kept, 8765 -> 8766 chunks,
+   * colliders 26920 -> 26921. Four placements moved or stopped being built:
+   * an advertising mast walked sixteen degrees round its ring out of a
+   * habitat tower, a steam vent nudged off the residential terrace's plinth,
+   * and one vent with nowhere legal within forty-three candidate offsets is
+   * no longer installed. No avenue lamp was dropped in the end - the one a
+   * bounding box accused proved to be outside the building.
+   *
+   * The direction is the usual one and it is worth reading: eight triangles
+   * MORE found and ten more kept, from things REMOVED or moved. A prop
+   * standing inside a wall has the buried part counted as already inside a
+   * box; standing clear, or gone, the geometry around it stops sharing its
+   * collision column. The +1 collider is the net of one vent no longer built
+   * and two props that stopped sharing a column with what they stood in.
    */
-  assert.equal(physics.colliders.length, 26920, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26921, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

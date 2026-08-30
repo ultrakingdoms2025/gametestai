@@ -1882,6 +1882,10 @@ export class StationWorld extends World {
      * rebuild - so a Set that survived the previous build would make every
      * tower in the second one collide with itself. */
     this._towerIds = new Set();
+    /* Same reason, and the same trap: a rebuild in place would otherwise
+     * accumulate two generations of footprints and refuse ground that is
+     * now open. */
+    this._rooms = [];
 
     /* One `breathe` per phase, closed over that phase's own progress fraction
      * and label so a phase never has to know where in the build it sits. */
@@ -3658,6 +3662,31 @@ export class StationWorld extends World {
     const reach = Math.hypot(halfX, halfZ);
     for (const l of this._legendSpots ?? []) {
       if (Math.hypot(l.x - x, l.z - z) < l.r + reach) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is this footprint standing inside an enterable building?
+   *
+   * Sibling of `_onLegend`, and needed for the mirror-image reason. That one
+   * exists because paint does not occupy ground; this one exists because a
+   * ROOM does not either - `_footprintClear` samples `physics.containsPoint`
+   * and a room is exactly the volume where that is false. Every scatter pass
+   * in the dressing phase therefore read the inside of a tower as prime open
+   * deck.
+   *
+   * Oriented, not an AABB: the footprints are pushed by `buildTower` with the
+   * tower's own `yaw`, so the test rotates the query into the tower's frame
+   * rather than testing a box that bulges past the corners of a rotated
+   * building.
+   */
+  _inRoom(x, z, halfX = 0, halfZ = 0) {
+    for (const r of this._rooms ?? []) {
+      const dx = x - r.x, dz = z - r.z;
+      const c = Math.cos(-r.yaw), s = Math.sin(-r.yaw);
+      const lx = dx * c - dz * s, lz = dx * s + dz * c;
+      if (Math.abs(lx) < r.hx + halfX && Math.abs(lz) < r.hz + halfZ) return true;
     }
     return false;
   }
@@ -10066,6 +10095,33 @@ export class StationWorld extends World {
         const r = PLAZA_R + 8 + i * 19;
         const side = i % 2 ? 1 : -1;
         const p = roadPos(deg, r, side * (ROAD_W / 2 + 1.6), 0, new THREE.Vector3());
+        /* NO ROOM TEST HERE, and the reason is worth keeping.
+         *
+         * A bounding-box probe accused the post at (-33.8, 79.8) of standing
+         * inside `tower-interior-habitat-stack-s1`. It does not: that tower
+         * is yawed 1.05 rad, and its AABB over-reaches its corners by about
+         * two metres, which is where the lamp is. The oriented footprint
+         * `_inRoom` tests says outside, and no avenue lamp is in a room.
+         *
+         * A second post, at (-52.8, 112.7), the box could NOT see - it is
+         * outside the bounding box of that tower's interior geometry and
+         * inside its outline, because the plinth is wider than the rooms it
+         * carries. It settled the outline `buildTower` records: eight
+         * centimetres inside the plinth's overhang is not inside a building,
+         * so the shell is what gets declared.
+         *
+         * So no guard was written. A fix for a defect that cannot be
+         * demonstrated is worse than none - it is an untested branch that
+         * fires on a future tower re-plan with nobody having ever seen it
+         * work. `station-tower-interiors.test.mjs` holds the invariant at
+         * zero; when a re-plan does put a lamp in a room, that gate fails and
+         * the guard gets written with a measurement behind it.
+         *
+         * Note also what CANNOT be the criterion: measured, all sixty of
+         * these posts read as standing on non-clear ground, because
+         * `_contact` below has claimed the lamp's own patch by the time the
+         * question is asked. A test the subject has contaminated would delete
+         * every street lamp in the station. */
         this._contact(p.x, p.z, 2.6);
         lampPosts.push([p.x, 4.0, p.z, 0, yaw, 0, 1, 1, 1]);
         lampHeads.push([p.x - side * 0 + Math.cos(deg * DEG) * 0, 8.0, p.z, 0, yaw, 0, 1, 1, 1]);
@@ -10380,10 +10436,90 @@ export class StationWorld extends World {
     for (let i = 0; i < 14; i++) {
       const th = rng() * Math.PI * 2;
       const rr = PLAZA_R + 20 + rng() * 120;
-      const x = Math.cos(th) * rr, z = Math.sin(th) * rr;
+      let x = Math.cos(th) * rr, z = Math.sin(th) * rr;
+      /* Both yaws drawn HERE, before any decision, so that dropping a vent
+       * cannot re-roll the fourteen. This is the shape every fix in this pass
+       * has had to take: the choice may read the world, but it may not move
+       * the stream. */
+      const grateYaw = rng() * 3, hazardYaw = rng() * 3;
+      /* A vent is a hole in the deck, so it has to be ON deck.
+       *
+       * `rr` reaches 210 m, which is past the far end of every district, and
+       * nothing in this loop had ever asked what was already there. One of
+       * the fourteen landed at (-102, 14) inside the 0.8 m plinth the
+       * residential terrace stands on - measured at 63% of the grate's
+       * volume, and steam then rose out of a doorstep.
+       *
+       * NUDGED FIRST, and the nudge draws no random numbers - both yaws are
+       * already taken above, so neither moving a vent nor dropping one can
+       * re-roll the fourteen. Nudged BEFORE `ventSpots.push`, because the
+       * steam puffs and `_anim.steamSeeds` are placed from that array; moving
+       * the grate and leaving the steam behind is a worse defect than the one
+       * being fixed. Three radii for the reason the queue nudge has three: a
+       * ring has to clear the OBSTACLE, and a terrace plinth is 13 m deep. */
+      /* TWO QUESTIONS, ASKED SEPARATELY.
+       *
+       * `_inRoom` is not a fallback for `_footprintClear` failing - it is a
+       * different question, and it has to be asked even when the ground reads
+       * clear, because the inside of a room IS clear ground. Written first as
+       * a fallback and it changed nothing: the vent that sits on a habitat
+       * tower's plinth passed the clearance test at the moment this loop runs
+       * and never reached the nudge at all. */
+      const blocked = !this._footprintClear(x, z, 1.1, 1.1, 1.0) || this._inRoom(x, z, 1.1, 1.1);
+      let put = false;
+      if (blocked) {
+        const ox = x, oz = z;
+        for (const rad of [2.2, 4.0, 6.0]) {
+          for (let d = 0; d < 12 && !put; d++) {
+            const a = (d / 12) * Math.PI * 2;
+            const nx = ox + Math.cos(a) * rad, nz = oz + Math.sin(a) * rad;
+            if (!this._footprintClear(nx, nz, 1.1, 1.1, 1.0)) continue;
+            if (this._onLegend(nx, nz, 1.1, 1.1)) continue;
+            if (this._inRoom(nx, nz, 1.1, 1.1)) continue;
+            x = nx; z = nz; put = true;
+          }
+          if (put) break;
+        }
+        /* A SIX METRE RING CANNOT LEAVE A TWENTY-FOUR METRE BUILDING.
+         *
+         * One of the fourteen landed on the plinth of a habitat tower, and
+         * every offset the ring could reach was still on that plinth - so the
+         * nudge ran its thirty-six candidates, failed all of them, and put the
+         * vent back exactly where it started. Growing the ring is the wrong
+         * answer: it would fling street furniture tens of metres for
+         * obstacles that are five metres across.
+         *
+         * Stepping `rr` walks the vent OUT ALONG ITS OWN BEARING instead,
+         * which is the axis this scatter is composed on - the same radial, the
+         * same district, further from the centre. Draws nothing from `rng`,
+         * so the two yaws below are untouched. */
+        if (!put) {
+          for (const dr of [8, -8, 16, -16, 24, -24, 32]) {
+            const nr = rr + dr;
+            if (nr < PLAZA_R + 12) continue;
+            const nx = Math.cos(th) * nr, nz = Math.sin(th) * nr;
+            if (!this._footprintClear(nx, nz, 1.1, 1.1, 1.0)) continue;
+            if (this._onLegend(nx, nz, 1.1, 1.1)) continue;
+            if (this._inRoom(nx, nz, 1.1, 1.1)) continue;
+            x = nx; z = nz; put = true;
+            break;
+          }
+        }
+      }
+      /* NOT INSTALLED, when there is nowhere to install it.
+       *
+       * Two of the fourteen have nowhere legal within reach - one on a habitat
+       * tower's plinth with the whole block built up around it, one on
+       * occupied ground at (11, -122) - and forty-three candidate offsets
+       * apiece do not find them a home. The choice at that point is between a
+       * vent sunk into a building and no vent, and thirteen steam vents look
+       * exactly like fourteen: this is atmospheric scatter, not a fitting
+       * anybody counts. The steam follows automatically, because the puffs and
+       * `_anim.steamSeeds` below are built FROM `ventSpots`. */
+      if (blocked && !put) continue;
       ventSpots.push([x, z]);
-      B.at('grate', boxGeo(2.2, 0.4, 2.2, 1.5), x, 0.2, z, rng() * 3);
-      B.at('hazard', boxGeo(2.6, 0.18, 2.6, 1.5), x, 0.06, z, rng() * 3);
+      B.at('grate', boxGeo(2.2, 0.4, 2.2, 1.5), x, 0.2, z, grateYaw);
+      B.at('hazard', boxGeo(2.6, 0.18, 2.6, 1.5), x, 0.06, z, hazardYaw);
     }
     const puffs = [];
     const puffColors = [];
@@ -10408,9 +10544,32 @@ export class StationWorld extends World {
     g.add(steamMesh);
 
     /* --- Holographic advertising ------------------------------------ */
+    /* ── EIGHT HAND-AUTHORED SPOTS, AND ONE OF THEM WAS IN A ROOM ──────
+     *
+     * Each spot draws a 14 m mast from y = 0 up to the plate, with a solid
+     * of the same height, and the list knows nothing about what stands at
+     * those coordinates. Six of the eight cross structure. Five of the six
+     * are fine and were photographed to establish that: a mast rising
+     * through a shop roof or a promenade deck and topping out above it
+     * reads as a mast on a roof, which is what a projector mast is.
+     *
+     * The eighth was not. `[-24, 16, 96]` stood at the middle of
+     * `tower-interior-habitat-stack-s1` (x -36..-11.7, z 76.9..106.8), so
+     * the mast ran up through four storeys of a room the player can walk
+     * into, carrying a 1 m square collider and a 9 x 4.5 m advertising
+     * plate with it. An ENTERABLE VOLUME is the one place where "inside"
+     * needs no argument - see station-tower-interiors.test.mjs, which now
+     * holds this.
+     *
+     * Moved 16 degrees round the same ring rather than to the first clear
+     * patch: the eight are a composition spread around the plaza, and
+     * radius and district are what that composition is made of. (3, 99) is
+     * the same distance out, the same northern sightline, and swept from
+     * -40 to +40 degrees it is one of only two bearings where the mast
+     * column and the whole plate volume are both empty. */
     const adSpots = [
       [56, 12, 26], [-40, 14, 62], [70, 16, -48], [-64, 13, -40],
-      [110, 15, 24], [-96, 15, 30], [30, 18, -92], [-24, 16, 96],
+      [110, 15, 24], [-96, 15, 30], [30, 18, -92], [3, 16, 99],
     ];
     for (let i = 0; i < adSpots.length; i++) {
       const [ax, ay, az] = adSpots[i];

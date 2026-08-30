@@ -524,6 +524,28 @@ export function buildTower(world, B, g, spec, rng) {
   const ig = new THREE.Group();
   ig.name = `tower-interior-${towerId}`;
   g.add(ig);
+  /* THE FOOTPRINT OF A ROOM, DECLARED WHERE THE ROOM IS BUILT.
+   *
+   * `_footprintClear` answers "is this ground free", and the inside of a
+   * building is nothing BUT free ground - that is what makes it a room. So
+   * every scatter pass in the dressing phase was blind to towers: it put a
+   * steam vent on one plinth and ran a 14 m advertising mast, its collider
+   * and a 9 x 4.5 m plate up through four storeys of another.
+   *
+   * An ENTERABLE VOLUME is the one host class where "is A inside B" needs no
+   * architectural argument, which is the question `isDesignedContainer` exists
+   * to refuse in general: a player can stand in here, so nothing scattered
+   * may. Recorded here, oriented, rather than recovered later from the group's
+   * bounding box - an AABB of a yawed tower over-reaches at the corners by
+   * metres, and here `yaw` is still a number rather than something to
+   * reverse-engineer.
+   *
+   * THE SHELL, NOT THE PLINTH. Written first as the plinth's `w + 0.8`, and
+   * that 0.4 m overhang immediately produced a knife-edge: an avenue lamp
+   * eight CENTIMETRES inside the claimed outline, standing beside a base you
+   * are meant to be able to stand beside. A plinth is a step; the room is the
+   * shell. Walls included, because a prop inside a wall is a defect too. */
+  (world._rooms ??= []).push({ x, z, hx: w / 2, hz: d / 2, yaw, name: ig.name });
   const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
     I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
 

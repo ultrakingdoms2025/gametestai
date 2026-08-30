@@ -35,15 +35,33 @@ import { collectParts, fractionInside, isDesignedContainer } from '../../src/dev
  *
  * ── Why a ratchet ─────────────────────────────────────────────────────────
  *
- * Two remain: a hologram projector cone 92% inside a commercial panel at
- * y = 13.8, and a vent grate 63% inside a residential panel. Both are
- * single hand-authored placements rather than scatter, so each needs its own
- * look. Zero would fail on arrival and be disabled within a day.
- * Lower it when you clear one; a rise means a placement pass started putting
- * props inside the world again.
+ * ONE remains, and it was photographed before it was accepted. The hologram
+ * projector cone at (110, 13.8, 24) sits 92% inside the roof slab of the
+ * HELIOS OPTICS unit, because the ad mast's fourteen metres are drawn from
+ * y = 0 with no knowledge of what stands there. Shot from three headings it
+ * reads as a projector mast on a shop roof, which is what it is meant to be,
+ * and the unit is not in `OPEN_SHOPS` - the mast crosses a sealed volume no
+ * player can enter. Left at the honest measurement rather than tuned away:
+ * dropping the bar to hide a 92% would blind this file to everything.
+ *
+ * The vent grate that used to be the second one is gone - it was scatter, and
+ * the steam-vent loop now asks what is already there.
+ *
+ * ── What this gate cannot see, and what covers it ────────────────────────
+ *
+ * A LONG THIN THING DILUTES. A fraction-of-volume test measures the whole
+ * prop, so a mast with one metre inside a wall and thirteen in open air reads
+ * about 7% and passes. Six of the eight ad masts cross structure and this
+ * file caught exactly one of them, by its CONE. And AN EMPTY ROOM CONTAINS
+ * NOTHING: ray parity works on a host's triangles, and the volume a room
+ * encloses has none. `station-tower-interiors.test.mjs` holds both cases for
+ * the one host class where "inside" needs no argument.
+ *
+ * Lower this when you clear one; a rise means a placement pass started
+ * putting props inside the world again.
  */
 
-const CEILING = 2;
+const CEILING = 1;
 /** Below this in ANY dimension the piece is paint, not an object. */
 const FLAT = 0.15;
 

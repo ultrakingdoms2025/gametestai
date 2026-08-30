@@ -1563,3 +1563,117 @@ the code looks correct and simply never fires.
 
 **Hub state:** 2 props embedded (both single hand-authored placements — a projector cone at y = 13.8 and a
 vent grate — so each needs its own look rather than a rule), 16 backdrop pieces, 3 buried signs.
+
+### The two embedded props were not two of a kind: one was a mast standing in a room
+
+Both remaining findings were sourced in a single traced build. They turned out to belong to different
+classes, and only one of them was a defect.
+
+**The projector cone at (110, 13.8, 24) — accepted, photographed.** The hologram ad mast's fourteen
+metres are drawn from `y = 0` with no knowledge of what stands there, and this one rises through the
+HELIOS OPTICS unit, putting its cone 92 % inside the roof slab. Shot from three headings it reads as *a
+projector mast on a shop roof* — which is what it is meant to be — and the unit is not in `OPEN_SHOPS`,
+so the volume it crosses is sealed. Left at the honest 92 % rather than tuned away: dropping the bar to
+hide a 92 % would blind the file to everything.
+
+**The vent grate was scatter, and the loop was blind.** Fixed by the same rule as the others.
+
+But sweeping *all eight* ad spots — not just the one the gate named — found that **six of the eight cross
+structure**, and led to the finding that matters:
+
+#### `[-24, 16, 96]` stood in the middle of a habitat tower
+
+`tower-interior-habitat-stack-s1` spans x −36…−11.7, z 76.9…106.8. The mast ran fourteen metres up
+through four storeys of a room the player can walk into, carrying a 1 m square collider and a 9 × 4.5 m
+advertising plate with it. The `station-move-colliders` fixture had been recording it all along:
+`tower-int-habitat-stack-s1:*` counts fall by one across seven materials now that the mast is gone,
+because the editor had been dragging it with the building.
+
+Moved **sixteen degrees round the same ring** rather than to the first clear patch. The eight spots are a
+composition spread around the plaza and radius and district are what that composition is made of; swept
+from −40° to +40°, (3, 99) is one of only two bearings where the mast column *and* the whole plate volume
+are empty.
+
+#### Why nothing caught it: two blind spots pointing at each other
+
+⚠ **A long thin thing dilutes.** `fractionInside` measures the whole prop, so a mast with one metre inside
+a wall and thirteen in open air reads about **7 %** and passes a 50 % bar. The containment gate caught one
+of the six ad masts, and it caught it by the *cone*. This is the annulus artefact's mirror image: there a
+ring-shaped host made a **higher** fraction evidence of a false positive; here a slender prop makes a
+**low** fraction no evidence of anything.
+
+⚠ **An empty room contains nothing.** Ray parity works on a host's triangles, and the volume a room
+encloses has none. There is no threshold that would have found this.
+
+⚠ **And in the world, `_footprintClear` was blind for the mirror-image reason.** It samples
+`physics.containsPoint`, and *the inside of a building is exactly the volume where that is false*. **That
+is what a room is.** So three separate scatter passes — avenue lamps, steam vents, ad masts — read the
+inside of a habitat tower as prime open deck.
+
+This is now the third variety of the same disease in this pass, and they are worth reading together:
+
+| the test cannot see | because | fix |
+|---|---|---|
+| painted legends | paint does not occupy ground | `_onLegend`, a separate question |
+| the inside of a room | emptiness is what a room *is* | `_inRoom`, a separate question |
+| the prop's own claim | `_contact` ran before the test | ask a different question entirely |
+
+The third is new and it is the sharpest. Measured: **all sixty avenue lamp posts read as standing on
+non-clear ground**, because `_contact` has already claimed the lamp's own patch by the time the question
+is asked. A test the subject has contaminated cannot be a drop criterion — it would have deleted every
+street lamp in the station. Exactly one post is inside a tower.
+
+### `_inRoom`, and a gate at zero rather than a ratchet
+
+`buildTower` now records `{x, z, hx, hz, yaw}` where the tower is built, and `_inRoom` rotates the query
+into that frame. **`station-tower-interiors.test.mjs` is pinned at zero, not ratcheted** — an *enterable
+volume* is the one host class where "should A be inside B" needs no architectural argument, which is the
+question `isDesignedContainer` exists to refuse in general. A player can stand in here; nothing scattered
+may.
+
+⚠ **An AABB of a yawed building invented a defect — and then hid a different one.** The first probe used
+each interior group's bounding box and reported six pieces. Four were one avenue lamp at (−33.8, 79.8),
+inside the AABB of a tower yawed 1.05 rad and about two metres *outside the building*: **fourth false
+positive of the session from an instrument measuring the wrong thing**, and it nearly got a working street
+lamp deleted. A guard was written for it and then removed once the oriented test disagreed — *a fix for a
+defect that cannot be demonstrated is worse than none*, because it is an untested branch that fires on a
+future re-plan with nobody having ever seen it work. The gate holds the invariant instead.
+
+And the AABB was concealing a real one at the same time: a different lamp, `#20` at (−52.8, 112.7), is
+inside the tower's oriented footprint but *outside* the bounding box of its interior geometry, because the
+plinth is wider than the rooms it carries. One probe, two errors, in opposite directions.
+
+⚠ **The room is the SHELL, not the plinth.** `w + 0.8` was the first outline written, and that 0.4 m
+overhang immediately produced a knife-edge: lamp `#20` sits **eight centimetres** inside it, standing
+beside a base you are meant to be able to stand beside. A plinth is a step. Recording `w × d` keeps every
+real finding — the mast is 2.6 m from the tower's centre — and drops the knife-edge, which is what a gate
+pinned at *zero* needs: no finding may be within a hand's breadth of the boundary, or the pin is noise.
+
+The gate corroborates the registry against the geometry it names (the group must exist, contain the
+declared centre, and not be dwarfed by the claimed footprint) and asserts `rooms.length >= 6`, so a
+rename or a reset in the wrong order cannot make it pass vacuously. Mutation-tested: restoring
+`[-24, 16, 96]` fails it with both the mast and its cone named.
+
+### A vent with nowhere to go is not installed
+
+One of the fourteen steam vents has nowhere legal within **forty-three candidate offsets** — it sits on a
+habitat tower's plinth with the whole block built up around it. The ring cannot help: *a six-metre ring
+cannot leave a twenty-four-metre building*, and growing it would fling street furniture tens of metres for
+obstacles five metres across. Stepping `rr` walks the vent out along its own bearing instead — the axis
+the scatter is composed on — and where even that fails the vent is simply **not built**. Thirteen steam
+vents look exactly like fourteen.
+
+⚠ **`_inRoom` had to be asked unconditionally, not as a fallback.** Written first as "nudge if the ground
+is blocked, then also check the room", it changed nothing: the vent on the tower plinth passed the
+clearance test *at the moment that loop runs* and never reached the nudge at all. Two questions, asked
+separately.
+
+Every fix in this pass has had the same shape: **the choice may read the world, but it may not move the
+stream.** Both vent yaws and the lamp shaft yaw are now drawn before any decision, so dropping something
+cannot re-roll what follows.
+
+⚠ **And `console.log` inside a world build goes nowhere.** `world-kit.mjs` captures it. Ten minutes went
+into "the loop never runs" before the instrument was pointed at `process.stderr`.
+
+**Hub state:** 1 prop embedded (accepted, photographed), 0 props in rooms, 9 backdrop pieces, 1 buried
+sign (accepted), 2 skyline clashes, 21 carriageway conflicts.

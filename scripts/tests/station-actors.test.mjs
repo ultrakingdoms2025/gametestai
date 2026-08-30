@@ -14,8 +14,11 @@ import { buildStation, THREE } from './world-kit.mjs';
  * (R2) was a build-time sweep settling every actor's FEET onto the surface
  * beneath them. Measured before writing it, and the plan did not survive:
  * across all 1,887 fixed actors the worst foot error is **0.21 m**, exactly one
- * is off by more than 15 cm, and none is sunk. The ambient crowd is the same,
- * four of 135 over 15 cm. A feet-settling sweep would have moved almost
+ * is off by more than 15 cm, and none is sunk. The ambient crowd is the same -
+ * 204 figures, worst 0.134 m, NONE over 15 cm (an earlier note here said "four
+ * of 135", and a later one "five over 25 cm, worst +1.26 m"; both were
+ * measurements taken before the third test below existed, and neither
+ * reproduces). A feet-settling sweep would have moved almost
  * nothing, passed its own gate, and left whatever the owner saw exactly where
  * it was. That part stands, and the first test below is what keeps it true.
  *
@@ -51,11 +54,23 @@ import { buildStation, THREE } from './world-kit.mjs';
  *  SO WHAT DID THE OWNER SEE?
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Not this. Both populations this file can reach are clean on both questions.
- * Whatever "floating fixed people" refers to is elsewhere - the mobile NPCs,
- * which are grounded by `src/npc/Grounding.js` and are not these actors; a
- * world other than the station; or something a downward raycast cannot see.
- * The next move is a playthrough with real key events, not a third raycast.
+ * Not this. All three populations this file reaches are clean on every question
+ * it asks. This note used to end "whatever 'floating fixed people' refers to is
+ * elsewhere - the mobile NPCs... the next move is a playthrough with real key
+ * events, not a third raycast", and that turned out to be exactly right.
+ *
+ * ANSWERED, 2026-08-29. The owner played it and reported "npc that are part in
+ * the ground, feet can not be seen". It was the mobile cast: five spawns and
+ * twelve patrol waypoints resolved to a point INSIDE solid geometry - a
+ * building shell, a walkway slab, a cargo container, a platform, and a lamp
+ * post. `NPCManager._snapToGround` promised a spawn was placed "so nothing ever
+ * spawns embedded in geometry", and `Grounding.resolveSpot` under it searched
+ * outward when a column had no floor but never when the floor it found was
+ * inside something. See `station-npc-grounding.test.mjs`, which is the gate for
+ * that population and the fourth this station now carries.
+ *
+ * The lesson is the one this whole file is about: the defect was never in the
+ * population that was easy to measure.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  *  WHY THE SEAT CHECK IS A TEST AND NOT A BUILD STEP
@@ -151,4 +166,71 @@ test('a seated actor has something drawn to sit on', async () => {
    * today, so the honest assertion is that it stays that way. */
   assert.deepEqual(onNothing, [], `${onNothing.length} seated actors have nothing drawn at hip height`);
 
+});
+
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  AND THE THIRD POPULATION, WHICH THIS FILE USED TO LEAVE OUT
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The station draws people three different ways and only two of them were
+ * gated here: `StationActors`' 1,887 fixed figures, and - until now - not the
+ * ambient plaza crowd `_buildCrowd` scatters. A note carried in this file for
+ * a while said five of those 204 stood more than 25 cm off their floor, worst
+ * +1.26 m at (-19.5, -7.5). Re-measured on 2026-08-29 with the probe below:
+ * **worst 0.134 m, none over 15 cm, none with no floor at all.** The five were
+ * a measurement, not a defect - almost certainly the probe-from-above-the-head
+ * trap the header of this file already describes costing 333 imaginary sunk
+ * actors. Probe from the feet.
+ *
+ * ── Identifying the crowd is the fragile part, so it is asserted ──────────
+ * The crowd's meshes carry no name and `StationActors`' eleven do, and both
+ * draw on `mat.crowd` - so "unnamed instanced meshes on that material" is the
+ * only handle there is. That is exactly the kind of discriminator that stops
+ * matching after a refactor and leaves a gate measuring an empty set, so the
+ * mesh count and the figure count are pinned next to the result. A version of
+ * this probe that filtered on the material alone collected 17,258 "figures"
+ * with a suspiciously uniform 1.7 m error, because it had swept up
+ * `StationActors:head` and friends - whose instance origin is a head, not a
+ * pair of feet.
+ */
+test('the ambient plaza crowd stands on the floor too', async () => {
+  const { world, physics } = await buildStation();
+  world.group.updateMatrixWorld(true);
+
+  const meshes = [];
+  world.group.traverse((o) => {
+    if (o.isInstancedMesh && o.material === world.mat.crowd && !o.name) meshes.push(o);
+  });
+
+  const m4 = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const figures = [];
+  for (const o of meshes) {
+    for (let i = 0; i < o.count; i++) {
+      o.getMatrixAt(i, m4);
+      figures.push(p.setFromMatrixPosition(m4).applyMatrix4(o.matrixWorld).clone());
+    }
+  }
+
+  /* The denominator, before the numerator. `_crowdBodyGeo` puts the feet at
+   * `FOOT_Y` = 0.04, so an instance's translation IS its feet - but only for
+   * these meshes, which is why finding the right ones is asserted first. */
+  assert.equal(meshes.length, 4, 'the crowd is no longer four unnamed meshes - this probe is selecting the wrong set');
+  assert.equal(figures.length, 204, 'the crowd population changed');
+
+  let worst = 0, over15 = 0, missing = 0;
+  for (const f of figures) {
+    const g = physics.groundHeight(f.x, f.z, f.y + 0.15, 6);
+    if (g === null) { missing++; continue; }
+    const d = Math.abs(f.y - g);
+    if (d > worst) worst = d;
+    if (d > 0.15) over15++;
+  }
+
+  console.log(`  ${figures.length} crowd figures: worst foot error ${worst.toFixed(3)} m, ${over15} over 15 cm, ${missing} with no floor`);
+  assert.equal(missing, 0, 'a crowd figure has no floor beneath it at all');
+  assert.equal(over15, 0, `${over15} crowd figures are more than 15 cm off their floor`);
+  assert.ok(worst < 0.25, `a crowd figure stands ${worst.toFixed(2)} m off its floor`);
 });

@@ -1513,3 +1513,29 @@ often as about the world.
 
 **Hub state now:** 4 props genuinely embedded (63–92%), 16 backdrop pieces, 3 buried signs. The nine
 habitat road claims are closed.
+
+### The QUEUE nudge: 4 → 2, reverted, and the coupling it exposed
+
+Two of the four remaining embedded props were one cause — the `locker` at QUEUE local (−15.525, −24),
+whose two base trims sit 64% and 65% inside the 5 m planter `plaza-props:trim#179`. QUEUE is ten
+hand-composed offsets applied at **all six gateways**, so editing an offset moves it at the other five;
+it needs a per-gateway nudge, never a skip (several kinds draw from `rng`).
+
+Two things were learned before it was reverted:
+
+**A nudge ring must clear the OBSTACLE, not the prop.** The first attempt used a single 2.2 m ring and
+changed nothing, because the thing the locker stands in is a 5 m planter and 2.2 m from its middle is
+still its middle. Widening to 2.2/4.0/6.0 took the gate 4 → 2.
+
+**And placement passes are coupled through PHYSICS, not just through `rng`.** Moving a QUEUE prop covered
+the avenue legend `walk at (−5, −27)` — with props authored by the *near-field scatter*, a different loop
+entirely. The mechanism: QUEUE props register colliders, `_footprintClear` consults
+`physics.containsPoint`, and the scatter runs afterwards — so moving a QUEUE prop changes where the
+scatter nudges **its** props. The rng-stream discipline this document has repeated three times is
+necessary and not sufficient; a pass that adds colliders perturbs every later pass that tests against
+them.
+
+Reverted: two defects is not worth a legend regression whose fix is not obvious, and floor decals sit
+below `_markOccupancy`'s 0.5 m band so `_footprintClear` cannot see them to avoid them. **Ratchet stays at
+4.** The honest next step is to make painted decals visible to the clearance test, which would let both
+loops nudge without covering lettering.

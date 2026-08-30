@@ -572,6 +572,42 @@ check already does, deliberately and at ~5 s a run), not colliders.
 and `_buildCrowd` adds the ambient crowd to that same group — so 204 crowd figures carry solid colliders
 a player cannot walk through. Deliberate or accidental has not been established.
 
+### The drawn-geometry gate was built, and it fails for a reason that matters more than the gate
+
+Built 2026-08-29, after collider overlap was shown not to work (above). It enumerates instanced props,
+grids the merged batches by the `_settleScatter` recipe, casts three axis rays through each prop and
+counts a foreign surface whose HIT POINT is interior on every axis - which correctly rejects the
+"floor decal pierced by its own floor" case that a depth threshold alone lets through. It is fast:
+2,214 rays, 10.4 s, 451 flagged.
+
+**And it finds none of the five defects the owner found by eye.** Measured at each reported spot:
+
+| what the owner saw | instanced props within 5 m | merged batches covering it |
+|---|---|---|
+| barrier in planter (23.6, -20.2) | 6 | 65 |
+| barrier through block (21.2, 13.6) | 4 | 67 |
+| crates through a building corner (26.5, -153.6) | 1 | 27 |
+| two signs through their post (106.4, 54.5) | 1 | 38 |
+| two buildings half inside each other (-22.8, 147.4) | **0** | 30 |
+
+**THE ROOT CAUSE OF THE ROOT CAUSES.** `GeoBatch` merges geometry per MATERIAL at build time, so the
+things a player sees are not things the code can address. A barrier and the planter it stands in are
+either two slices of one `hazard` batch or two batches spanning a district each; in neither case is
+there an object called "the barrier" to ask a question about. This is the same blindness the map
+editor's catalogue already lives with (744 entries that are materials, not objects) and that
+`StationAudit` records for `Box3.setFromObject`.
+
+It is also the honest answer to the question this whole spec opened with - debug versus redesign. You
+cannot debug what you cannot address. Every automated instrument tried in one day - collider
+containment, collider overlap with ownership, drawn-geometry ray piercing - failed on the same wall,
+and the owner's screenshots beat all three because a human eye does not need object identity.
+
+**What follows from it.** Either (a) accept that placement defects are found by eye and keep the gates
+for the classes that DO have identity (NPC grounding, actor and crowd footing, framings, plan
+conflicts - all shipped and all green), or (b) give the geometry identity, which is what Phase 7's
+district-by-district rebuild would do and is the only thing that would make an automated placement
+gate possible. Not a decision to take from inside Phase 4.
+
 **Not delivered.** Everything else the phase asks for: `_footprintClear` and `_markOccupancy` becoming
 plan queries, `_selfCollided` / `_enterableRoomFootprints` / `_backdropKeepOut` becoming published
 roles, the `StationAuditSelfTest` `_occupied` port, and the placement-Y diff against production. A

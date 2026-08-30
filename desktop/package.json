@@ -1,0 +1,49 @@
+{
+  "name": "aether-nexus-desktop",
+  "version": "1.0.0",
+  "author": "Aether Nexus",
+  "description": "Aether Nexus desktop launcher for Windows, Steam, and Microsoft Store packaging.",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis portable",
+    "dist:store": "electron-builder --win appx",
+    "dist:steam": "electron-builder --win zip"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "games.aethernexus.desktop",
+    "productName": "Aether Nexus",
+    "icon": "icon.ico",
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "Aether-Nexus-${version}-steam-${arch}.${ext}",
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Aether-Nexus-${version}-installer-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Aether-Nexus-${version}-portable-${arch}.${ext}"
+    },
+    "appx": {
+      "identityName": "AetherNexus",
+      "publisherDisplayName": "Aether Nexus",
+      "artifactName": "Aether-Nexus-${version}-store-${arch}.${ext}"
+    }
+  }
+}

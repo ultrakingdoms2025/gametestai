@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Aether Nexus logo</title>
+  <desc id="desc">An orbital gateway emblem beside the Aether Nexus wordmark.</desc>
+  <defs>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e8ffff"/>
+      <stop offset="0.45" stop-color="#54eaff"/>
+      <stop offset="1" stop-color="#2782d8"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe7a0"/>
+      <stop offset="0.5" stop-color="#ffb62f"/>
+      <stop offset="1" stop-color="#d76a20"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g transform="translate(210 210)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle r="126" stroke="#54eaff" stroke-opacity="0.16" stroke-width="2" stroke-dasharray="3 17"/>
+    <ellipse rx="151" ry="54" transform="rotate(-28)" stroke="url(#cyan)" stroke-width="8"/>
+    <ellipse rx="151" ry="54" transform="rotate(28)" stroke="url(#amber)" stroke-width="8"/>
+    <path d="M-94 0h188" stroke="#d8fbff" stroke-opacity="0.34" stroke-width="2"/>
+    <path d="M0-94v188" stroke="#d8fbff" stroke-opacity="0.18" stroke-width="2"/>
+    <path d="M-58 0 0-72 58 0 0 72Z" stroke="url(#cyan)" stroke-width="8" filter="url(#glow)"/>
+    <path d="M-27 0 0-34 27 0 0 34Z" fill="#091a2a" stroke="#f2ffff" stroke-width="4"/>
+    <circle r="9" fill="#ffbd3e" stroke="#fff1bd" stroke-width="3" filter="url(#glow)"/>
+    <path d="M-176 0h-28M176 0h28M0-176v-28M0 176v28" stroke="#ffbd3e" stroke-width="5"/>
+  </g>
+
+  <g transform="translate(400 139)">
+    <text x="0" y="0" fill="#eafcff" font-family="Orbitron, Rajdhani, 'Arial Narrow', sans-serif" font-size="74" font-weight="700" letter-spacing="14">AETHER</text>
+    <text x="6" y="92" fill="url(#cyan)" font-family="Orbitron, Rajdhani, 'Arial Narrow', sans-serif" font-size="92" font-weight="700" letter-spacing="10">NEXUS</text>
+    <path d="M8 124h430" stroke="#ffb62f" stroke-width="5"/>
+    <circle cx="462" cy="124" r="6" fill="#ffb62f"/>
+    <text x="8" y="158" fill="#8baabd" font-family="Rajdhani, 'Arial Narrow', sans-serif" font-size="18" font-weight="600" letter-spacing="8">SEVEN WORLDS / ONE GATEWAY</text>
+  </g>
+</svg>

@@ -1,0 +1,52 @@
+Total messages: 49 (Errors: 9, Warnings: 10)
+
+[DEBUG] [vite] connecting... @ http://localhost:5173/game/@vite/client:850
+[DEBUG] [vite] connected. @ http://localhost:5173/game/@vite/client:954
+[WARNING] THREE.Clock: This module has been deprecated. Please use THREE.Timer instead. @ http://localhost:5173/game/@vite/client:524
+[INFO] [PostFX] chain ready (4x MSAA): render -> gtao -> shafts -> bloom -> grade[linear] -> output -> smaa -> film @ http://localhost:5173/game/src/gfx/PostFX.js:1202
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/lore:0
+[WARNING] [lore] remote lore unavailable; using bundled defaults: Error: http 404
+    at http://localhost:5173/game/src/main.js:237:26 @ http://localhost:5173/game/@vite/client:524
+[ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://localhost:5173/api/game/session:0
+[LOG] InventoryUI listening for inventory:changed @ http://localhost:5173/game/src/ui/InventoryUI.js:127
+[INFO] [inventory] no external tick - binding "I" directly @ http://localhost:5173/game/src/systems/Inventory.js:566
+[INFO] [market] no external tick - binding "B" directly @ http://localhost:5173/game/src/systems/Marketplace.js:795
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[WARNING] THREE.sigmaRadians, 0.22, is too large and will clip, as it requested 108 samples when the maximum is set to 20 @ http://localhost:5173/game/@vite/client:524
+[INFO] [station] hull collision: 26 panels, 4 link mouths left open @ http://localhost:5173/game/src/worlds/StationWorld.js:4827
+[INFO] [station] dome: roof collided in 10 bands, 381 panels @ http://localhost:5173/game/src/worlds/station/OuterRing.js:374
+[INFO] [station] outer ring: 4 zones, 1887 actors, 28 enterables (198 collectible spots, 77 loose), 120 published roofs, 14 escalator banks @ http://localhost:5173/game/src/worlds/StationWorld.js:10142
+[INFO] [station] set dressing settled: 178 of 806 props lifted out of the surface they were sunk into (worst 2.65 m, 4017ms) @ http://localhost:5173/game/src/worlds/StationWorld.js:3846
+[INFO] [station] 2227 set-dressing props made solid @ http://localhost:5173/game/src/worlds/StationWorld.js:3124
+[INFO] [station] structure collided from geometry: 328702 triangles found, 144629 already inside a box, 184073 kept in 8192 chunks (6.3 MB), 1352 planting proxies, 862ms @ http://localhost:5173/game/src/worlds/StationWorld.js:3266
+[INFO] [station] hub caches: 16 ground-level collectables @ http://localhost:5173/game/src/worlds/StationWorld.js:10226
+[INFO] [World] built "station" in 6948ms (26345 colliders, 59 npc spawns) @ http://localhost:5173/game/src/worlds/World.js:165
+[INFO] [WaterVolumes] station: 6 surface(s), 188 volumes - station.pool surfaceY=0.13 1677m2 x36 | station.pool surfaceY=0.13 884m2 x24 | station.pool surfaceY=0.13 1677m2 x36 | station.pool surfaceY=0.13 1677m2 x36 | station.pool surfaceY=0.13 884m2 x20 | station.pool surfaceY=0.13 1677m2 x36 @ http://localhost:5173/game/src/systems/WaterVolumes.js:225
+[INFO] [Relics] "station": 110/110 hidden (107 authored, 3 darted, 1 districts) @ http://localhost:5173/game/src/systems/Relics.js:1078
+[ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://localhost:5173/api/game/map-overlay?world=station:0
+[WARNING] [map-overlay] overlay unavailable for "station": HTTP 502 @ http://localhost:5173/game/@vite/client:524
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/lore:0
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/marketplace/items?world=station:0
+[INFO] [boot] title card up at 13932ms @ http://localhost:5173/game/src/main.js:1314
+[INFO] [prewarm] boot links settled in 1077ms over 234 frames (107 issued, 0 still pending) @ http://localhost:5173/game/src/main.js:1809
+[INFO] [rehearse] 1 programs in 341ms, +909 geometries +111 textures uploaded - state clean @ http://localhost:5173/game/src/main.js:2027
+[INFO] [prewarm] shader warmup took 3890ms, 142 programs @ http://localhost:5173/game/src/main.js:1746
+[INFO] [boot] playable at 17858ms (3926ms of that behind the menu) @ http://localhost:5173/game/src/main.js:1320
+[ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://localhost:5173/api/game/quests?world=station:0
+[WARNING] [QuestSystem] quest service unreachable; the board will show what is bundled and nothing else: http 502 @ http://localhost:5173/game/@vite/client:524
+[INFO] [World] built "citadel" in 2403ms (4425 colliders, 12 npc spawns) @ http://localhost:5173/game/src/worlds/World.js:165
+[INFO] [warm] "citadel" precompiled in 1834ms across 5 slices (complete, +5 programs, 147 total) @ http://localhost:5173/game/src/main.js:2493
+[INFO] [warm] gateway preview to "citadel" linked in 1360ms across 17 slices (complete, 147 programs total) @ http://localhost:5173/game/src/main.js:2555
+[INFO] [World] built "maze" in 3092ms (8576 colliders, 1 npc spawns) @ http://localhost:5173/game/src/worlds/World.js:165
+[INFO] [warm] "maze" precompiled in 516ms across 5 slices (complete, +6 programs, 153 total) @ http://localhost:5173/game/src/main.js:2493
+[INFO] [warm] gateway preview to "maze" linked in 1718ms across 19 slices (complete, 160 programs total) @ http://localhost:5173/game/src/main.js:2555
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/telemetry:0
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/telemetry:0
+[LOG] InventoryUI._render() called, bag: 4 store: 3 @ http://localhost:5173/game/src/ui/InventoryUI.js:285
+[LOG] inventory:changed event firing with: {items: Array(4), bag: Array(3), bagUsed: 5, bagCapacity: 30} @ http://localhost:5173/game/src/systems/Inventory.js:506
+[LOG] InventoryUI._render() called, bag: 3 store: 4 @ http://localhost:5173/game/src/ui/InventoryUI.js:285
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/api/telemetry:0

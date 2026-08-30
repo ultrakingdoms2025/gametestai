@@ -24,13 +24,13 @@ const body = Rajdhani({
 });
 
 export const metadata: Metadata = {
-  title: 'AETHER NEXUS — six worlds, one gateway',
+  title: 'AETHER NEXUS — seven worlds, one gateway',
   description:
     'A first-person action-adventure that runs in a browser tab and generates every '
     + 'world, character and texture in code as you play. No install, no downloads.',
   openGraph: {
     title: 'AETHER NEXUS',
-    description: 'Six worlds. One gateway. Nothing downloaded.',
+    description: 'Seven worlds. One gateway. Nothing downloaded.',
     type: 'website',
   },
 };

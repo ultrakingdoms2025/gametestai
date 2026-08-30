@@ -33,6 +33,12 @@ output/
 # Agent scratch probes - never commit
 .probe/
 
+# Desktop release output - upload these to Steam/Partner Center instead of
+# committing unpacked Electron runtimes to the source repository.
+PCWINDOWSTEAMWRAPPER/
+desktop/release/
+desktop/node_modules/
+
 claude-skills-threejs-ecs-ts/
 dray-bow.txt
 

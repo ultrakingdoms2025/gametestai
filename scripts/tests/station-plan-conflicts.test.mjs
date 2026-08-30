@@ -68,7 +68,14 @@ import { buildStation } from './world-kit.mjs';
  * ground that permits it: the measurement got better, not the world worse. The
  * nine habitat claims are the largest single group and are the work to go and
  * do. Lower it when you fix one; never raise it for any other reason. */
-const CEILING = 30;
+/* 30 -> 21 on 2026-08-30, and this one is a FIX rather than a measurement
+ * change. All nine "Stacking habitat blocks" claims were a single feature: a
+ * ring of ten 1.5 m planters, each with its own collider, around the terrace
+ * at r = 172 - and photographed, the cyan lane dashes and LOAD ZONE paint ran
+ * straight through them. The terrace moved 24 m off the avenue centreline, so
+ * it is now a garden beside the road rather than bollards in it. All ten
+ * planters survive; refusing the occupied bearings would have left two. */
+const CEILING = 21;
 
 /**
  * Conflicts by the build step that caused them.
@@ -122,7 +129,6 @@ const BY_OWNER = {
   'Erecting Gateway Plaza': 3,
   'Opening the commercial strip': 4,
   'Scattering set dressing': 1,
-  'Stacking habitat blocks': 9,
   'Stacking the cargo yard': 2,
   dressing: 3,
   'link:canteen': 2,

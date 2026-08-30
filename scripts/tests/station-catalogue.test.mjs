@@ -251,15 +251,22 @@ test('the collision the world derives from its own geometry is unchanged', async
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 369368, boxed: 169701, kept: 199667, planting: 1360 },
+    { found: 369218, boxed: 169620, kept: 199598, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8785, 'the chunking changed');
+  assert.equal(chunks, 8776, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
-   * the +1,204 kept triangles above, counted in colliders instead. */
-  assert.equal(physics.colliders.length, 26940, 'the collider total changed');
+   * the +1,204 kept triangles above, counted in colliders instead.
+   *
+   * -- And again: the habitat terrace moved off the avenue --------------
+   * 369368 -> 369218 found, 199667 -> 199598 kept, 8785 -> 8776 chunks.
+   * Ten planters moved 24 m off the carriageway centreline; the small fall
+   * is those planters no longer sharing collision columns with the road
+   * surface they were standing on. Colliders 26940 -> 26931, the same nine.
+   */
+  assert.equal(physics.colliders.length, 26931, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

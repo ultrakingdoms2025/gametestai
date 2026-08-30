@@ -362,7 +362,13 @@ const VIEWS = {
     { name: 'portal-sports', pos: [0, 4, 30], look: [0, 5.5, 54], fov: 60 },
     { name: 'street-level', pos: [-34, 1.7, 2], look: [0, 4, 0], fov: 75 },
     { name: 'district-east', pos: [104, 4, 40], look: [60, 8, -10], fov: 72 },
-    { name: 'hull-outward', pos: [70, 10, 0], look: [190, 30, 0], fov: 80 },
+    /* 11.7, not 10. The promenade slab at this column spans y = 9.4 to 10.2
+     * with its top at 10.005, so a camera at exactly 10 stood INSIDE the deck
+     * it was meant to be standing on - and a framing that shoots from inside
+     * geometry produces evidence nobody can read. 11.7 is eye height above
+     * that top, which is where a player looking outward would actually be.
+     * @see ../../scripts/tests/station-framings.test.mjs */
+    { name: 'hull-outward', pos: [70, 11.7, 0], look: [190, 30, 0], fov: 80 },
     // The apron, seen through the great window - the view the whole outer ring
     // was arranged around.
     { name: 'window-apron', pos: [150, 6, 0], look: [520, 40, 40], fov: 82 },

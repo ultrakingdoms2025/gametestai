@@ -8482,10 +8482,15 @@ export class StationWorld extends World {
       specs.push({ deg: base, r: 146, w: 42, d: 26, floors: 9 });
     }
 
-    for (const s of specs) {
+    for (const [si, s] of specs.entries()) {
       // Keep clear of the window sector's promenade.
       const wrapped = ((s.deg + 180) % 360) - 180;
       if (Math.abs(wrapped) < 22 && s.r > 140) continue;
+      /* One label per block, so the pieces this iteration raises can be told
+       * apart from the next block's. Without it every mid-rise in the skyline
+       * shares one owner ("Raising the outer skyline"), and two blocks standing
+       * inside each other are indistinguishable from one block's own walls. */
+      B._piece = `block:${si}`;
       /* Off the carriageway first, by MOVING rather than dropping.
        *
        * `base +- 25` is five degrees off a road, for both gateway bases and
@@ -8582,6 +8587,7 @@ export class StationWorld extends World {
       });
     }
 
+    B._piece = null;
     B.flush(g, M, 'skyline', { cast: true, recv: true });
   }
 

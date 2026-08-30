@@ -608,6 +608,10 @@ conflicts - all shipped and all green), or (b) give the geometry identity, which
 district-by-district rebuild would do and is the only thing that would make an automated placement
 gate possible. Not a decision to take from inside Phase 4.
 
+**ANSWERED 2026-08-30: both, in that order — and (b) cost days, not weeks, because identity
+is metadata and `GeoBatch.add` has one call site. See §14, which also records what it found on the
+first run: a guard in `_buildSkyline` that has been computed and discarded since it was written.**
+
 **Not delivered.** Everything else the phase asks for: `_footprintClear` and `_markOccupancy` becoming
 plan queries, `_selfCollided` / `_enterableRoomFootprints` / `_backdropKeepOut` becoming published
 roles, the `StationAuditSelfTest` `_occupied` port, and the placement-Y diff against production. A
@@ -1045,3 +1049,100 @@ Owner, 2026-08-28: **D1 (b)** per-parcel names at a third segment; **D2 (a)** na
 **D3 (b)** roles published as a raster with a `reserved` warning, deferred until after Phase 6;
 **D4 (b)** an `onOverlayApplied` hook that carries colliders as well as meshes and records on the undo stack;
 **D5 (b)** enforced build identity, with the editor refusing to snap against a stale grid.
+
+Owner, 2026-08-30, on the (a)/(b) question §5 closed with: **both, in that order.** Accept that placement
+defects are found by eye and keep the gates for the classes that have identity — *and* give the geometry
+identity, then Phase 7. See §14.
+
+---
+
+## 14. Phase 4(b) — the drawn geometry knows what it is. Delivered 2026-08-30
+
+### The assumption that turned out to be wrong
+
+§5 records (b) as "what Phase 7's district-by-district rebuild would do", i.e. weeks. It is not. Identity
+does not require re-authoring anything, because **`GeoBatch.add` has exactly one call site in the
+repository** — `at`, which `localAt` also funnels through. One choke point covers all ~1,170 authored
+placement calls, and ~642 more behind the `ZoneContext.put`/`box`/`floorQuad` wrappers, **with no
+call-site edits at all.**
+
+### Identity is metadata, not scene nodes
+
+The load-bearing choice. Naming pieces as real objects would multiply draw calls — the one thing
+`GeoBatch` exists to prevent — and would blow both `MAX_CATALOGUE` and the
+`Box3.setFromObject`-per-named-node cost D1(b) already flagged. So `flush` writes `userData.parts`:
+start/count into the merged index buffer per authored piece, plus the build step, zone or link that
+raised it, read from the same ambient `_planOwner` the colliders already use. Nothing changes a vertex, a
+draw call, a material or a name.
+
+| | |
+|---|---|
+| addressable pieces | 617 opaque meshes → **37,923** named pieces (92,727 with the instanced scatter) |
+| table memory | 0.43 MB of typed arrays |
+| build time | 9,392 ms with, 9,557 ms without — inside a ±350 ms noise band, so **unmeasurable** |
+| span invariant | holds on all 617 merged meshes |
+| unowned pieces | 0 of 37,923 |
+| read-back | 92,727 pieces boxed in 96 ms (`src/dev/GeoParts.js`) |
+| suite | 3,635 → 3,641, 0 fail |
+
+`GeoParts` unions the merged and instanced populations behind one address shape. The instanced half always
+had identity — mesh plus index — which is why the abandoned drawn-geometry probe could enumerate 2,214
+props and still see nothing: it was the merged half it could not name.
+
+### What it found on the first run
+
+The five sites §5 tabulates, asked of the code rather than the eye:
+
+| what the owner saw | before: addressable | now |
+|---|---|---|
+| crates through a building corner (26.5, −153.6) | 1 prop / 27 batches | **`skyline:panelWarm#5` ∩ scatter instance, 464 m³** |
+| barrier in planter (23.6, −20.2) | 6 / 65 | 142 cross-owner pairs, named piece by piece |
+| barrier through block (21.2, 13.6) | 4 / 67 | 127 pairs, named |
+| two signs through their post (106.4, 54.5) | 1 / 38 | 0 — same owner, needs `_piece` on `_signBoard` |
+| two buildings half inside each other (−22.8, 147.4) | **0** / 30 | 0 by overlap; **root-caused by reading the code identity led to** |
+
+### `clash` is computed and never read
+
+`_buildSkyline` computes a `clash` flag under twenty-six lines of comment explaining the defect it removes
+— "backdrop may not stand in a building you can walk into" — and **nothing ever reads it.** The drop it
+describes has never happened. Measured with per-block labels: **eight blocks stand inside self-collided
+interiors**, worst `block:3` at (−40.9, 152.9), **19.9 m inside** a footprint at (−53.5, 144.6). That pair
+is what (−22.8, 147.4) looks straight at. Defect 5 is not an overlap between two skyline blocks — those
+are clean — it is a skyline block swallowing a building that has its own interior.
+
+### The fix that was tried, measured worse, and reverted
+
+Folding the clash test into the existing bearing sweep is the obvious one-line-ish fix, and the sweep is
+already the right shape (it nudges rather than drops, because a `continue` re-rolls the shared `rng` and
+was measured to move the skyline from 49,056 to 72,530 collision triangles). It gives **interiors 8 → 4
+and creates three block-on-block overlaps that did not exist, `block:2` ending 20.8 m inside `block:14`
+(17,598 m³)** — the same defect class, moved. Adding rectangle-accurate block-vs-block avoidance to the
+sweep changed nothing, because the r=158 blocks sweep into the space the r=146 block needs before it is
+placed, and the sweep silently falls back to the original bearing when nothing clears.
+
+It is a constraint-satisfaction problem over the whole ring, not a guard. **That is Phase 7 work with a
+visible art consequence, so the debt is pinned rather than pretended away:**
+`scripts/tests/station-skyline-clash.test.mjs` ratchets interiors at 8 (lower it when you fix one) and
+asserts block-on-block at **zero** — the assertion the rejected fix fails, so any future attempt has to
+pass both.
+
+### Gates, each proven able to fail before being trusted
+
+`geo-batch-parts.test.mjs` (6 cases) — mutation-tested with spans packed in reverse (caught), no table
+written (caught), owner frozen at first `add` (caught), and one `new GeoBatch()` without the world, which
+is the regression the file exists for: caught, naming the five `dressing` batches it orphaned.
+`station-skyline-clash.test.mjs` (2 cases) — ceiling lowered to 7 (caught); the rejected sweep fix
+(caught, naming `block:2 x block:14: 17598 m3`).
+
+### Deferred, deliberately
+
+- **`instanced()` carries no owner.** It is a free function with no world to read `_planOwner` from. Costs
+  nothing yet — "same thing by construction" for a scatter is same mesh and same index — and is worth
+  doing only when a gate asks.
+- **`_piece` is set by one builder.** Only `_buildSkyline` labels per block. Every intra-step defect stays
+  invisible until its builder does the same: `_signBoard` (which is why the signs-through-post site reads
+  zero), the habitat towers, commercial units, cargo stacks. This is D1(b)'s third colon segment arriving
+  from the measurement side, and it is the cheapest remaining win.
+- **A global placement gate.** `overlappingPairs` runs, but "a building IS a set of overlapping boxes"
+  still holds: without finer `_piece` labels the cross-owner filter is the only thing separating
+  construction from defect. Per-builder labels first, then the gate.

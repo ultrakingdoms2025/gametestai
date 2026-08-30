@@ -3641,6 +3641,27 @@ export class StationWorld extends World {
     return true;
   }
 
+  /**
+   * Would a footprint here cover painted lettering?
+   *
+   * Circle against circle, which is conservative: a legend is a square cell
+   * and this treats it as its circumscribed disc, so a prop is refused a
+   * little before it actually touches type. That is the right direction to be
+   * wrong in - lettering the player cannot read is a defect a screenshot
+   * shows, and a prop half a metre further away is not.
+   *
+   * Separate from `_footprintClear` on purpose. That answers "is this ground
+   * free", and paint does not occupy ground: you can stand on a legend, you
+   * just must not be BUILT on one.
+   */
+  _onLegend(x, z, halfX = 1.0, halfZ = 1.0) {
+    const reach = Math.hypot(halfX, halfZ);
+    for (const l of this._legendSpots ?? []) {
+      if (Math.hypot(l.x - x, l.z - z) < l.r + reach) return true;
+    }
+    return false;
+  }
+
   _occKey(x, z) {
     return occKeyOf(x, z);
   }
@@ -5451,6 +5472,25 @@ export class StationWorld extends World {
       routeMesh.renderOrder = 1;
       g.add(routeMesh);
     }
+
+    /* ── WHERE THE LETTERING IS, RECORDED WHERE IT IS AUTHORED ──────────
+     *
+     * Painted legends sit at y = 0.135, and `_markOccupancy` only marks
+     * triangles reaching above 0.5 m - deliberately, because the deck itself
+     * is at 0.09 and marking it would make `_footprintClear` false everywhere.
+     * So a prop nudged off a planter could not see lettering and could land on
+     * it: measured, that covered `walk at (-5, -27)`.
+     *
+     * Recorded here from `decalCells` rather than recovered from UVs later,
+     * because here the cell is still a NUMBER with a name - reverse-engineering
+     * atlas coordinates in the game to rediscover what this loop already knows
+     * would be test logic living in the world. LEGEND_CELLS indexes
+     * DECAL_NAMES: keepclear 3, number 4, stop 12, walk 13, load 14. */
+    const LEGEND_CELLS = new Set([3, 4, 12, 13, 14]);
+    this._legendSpots = (this._legendSpots ?? []).concat(
+      decalCells.filter((d) => LEGEND_CELLS.has(d.cell))
+        .map((d) => ({ x: d.x, z: d.z, r: d.size * 0.5 })),
+    );
 
     const decalGeos = [];
     for (const d of decalCells) {
@@ -9821,6 +9861,39 @@ export class StationWorld extends World {
       for (const [kind, lx, lz, a, b, c] of QUEUE) {
         const p = this._localPoint(gcx, gcz, th, lx, 0, lz);
         if (avenueClearance(p.x, p.z) < 1.2) continue;
+        /* And not inside whatever the plaza already built here.
+         *
+         * QUEUE is ten hand-composed offsets applied at all SIX gateways, so
+         * the same local coordinate lands somewhere different at each one.
+         * Editing an offset to fix one gateway moves it at the other five,
+         * which is why this is a per-gateway nudge and not a data change.
+         * Measured: the locker at local (-15.525, -24) put two of its base
+         * trims 64% and 65% inside the 5 m planter `plaza-props:trim#179`.
+         *
+         * THREE RADII, because a nudge ring has to clear the OBSTACLE and not
+         * the prop. The first attempt used 2.2 m alone and moved nothing: the
+         * thing it stands in is a 5 m planter, and 2.2 m from its middle is
+         * still its middle.
+         *
+         * NUDGED, and placed as authored when nothing is clear - never
+         * skipped. Several of these kinds draw from `rng` (`crateStack` rolls
+         * its height and count), so a `continue` would re-roll every prop
+         * after it at every later gateway. */
+        if (!this._footprintClear(p.x, p.z, 1.0, 1.0, 1.6)) {
+          const ox = p.x, oz = p.z;
+          let put = false;
+          for (const rad of [2.2, 4.0, 6.0]) {
+            for (let d = 0; d < 12 && !put; d++) {
+              const ang = (d / 12) * Math.PI * 2;
+              const nx = ox + Math.cos(ang) * rad, nz = oz + Math.sin(ang) * rad;
+              if (avenueClearance(nx, nz) < 1.2) continue;
+              if (!this._footprintClear(nx, nz, 1.0, 1.0, 1.6)) continue;
+              if (this._onLegend(nx, nz, 1.0, 1.0)) continue;
+              p.x = nx; p.z = nz; put = true;
+            }
+            if (put) break;
+          }
+        }
         // A puddle has no heading; everything else turns with the gateway.
         if (kind === 'puddle') { puddle(p.x, p.z, a); continue; }
         const yaw = th + a;
@@ -9877,6 +9950,10 @@ export class StationWorld extends World {
             const nx = ox + Math.cos(a) * rad, nz = oz + Math.sin(a) * rad;
             if (!legal(nx, nz)) continue;
             if (!this._footprintClear(nx, nz, 1.2, 1.2, 1.6)) continue;
+            /* Paint does not occupy ground, so `_footprintClear` cannot see
+             * it - see `_onLegend`. A prop nudged onto a legend covers type
+             * the player is meant to read. */
+            if (this._onLegend(nx, nz, 1.2, 1.2)) continue;
             x = nx; z = nz; moved = true;
           }
           if (moved) break;

@@ -35,14 +35,15 @@ import { collectParts, fractionInside, isDesignedContainer } from '../../src/dev
  *
  * ── Why a ratchet ─────────────────────────────────────────────────────────
  *
- * Four remain, and all four read between 63% and 92% - partial embedding,
- * which is what a real defect looks like here. Zero would fail on arrival
- * and be disabled within a day.
+ * Two remain: a hologram projector cone 92% inside a commercial panel at
+ * y = 13.8, and a vent grate 63% inside a residential panel. Both are
+ * single hand-authored placements rather than scatter, so each needs its own
+ * look. Zero would fail on arrival and be disabled within a day.
  * Lower it when you clear one; a rise means a placement pass started putting
  * props inside the world again.
  */
 
-const CEILING = 4;
+const CEILING = 2;
 /** Below this in ANY dimension the piece is paint, not an object. */
 const FLAT = 0.15;
 

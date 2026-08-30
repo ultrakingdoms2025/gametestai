@@ -1975,3 +1975,42 @@ than its centre, noted as something that changes every count in the file and is 
 
 **Carriageway conflicts: 21 → 4.** Remaining: the observation promenade crossing avenue 0's axis, which
 needs the frame in front of you.
+
+### The last four: photographed, and left deliberately
+
+`window-apron` stands at (150, 6, 0) on avenue 0 looking outward, which is what a player walking out that
+avenue sees. The road runs to the observation promenade's leading edge — a raised terrace spanning the
+full width with a lit lip, the great window beyond. **It reads as a designed threshold, not as a road
+running into a wall.** The stairs up are at ±18°, off-frame.
+
+So the four conflicts are real in the plan's terms and invisible in the world's: the avenue's surface is
+drawn out to `ROAD_R1` = 188 and the terrace sits on it from r = 158, so thirty metres of carriageway are
+under a deck nobody can see them from.
+
+The fix the gate names — "stop the avenue at the promenade" — is now cheap to *specify* and still not cheap
+to *do*: `R1` would have to become per-bearing in a loop that draws all six avenues identically, the
+promenade's `promR0` would have to become a shared constant, and the plan's seeding loop would have to take
+the same per-bearing bound. That is composition plumbing for a hidden overlap, and the frame above is the
+argument for not doing it in passing.
+
+**Left at 4, photographed.** Only avenue 0 is affected — the promenade's arc is ±48° and the avenues are
+every 60°.
+
+---
+
+## Placement backlog: closed
+
+| | at the start of this pass | now |
+|---|---|---|
+| props inside structure | 18 | **0** |
+| props inside rooms | (not measured) | **0** |
+| pieces inside backdrop blocks | 1,008 | **0** |
+| block-on-block overlap | 0 | **0** (and now measured exactly) |
+| skyline placed on clean ground | (not measured) | **16 / 16** |
+| block/interior clashes | 8 | **1** (refused with reasons) |
+| buried signs | 13 | **1** (accepted, photographed) |
+| carriageway conflicts | 21 | **4** (photographed, composition) |
+| phantom crowd colliders | 202 | **0** |
+
+Everything remaining is a judged accept with the evidence recorded beside it. Phase 7's per-release gate is
+7½ of 7 and its stated prerequisite, D5, has landed — so the district-by-district rebuild is unblocked.

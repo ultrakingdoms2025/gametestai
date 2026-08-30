@@ -1214,3 +1214,37 @@ foliage in front of it. `station-sign-mounting.test.mjs` ratchets at 3.
 The 20 carriageway conflicts, the crates in the building corner at (26.5, −153.6), and the barrier sites
 at (23.6, −20.2) and (21.2, 13.6) are all now measurable exactly rather than as candidate lists — which is
 what Phase 7 needs to re-author a district and prove it did not make things worse.
+
+### The backlog was one defect all along: the backdrop stands on the station
+
+With the exact test working, the whole station was swept rather than the five reported spots. 127,278 box
+candidates reduce to 1,246 pieces at ≥ 50% genuinely inside another, in 10.2 s — and the ranking is
+dominated by one host class. Restricting to the rule that has no legitimate exceptions — **the skyline is
+backdrop, it has no interior, nothing may be inside it**:
+
+| block | pieces swallowed | what |
+|---|---|---|
+| `block:13` | **613** | `Stacking habitat blocks` ×502, scatter ×111 — an entire habitat tower inside scenery |
+| `block:3` | 168 | `Stacking habitat blocks` |
+| `block:4` | 107 | habitat ×89, scatter ×18 |
+| `block:15` | 61 | dressing ×39, traffic control ×17 |
+| nine more | 59 | hangar, commercial strip, cargo yard, gateway plaza |
+| **total** | **1,008** | across **13 of the 16 blocks** |
+
+**Three separately reported defects are this one cause.** "Two buildings half inside each other" at
+(−22.8, 147.4) is `block:3` and its 168 habitat pieces. "Crates through a building corner" at
+(26.5, −153.6) is `block:9` standing over the cargo yard — `cargo:instanced#28`, a 13.5 × 2.9 × 11.8
+stack, measured **100% inside** `skyline:panelWarm#5`. The eight block/interior clashes ratcheted in
+`station-skyline-clash.test.mjs` are the same blocks a third time. And the `clash` guard in
+`_buildSkyline` was written to prevent precisely this, and has never been read.
+
+`station-backdrop.test.mjs` ratchets the total at 1,008 — deterministic across runs, proven able to fail
+at 1,007. It is the strongest gate in this family because the rule needs no judgement: "is this prop
+inside that building" requires knowing what should contain what, and a building genuinely is a set of
+overlapping boxes; a backdrop block should contain nothing at all.
+
+**Also learned: exactness does not remove the need for a rule.** The unrestricted sweep's top hosts
+include `hull:instanced`, `zone:gym:hullIn` and the zone shells, each "containing" everything inside
+them — which is true, and by design. Ray parity answers *is A inside B*, not *should A be inside B*. The
+second question is architectural and has to be stated per host class, which is what makes the backdrop
+rule worth a gate and a general containment sweep worth only a probe.

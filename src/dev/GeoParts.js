@@ -61,7 +61,11 @@ export function collectParts(root) {
         o.getMatrixAt(i, _m);
         const box = gb.clone().applyMatrix4(_m).applyMatrix4(o.matrixWorld);
         if (!Number.isFinite(box.min.x)) continue;
-        out.push({ mesh: o.name, obj: o, index: i, owner: null, piece: null, box, tris, instanced: true });
+        /* An InstancedMesh is usually anonymous - `instanced()` never names
+         * one - so a finding reads "(unnamed)#28" and cannot be looked up.
+         * The group it hangs under is named, and that is the district. */
+        const name = o.name || (o.parent?.name ? `${o.parent.name}:instanced` : '(unnamed)');
+        out.push({ mesh: name, obj: o, index: i, owner: null, piece: null, box, tris, instanced: true });
       }
       return;
     }

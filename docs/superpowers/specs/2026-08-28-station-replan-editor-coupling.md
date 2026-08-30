@@ -1146,3 +1146,32 @@ is the regression the file exists for: caught, naming the five `dressing` batche
 - **A global placement gate.** `overlappingPairs` runs, but "a building IS a set of overlapping boxes"
   still holds: without finer `_piece` labels the cross-owner filter is the only thing separating
   construction from defect. Per-builder labels first, then the gate.
+
+### Site 4, closed: the pylon signs were threaded through their post
+
+Labelling `_signBoard` per sign — one line in one function, covering all fourteen call sites — turned
+(106.4, 54.5) from **0 findings into the defect, addressed to the piece**: `dressing:signs#4` and `#5`
+each 2.60 m inside `dressing:panelDark#3`. Photographed, the pylon comes up through the middle of the
+artwork and cuts "DOCK 4 // ARRIVALS" in half lengthways.
+
+**Root cause.** `_signBoard` offsets each face by `thickness * 0.55` and defaults `thickness` to 0.18 —
+*the sign's own backer*, with no knowledge of what it is mounted on. The avenue-mouth pylons are
+`boxGeo(2.0, 12.5, 2.0)`, so the faces landed 0.9 m inside a 1.0 m half-width post. **All three pylons**
+([70, 52], [118, 47], [62, −54]) carried it, two signs each, two faces each — twelve buried faces from one
+default. Fixed by passing `thickness: 2.2` at the call site, which carries backer and accent out with the
+faces so the sign reads as a housing wrapped around the post. Verified by photograph: the sign is legible.
+
+**The measurement lesson, which is the same one §5 recorded about colliders.** Box overlap FOUND this and
+cannot CONFIRM it. A sign face is a rotated plane, so its AABB overlaps the post's whether or not the
+plane does, and the post's own AABB is 2.8 m because it is a 2.0 m square turned 37°. Both numbers stay
+non-zero after a fix that is unarguable in a screenshot. `station-sign-mounting.test.mjs` therefore
+measures **distance from the post's axis** — exact for a square post, whatever the yaw — and reads 0.10 m
+before, 1.21 m after, against a half-width of 1.0. Proven able to fail by restoring the old default.
+
+**A class, not an instance — and an upper bound, not a count.** A point-in-box sweep of all 191 sign faces
+reports **47 candidates** whose centre falls inside some other solid, across `plaza-props`,
+`zone:habitation` (21 of them), `zone:gym` and `zone:canteen`. That number must not be quoted as a defect
+count: the mounts are rotated wall panels whose AABBs are larger than the panels, so a correctly flush
+sign reads as buried — the fixed pylons are still in the list. Separating the two needs the piece's actual
+triangles, which the spans make possible and which no instrument has used yet. **That is the next
+increment, and it is the one that turns identity into a general placement gate.**

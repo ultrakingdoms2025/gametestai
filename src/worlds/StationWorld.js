@@ -4183,6 +4183,15 @@ export class StationWorld extends World {
    * space, a second correctly-wound quad on the reverse.
    */
   _signBoard(B, cell, w, h, x, y, z, yaw, opts = {}) {
+    /* One label per sign, restored afterwards so the caller's own geometry is
+     * not labelled as a sign. A sign and the post it is mounted on are almost
+     * always raised by the same build step, so without this they share an
+     * owner and a piece, and "two signs driven through their post" - reported
+     * live at (106.4, 54.5) - is indistinguishable from a sign correctly
+     * mounted on one. The post keeps a null piece, which is what makes the
+     * pair comparable. */
+    const outer = B._piece;
+    B._piece = `sign:${(this._signSeq = (this._signSeq ?? 0) + 1)}`;
     const quad = () => {
       const q = new THREE.PlaneGeometry(w, h);
       signUV(q, cell);
@@ -4199,6 +4208,7 @@ export class StationWorld extends World {
     if (opts.accent) {
       B.at(opts.accent, boxGeo(w * 1.07, 0.1, t * 1.15, 1), x, y - h * 0.63, z, yaw);
     }
+    B._piece = outer;
   }
 
   /* ---------------------------------------------------------------- */
@@ -10019,8 +10029,19 @@ export class StationWorld extends World {
       for (const s of [-1, 1]) {
         B.at('emSodium', boxGeo(0.34, 10.5, 0.34, 1), ax + Math.cos(ayaw) * s * 1.05, 6.4, az - Math.sin(ayaw) * s * 1.05, ayaw);
       }
-      this._signBoard(B, SIGN_ROLE.dock, 5.2, 2.6, ax, 10.0, az, ayaw, { twoSided: true, accent: 'emSodium' });
-      this._signBoard(B, SIGN_ROLE.concourse, 3.4, 1.7, ax, 6.6, az, ayaw + Math.PI / 2, { twoSided: true, accent: 'emCyan' });
+      /* `thickness` is what the sign is mounted ON, not the sign's own board.
+       *
+       * `_signBoard` offsets each face by `thickness * 0.55` and defaults to
+       * 0.18, which is right for a fascia on a shopfront and very wrong here:
+       * the pylon is a 2.0 m square column, so the default put both faces
+       * 0.9 m INSIDE it and the post came through the middle of the artwork,
+       * cutting "DOCK ARRIVALS" in half on all three pylons. 2.2 puts the
+       * faces at +/-1.21 m, clear of the column's +/-1.0 m by 0.21 m, and
+       * carries the backer and accent out with them so the sign reads as a
+       * housing wrapped around the post rather than a plane through it. */
+      const mount = { twoSided: true, thickness: 2.2 };
+      this._signBoard(B, SIGN_ROLE.dock, 5.2, 2.6, ax, 10.0, az, ayaw, { ...mount, accent: 'emSodium' });
+      this._signBoard(B, SIGN_ROLE.concourse, 3.4, 1.7, ax, 6.6, az, ayaw + Math.PI / 2, { ...mount, accent: 'emCyan' });
       this._solid(ax, 6, az, 1.2, 6, 1.2);
       this._contact(ax, az, 8);
       this._mmCircle(ax, az, 2, 'rgba(255,150,80,0.4)', null);

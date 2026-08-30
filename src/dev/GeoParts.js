@@ -124,7 +124,13 @@ export function nearby(parts, x, z, r) {
  * carry finer labels.
  */
 export function overlappingPairs(parts, { minOverlap = 0.05, sameThing } = {}) {
-  const same = sameThing ?? ((a, b) => a.owner === b.owner && a.owner !== null);
+  /* Same owner AND same piece. The piece half matters as soon as any builder
+   * labels: a sign carries `sign:12` and the post beside it carries null, so
+   * they are two things inside one build step and can be compared. Without it
+   * every label would be ignored and the reader would answer at step
+   * granularity forever. */
+  const same = sameThing
+    ?? ((a, b) => a.owner === b.owner && a.piece === b.piece && a.owner !== null);
   /* Bucket by a 4 m XZ grid so this is not 37,923 squared. */
   const CELL = 4;
   const grid = new Map();

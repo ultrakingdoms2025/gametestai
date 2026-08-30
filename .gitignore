@@ -35,7 +35,11 @@ output/
 
 # Desktop release output - upload these to Steam/Partner Center instead of
 # committing unpacked Electron runtimes to the source repository.
-PCWINDOWSTEAMWRAPPER/
+# Keep final distributables available for backup, but exclude electron-builder's
+# duplicated unpacked runtimes and diagnostics.
+PCWINDOWSTEAMWRAPPER/**/win-unpacked/
+PCWINDOWSTEAMWRAPPER/**/builder-*.yml
+PCWINDOWSTEAMWRAPPER/**/builder-*.yaml
 desktop/release/
 desktop/node_modules/
 

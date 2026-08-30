@@ -57,10 +57,15 @@ const CEILING = 18;
  * returns 'carriageway'. Then RE-TRACED after the mirror bug was fixed, which
  * moved four of the eight groups. The numbers below are the corrected ones.
  *
- * `Spanning the great dome` 8 - StationWorld.js:10431, the outer ring's link
- *   mouths. Was reported as 2 by the mirrored test; six more were hidden by
- *   it. These are at r = 247 where the road runs out at the hull, and may be
- *   correct as built - but there are four times as many as anyone thought.
+ * `link:*` 2 each, 8 in total - the outer ring's link mouths, one pair per
+ *   link. These were reported as 2 by the mirrored `_rectCovers`, and then as
+ *   8 under the single label `Spanning the great dome` once that was fixed.
+ *   Scoping ownership to the zone and link builders resolved them into the
+ *   pattern they actually are: EVERY link crosses a carriageway at its mouth,
+ *   symmetrically, two claims each. That is a far more useful thing to know
+ *   than "the dome has eight", and it is what the ownership increment bought.
+ *   Whether it is correct as built is still open - a link mouth is how a
+ *   player leaves the hub, so something has to cross the avenue there.
  *
  * `Opening the commercial strip` 4 - StationWorld.js:7378 and :7384, the
  *   window promenade's raised deck and its balustrade. NOT a misplaced
@@ -93,8 +98,11 @@ const CEILING = 18;
 const BY_OWNER = {
   'Erecting Gateway Plaza': 3,
   'Opening the commercial strip': 4,
-  'Spanning the great dome': 8,
   dressing: 3,
+  'link:canteen': 2,
+  'link:construction': 2,
+  'link:gym': 2,
+  'link:habitation': 2,
 };
 
 test('nothing new stands in a carriageway', async () => {

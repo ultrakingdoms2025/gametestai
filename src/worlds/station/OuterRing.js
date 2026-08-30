@@ -84,10 +84,31 @@ export function buildOuterRing(world, actors) {
   buildGreatDome(world);
   buildApron(world);
 
+  /* Each zone and each link owns its own solids.
+   *
+   * `world._planOwner` is the BUILD STEP's label, and this whole file runs
+   * inside one step - "Spanning the great dome" - which raises the apron, four
+   * links and four zones, roughly half the station's collision. That is too
+   * coarse to be useful: with every one of those solids owned by the same
+   * string, "is this prop inside something that is not its own structure"
+   * cannot distinguish a canteen crate sitting in the canteen's own deck from
+   * one buried in the dome. Measured before this change, 1,459 solids sat
+   * >=50% inside another step's solid and the dominant term was this step
+   * against itself.
+   *
+   * The names match the groups these builders already create - `zone:gym`,
+   * `link:gym` - so a collider's owner and the node the editor addresses it by
+   * are the same string wherever both exist. Restored around each call rather
+   * than set once, so anything raised between zones keeps the step's own
+   * label and nothing leaks past the loop. */
   const built = [];
+  const step = world._planOwner;
   for (const spec of ZONES) {
+    world._planOwner = `link:${spec.id}`;
     buildLink(world, spec);
+    world._planOwner = `zone:${spec.id}`;
     built.push(buildZone(world, spec, actors));
+    world._planOwner = step;
   }
   return built;
 }

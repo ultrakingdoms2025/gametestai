@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="0; url=https://aethernexus.games/">
+  <meta http-equiv="refresh" content="0; url=https://www.aethernexus.games/">
   <title>AETHER NEXUS</title>
   <style>
     :root { color-scheme: dark; }
@@ -41,10 +41,15 @@
   <main>
     <h1>AETHER NEXUS</h1>
     <p>Opening the gateway...</p>
-    <a href="https://aethernexus.games/">Continue to Aether Nexus</a>
+    <a href="https://www.aethernexus.games/">Continue to Aether Nexus</a>
   </main>
   <script>
-    window.location.replace('https://aethernexus.games/');
+    var destination = 'https://www.aethernexus.games/';
+    if (window.top && window.top !== window) {
+      window.top.location.replace(destination);
+    } else {
+      window.location.replace(destination);
+    }
   </script>
 </body>
 </html>

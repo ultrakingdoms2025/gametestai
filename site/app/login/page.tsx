@@ -61,6 +61,12 @@ function LoginForm() {
   }
 
   async function handleGoogle() {
+    if (window.top && window.top !== window) {
+      const target = new URL('/api/auth/signin/google', window.location.origin);
+      target.searchParams.set('callbackUrl', callbackUrl);
+      window.top.location.href = target.toString();
+      return;
+    }
     startTransition(async () => {
       await signIn('google', { callbackUrl });
     });

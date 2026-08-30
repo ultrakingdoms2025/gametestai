@@ -496,6 +496,36 @@ production placement's resolved snap Y: placements snap unconditionally through 
 `groundHeight` window (`Loot.js:708-710`), and moving a crate drops or hangs the pickup on it.
 **Editor:** functional; `dressing:*` anchors shift and must be listed in the release note.
 
+### Phase 4 — status, 2026-08-29. **SKIPPED THEN, PART-STARTED NOW.**
+Phase 4 was never run: the owner said "ok onto phase 5" and the sequence went straight past it. Two
+pieces of it exist now, arrived at from the other end — by chasing a defect the owner reported from
+inside the game rather than by working the plan.
+
+**Delivered.** `StationPlan.roleUnder` — the read-only half of `claim`: the same rasterise-and-confirm
+scan without the bookkeeping, so a placement loop can ask before it builds instead of being counted
+afterwards. It takes an optional role filter, and that filter matters: refusing everything that clips a
+*sightline* would delete most of what the gateways are silhouetted against, so only `carriageway` is
+enforced today. `_buildSkyline` is the first builder converted, and it nudges rather than skips — see
+its note on the shared `rng` stream, which is the trap any further conversion will hit.
+
+**Gate.** `station-plan-conflicts.test.mjs` is the Phase 4 gate written as a **ratchet** rather than the
+`=== 0` the plan above asks for. Zero would fail on arrival and be disabled within a day; a ceiling of
+20 with a per-builder split cannot, and it names the pass to go and look at. Lower it when you fix one.
+
+**The work list, measured.** 20 claims stand on a carriageway or its kerb (`ROAD_EDGE_HALF` = 9.9 m):
+`Opening the commercial strip` 4 (avenue 0, the street the player walks down — and note the strip's
+*units* sit 13.5 m off the centreline and are clean, so these four are something else inside that
+step); `Stacking the cargo yard` 4; `Erecting Gateway Plaza` 3 (r = 41-42, where the roles necessarily
+abut); `Stacking habitat blocks` 3; `Spanning the great dome` 2 and `Raising the pressure hull` 1
+(r = 204-247, where the road runs out at the hull — these may be correct as built); `dressing` 2;
+`Calibrating Traffic Control` 1.
+
+**Not delivered.** Everything else the phase asks for: `_footprintClear` and `_markOccupancy` becoming
+plan queries, `_selfCollided` / `_enterableRoomFootprints` / `_backdropKeepOut` becoming published
+roles, the `StationAuditSelfTest` `_occupied` port, and the placement-Y diff against production. A
+`_footprintClear` conversion was attempted and reverted the same session: it did not remove the
+conflict it was aimed at, and a guard that changes geometry without fixing anything is worse than none.
+
 ### Phase 5 — R2, actor surfaces, as a build-time sweep. *(1 week)*
 Keep the authored y as an intent hint; add a lift-and-settle sweep in the `_settleDressing` slot with the
 authored y as the null fallback. Preserve the lift-only rule and the ring exclusion.

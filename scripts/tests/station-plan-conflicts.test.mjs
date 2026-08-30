@@ -48,9 +48,34 @@ import { ROAD_R1 } from '../../src/worlds/station/StationKit.js';
  *
  * So a ZERO here would mean "nothing bigger than a grid cell stands in a
  * road", which is not the same sentence. Anything measuring against this plan
- * must use half-extents of at least 0.75, and the fix - testing the rect
- * against the cell's EXTENT rather than its centre - would change every count
- * in this file and is not a thing to do in passing.
+ * must use half-extents of at least 0.75.
+ *
+ * ── AND THE OBVIOUS FIX IS WORSE. MEASURED, NOT ASSUMED ──────────────────
+ *
+ * Testing the claim's rect against the cell's EXTENT instead of its centre
+ * was written, run, and reverted. It takes this count from 4 to 61 - and 42
+ * of the 57 it adds are AVENUE LAMP POSTS that are standing correctly.
+ *
+ * A lamp sits at `ROAD_W / 2 + 1.6` = 10.6 with a 0.25 m half-extent, so its
+ * inner face is at 10.35 against a road edge of `ROAD_EDGE_HALF` = 9.9: clear
+ * by 0.45 m, by simple arithmetic. But `_seed` rasterises the corridor to
+ * whole cells, and the cell holding the boundary sample at 9.9 reaches 10.5.
+ * The extent test hits it.
+ *
+ * So the two tests are wrong in OPPOSITE directions and neither is the
+ * answer: the centre test cannot see a claim smaller than a cell, and the
+ * extent test reports anything within a cell of the kerb. The cell is not the
+ * road - it is a QUANTISATION of the road, to 1.5 m, and both errors are that
+ * 1.5 m being asked a sub-metre question.
+ *
+ * The real fix is to stop asking the raster. `claim` and `roleUnder` would
+ * test the claim against the corridor's own rectangle, with the cells kept as
+ * what they are good at - an index for finding which corridors are worth
+ * testing. That needs the plan to store the corridor shapes it currently
+ * throws away after seeding, and it is a piece of work rather than a patch.
+ * Until then the centre test is kept, because an under-report leaves a known
+ * blind spot while an over-report buries every real finding under 42 lamp
+ * posts.
  *
  * ── The by-owner list is the work list ───────────────────────────────────
  * It is asserted, not just printed, because the useful regression is not "the

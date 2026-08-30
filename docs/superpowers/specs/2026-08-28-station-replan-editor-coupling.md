@@ -2014,3 +2014,39 @@ every 60°.
 
 Everything remaining is a judged accept with the evidence recorded beside it. Phase 7's per-release gate is
 7½ of 7 and its stated prerequisite, D5, has landed — so the district-by-district rebuild is unblocked.
+
+## 19. The obvious fix for the blind spot is worse, and the reason is the interesting part
+
+§18 recorded that `claim` and `roleUnder` confirm a hit by asking whether the claim's rectangle covers a
+**cell centre**, so a claim under 0.75 m of half-extent can sit in a road and slip between the centres.
+The obvious repair is to test against the cell's **extent** instead. It was written, run, and **reverted**.
+
+It takes the carriageway count from 4 to 61 — and **42 of the 57 it adds are avenue lamp posts that are
+standing correctly.**
+
+A lamp sits at `ROAD_W / 2 + 1.6` = 10.6 with a 0.25 m half-extent, so its inner face is at 10.35 against a
+road edge (`ROAD_EDGE_HALF`) of 9.9: **clear by 0.45 m**, by arithmetic that needs no instrument. But
+`_seed` rasterises the corridor to whole cells, and the cell holding the boundary sample at 9.9 reaches
+10.5. The extent test hits it.
+
+### The two tests are wrong in opposite directions
+
+| test | error | consequence |
+|---|---|---|
+| cell **centre** | cannot see a claim smaller than a cell | an ad mast sat in a road, twice, unreported |
+| cell **extent** | reports anything within a cell of the kerb | 42 correctly-placed lamp posts as conflicts |
+
+Neither is the answer, and the reason they fail symmetrically is the same one: **the cell is not the road.
+It is a quantisation of the road to 1.5 m**, and both errors are that 1.5 m being asked a sub-metre
+question. Every instrument failure in this pass has had this shape — an AABB standing in for a rotated
+building, a circumscribed circle standing in for a block, a bounding box standing in for a tower — and this
+is the same shape one level down, in the plan's own index.
+
+**The real fix is to stop asking the raster.** `claim` and `roleUnder` would test the claim against the
+corridor's own rectangle, with the cells kept as what they are actually good at: an index for finding which
+corridors are worth testing at all. That needs the plan to keep the corridor shapes it currently throws
+away after seeding — a piece of work, not a patch.
+
+The centre test is kept meanwhile, on the argument that decides it: **an under-report leaves a known blind
+spot that is written down; an over-report buries every real finding under 42 lamp posts.** A gate nobody
+can triage is a gate that gets disabled, which this file has already said twice about zeroes.

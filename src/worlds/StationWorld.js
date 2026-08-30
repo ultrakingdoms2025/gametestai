@@ -2963,8 +2963,10 @@ export class StationWorld extends World {
   /* ---------------------------------------------------------------- */
 
   /** Axis-aligned solid volume. */
-  _solid(cx, cy, cz, hx, hy, hz) {
-    return this.track(this.physics.addBox(cx, cy, cz, hx, hy, hz));
+  _solid(cx, cy, cz, hx, hy, hz, ownerId = null) {
+    // Owner from the build step, on the same terms as `_solidRot` above.
+    const owner = ownerId ?? this._planOwner ?? null;
+    return this.track(this.physics.addBox(cx, cy, cz, hx, hy, hz, owner ? { ownerId: owner } : {}));
   }
 
   /**
@@ -4076,9 +4078,35 @@ export class StationWorld extends World {
      * a builder has to remember to write - which is the whole reason
      * `Gym.scope()` works and a hand-kept keep-out table would not. Nothing
      * reads it back yet; see `StationPlan`. */
-    this.plan?.claim(x, z, y - hy, y + hy, hx, hz, ry, ownerId ?? this._planOwner ?? null);
+    const owner = ownerId ?? this._planOwner ?? null;
+    this.plan?.claim(x, z, y - hy, y + hy, hx, hz, ry, owner);
+    /* The COLLIDER gets the owner too, not just the plan.
+     *
+     * ── Why this was worth doing before anything else in Phase 4 ─────────
+     * `Collider.ownerId` says of hand-authored solids that "null is the honest
+     * answer there: it means fall back to geometry, not belongs to nobody".
+     * True for the editor, and it is also what makes the world unmeasurable.
+     * Asked "is this lamp post buried in a building", `containsPoint` answers
+     * yes for 516 of 1,227 posts - and every one of those is the post's OWN
+     * collider, because with no owner there is no way to say "anything but
+     * me". Three separate measurements this session died on that, and each
+     * time the wrong answer looked like a defect worth fixing.
+     *
+     * `this._planOwner` is the build step's label, already tracked for the
+     * plan's conflict report, and it is exactly the granularity the question
+     * needs: a prop inside its own collider shares an owner, a prop inside a
+     * habitat block does not.
+     *
+     * ── Why it cannot disturb the map editor ─────────────────────────────
+     * `MapOverlay._collidersInside` is ownership-FIRST: it asks
+     * `_collidersOwnedBy(name)` for a NODE name and falls back to geometry
+     * containment when that finds nothing. Step labels ("Stacking the cargo
+     * yard") are not node names and never collide with one, so an explicitly
+     * tagged collider still wins, an untagged one still reaches the fallback,
+     * and the fallback does not filter by owner at all. The editor sees the
+     * same set it saw before. */
     return this.track(
-      this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), ry, ownerId ? { ownerId } : undefined)
+      this.physics.addRotatedBox(_v1.set(x, y, z), _v2.set(hx, hy, hz), ry, owner ? { ownerId: owner } : undefined)
     );
   }
 

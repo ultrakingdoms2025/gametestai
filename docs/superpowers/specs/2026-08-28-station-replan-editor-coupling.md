@@ -1492,3 +1492,24 @@ correctness.**
 One thing this loop did settle: it is the one place in the file where a `continue` is free, because `th` is
 `(i / 10) * TAU` and nothing in it draws from `rng`. Both the skyline and the near-field scatter had to
 nudge for exactly the opposite reason.
+
+### Resolved: the terrace moved, and the ratchet came DOWN for the first time
+
+Owner chose the offset. `roadPos`'s `off` argument moves the whole terrace 24 m clear of the avenue
+centreline — **all ten planters survive, zero carriageway claims, zero planters inside structure.**
+Carriageway ratchet **30 → 21**, the first time that number has fallen, and the first fall that is a fix
+rather than a measurement improvement.
+
+Direction was measured, not guessed: **+24 m puts the terrace inside the habitat blocks** (photographed,
+one planter clipping a structure edge); −24 m is clear.
+
+⚠ **And the visual check nearly defeated the change.** Four framings at the terrace's new centroid came
+back as empty deck, while three independent numeric measures said it was there. One of the two instruments
+was lying, and shipping before knowing which would have been precisely the failure this whole effort
+exists to prevent. Shooting the OLD location settled it in one frame: the carriageway is clean and the
+planters are plainly visible off to one side. **The framings had been pointing past them.** Worth
+remembering that a subject framing which returns "nothing there" is evidence about the framing at least as
+often as about the world.
+
+**Hub state now:** 4 props genuinely embedded (63–92%), 16 backdrop pieces, 3 buried signs. The nine
+habitat road claims are closed.

@@ -134,6 +134,38 @@ export function isMarking(part, minH = MARKING_H) {
   return (part.box.max.y - part.box.min.y) < minH;
 }
 
+/**
+ * Hosts that legitimately contain other things.
+ *
+ * ── Why this is a list, and has to be ─────────────────────────────────────
+ *
+ * Ray parity answers IS A INSIDE B. It never answers SHOULD A BE INSIDE B,
+ * and the second question is architectural: it depends on what the host is
+ * FOR. Three separate sweeps rediscovered that the hard way in one day, each
+ * time by photographing a "defect" and finding it was a prop standing
+ * correctly inside something hollow:
+ *
+ *   hull:*        the pressure hull and its 17 x 57.8 m pillars. Photographed
+ *                 at (57, 1.8, 62.5): a cargo container standing clear on
+ *                 open deck, with the pillar metres away. The pillar's shell
+ *                 encloses the space beneath it, so parity is right and the
+ *                 answer is useless. 15 of 25 hits in the dressing sweep.
+ *   *:hullIn      a zone's inner shell. Contains every actor in the zone, by
+ *                 construction - `zone:gym:hullIn#0` "swallowed" 33 crowd
+ *                 figures who were simply standing in the gym.
+ *
+ * So the list is not a workaround for a weak test. It IS the architectural
+ * statement the test cannot make for itself, and it is deliberately small and
+ * deliberately explicit: anything added here is a claim that the host is a
+ * VOLUME rather than an OBJECT, and that claim should be argued in the commit
+ * that adds it. A gate built on containment without one of these is noise.
+ */
+const CONTAINER_PATTERNS = [/^hull:/, /:hullIn$/];
+
+/** Is this piece a shell that other things are meant to be inside? */
+export function isDesignedContainer(part) {
+  return CONTAINER_PATTERNS.some((re) => re.test(part.mesh));
+}
 /** An address a human can read in a report: `dressing:hazard#412`. */
 export function addressOf(part) {
   return `${part.mesh}#${part.index}`;

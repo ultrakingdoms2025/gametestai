@@ -1539,3 +1539,27 @@ Reverted: two defects is not worth a legend regression whose fix is not obvious,
 below `_markOccupancy`'s 0.5 m band so `_footprintClear` cannot see them to avoid them. **Ratchet stays at
 4.** The honest next step is to make painted decals visible to the clearance test, which would let both
 loops nudge without covering lettering.
+
+### Paint made visible, and the QUEUE nudge lands: props inside structure 4 → 2
+
+The blocker was structural. Painted legends sit at y = 0.135 and `_markOccupancy` only marks triangles
+reaching above **0.5 m** — deliberately, because the deck is at 0.09 and marking it would make
+`_footprintClear` false everywhere. So **paint was invisible to every clearance test in the file**, which
+is why the first QUEUE nudge covered `walk at (−5, −27)`.
+
+`_legendSpots` records the 32 legend footprints **where they are authored**, from `decalCells`, because
+there the cell is still a number with a name. Recovering it from atlas UVs later — which is what the decal
+*test* must do — would be test logic living in the world. `_onLegend` is deliberately separate from
+`_footprintClear`: that answers "is this ground free", and paint does not occupy ground. *You can stand on
+a legend; you must not be built on one.*
+
+With paint visible the QUEUE loop takes the nudge it needed — **props inside structure 4 → 2, legends
+still zero**, kept collision +2 triangles.
+
+⚠ **A nudge ring must clear the OBSTACLE, not the prop.** The first QUEUE attempt used a single 2.2 m ring
+and moved nothing: the thing the locker stands in is a **5 m** planter, and 2.2 m from its middle is still
+its middle. Sized to the prop rather than to what it was stuck in — an easy and invisible mistake, since
+the code looks correct and simply never fires.
+
+**Hub state:** 2 props embedded (both single hand-authored placements — a projector cone at y = 13.8 and a
+vent grate — so each needs its own look rather than a rule), 16 backdrop pieces, 3 buried signs.

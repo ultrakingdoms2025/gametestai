@@ -1368,3 +1368,34 @@ probe had explicitly handled and that increment 3 re-introduced. `MINH` is in th
 Re-author the Hub against the plan, behind the gate above: the dressing-in-plaza-props defects, the nine
 habitat carriageway claims, the 16 remaining backdrop pieces and the 3 buried signs. The prerequisite
 (build-identity banner, D5) should land before any release that *renames*, which none of the above does.
+
+### Hub triage, 2026-08-30 — two false-positive classes settled by eye, one defect not yet sourced
+
+Sweeping dressing props against authored structure: **57 pieces ≥ 50% inside something**. Filtering to
+volumetric props (a plane is excluded whatever its orientation — flat in Y is a floor decal, flat in Z is
+a poster on a wall, and neither can be "inside" what it is painted on) leaves **33**.
+
+Of those, **15 are inside `hull:instanced`** — the 17 × 57.8 m hull pillars, 240 triangles each.
+Photographed at (57, 1.8, 62.5): the prop is a cargo container standing clear on open deck, with the
+striped pillar metres away. Ray parity is right — the pillar's shell encloses the space beneath it — and
+the answer is useless. **`hull:*` joins the zone shells and the deck as a designed container.** That is
+the third time today that "is A inside B" needed a per-host-class rule to become "should A be inside B",
+and it is now clear this is a permanent property of the instrument rather than a gap to be closed: **an
+exact containment gate needs a host allow-list, stated per class, or it is noise.**
+
+The remaining 18 are real candidates: `plaza-props:trim` ×7, `trimDark` ×4, `panelDark` ×3,
+`commercial` ×3, `residential:panelDark` ×1.
+
+**The reported barrier is confirmed and NOT yet sourced.** `dressing:hazard#27`, a toppled hazard barrier
+0.86 × 2.46 × 0.84 at (22.00, 0.34, −22.93), is **39% inside `plaza-props:trim#189`**, the 5 m planter
+centred (22.11, −24.50). Photographed: the prop is visibly embedded in the planter's rim.
+
+⚠ **A wrong turn worth recording.** The `barrier()` helper in `_buildNearField` (`StationWorld.js:9631`)
+produces exactly this shape at exactly this `yc`, and its only two call sites are `:9766` and `:9773`. I
+changed the toppled one and the piece did not move — because `SPAWN_X = −34, SPAWN_Z = 2`
+(`StationKit.js:618`), so those two barriers stand at (−18.5, 8.8) and (−17.6, −3.4), nowhere near the
+plaza. The edit was reverted; it had moved a hand-composed spawn-view prop for no reason. **Matching a
+piece to its author by shape and material is not identification** — the spans give a piece an address and
+a build step, and neither of those is a call site. Recording the `at()` call site in the part table would
+have answered this in one query, and is the obvious next increment for `GeoParts` if this triage
+continues.

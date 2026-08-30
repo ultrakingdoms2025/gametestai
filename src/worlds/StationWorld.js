@@ -9820,8 +9820,50 @@ export class StationWorld extends World {
     for (let i = 0; i < 420 && placed < 96; i++) {
       const th = rng() * Math.PI * 2;
       const rr = 12 + Math.sqrt(rng()) * 30;
-      const x = Math.cos(th) * rr, z = Math.sin(th) * rr;
+      let x = Math.cos(th) * rr, z = Math.sin(th) * rr;
       if (!legal(x, z)) continue;
+      /* AND nothing may already be standing here - NUDGED, never skipped.
+       *
+       * `legal` tests the radius band, the gateway bubbles and the road
+       * centrelines: geometry this loop computed itself. It has never tested
+       * what the PLAZA built at step 0.50, and this loop runs at 0.95 across
+       * r = 12-42 with PLAZA_R = 40, so it drops props into planters and onto
+       * plinths. Measured: a toppled hazard barrier 39% inside the 5 m planter
+       * centred (22.1, -24.5), reported live as a barrier in a planter seen
+       * from (23.6, -20.2). `_markOccupancy` has already run by here, and the
+       * two sibling scatter loops in this same pass have always used
+       * `_footprintClear`; this one simply never did.
+       *
+       * -- WHY IT NUDGES, and this is the whole difficulty ----------------
+       *
+       * `rng` is one stream shared by every prop in this loop, and each prop
+       * draws from it. A `continue` therefore does not remove one prop, it
+       * RE-ROLLS EVERY PROP AFTER IT. Measured, adding a skip here moved a
+       * crowd figure 0.78 m off its footing and slid a prop across an avenue
+       * legend - two gates that have nothing to do with planters. It is the
+       * same trap `_buildSkyline` documents a few hundred lines from here,
+       * and it caught the same mistake twice in one day.
+       *
+       * So: keep the draw, move the prop. A fixed eight-point ring at two
+       * radii, tried in a fixed order, consuming no random numbers - the
+       * stream is bit-identical whether a nudge happens or not, so every
+       * prop after this one lands exactly where it did before. Only when
+       * nothing within 3 m is clear does it give up. */
+      if (!this._footprintClear(x, z, 1.2, 1.2, 1.6)) {
+        const ox = x, oz = z;
+        let moved = false;
+        for (const rad of [1.6, 3.0]) {
+          for (let k = 0; k < 8 && !moved; k++) {
+            const a = (k / 8) * Math.PI * 2;
+            const nx = ox + Math.cos(a) * rad, nz = oz + Math.sin(a) * rad;
+            if (!legal(nx, nz)) continue;
+            if (!this._footprintClear(nx, nz, 1.2, 1.2, 1.6)) continue;
+            x = nx; z = nz; moved = true;
+          }
+          if (moved) break;
+        }
+        if (!moved) continue;
+      }
       // Never inside the spawn's own 4 m bubble.
       if (Math.hypot(x - sx, z - sz) < 4.5) continue;
       const yaw = rng() * Math.PI * 2;
@@ -10970,7 +11012,14 @@ export class StationWorld extends World {
          * follower climbed it and then had 14.1 m with nothing under it on the
          * far side. One metre south-west of it the leg misses the block, and
          * still does with every waypoint jittered 0.5 m. @see npc-routes.test.mjs */
-        [[6, -22], [-6, -30], [15, -13], [0, -40]]),
+        /* (15, -13) -> (15.9, -13.1) on 2026-08-30: the near-field scatter
+         * gained an occupancy nudge, and a trolley landed at (14.6, -13.0)
+         * with this waypoint 0.18 m inside its collider. The waypoint moved
+         * away from the trolley rather than the trolley away from it, because
+         * this is authored data and that is scattered - and 0.9 m is inside
+         * the 0.5 m jitter band the note above says the diagonal survives,
+         * checked by the same test. */
+        [[6, -22], [-6, -30], [15.9, -13.1], [0, -40]]),
 
       // The plaza is the busiest space on the ring and photographed empty. This
       // second rank of friendlies works the gateway queues, the stalls and the

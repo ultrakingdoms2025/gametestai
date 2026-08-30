@@ -236,14 +236,30 @@ test('the collision the world derives from its own geometry is unchanged', async
    * backdrop blocks off the station (16 -> 9 pieces swallowed), and 76
    * triangles that had been inside a box are now surfaces. Same direction and
    * same reason as the entry above.
+   *
+   * -- Re-taken: the near-field scatter stopped landing on structure --------
+   * 368736 -> 369368 found, 170273 -> 169701 boxed, 198463 -> 199667 kept,
+   * 8617 -> 8785 chunks. `_buildNearField`'s scatter loop gained the
+   * occupancy test its two sibling loops in the same pass have always had, so
+   * props no longer stand in planters and on plinths.
+   *
+   * Kept collision ROSE 1,204, and the direction is the tell: a prop half
+   * sunk into a planter had the buried half counted as ALREADY INSIDE A BOX,
+   * and standing clear it contributes its whole surface. The same arithmetic
+   * as the backdrop entry above, one scale down. 1,204 triangles for eight of
+   * the eighteen real dressing-inside-structure defects.
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 368736, boxed: 170273, kept: 198463, planting: 1360 },
+    { found: 369368, boxed: 169701, kept: 199667, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8617, 'the chunking changed');
-  assert.equal(physics.colliders.length, 26771, 'the collider total changed');
+  assert.equal(chunks, 8785, 'the chunking changed');
+  /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
+   * A prop that stood inside a planter shared a collision column with it and
+   * was boxed together; nudged clear it needs a box of its own. Same cause as
+   * the +1,204 kept triangles above, counted in colliders instead. */
+  assert.equal(physics.colliders.length, 26940, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

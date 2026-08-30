@@ -10256,7 +10256,8 @@ export class StationWorld extends World {
      * which is the more expensive failure. A 12 m sign pylon plus a run of lit
      * shopfront glazing gives that bearing a destination to read.
      */
-    for (const [ax, az, ayaw] of [[70, 52, -0.9], [118, 47, -0.65], [62, -54, 2.3]]) {
+    const PYLONS = [[70, 52, -0.9], [118, 47, -0.65], [62, -54, 2.3]];
+    for (const [ax, az, ayaw] of PYLONS) {
       B.at('panelDark', boxGeo(2.0, 12.5, 2.0, 3), ax, 6.25, az, ayaw);
       B.at('trim', boxGeo(2.6, 0.5, 2.6, 1.6), ax, 12.6, az, ayaw);
       B.at('hazard', boxGeo(2.8, 1.4, 2.8, 1.6), ax, 0.7, az, ayaw);
@@ -10285,6 +10286,22 @@ export class StationWorld extends World {
     for (let i = 0; i < 14; i++) {
       const bx = 62 + i * 8.4;
       const bz = 47 + Math.sin(i * 0.9) * 2.6;
+      /* Leave a gap where a pylon stands.
+       *
+       * The pylon at (118, 47) is ON this band: panel i = 7 spans x
+       * 117.0-124.6 at z = 47.1, and the two were authored ten lines apart
+       * without either knowing about the other. The visible consequence was
+       * not the panel - it was the pylon's CONCOURSE SIGN, which faces across
+       * the band and ended up 42% inside the glazing, the last of the buried
+       * signs.
+       *
+       * A gap in a shopfront run where a 12 m sign pylon stands reads as
+       * composed; a window sunk into a column does not. Skipping is safe here
+       * and nowhere else nearby: nothing in this loop draws from `rng` - every
+       * value comes from `i` - so dropping one panel cannot re-roll the rest.
+       * Half-extents: the panel is 7.6 wide and 1.2 deep, the pylon 2.0
+       * square, so 4.8 m and 1.6 m are the touching distances. */
+      if (PYLONS.some(([ax, az]) => Math.abs(bx - ax) < 4.8 && Math.abs(bz - az) < 1.6)) continue;
       B.at('panel', boxGeo(7.6, 7.0, 1.2, 2.4), bx, 5.6, bz, 0);
       const room = new THREE.PlaneGeometry(6.6, 4.2);
       atlasUV(room, i % 4, (i >> 2) % 4, 4, 4);

@@ -251,10 +251,10 @@ test('the collision the world derives from its own geometry is unchanged', async
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 369218, boxed: 169618, kept: 199600, planting: 1360 },
+    { found: 369192, boxed: 169614, kept: 199578, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8775, 'the chunking changed');
+  assert.equal(chunks, 8765, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -271,8 +271,14 @@ test('the collision the world derives from its own geometry is unchanged', async
    * pieces of one locker per gateway stopped sharing a collision column with
    * the planter they stood in. A two-triangle change, which is the size this
    * kind of fix should be.
+   *
+   * -- And the shopfront band leaves a gap at the pylon ----------------
+   * 369218 -> 369192 found, 199600 -> 199578 kept, 8775 -> 8765 chunks. One
+   * lit window panel of fourteen is no longer built, because the pylon at
+   * (118, 47) stands where it was. A 26-triangle fall for the last of the
+   * buried signs.
    */
-  assert.equal(physics.colliders.length, 26930, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26920, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

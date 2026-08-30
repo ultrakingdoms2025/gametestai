@@ -64,7 +64,27 @@ const { collectParts: parts2, fractionInside } = await import('../../src/dev/Geo
 /** Fraction of a face's sampled surface that must be inside to count. */
 const BURIED = 0.15;
 /** Exact buried faces today. Lower it when you clear one. */
-const CEILING = 3;
+/* 3 -> 1 on 2026-08-30. The 42% case is fixed: the pylon at (118, 47) stood
+ * ON the lit shopfront band - panel i = 7 spans x 117.0-124.6 at z = 47.1 -
+ * and its concourse sign faced across into the glazing. The band now leaves
+ * a gap where a pylon stands, which reads as composed; a window sunk into a
+ * column does not.
+ *
+ * The one that remains is `plaza-props:signs#5` at 17% inside a foliage mass,
+ * just over this file's 15% bar. Photographed at (-22.4, 2.4, -8.5) there is
+ * nothing visibly wrong: the foliage is decorative organic massing, not a
+ * wall, and a sign among leaves is a composition. Left deliberately rather
+ * than tuned away - it is the honest reading of the measure, and dropping the
+ * bar to hide it would blind the file to real 20% cases.
+ *
+ * ── And the count means FACES now, not pairs ─────────────────────────────
+ *
+ * This loop used to record every (face, host) pair, so one sign overlapping
+ * two fronds of the same plant counted twice and the ceiling read 2 for a
+ * single defect. A gate whose number is not a count of defects cannot be
+ * ratcheted honestly - "lower it when you fix one" means nothing if fixing one
+ * lowers it by two. It breaks on the first host now. */
+const CEILING = 1;
 
 test('no sign face is buried in the thing it is mounted on', async () => {
   /* THIS IS THE GATE THE IDENTITY WORK WAS FOR.
@@ -110,6 +130,7 @@ test('no sign face is buried in the thing it is mounted on', async () => {
         f.box.getCenter(size);
         buried.push(`${(frac * 100).toFixed(0)}% of ${f.mesh}#${f.index} (${f.piece}) is inside `
           + `${s.mesh}#${s.index} at ${size.x.toFixed(0)},${size.y.toFixed(1)},${size.z.toFixed(0)}`);
+        break;
       }
     }
   }

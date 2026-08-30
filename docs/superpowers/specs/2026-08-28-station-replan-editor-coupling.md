@@ -540,6 +540,38 @@ from the plan before this date is suspect.
 outer ring including four zones, so at the ring step-level ownership cannot yet separate "a zone prop
 inside the deck the ring built for it" from a defect. Finer owners there are the next increment.
 
+**Delivered 2026-08-29, increment 3 — zone and link ownership.** `OuterRing.js` ran entirely inside one
+step ("Spanning the great dome": 12,540 colliders, ~half the station's collision). `world._planOwner` is
+now scoped per call to `zone:<id>` / `link:<id>`, matching the group names those builders already create.
+Dome 12,540 → 751. It re-diagnosed a whole group in the carriageway gate: eight conflicts read as 2 by
+the mirrored rect, then 8 under one label, and finally as **two per link** — every link crossing a
+carriageway at its mouth, symmetrically. A pattern, not a pile.
+
+### A NEGATIVE RESULT, recorded so nobody spends another day on it
+
+**Collider overlap cannot find these defects, and three independent attempts died the same way.**
+
+1. *No ownership.* "Is this post buried in a building?" → 516 of 1,227. Every one was the post's own
+   collider. Fixed by increment 2 — but the next two survived it.
+2. *Construction is overlap.* A 12,918-pair census ranked by any measure puts **floors inside their own
+   buildings** at the top. A building IS a set of overlapping boxes; only 45 of 2,482 "prop swallowed by
+   structure" involved a prop at all.
+3. *Colliders are coarser than what is drawn.* After increments 2 and 3 narrowed it to 398 cross-owner
+   cases, the largest legible group — "46 dressing props inside the gateway daises and promenade" —
+   turned out to be **crowd figures standing correctly on the steps of a stepped dais whose collision is
+   one coarse 29 × 2.4 × 29 box**. Inside the collider, on the geometry.
+
+The through-line: **a box collider is a conservative approximation of drawn geometry, so "inside a
+collider" is not "inside the visible object", and no threshold on box overlap separates the two.** The
+owner's own screenshots are a strictly better instrument for this defect class, because the defect is
+visual — a sign unreadable through its post is not distinguishable from a sign correctly mounted on one
+by box overlap. Any future overlap gate must measure DRAWN geometry (as `station-actors.test.mjs`'s seat
+check already does, deliberately and at ~5 s a run), not colliders.
+
+**Open question raised in passing:** `_solidifyProps` boxes every instanced mesh in the `dressing` group,
+and `_buildCrowd` adds the ambient crowd to that same group — so 204 crowd figures carry solid colliders
+a player cannot walk through. Deliberate or accidental has not been established.
+
 **Not delivered.** Everything else the phase asks for: `_footprintClear` and `_markOccupancy` becoming
 plan queries, `_selfCollided` / `_enterableRoomFootprints` / `_backdropKeepOut` becoming published
 roles, the `StationAuditSelfTest` `_occupied` port, and the placement-Y diff against production. A

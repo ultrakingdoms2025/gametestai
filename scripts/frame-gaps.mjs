@@ -2615,8 +2615,70 @@ const BASELINES = {
   },
 };
 
-/** How far a counter may drift before it is a regression rather than noise. */
+/**
+ * How far a counter may drift before it is a regression rather than noise.
+ *
+ * ── warmPrograms is gated in BOTH directions; dProg only upward ───────────
+ *
+ * They look symmetrical and are not. `dProg` counts programs linked ON ENTRY
+ * to a world - the cost paid on the arrival frame - so a fall is the outcome
+ * everything here is trying to produce and only a rise is a regression.
+ *
+ * `warmPrograms` counts what boot linked AHEAD of that. A rise costs boot time
+ * and is worth catching. A FALL IS THE EXPENSIVE ONE and was not gated at all
+ * until 2026-08-30: a builder that quietly stops warming twenty programs reads
+ * as an improvement here, and pays for it on the arrival frame, where this
+ * project has lost the number twice before. The spec's own words for it are
+ * "the realistic hazard is a drop".
+ *
+ * The two are not redundant either. A drop in warm with no matching rise in
+ * dProg is the worst case of all - the programs are not being linked at boot
+ * AND not on entry, which means they are being linked mid-play, in a frame
+ * nothing measures.
+ */
 const GATE_MARGIN = { dProg: 2, warmPrograms: 4 };
+
+/**
+ * Compare one run's shader-program counters against a platform baseline.
+ *
+ * Exported and pure so it can be asserted without a browser. The gate itself
+ * needs Chrome, a built bundle and about a minute, which is exactly the sort
+ * of gate that gets changed and never re-proven - and this repository's rule
+ * is that a gate nobody has watched fail is not yet a gate. The arithmetic is
+ * here; `scripts/tests/frame-gaps-program-gate.test.mjs` watches it fail.
+ *
+ * @param {number} warm programs linked during boot warm
+ * @param {Record<string, number>} dProg programs linked on entry, per world
+ * @param {{warmPrograms: number, dProg: Record<string, number>}} base
+ * @param {string} key platform key, for the messages
+ */
+export function programGateVerdict(warm, dProg, base, key = 'this platform') {
+  const failures = [], notes = [];
+  if (warm > base.warmPrograms + GATE_MARGIN.warmPrograms) {
+    failures.push(`boot warm linked ${warm} programs against a baseline of ${base.warmPrograms}`
+      + ` (+${GATE_MARGIN.warmPrograms} allowed)`);
+  }
+  /* The lower bound. See GATE_MARGIN: a fall here is not an improvement, it is
+   * the link cost moving somewhere nothing is watching. */
+  if (warm < base.warmPrograms - GATE_MARGIN.warmPrograms) {
+    failures.push(`boot warm linked only ${warm} programs against a baseline of ${base.warmPrograms}`
+      + ` (-${GATE_MARGIN.warmPrograms} allowed) - something stopped being warmed at boot.`
+      + ` That is not a saving: those programs are linked on the arrival frame instead, or worse,`
+      + ` mid-play. If it is deliberate, re-take the baseline and say what stopped warming.`);
+  }
+  for (const [name, got] of Object.entries(dProg)) {
+    const want = base.dProg[name];
+    if (want == null) { notes.push(`${name}: no dProg baseline for "${key}"; not asserted.`); continue; }
+    if (got > want + GATE_MARGIN.dProg) {
+      failures.push(`${name} linked ${got} programs on entry against a baseline of ${want}`
+        + ` (+${GATE_MARGIN.dProg} allowed) - a world that was warm is arriving cold`);
+    }
+  }
+  for (const name of Object.keys(base.dProg)) {
+    if (!(name in dProg)) notes.push(`${name} is in the baseline and was not measured by this run.`);
+  }
+  return { failures, notes };
+}
 
 /**
  * Metres a movement phase must cover before it is allowed to mean anything.
@@ -2741,22 +2803,9 @@ function gateRun(run, args) {
     notes.push(`paste this into BASELINES in ${path.relative(root, fileURLToPath(import.meta.url))}:`);
     notes.push(JSON.stringify(block, null, 2));
   } else {
-    const warm = run.warm?.programs ?? 0;
-    if (warm > base.warmPrograms + GATE_MARGIN.warmPrograms) {
-      failures.push(`boot warm linked ${warm} programs against a baseline of ${base.warmPrograms}`
-        + ` (+${GATE_MARGIN.warmPrograms} allowed)`);
-    }
-    for (const [name, got] of Object.entries(dProg)) {
-      const want = base.dProg[name];
-      if (want == null) { notes.push(`${name}: no dProg baseline for "${key}"; not asserted.`); continue; }
-      if (got > want + GATE_MARGIN.dProg) {
-        failures.push(`${name} linked ${got} programs on entry against a baseline of ${want}`
-          + ` (+${GATE_MARGIN.dProg} allowed) - a world that was warm is arriving cold`);
-      }
-    }
-    for (const name of Object.keys(base.dProg)) {
-      if (!(name in dProg)) notes.push(`${name} is in the baseline and was not measured by this run.`);
-    }
+    const p = programGateVerdict(run.warm?.programs ?? 0, dProg, base, key);
+    failures.push(...p.failures);
+    notes.push(...p.notes);
   }
 
   /* ---- C. the clock, reported and never asserted ---------------------- */
@@ -2894,4 +2943,15 @@ async function main() {
   return 0;
 }
 
-main().then((c) => process.exit(c), (e) => { console.error(e); process.exit(1); });
+/* Run only when invoked as a script.
+ *
+ * This used to be an unconditional call, which made the file unimportable:
+ * anything that wanted the gate arithmetic got a browser launch instead. That
+ * is why the counter half of this gate had never been unit-tested - not
+ * because nobody wanted to, but because importing it started Chrome.
+ */
+const invokedDirectly = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) {
+  main().then((c) => process.exit(c), (e) => { console.error(e); process.exit(1); });
+}

@@ -8097,13 +8097,34 @@ export class StationWorld extends World {
     const gp = roadPos(deg, 132, 0, 0, new THREE.Vector3());
     const gYaw = -deg * DEG;
     const span = 46, legH = 22;
+    /* The legs stand OUTSIDE the carriageway, which is the whole point of a
+     * straddle crane: the road passes between them.
+     *
+     * They were at `t * 7`, and avenue 300 is 18 m wide - so a 14 m gap
+     * pinched the road by two metres on each side and put four gantry legs in
+     * the traffic lane. `StationPlan` had been counting them the whole time:
+     * four of the twenty carriageway conflicts, in symmetric pairs at r = 109
+     * and r = 155, which is the gantry's own `span / 2` either side of its
+     * centre at r = 132.
+     *
+     * 11.0 m is `ROAD_EDGE_HALF` (9.9 - the carriageway plus its kerb strips)
+     * plus the leg's own 0.8 m half-extent, plus 0.3 to spare. 10.4 was tried
+     * first and left three of the four still conflicting: the leg is a BOX,
+     * not a point, and at 10.4 its inboard face still reached 9.6 - inside the
+     * kerb. The gate caught that, which is what it is for. The crossbeam grows with the gap, or
+     * it would stop reaching the legs it ties together.
+     *
+     * Nothing here draws from `rng` - the container loops above have already
+     * finished with it - so unlike the skyline flanks this moves four legs and
+     * nothing else. */
+    const legAcross = 11.0;
     for (const s of [-1, 1]) {
       for (const t of [-1, 1]) {
-        B.localAt('hazard', boxGeo(1.4, legH, 1.4, 2), gp.x, 0, gp.z, gYaw, s * span / 2, legH / 2, t * 7);
-        this._solidRot(gp.x + Math.cos(gYaw) * (s * span / 2) + Math.sin(gYaw) * (t * 7), legH / 2,
-          gp.z - Math.sin(gYaw) * (s * span / 2) + Math.cos(gYaw) * (t * 7), 0.8, legH / 2, 0.8, gYaw);
+        B.localAt('hazard', boxGeo(1.4, legH, 1.4, 2), gp.x, 0, gp.z, gYaw, s * span / 2, legH / 2, t * legAcross);
+        this._solidRot(gp.x + Math.cos(gYaw) * (s * span / 2) + Math.sin(gYaw) * (t * legAcross), legH / 2,
+          gp.z - Math.sin(gYaw) * (s * span / 2) + Math.cos(gYaw) * (t * legAcross), 0.8, legH / 2, 0.8, gYaw);
       }
-      B.localAt('trim', boxGeo(1.0, 1.0, 15, 2), gp.x, 0, gp.z, gYaw, s * span / 2, legH - 2, 0);
+      B.localAt('trim', boxGeo(1.0, 1.0, legAcross * 2 + 1.4, 2), gp.x, 0, gp.z, gYaw, s * span / 2, legH - 2, 0);
     }
     B.localAt('hazard', boxGeo(span + 6, 2.2, 3.0, 3), gp.x, 0, gp.z, gYaw, 0, legH + 1, 0);
     B.localAt('panelDark', boxGeo(span + 6, 0.8, 1.0, 2), gp.x, 0, gp.z, gYaw, 0, legH - 0.4, 3.0);

@@ -37,8 +37,13 @@ import { buildStation } from './world-kit.mjs';
  * message name the pass to go and look at.
  */
 
-/** Measured 2026-08-29, after the gateway flanks were nudged off the avenues. */
-const CEILING = 20;
+/**
+ * Measured 2026-08-29, after the gateway flanks were nudged off the avenues
+ * and the cargo straddle gantry's legs were moved outboard of the kerb.
+ *
+ * 20 -> 17. Lowering it is the point of the file; it has now happened twice.
+ */
+const CEILING = 17;
 
 /**
  * Conflicts by the build step that caused them.
@@ -47,7 +52,11 @@ const CEILING = 20;
  *   and the two roles necessarily abut.
  * `Opening the commercial strip` 4 - shopfronts flanking avenue 0 at r = 158
  *   and 174, the street the player walks down.
- * `Stacking the cargo yard` 4 - on avenue 300.
+ * `Stacking the cargo yard` 1 - was 4. Three were the straddle gantry's legs,
+ *   which stood at 7 m across an 18 m road and pinched it by two metres each
+ *   side; they now stand outboard of the kerb and the road passes between them,
+ *   which is what a straddle crane is for. The survivor at (45, -99.9) is not a
+ *   leg and not a container from the stacking loop - it is unidentified.
  * `Stacking habitat blocks` 3 - avenue 120.
  * `Spanning the great dome` 2 and `Raising the pressure hull` 1 - at r = 204
  *   to 247, where the road runs out at the hull. These may be correct as
@@ -64,7 +73,7 @@ const BY_OWNER = {
   'Raising the pressure hull': 1,
   'Spanning the great dome': 2,
   'Stacking habitat blocks': 3,
-  'Stacking the cargo yard': 4,
+  'Stacking the cargo yard': 1,
   dressing: 2,
 };
 

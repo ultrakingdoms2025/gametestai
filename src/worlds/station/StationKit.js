@@ -1039,10 +1039,52 @@ export function instanced(geo, mat, entries, opts = {}) {
  * Collects geometry per material during generation and merges each bucket into
  * a single mesh. A district of forty buildings collapses to ~6 draw calls.
  */
+/**
+ * Pack `GeoBatch` part records into the parallel-typed-array form described
+ * on `flush`. Kept out of the class so the shape has one definition and the
+ * readers can be pointed at it.
+ */
+function packParts(recs) {
+  const n = recs.length;
+  const owners = [null], pieces = [null];
+  const ownerIx = new Map([[null, 0]]), pieceIx = new Map([[null, 0]]);
+  const ownerOf = new Uint16Array(n), pieceOf = new Uint16Array(n);
+  const start = new Uint32Array(n), count = new Uint32Array(n);
+  let at = 0;
+  for (let i = 0; i < n; i++) {
+    const r = recs[i];
+    let oi = ownerIx.get(r.owner);
+    if (oi === undefined) { oi = owners.push(r.owner) - 1; ownerIx.set(r.owner, oi); }
+    let pi = pieceIx.get(r.piece);
+    if (pi === undefined) { pi = pieces.push(r.piece) - 1; pieceIx.set(r.piece, pi); }
+    ownerOf[i] = oi;
+    pieceOf[i] = pi;
+    start[i] = at;
+    count[i] = r.n;
+    at += r.n;
+  }
+  return { owners, pieces, ownerOf, pieceOf, start, count, indices: at };
+}
+
 export class GeoBatch {
-  constructor() {
+  /**
+   * @param {{_planOwner?: string|null}|null} owner the world, read for
+   *   `_planOwner` at `add` time. Optional: a batch built without one still
+   *   records spans, with `owner: null` on every part.
+   */
+  constructor(owner = null) {
     /** @type {Map<string, THREE.BufferGeometry[]>} */
     this.buckets = new Map();
+    /**
+     * Per-bucket part records, index-parallel to `buckets`. One entry per
+     * `add` call - which is one authored piece, because `at` and `localAt`
+     * both funnel through it and nothing else in the repository calls it.
+     * @type {Map<string, {owner: string|null, piece: string|null, n: number}[]>}
+     */
+    this.parts = new Map();
+    this._owner = owner;
+    /** Set by a builder around a loop to name a piece finer than the step. */
+    this._piece = null;
   }
 
   /** @param {string} key material key @param {THREE.BufferGeometry} geo owned by the batch */
@@ -1060,6 +1102,24 @@ export class GeoBatch {
     let list = this.buckets.get(key);
     if (!list) this.buckets.set(key, (list = []));
     list.push(geo);
+    /* ── THE IDENTITY HALF ──────────────────────────────────────────────
+     * Recorded here rather than in `flush` because this is the only moment
+     * the piece exists as itself: `flush` merges the bucket and disposes
+     * every source, and after that there is nothing left to ask. That loss
+     * is what defeated three separate placement instruments in one day -
+     * see StationAudit's `blindSpots` note and the spec's "root cause of
+     * the root causes".
+     *
+     * Cost is one small object per authored piece plus one read of an
+     * ambient field. It is the same mechanism `_solid`/`_solidRot` already
+     * use to give a COLLIDER its owner, applied to what is DRAWN. */
+    let plist = this.parts.get(key);
+    if (!plist) this.parts.set(key, (plist = []));
+    plist.push({
+      owner: this._owner?._planOwner ?? null,
+      piece: this._piece,
+      n: geo.getIndex().count,
+    });
     return geo;
   }
 
@@ -1081,7 +1141,24 @@ export class GeoBatch {
     return this.add(key, geo, _mat4);
   }
 
-  /** Merge every bucket, add the meshes to `parent`, and reset. */
+  /**
+   * Merge every bucket, add the meshes to `parent`, and reset.
+   *
+   * Each mesh carries `userData.parts`: the index range every authored piece
+   * occupies in the merged buffer, so a caller can still address "that
+   * barrier" after the merge has taken its name away. Storage is parallel
+   * typed arrays plus two string tables, because the station raises tens of
+   * thousands of pieces and an object apiece is megabytes of nothing.
+   *
+   *   parts.start[i] / parts.count[i]   range into `geometry.index`
+   *   parts.owners[parts.ownerOf[i]]    the build step, zone or link
+   *   parts.pieces[parts.pieceOf[i]]    a finer label, or null
+   *
+   * Entry 0 of both string tables is `null`, so an unlabelled piece costs no
+   * table row. `start` is a running sum of source index counts, which is
+   * exactly what `mergeGeometries` concatenates - asserted, not assumed, by
+   * `geo-batch-parts.test.mjs`.
+   */
   flush(parent, materials, name, opts = {}) {
     const out = [];
     for (const [key, list] of this.buckets) {
@@ -1100,8 +1177,12 @@ export class GeoBatch {
       mesh.receiveShadow = o.recv ?? true;
       parent.add(mesh);
       out.push(mesh);
+
+      const recs = this.parts.get(key);
+      if (recs) mesh.userData.parts = packParts(recs);
     }
     this.buckets.clear();
+    this.parts.clear();
     return out;
   }
 }

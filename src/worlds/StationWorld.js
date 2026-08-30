@@ -4487,7 +4487,7 @@ export class StationWorld extends World {
 
   _buildHull() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'hull';
     this.group.add(g);
@@ -5101,7 +5101,7 @@ export class StationWorld extends World {
 
   _buildDeck() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'deck';
     this.group.add(g);
@@ -5470,7 +5470,7 @@ export class StationWorld extends World {
 
   _buildPlazaCentre() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'monument';
     this.group.add(g);
@@ -5617,7 +5617,7 @@ export class StationWorld extends World {
     }
 
     // Vendor stalls + benches around the plaza give it human scale.
-    const D = new GeoBatch();
+    const D = new GeoBatch(this);
     // Deliberately clear of the -X approach: that is the spawn sightline and
     // it must stay open all the way to the window wall.
     const stallSpots = [
@@ -6243,7 +6243,7 @@ export class StationWorld extends World {
    */
   _buildGateway(g, s, deg) {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const TH = gatewayFrameYaw(deg);
     const [cx, cz] = gatewayCentre(deg);
 
@@ -6623,7 +6623,7 @@ export class StationWorld extends World {
 
   _buildWalkwayLoop() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'promenade';
     this.group.add(g);
@@ -7140,7 +7140,7 @@ export class StationWorld extends World {
 
   _buildCommercial() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'commercial';
     this.group.add(g);
@@ -7443,7 +7443,7 @@ export class StationWorld extends World {
 
   _buildHangar() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'hangar';
     this.group.add(g);
@@ -7769,7 +7769,7 @@ export class StationWorld extends World {
 
   _buildHabitat() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'habitat';
     this.group.add(g);
@@ -7912,7 +7912,7 @@ export class StationWorld extends World {
 
   _buildResidential() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'residential';
     this.group.add(g);
@@ -7989,7 +7989,7 @@ export class StationWorld extends World {
 
   _buildControlTower() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'control';
     this.group.add(g);
@@ -8057,7 +8057,7 @@ export class StationWorld extends World {
     g.add(towerLight);
 
     // Antenna field flanking the tower.
-    const A = new GeoBatch();
+    const A = new GeoBatch(this);
     const dishEntries = [];
     for (let i = 0; i < 14; i++) {
       const r = 150 + rng() * 38;
@@ -8089,7 +8089,7 @@ export class StationWorld extends World {
 
   _buildCargo() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'cargo';
     this.group.add(g);
@@ -8264,7 +8264,7 @@ export class StationWorld extends World {
      */
 
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'station-enterables';
     this.group.add(g);
@@ -8409,7 +8409,7 @@ export class StationWorld extends World {
 
   _buildSkyline() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'skyline';
     this.group.add(g);
@@ -8599,7 +8599,7 @@ export class StationWorld extends World {
    */
   _buildCanopy() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'canopy';
     this.group.add(g);
@@ -9782,7 +9782,7 @@ export class StationWorld extends World {
 
   _buildDressing() {
     const M = this.mat;
-    const B = new GeoBatch();
+    const B = new GeoBatch(this);
     const g = new THREE.Group();
     g.name = 'dressing';
     this.group.add(g);

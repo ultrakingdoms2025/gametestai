@@ -520,7 +520,7 @@ export function buildTower(world, B, g, spec, rng) {
    * walking in through a door never falls through a floor that has not faded
    * up yet, because the floor was never the thing being faded.
    */
-  const I = new GeoBatch();
+  const I = new GeoBatch(world);
   const ig = new THREE.Group();
   ig.name = `tower-interior-${towerId}`;
   g.add(ig);

@@ -119,7 +119,7 @@ export function buildOuterRing(world, actors) {
 
 function buildGreatDome(world) {
   const M = world.mat;
-  const B = new GeoBatch();
+  const B = new GeoBatch(world);
   const g = new THREE.Group();
   g.name = 'dome';
   world.group.add(g);
@@ -419,7 +419,7 @@ function buildGreatDome(world) {
  */
 function buildApron(world) {
   const M = world.mat;
-  const B = new GeoBatch();
+  const B = new GeoBatch(world);
   const g = new THREE.Group();
   g.name = 'apron';
   world.group.add(g);
@@ -608,7 +608,7 @@ function gantry(B, world, x, z, yaw) {
  */
 function buildLink(world, spec) {
   const M = world.mat;
-  const B = new GeoBatch();
+  const B = new GeoBatch(world);
   const g = new THREE.Group();
   g.name = `link:${spec.id}`;
   world.group.add(g);
@@ -792,7 +792,7 @@ function buildLink(world, spec) {
  */
 function buildZone(world, spec, actors) {
   const M = world.mat;
-  const B = new GeoBatch();
+  const B = new GeoBatch(world);
   const g = new THREE.Group();
   g.name = `zone:${spec.id}`;
   world.group.add(g);

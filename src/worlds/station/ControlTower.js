@@ -404,14 +404,14 @@ export function buildControlTower(world, B, g, spec) {
   };
 
   /* Two interior batches. See `LOW_HIDE_R` / `CAB_HIDE_R` for why two. */
-  const I = new GeoBatch();
+  const I = new GeoBatch(world);
   const ig = new THREE.Group();
   ig.name = 'control-interior-low';
   g.add(ig);
   const iput = (key, geo, lx, ly, lz, ry = 0, rx = 0, rz = 0) =>
     I.localAt(key, geo, x, 0, z, yaw, lx, ly, lz, ry, rx, rz);
 
-  const C = new GeoBatch();
+  const C = new GeoBatch(world);
   const cg = new THREE.Group();
   cg.name = 'control-interior-cab';
   g.add(cg);

@@ -42,6 +42,25 @@ import { MapOverlay } from '../../src/systems/MapOverlay.js';
  * longer can. A name going from -1 to a number means a district-scale drag
  * became possible. Both are release-note material; neither is caught by
  * anything else.
+ *
+ * ── Re-taken 2026-08-30: two nudges, three names, one collider each ──────
+ *
+ *   gateway-medieval:plaza    38 -> 37
+ *   gateway-medieval:emAmber  90 -> 89
+ *   habitat:emGreen           16 -> 15
+ *
+ * `StationPlan` stopped rasterising its corridors and found three claims
+ * standing in a carriageway that the raster could not see. Fixing them moved
+ * two pieces of geometry, and this table is where that shows up as drag:
+ *
+ *   the gateway approach's parked freight moved 2 m perpendicular to avenue 60
+ *   (mirrored to 300), which takes one collider out of each of the two
+ *   gateway-medieval drag sets it was sitting in;
+ *   the habitat terrace's planter ring went 12 m to 11 m, taking one lit
+ *   sphere out of the `habitat:emGreen` set.
+ *
+ * Three names, one collider each, and no name crossed the -1 boundary - which
+ * is the outcome this table exists to distinguish a real change from.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

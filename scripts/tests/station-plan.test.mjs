@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 
 import { buildStation } from './world-kit.mjs';
 import { StationPlan, ROLE } from '../../src/worlds/station/StationPlan.js';
-import { gatewayClearances, ROAD_ANGLES_DEG, PLAZA_R } from '../../src/worlds/station/StationKit.js';
+import {
+  gatewayClearances, ROAD_ANGLES_DEG, PLAZA_R, ROAD_R1, ROAD_EDGE_HALF,
+} from '../../src/worlds/station/StationKit.js';
 
 /**
  * THE STATION PLAN, IN SHADOW.
@@ -112,11 +114,59 @@ test('marking is conservative and testing is true', () => {
   assert.equal(plan.claim(120, 0, 19, 21, 3, 3, 0, 'soffit'), null);
 });
 
+/**
+ * THE TWO WAYS A RASTER GETS THIS WRONG, PINNED AS ONE TEST.
+ *
+ * The plan used to quantise its corridors to 1.5 m cells and answer every
+ * question by asking the grid, and there is no way to ask a 1.5 m grid a
+ * sub-metre question that is not wrong in one direction or the other. Both
+ * errors were measured on this station, and both are below:
+ *
+ *   ask whether the claim covers a CELL CENTRE, and a claim smaller than a
+ *   cell slips between the centres. The hologram ad mast is 0.5 m square and
+ *   was moved OFF one avenue and ONTO another by a sweep that got "clear"
+ *   from the raster. Asked at 0.5, two of the six avenues reported no
+ *   carriageway anywhere along their own centreline.
+ *
+ *   ask whether the claim covers a CELL EXTENT, and anything within a cell of
+ *   the kerb is a conflict. That version was written, run and reverted: it
+ *   took the carriageway count from 4 to 61, and 42 of the 57 it added were
+ *   avenue lamp posts standing correctly.
+ *
+ * A lamp and a mast are 0.25 m and 0.5 m and the whole disagreement is between
+ * them, which is why they are the probes. This test is the reason the corridors
+ * are kept as shapes; if it ever goes green by being deleted, the reason went
+ * with it.
+ */
+test('a lamp beside a kerb and a mast in a road get opposite answers', () => {
+  const plan = new StationPlan().seedCirculation();
+  const on = (r, across, h) => plan.roleUnder(r, across, h, h, 0, ROLE.CARRIAGEWAY);
+
+  /* An avenue lamp: `ROAD_W / 2 + 1.6` = 10.6 across, 0.25 m half-extent, so
+   * its inner face is at 10.35 against a kerb edge of 9.9. Clear by 0.45 m by
+   * arithmetic that needs no instrument - and the cell holding the kerb sample
+   * reaches 10.5, which is what made 42 of these read as conflicts. */
+  assert.equal(on(120, 10.6, 0.25), null, 'a lamp 0.45 m clear of the kerb is being reported as standing in the road');
+
+  // And a 0.5 m mast on the centreline is in the road, at every radius the
+  // avenue is drawn along - not at whichever ones happen to hold a cell centre.
+  for (let r = PLAZA_R + 6; r < ROAD_R1 - 2; r += 1.1) {
+    assert.equal(on(r, 0, 0.5), ROLE.CARRIAGEWAY, `a 0.5 m mast on the centreline at r=${r.toFixed(1)} is not being seen`);
+  }
+
+  /* The kerb itself is the boundary, to the millimetre rather than to the
+   * cell: `ROAD_EDGE_HALF` is the last painted metal, so a point-sized claim
+   * just inside it is in and one just outside it is out. */
+  assert.equal(on(120, ROAD_EDGE_HALF - 0.01, 0.001), ROLE.CARRIAGEWAY);
+  assert.equal(on(120, ROAD_EDGE_HALF + 0.01, 0.001), null);
+});
+
 test('the station, measured against its own plan', async () => {
   const { world } = await buildStation();
   const s = world.plan.summary();
 
-  console.log(`  ${s.cellsSeeded} cells reserved; ${s.claims} solids recorded (${s.floorSkipped} floor, ${s.overheadSkipped} overhead)`);
+  console.log(`  ${s.regionsSeeded} corridors reserved, ${s.seededArea.toFixed(0)} m2; `
+    + `${s.claims} solids recorded (${s.floorSkipped} floor, ${s.overheadSkipped} overhead)`);
   console.log(`  conflicts: ${s.conflicts} ${JSON.stringify(s.byRole)}`);
 
   /* Pinned as a measurement, with a band rather than an equality: the point is
@@ -129,20 +179,27 @@ test('the station, measured against its own plan', async () => {
    * per-builder breakdown - the rows above the fold were never in the total.
    * Left here because it is the cheapest possible reminder that a number read
    * off a truncated console is not a measurement.) */
-  /* 18,240 -> 17,560 on 2026-08-30, and DOWN is the direction that needs the
-   * explanation here, because fewer reserved cells is a weaker gate.
+  /* THE DENOMINATOR IS NO LONGER A CELL COUNT, because the plan no longer has
+   * cells to count. It kept a 1.5 m raster of its corridors and threw the
+   * corridor shapes away; it now keeps the shapes, so the honest statement of
+   * "how much circulation was laid down" is the area of the shapes.
    *
-   * The avenues are surfaced to `DECK_R - 12` and this plan had been seeding
-   * their carriageway role all the way to `DECK_R`: twelve metres of road, on
-   * six avenues, that nobody had ever laid. It was not a conservative
-   * over-claim - it made `station-plan-conflicts` report geometry standing on
-   * bare deck as standing in a road, and all eight of the link-mouth conflicts
-   * it had recorded as an open design question were exactly that.
+   * This is a better pin than the 17,560 cells it replaces, and not only
+   * because it is exact. That number was a rasterisation, so it could only be
+   * checked against another rasterisation - the previous note here had to
+   * explain a 680-cell fall as "6 avenues x 12 m x 19.8 m over a 1.5 m grid".
+   * Written as area it is the closed form of the layout constants themselves,
+   * so `ROAD_R1` moving, or `ROAD_EDGE_HALF`, or the plaza radius, fails HERE
+   * rather than in an arithmetic sentence somebody has to re-derive.
    *
-   * The two share `ROAD_R1` now. 680 cells is 6 avenues x 12 m x 19.8 m over a
-   * 1.5 m grid, which is the arithmetic check that this removed the twelve
-   * metres and not a swathe of the hub. */
-  assert.equal(s.cellsSeeded, 17560, 'the seeded circulation changed shape');
+   * Only the gateway corridor's own numbers are literals, because they are
+   * private to `StationPlan` - 24 m either side, r = 44 to 100, the rule the
+   * dressing scatter already applied by hand. */
+  assert.equal(s.regionsSeeded, 13, 'the plan no longer reserves one plaza, six avenues and six gateway corridors');
+  const expectArea = Math.PI * PLAZA_R * PLAZA_R
+    + 6 * (ROAD_R1 - PLAZA_R) * (2 * ROAD_EDGE_HALF)
+    + 6 * (100 - 44) * (2 * 24);
+  assert.equal(+s.seededArea.toFixed(3), +expectArea.toFixed(3), 'the seeded circulation changed shape');
   /* 186 -> 733 on 2026-08-30. `_solid` began claiming into the plan, so the
    * plan finally sees the 1,530 axis-aligned solids it had never been told
    * about. The rise is in what is MEASURED, not in what is built: plaza
@@ -150,8 +207,26 @@ test('the station, measured against its own plan', async () => {
    * mostly a monument or a planter standing on its own plaza, which is what a
    * plaza is for; the carriageway count is the one that names defects, and it
    * has its own ratchet in station-plan-conflicts.test.mjs. */
-  assert.ok(s.conflicts <= 800, `${s.conflicts} conflicts, was 733 - something new is standing on the circulation`);
-  assert.ok(s.conflicts >= 650, `${s.conflicts} conflicts, was 733 - if this improved, re-take the number and say what fixed it`);
+  /* 693 -> 1,390 on 2026-08-30, and THE WORLD DID NOT MOVE. The plan stopped
+   * rasterising its corridors to 1.5 m cells and started testing claims against
+   * the corridor rectangles themselves, so roughly half of what stands on the
+   * station's circulation had been invisible to this number: a claim smaller
+   * than a cell could cover no cell centre, and a claim straddling a boundary
+   * could cover none of the ones that carried the role.
+   *
+   * plaza 465 -> 1,017, sightline 224 -> 369, carriageway 4 -> 4. The plaza is
+   * most of the rise and it is what a plaza is for - a monument, a planter and
+   * a kiosk stand on it by design - and the sightline rise is the same kind of
+   * thing one district out. The number that names defects is the carriageway
+   * one, it has its own ratchet in station-plan-conflicts.test.mjs, and it is
+   * the same 4 it was before: the sharper instrument found three more, all
+   * three were real, and all three were fixed in this commit rather than
+   * pinned. See that file for what they were.
+   *
+   * Anything that moves this UP is a builder newly standing on the
+   * circulation. If it moves DOWN, re-take it and say what fixed it. */
+  assert.ok(s.conflicts <= 1500, `${s.conflicts} conflicts, was 1,390 - something new is standing on the circulation`);
+  assert.ok(s.conflicts >= 1250, `${s.conflicts} conflicts, was 1,390 - if this improved, re-take the number and say what fixed it`);
 
   /* The dome and the promenade loop must contribute nothing. Both cross the
    * circulation by design - the loop is 10 m up and spans every avenue - and

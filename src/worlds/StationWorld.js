@@ -3217,7 +3217,8 @@ export class StationWorld extends World {
     this.plan = new StationPlan().seedCirculation(this.roadAngles ?? undefined);
     await breathe();
     console.info(
-      `[station] plan set out: ${this.plan.stats.cellsSeeded} cells reserved ` +
+      `[station] plan set out: ${this.plan.stats.regionsSeeded} corridors, ` +
+      `${Math.round(this.plan.stats.seededArea)} m2 reserved ` +
       `(${Math.round(performance.now() - t0)}ms)`
     );
   }
@@ -5928,11 +5929,29 @@ export class StationWorld extends World {
         }
       }
 
-      // Parked freight on the apron: silhouette at 15 m, 25 m and 40 m depth so
-      // the wide approach is never an uninterrupted floor plane.
+      /* Parked freight on the apron: silhouette at 15 m, 25 m and 40 m depth so
+       * the wide approach is never an uninterrupted floor plane.
+       *
+       * THE FOURTH ENTRY WAS IN A ROAD, AT BOTH GATEWAYS, AND NO INSTRUMENT
+       * COULD SEE IT UNTIL THE PLAN KEPT ITS CORRIDORS AS SHAPES.
+       *
+       * `[24, -14]` put a 2.4 m crate stack at (24, +-62), whose CENTRE is
+       * 10.2 m across avenue 60 (and 300, mirrored) against a kerb edge of
+       * 9.9 - clear, if a box were a point. It is a 2.42 m box at 2.4 rad, so
+       * it reached 1.2 m past the kerb and into the carriageway. The plan's
+       * old raster confirmed a hit by asking whether the claim covered a cell
+       * CENTRE, and this one straddles the kerb without covering one.
+       *
+       * Moved 2 m perpendicular to the avenue, which is the shortest direction
+       * out: `[22.3, -13]` measures 0.77 m clear at the worse of the two
+       * gateways. Safe to edit in place - nothing in this loop draws from
+       * `rng`, and the mirror is `sgn`, so one edit fixes both.
+       *
+       * The other four were already clear, though `[-27, -6]` is the next one
+       * to watch at 0.21 m. */
       const apron = [
         [-27, -6, 0.5, 1.0], [26, 4, -0.9, 1.25], [-30, 14, 1.9, 0.85],
-        [24, -14, 2.4, 1.1], [-22, 22, 0.3, 0.9],
+        [22.3, -13, 2.4, 1.1], [-22, 22, 0.3, 0.9],
       ];
       for (const [px, dzo, py, sc] of apron) {
         const pz = gz + sgn * dzo;
@@ -6154,7 +6173,22 @@ export class StationWorld extends World {
      * pallets round a plaza reads as tidied rather than used - and safe to
      * edit in place because nothing in this loop draws from `rng`.
      *
-     * The other three were already clear and are untouched. */
+     * The other three were already clear and are untouched.
+     *
+     * ── That last sentence is no longer the whole truth, and they stay ──
+     * The plan stopped rasterising its corridors on 2026-08-30 and now tests
+     * against the corridor rectangles, and asked `roleUnder(..., 'carriageway')`
+     * three of these six DO report carriageway - (-20, 34), (23, 32.1) and
+     * (-20, -34), all at r = 39.5, where a corner crosses the plaza circle into
+     * the mouth of an avenue strip.
+     *
+     * They are not conflicts and they are not moved again. `claim` and `roleAt`
+     * both answer PLAZA, which is the ground they are standing on: the plaza
+     * disc owns everything inside r = 40 and the avenue strips start there.
+     * A role-filtered query deliberately turns that precedence off - it asks
+     * "does this reach that role at all", which is the right question for a
+     * placement loop and the wrong one for a photograph. Freight parked at the
+     * plaza edge where an avenue begins is freight parked at the plaza edge. */
     for (const [fx, fz, fy] of [[-20, 34, 0.4], [23, 32.1, -1.2], [-20, -34, 2.0], [19, -33.1, 0.7], [34, 8, 1.5], [-35, -6, -0.6]]) {
       D.at('panelWarm', boxGeo(2.6, 0.26, 1.7, 1.4), fx, 0.13, fz, fy);
       D.at('crate', boxGeo(1.5, 1.5, 1.5, 1.6), fx - 0.2, 1.0, fz, fy + 0.2);
@@ -8033,8 +8067,36 @@ export class StationWorld extends World {
      * planting on the ring to fix a placement, which is the wrong trade. The
      * offset keeps all twenty and clears the road, at the cost of the disc
      * no longer capping the avenue - a garden beside the road rather than at
-     * the end of it. -24 m against a 9.9 m carriageway half-width and a
-     * 12 m ring radius leaves the nearest planter -36.0 m clear of the kerb. */
+     * the end of it.
+     *
+     * ── THE ARITHMETIC IN THAT LAST SENTENCE WAS WRONG ──────────────────
+     * It read "-24 m ... leaves the nearest planter -36.0 m clear of the
+     * kerb". -36.0 is the FAR side of the ring. Offset -24 with a 12 m radius
+     * puts the NEAREST planter at across -12.07, and a 1.6 m half-extent box
+     * is axis-aligned in world space while this avenue runs on 120 degrees,
+     * so its reach across the road is 1.6 * (|sin| + |cos|) = 2.19 m, not
+     * 1.6. -12.07 + 2.19 = -9.88 against a kerb edge of 9.9: it overhung the
+     * kerb by NINETEEN MILLIMETRES, and it did so for as long as the plan
+     * quantised its corridors to 1.5 m cells and could not see it.
+     *
+     * Fixed by the ring, not the offset - 12 m to 11 m, which measures 0.98 m
+     * clear. Sliding the whole garden one metre further off the avenue buys
+     * exactly the same clearance and was tried first, and it is the WRONG
+     * repair for a reason worth writing down: this garden already overlaps the
+     * habitat blocks it sits between, and moving it that way pushes it further
+     * in. Measured against the blocks' own published footprints, rim samples
+     * inside a block go 66 -> 72 for the offset and 66 -> 64 for the ring.
+     *
+     * ⚠ AND THAT 66 IS A FINDING NOBODY HAS ACTED ON. Four of the ten
+     * planters have geometry inside a habitat block's footprint and two of
+     * them are wholly inside one - planter 8 at (-61.5, 149.5) and planter 9
+     * at (-55.5, 153.9), against the block at (-53.5, 144.6) which is 26 x 24
+     * and reaches 36 m up. They collide as the block rather than as
+     * themselves, so `_collisionSoup` drops their triangles and nothing walks
+     * through anything; what it means is that two lit planters are standing
+     * inside a building. That is a composition defect, it predates this
+     * commit, and it is not being fixed in passing - it is written here so the
+     * district rebuild finds it instead of re-deriving it. */
     const parkP = roadPos(deg, 172, -24, 0, new THREE.Vector3());
     // `plazaOnDeck`, not `plaza`: this disc caps the end of the avenue and so
     // shares its plane with the carriageway. See the material for why.
@@ -8046,7 +8108,10 @@ export class StationWorld extends World {
     g.add(park);
     for (let i = 0; i < 10; i++) {
       const th = (i / 10) * Math.PI * 2;
-      const px = parkP.x + Math.cos(th) * 12, pz = parkP.z + Math.sin(th) * 12;
+      // 11, not 12: see the note on `parkP`. The nearest planter overhung the
+      // kerb by 19 mm and shrinking the ring is the repair that does not push
+      // the far side of it further into the habitat blocks.
+      const px = parkP.x + Math.cos(th) * 11, pz = parkP.z + Math.sin(th) * 11;
       B.at('panelDark', new THREE.CylinderGeometry(1.5, 1.7, 1.0, 12), px, 0.6, pz);
       B.at('emGreen', new THREE.SphereGeometry(1.25, 12, 8), px, 1.6, pz);
       this._solid(px, 0.6, pz, 1.6, 0.6, 1.6);
@@ -10741,11 +10806,24 @@ export class StationWorld extends World {
      *
      * IT WAS MOVED TWICE. The first attempt went to (-36, 55) on a sweep that
      * asked `roleUnder` with the mast's own 0.5 m half-extents - and
-     * `roleUnder` only reports a role where the query rect covers a CELL
-     * CENTRE, so on a 1.5 m grid a 1 m square misses more often than it hits.
+     * `roleUnder` only reported a role where the query rect covered a CELL
+     * CENTRE, so on a 1.5 m grid a 1 m square missed more often than it hit.
      * That sweep was reading the raster, not the road, and (-36, 55) is on the
-     * carriageway too. Anything below `OCC_CELL / 2` = 0.75 measures the grid;
+     * carriageway too. Anything below `OCC_CELL / 2` = 0.75 measured the grid;
      * this one was swept at 1.2.
+     *
+     * The instrument was rebuilt on 2026-08-30 - the plan keeps its corridors
+     * as shapes and `roleUnder` tests against them, so the 0.75 m floor and the
+     * rule to pad a query to 1.2 are both gone.
+     *
+     * AND THE PADDING IS NOW THE THING THAT LIES. Asked at its own 0.5 this
+     * mast at (-46, 57) is 0.76 m clear of avenue 120's kerb; asked at the 1.2
+     * it was swept with, it reports CARRIAGEWAY, because a 1.2 m box on a
+     * 120-degree avenue reaches 1.64 m across and 11.34 - 1.64 is inside 9.9.
+     * The mast is correct as placed and is not moved; the padding is what has
+     * to go. That is the whole lesson and it outlives this mast: a query padded
+     * to satisfy an instrument is a query about the instrument, and it keeps
+     * answering after the instrument is fixed.
      *
      * All three moved round the SAME RING rather than to the first clear patch:
      * the eight are a composition spread around the plaza, and radius and

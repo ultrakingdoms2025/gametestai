@@ -1973,6 +1973,10 @@ same sentence. Recorded at the gate, with the rule that anything measuring again
 half-extents of at least 0.75 — and the real fix, testing the rect against the cell's **extent** rather
 than its centre, noted as something that changes every count in the file and is not to be done in passing.
 
+> **Superseded by §20.** The 0.75 m rule is withdrawn: the plan keeps its corridors as shapes and there is
+> no size floor. Pad a query now and it over-reports — measured, on the very mast this paragraph is about.
+> The extent test was never the real fix either; §19 measured it and §20 replaced both.
+
 **Carriageway conflicts: 21 → 4.** Remaining: the observation promenade crossing avenue 0's axis, which
 needs the frame in front of you.
 
@@ -2050,3 +2054,184 @@ away after seeding — a piece of work, not a patch.
 The centre test is kept meanwhile, on the argument that decides it: **an under-report leaves a known blind
 spot that is written down; an over-report buries every real finding under 42 lamp posts.** A gate nobody
 can triage is a gate that gets disabled, which this file has already said twice about zeroes.
+
+---
+
+## 20. The corridor-geometry rewrite: the plan keeps its shapes
+
+§19 ended by naming the work: *"stop asking the raster. `claim` and `roleUnder` would test the claim
+against the corridor's own rectangle, with the cells kept as what they are actually good at."* That is what
+this section is.
+
+`StationPlan` now holds its circulation as **thirteen shapes** — a plaza disc and twelve rotated strips,
+six avenues and six gateway corridors — and `claim`, `roleUnder` and `roleAt` test the query's true rotated
+rectangle against the corridor's true rotated rectangle. Separating axes for rect-on-rect, a clamped
+nearest point for the disc. Both are exact; for convex shapes an unseparated pair is not a heuristic for
+overlap, it *is* overlap.
+
+The two failure modes §19 measured now get the answers arithmetic gives:
+
+| probe | centre test | extent test | shapes |
+|---|---|---|---|
+| avenue lamp, 0.25 m half-extent, 0.45 m clear of the kerb | clear | **conflict** | clear |
+| ad mast, 0.5 m half-extent, on the centreline | **missed** | conflict | conflict |
+
+`station-plan.test.mjs` pins exactly that, as one test with both probes, because the whole disagreement
+lives between 0.25 m and 0.5 m and a test that only holds one of them would go green on either bug.
+
+### The index that was specified and not built
+
+§19 said "with the cells kept as… an index for finding which corridors are worth testing at all". There
+are thirteen corridors. A bounding-circle reject settles nearly every query before a separating axis is
+computed, and thirteen of those is **cheaper than rasterising one large footprint was** — `roleUnder` used
+to walk every cell of a claim's axis-aligned bound, which for a skyline block is thousands.
+
+So the index is not there. Two representations of "where the road is" is the bug being fixed, and adding a
+second one back on the same day would be the same mistake wearing an optimisation's clothes. `occCellKey`
+stays in the file and the constructor says where an index goes if districts ever seed parcels by the
+hundred.
+
+The raster does survive, for `occupancyUnder` — which asks how much of a footprint stands on ground
+*something else has already claimed*, an unbounded set of eleven thousand arbitrary rectangles accumulated
+across a whole build. A 1.5 m raster is the right shape for that where thirteen corridors are not. It
+inherits the raster's floor, and that is now written on it rather than discovered later: a footprint
+smaller than a cell covers no cell centre, and zero covered cells answers 0, which reads as "clear". Its
+only callers are backdrop blocks tens of metres across.
+
+### Precedence had to be stated exactly, and one constant moved to do it
+
+The raster's rule was "the first seed to claim a cell wins", with the plaza seeded first. Stated exactly
+that becomes "the first region in seed order", and the difference between those two sentences is real: a
+claim straddling two regions used to report whichever *cell* the x/z scan reached first.
+
+The avenue strips now start at `PLAZA_R` (40) rather than the `PLAZA_R - 3` (37) the surface is drawn
+from. Those three metres are the tuck-in that lets a road meet a plaza without a seam, and they are plaza
+floor — which is what the raster said too, because the plaza had already taken those cells. **Starting the
+strip at the plaza circle makes the two regions disjoint by construction rather than by seed order**, so
+"which role is this ground" never needs one shape subtracted from another. It is exact rather than
+approximately exact: a strip point is `(along, across)` on perpendicular axes, so `along >= 40` already
+implies `along² + across² >= 1600`.
+
+The avenues and the gateway corridors *do* genuinely overlap, near r = 44–60 where a corridor is 48 m wide.
+The avenue wins by seed order, which is again the answer the raster gave.
+
+### `only` turns precedence off, and that is deliberate
+
+`roleUnder(x, z, hx, hz, yaw, ROLE.CARRIAGEWAY)` answers a different question from `roleUnder(...)` with no
+filter, and the difference now shows. Three of the six dropped-freight pallets around the plaza sit at
+r = 39.5 with a corner across the plaza circle into an avenue mouth. Unfiltered — and from `claim` and
+`roleAt` — they are **plaza**, which is the ground they stand on. Filtered to carriageway they report
+carriageway, because the question is "does this reach that role at all", which is what a placement loop
+needs before it commits and the wrong question for a photograph.
+
+They were not moved again. Freight parked at the plaza edge where an avenue begins is freight parked at the
+plaza edge, and the note at the site says so, because the previous session's comment there — "the first
+bearings at that radius where `roleUnder` says no carriageway" — stopped being true the moment the
+instrument changed.
+
+### What it cost: nothing moved, and half the measurement had been missing
+
+**3,675 of 3,678 tests passed on the first run of the rewrite**, and the three failures were the three pins
+that had to be re-taken. The skyline's placement search calls `roleUnder`, so a changed answer there could
+have moved sixteen backdrop blocks and every catalogue name with them. It did not move one.
+
+| | raster | shapes |
+|---|---|---|
+| plaza | 465 | **1,017** |
+| sightline | 224 | **369** |
+| carriageway | 4 | **7** |
+| total | 693 | **1,390** |
+
+The world did not change. **Roughly half of what stands on the station's circulation had been invisible to
+this measurement** — a claim smaller than a cell covered no cell centre, and a claim straddling a boundary
+covered none of the cells that carried the role. The plaza is most of the rise and it is what a plaza is
+for; the carriageway count is the one that names defects.
+
+### The three it found were all real, and all three are fixed
+
+Carriageway went 4 → 7 **with nothing having moved**, which is the one ground on which this file permits a
+ratchet to rise: the measurement got better, not the world worse. Rather than pin 7, all three were fixed,
+so the gate reads the same 4 — but 4 now means *"nothing stands in a road"* where before it meant
+*"nothing bigger than a grid cell stands in a road, unless it straddles a kerb"*.
+
+- **Apron freight ×2, at (24, ±62).** A 2.42 m crate stack at 2.4 rad whose *centre* is 10.2 m across
+  avenue 60 against a kerb edge of 9.9 — clear, if a box were a point. Rotated, it reached **1.2 m past the
+  kerb**. It straddles the kerb without covering a cell centre, which is precisely the blind spot. Moved
+  2 m perpendicular to the avenue; 0.77 m clear at the worse of the two gateways. One edit, because the
+  mirror is `sgn`.
+
+- **A habitat terrace planter, overhanging by nineteen millimetres.** And the note beside it was wrong:
+  it claimed the offset left the nearest planter "-36.0 m clear of the kerb", which is the *far* side of
+  the ring. The near planter sits at across -12.07, and a 1.6 m half-extent box is axis-aligned in world
+  space while that avenue runs on 120°, so its reach across the road is 1.6 × (|sin| + |cos|) = **2.19 m,
+  not 1.6**. -12.07 + 2.19 = -9.88 against 9.9.
+
+### ⚠ The obvious repair for the planter was wrong too, and measuring is what said so
+
+Sliding the whole garden one more metre off the avenue buys 0.98 m of clearance. It was written first, and
+the collision pin caught it: `found` fell by **six triangles**.
+
+Six triangles is a strange number for a move, and chasing it found this: **the terrace garden already
+overlaps the habitat blocks it sits between.** Four of the ten planters have rim geometry inside a block's
+published footprint and **two are wholly inside one** — planter 8 at (-61.5, 149.5) and planter 9 at
+(-55.5, 153.9), against the block at (-53.5, 144.6), which is 26 × 24 m and reaches 36 m up. The six
+triangles were a *fifth* planter's rim crossing into a footprint and being dropped as already-inside-a-box.
+
+So the fall was the fix reporting its own side effect, and the side effect was in the wrong direction.
+Shrinking the **ring** from 12 m to 11 m buys identical clearance — 0.975 m against 0.980 — and moves the
+far side of the ring *out* of the blocks instead of further in. Measured against the blocks' own
+footprints, rim samples inside a block go **66 → 72 for the offset and 66 → 64 for the ring**.
+
+`found` rose 12 rather than falling 6, which is the same arithmetic inverted: less geometry inside a
+building means more surfaces a player can walk into.
+
+**The two lit planters standing inside a habitat block are left, and written down.** They collide as the
+block rather than as themselves, so nothing walks through anything; what it means is that two glowing
+planters are inside a building. That is a composition defect, it predates this work, and the district
+rebuild should find it recorded rather than re-derive it.
+
+### The denominator stopped being a cell count
+
+`cellsSeeded` was 17,560 and it is gone, because the plan has no cells to count. The honest statement of
+"how much circulation was laid down" is the **area of the shapes**, and it is a better pin than the one it
+replaces for a reason beyond exactness: a rasterised count can only be checked against another
+rasterisation, which is why the previous note here had to explain a 680-cell fall as "6 avenues × 12 m ×
+19.8 m over a 1.5 m grid". Written as area it is the closed form of the layout constants themselves —
+`Math.PI * PLAZA_R²  +  6 (ROAD_R1 - PLAZA_R)(2 ROAD_EDGE_HALF)  +  6 × 56 × 48` = **38,736.948 m²** —
+so `ROAD_R1` moving fails *there* rather than in an arithmetic sentence somebody has to re-derive.
+
+`regionsSeeded === 13` carries the other half of the canary: a `seedCirculation` that quietly stopped
+laying corridors would take every count above to zero and pass by measuring nothing.
+
+### And the padding is now the thing that lies
+
+§18 left a rule: *"anything measuring against this plan uses half-extents of at least 0.75."* It is
+withdrawn, and the withdrawal has teeth. The hologram ad mast at (-46, 57) is **0.76 m clear** of avenue
+120's kerb asked at its own 0.5 — and reports **carriageway** asked at the 1.2 it was swept with, because a
+1.2 m box on a 120° avenue reaches 1.64 m across and 11.34 − 1.64 is inside 9.9.
+
+The mast is correct as placed. The padding is what has to go, and the probe in
+`station-plan-conflicts.test.mjs` that was raised from 0.5 to 1.2 to work around the old instrument is now
+**0.05** — a thirtieth of the cell it used to have to hit — so a size floor coming back fails there first.
+
+That is the lesson worth carrying past this file: **a query padded to satisfy an instrument is a query
+about the instrument, and it keeps answering after the instrument is fixed.**
+
+### Pins re-taken, with reasons
+
+| pin | was | now | why |
+|---|---|---|---|
+| `cellsSeeded` | 17,560 | `regionsSeeded` 13, `seededArea` 38,736.948 m² | the plan has shapes, not cells |
+| total conflicts | 693 (band 650–800) | 1,390 (band 1,250–1,500) | half the measurement had been invisible |
+| carriageway ceiling | 4 | **4** | rose to 7 on a better instrument, all three fixed |
+| `roleUnder` probe size | 1.2 | 0.05 | the size floor is gone and this proves it |
+| collision found/boxed/kept | 372,148 / 170,715 / 201,433 | 372,160 / 170,718 / 201,442 | 12 triangles: the planter ring left a block footprint |
+| `habitat:panelDark` anchor | z 112.152 | z 111.677 | the ring shrank, so the batch's bounds centre moved |
+| move-drag table | 3 names | −1 collider each | two nudges leaving two drag sets |
+
+`check-stored-overlays.mjs` against production: 1 stored document, 9 entries, **0 name-targeted** — so the
+anchor move is free today. That is a fact about today, and it is why that script exists.
+
+**Hub state:** props inside structure 0, props in rooms 0, backdrop intrusions 0, block-on-block 0, skyline
+placements clean 16/16, block/interior 1, carriageway **4** — the same four promenade claims, now measured
+by an instrument with no known blind spot. 3,679 tests green, build clean.

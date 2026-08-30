@@ -24,58 +24,49 @@ import { ROAD_R1 } from '../../src/worlds/station/StationKit.js';
  * multi storey building that goes halfway into the road", from 40.4,-77.2).
  *
  * ── What a conflict actually means here ──────────────────────────────────
- * `StationPlan.claim` rasterises the claim's axis-aligned bound but confirms a
- * hit with `_rectCovers`, the TRUE rotated rectangle, so a conflict is not a
- * bounding-box artefact. The corridor it tests against is seeded from
- * `ROAD_EDGE_HALF` = 9.9 m, which is the 18 m carriageway plus its two 0.45 m
- * kerb strips - so a conflict is geometry standing on the road or its kerb,
- * not merely near it.
+ * `StationPlan.claim` tests the claim's TRUE rotated rectangle against the
+ * corridor's true rotated rectangle, so a conflict is neither a bounding-box
+ * artefact nor a grid one. The corridor is built from `ROAD_EDGE_HALF` = 9.9 m,
+ * the 18 m carriageway plus its two 0.45 m kerb strips - so a conflict is
+ * geometry standing on the road or its kerb, not merely near it, to the
+ * millimetre rather than to the nearest 1.5 m.
  *
- * ── WHAT THIS GATE CANNOT SEE: A CLAIM SMALLER THAN A CELL ──────────────
+ * ── THE BLIND SPOT THIS GATE USED TO HAVE, AND HOW IT CLOSED ────────────
  *
- * `roleUnder` and `claim` both confirm a hit by asking whether the claim's
- * true rotated rectangle covers a CELL CENTRE - `(gx + 0.5) * OCC_CELL`. On a
- * 1.5 m grid that means a claim under `OCC_CELL / 2` = 0.75 m of half-extent
- * can sit squarely in a road and slip between the centres, and the count above
- * will not include it.
+ * Until 2026-08-30 the plan rasterised its corridors to 1.5 m cells at seeding
+ * time and threw the corridor shapes away, so every question here was really a
+ * question about a grid. That was wrong in two directions at once and this file
+ * recorded both:
  *
- * Measured, not theorised: the hologram ad mast claims 0.5 m square, and after
- * being moved OFF an avenue it was moved onto another one - because the sweep
- * that placed it asked `roleUnder` at the mast's own 0.5 and got the raster's
- * answer rather than the road's. Asked at 1.2 the picture is uniform; asked at
- * 0.5 two of the six avenues report no carriageway anywhere along their
- * centreline and the other four report a patchwork.
+ *   a hit was confirmed by asking whether the claim covered a CELL CENTRE, so
+ *   a claim under `OCC_CELL / 2` = 0.75 m of half-extent could sit squarely in
+ *   a road and slip between the centres. The 0.5 m hologram ad mast was moved
+ *   OFF one avenue and ONTO another by a sweep that asked at the mast's own
+ *   size and got the raster's answer. Every caller was under instruction to
+ *   pad its query to at least 1.2, which is a rule that only makes sense if
+ *   the instrument is wrong.
  *
- * So a ZERO here would mean "nothing bigger than a grid cell stands in a
- * road", which is not the same sentence. Anything measuring against this plan
- * must use half-extents of at least 0.75.
+ *   the obvious repair - testing the cell's EXTENT - was written, run and
+ *   reverted, because it took this count from 4 to 61 and 42 of the 57 it
+ *   added were avenue lamp posts standing correctly, each 0.45 m clear of a
+ *   kerb whose cell reaches 0.6 m past it.
  *
- * ── AND THE OBVIOUS FIX IS WORSE. MEASURED, NOT ASSUMED ──────────────────
+ * The cell was never the road. It was a quantisation of the road to 1.5 m, and
+ * both errors were that 1.5 m being asked a sub-metre question - so the fix was
+ * to stop asking it. `StationPlan` keeps its corridors as a plaza disc and
+ * twelve rotated strips, and `claim`, `roleUnder` and `roleAt` test against
+ * those. `station-plan.test.mjs` pins the lamp and the mast getting opposite
+ * answers, which is the whole disagreement in one test.
  *
- * Testing the claim's rect against the cell's EXTENT instead of its centre
- * was written, run, and reverted. It takes this count from 4 to 61 - and 42
- * of the 57 it adds are AVENUE LAMP POSTS that are standing correctly.
+ * ── WHAT THAT COST, AND WHY THE CEILING DID NOT MOVE ────────────────────
  *
- * A lamp sits at `ROAD_W / 2 + 1.6` = 10.6 with a 0.25 m half-extent, so its
- * inner face is at 10.35 against a road edge of `ROAD_EDGE_HALF` = 9.9: clear
- * by 0.45 m, by simple arithmetic. But `_seed` rasterises the corridor to
- * whole cells, and the cell holding the boundary sample at 9.9 reaches 10.5.
- * The extent test hits it.
- *
- * So the two tests are wrong in OPPOSITE directions and neither is the
- * answer: the centre test cannot see a claim smaller than a cell, and the
- * extent test reports anything within a cell of the kerb. The cell is not the
- * road - it is a QUANTISATION of the road, to 1.5 m, and both errors are that
- * 1.5 m being asked a sub-metre question.
- *
- * The real fix is to stop asking the raster. `claim` and `roleUnder` would
- * test the claim against the corridor's own rectangle, with the cells kept as
- * what they are good at - an index for finding which corridors are worth
- * testing. That needs the plan to store the corridor shapes it currently
- * throws away after seeding, and it is a piece of work rather than a patch.
- * Until then the centre test is kept, because an under-report leaves a known
- * blind spot while an over-report buries every real finding under 42 lamp
- * posts.
+ * The rewrite roughly doubled the plan's total conflict count (693 -> 1,390)
+ * without a single thing in the world moving, and it found THREE more claims
+ * standing in a carriageway that no instrument here had ever been able to see.
+ * All three were real and all three were fixed in the same commit, so this
+ * ceiling reads the same 4 it did the day before - but 4 now means "nothing
+ * stands in a road", where before it meant "nothing bigger than a grid cell
+ * stands in a road, unless it straddles a kerb".
  *
  * ── The by-owner list is the work list ───────────────────────────────────
  * It is asserted, not just printed, because the useful regression is not "the
@@ -172,6 +163,30 @@ import { ROAD_R1 } from '../../src/worlds/station/StationKit.js';
  *
  * The denominator moved with it - 18,240 seeded cells to 17,560 - which is the
  * check that this removed the right cells and not a swathe of the hub. */
+/* 4 -> 7 -> 4 on 2026-08-30, in one commit, and the round trip is the point.
+ *
+ * `StationPlan` stopped rasterising its corridors and started testing claims
+ * against the corridor rectangles themselves. That raised this count to 7
+ * WITHOUT ANYTHING MOVING, which is the one ground on which a ratchet may rise:
+ * the measurement got better, not the world worse. The three it found:
+ *
+ *    Erecting Gateway Plaza  2  parked apron freight at (24, +-62). A 2.42 m
+ *      crate stack at 2.4 rad whose CENTRE is 10.2 m across avenue 60 - clear,
+ *      if a box were a point - reaching 1.2 m past the kerb. It straddles the
+ *      kerb without covering a cell centre, so the raster saw nothing. Moved
+ *      2 m perpendicular to the avenue, to `[22.3, -13]`; 0.77 m clear at the
+ *      worse of the two gateways.
+ *    Stacking habitat blocks 1  the terrace garden's nearest planter,
+ *      overhanging the kerb by NINETEEN MILLIMETRES. The note beside it
+ *      claimed 36 m of clearance and had read the far side of the ring; the
+ *      near planter sits at -12.07 and a 1.6 m axis-aligned box on a
+ *      120-degree avenue reaches 2.19 m, not 1.6. The garden moved one more
+ *      metre off the centreline: 0.98 m clear.
+ *
+ * Both were fixed rather than pinned, so the ceiling is back to 4 and the four
+ * are the same four this file has photographed and left. Lower it when the
+ * promenade is decided; never raise it for anything but a better instrument,
+ * and say so here when you do. */
 const CEILING = 4;
 
 /**
@@ -265,12 +280,18 @@ test(`the plan's carriageway ends where the avenue surface ends`, async () => {
   const plan = world.plan;
   for (const deg of world.roadAngles) {
     const t = (deg * Math.PI) / 180;
-    /* 1.2, not the 0.5 this was first written with. `roleUnder` reports a role
-     * only where the query rect covers a CELL CENTRE, so a footprint under
-     * `OCC_CELL / 2` = 0.75 answers about the raster rather than the road: at
-     * 0.5 this test reported avenues 0 and 180 as having no carriageway
-     * ANYWHERE and the other four as a patchwork. */
-    const on = (r) => plan.roleUnder(Math.cos(t) * r, Math.sin(t) * r, 1.2, 1.2, 0, 'carriageway');
+    /* 0.05, and the size is now part of what this test says.
+     *
+     * It was written at 0.5, failed, and was raised to 1.2 - because the old
+     * raster reported a role only where the query covered a CELL CENTRE, so a
+     * footprint under `OCC_CELL / 2` = 0.75 answered about the grid rather than
+     * the road. At 0.5 it read avenues 0 and 180 as having no carriageway
+     * ANYWHERE and the other four as a patchwork.
+     *
+     * A padded query is now a wrong query, and 5 cm proves the padding is gone:
+     * this probe is smaller than a thirtieth of the cell it used to have to
+     * hit. If a size floor ever comes back, this fails first. */
+    const on = (r) => plan.roleUnder(Math.cos(t) * r, Math.sin(t) * r, 0.05, 0.05, 0, 'carriageway');
     assert.ok(on(ROAD_R1 - 4), `avenue ${deg} has no carriageway 4 m inside its own end`);
     assert.ok(!on(ROAD_R1 + 6), `avenue ${deg} claims carriageway 6 m PAST the surface it is drawn on`);
   }
@@ -285,7 +306,12 @@ test('the plan still sees the whole station, so a zero would mean something', as
    * `_solidRot` - every conflict count above would read zero and the gate
    * would pass by measuring nothing. That shape has cost this repository
    * real defects, so the denominator is pinned alongside the numerator. */
-  console.log(`  ${s.claims} claims, ${s.cellsSeeded} cells seeded, ${s.conflicts} conflicts`);
+  console.log(`  ${s.claims} claims, ${s.regionsSeeded} corridors over ${s.seededArea.toFixed(0)} m2, ${s.conflicts} conflicts`);
   assert.ok(s.claims > 10000, `only ${s.claims} claims reached the plan - it is no longer seeing the build`);
-  assert.ok(s.cellsSeeded > 15000, `only ${s.cellsSeeded} cells seeded - circulation is no longer being laid down`);
+  /* Was `cellsSeeded > 15000`. The plan keeps shapes rather than cells now, so
+   * the denominator is their area - and the same trap it guards applies to the
+   * new form: a `seedCirculation` that quietly stopped laying corridors would
+   * take every count above to zero and pass this gate by measuring nothing. */
+  assert.ok(s.regionsSeeded >= 13, `only ${s.regionsSeeded} corridors seeded - circulation is no longer being laid down`);
+  assert.ok(s.seededArea > 30000, `only ${s.seededArea.toFixed(0)} m2 of circulation reserved - the corridors have shrunk`);
 });

@@ -248,10 +248,34 @@ test('the collision the world derives from its own geometry is unchanged', async
    * and standing clear it contributes its whole surface. The same arithmetic
    * as the backdrop entry above, one scale down. 1,204 triangles for eight of
    * the eighteen real dressing-inside-structure defects.
+   *
+   * -- Re-taken: two nudges the corridor-geometry rewrite made visible ------
+   * 372148 -> 372160 found, 170715 -> 170718 boxed, 201433 -> 201442 kept;
+   * chunks, colliders and planting unchanged. TWELVE triangles, and they are
+   * the smallest re-take in this list by two orders of magnitude.
+   *
+   * `StationPlan` stopped rasterising its corridors to 1.5 m cells and started
+   * testing claims against the corridor rectangles themselves, which found
+   * three claims standing in a carriageway that no instrument here had ever
+   * been able to see. Two were apron freight and moving them changes nothing
+   * in this pass at all - measured, the soup is byte-identical. The twelve are
+   * the third: the habitat terrace's planter ring went 12 m to 11 m, which
+   * lifted two planter rims OUT of a habitat block's published footprint, so
+   * twelve triangles that were being dropped as already-inside-a-box are now
+   * surfaces again.
+   *
+   * The direction is the same one this list keeps recording, and here it is
+   * inverted deliberately: a smaller ring means LESS geometry inside a
+   * building, so `found` and `kept` go up. It is also the reason the ring
+   * shrank rather than the garden sliding one metre further off the avenue -
+   * that buys identical kerb clearance and pushes the far side of the ring
+   * DEEPER into the blocks. See the note on `parkP` in `_buildHabitat`, which
+   * also records the four planters that are still inside a block footprint and
+   * were left there.
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 372148, boxed: 170715, kept: 201433, planting: 1361 },
+    { found: 372160, boxed: 170718, kept: 201442, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
   assert.equal(chunks, 8765, 'the chunking changed');
@@ -344,6 +368,25 @@ test('every reported position is finite', async () => {
   assert.deepEqual(bad.map((o) => o.name), [], 'non-finite anchors reported');
 });
 
+/**
+ * ── Re-taken 2026-08-30: one anchor, 0.475 m ────────────────────────────
+ * `habitat:panelDark` moved from (-61, 0, 112.152) to (-61, 0, 111.677). No
+ * name was minted or retired.
+ *
+ * An anchor is the centre of a batch's bounds, and the habitat terrace's
+ * planter ring shrank from 12 m to 11 m - so the batch got smaller and its
+ * centre moved with the half of it that is not symmetric about the anchor. The
+ * ring shrank because the plan stopped rasterising its corridors and could
+ * finally see that the nearest planter overhung the kerb by 19 mm; the note on
+ * `parkP` in `_buildHabitat` has the arithmetic and the reason this repair was
+ * chosen over sliding the whole garden.
+ *
+ * Half a metre matters here for one reason and it is the one in the assertion
+ * message: a stored move against this name was authored as a translation from
+ * the old anchor, so it now lands half a metre off and still reports ok:true.
+ * `scripts/check-stored-overlays.mjs` reads this same fixture, and it is what
+ * says whether any stored document actually targets the name.
+ */
 test('the name set and every anchor match the pin', async () => {
   const cat = await catalogue();
   const now = cat.map((o) => ({ name: o.name, position: o.position })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

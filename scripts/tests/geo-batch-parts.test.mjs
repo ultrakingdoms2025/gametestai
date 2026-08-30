@@ -171,3 +171,27 @@ test('no station geometry is raised by an anonymous batch', async () => {
   assert.deepEqual([...orphans], [],
     'a merged piece with no owner means its GeoBatch was constructed without the world');
 });
+
+test('call-site tracing is OFF unless a tool turns it on', async () => {
+  /* THE COST THE GAME MUST NEVER PAY.
+   *
+   * Capturing a call site is an Error construction per authored piece, and the
+   * station authors 37,923 of them - about 700 ms on the build, measured. That
+   * is a price a debugging session should pay and a player never should, so the
+   * default is off and this asserts it. A leaked `true` would not fail any
+   * other test in the suite: the world would build correctly, look identical,
+   * and simply be slower for everyone. That is exactly the kind of regression
+   * nothing else here would catch. */
+  const { world } = await buildStation();
+  let traced = 0, total = 0;
+  world.group.traverse((o) => {
+    const p = o.userData?.parts;
+    if (!p?.sites) return;
+    total += p.start.length;
+    for (let i = 0; i < p.siteOf.length; i++) if (p.sites[p.siteOf[i]]) traced++;
+  });
+  assert.ok(total > 30000, `expected the station's parts, got ${total}`);
+  assert.equal(traced, 0,
+    `${traced} of ${total} pieces carry a call site in a normal build - `
+    + 'setTraceCallSites(true) has leaked out of a probe and every player is paying for it');
+});

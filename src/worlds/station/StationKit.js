@@ -1040,15 +1040,64 @@ export function instanced(geo, mat, entries, opts = {}) {
  * a single mesh. A district of forty buildings collapses to ~6 draw calls.
  */
 /**
+ * WHERE A PIECE WAS AUTHORED - off by default, and off in the game always.
+ *
+ * The spans give a piece an address and a build step. Neither is a CALL SITE,
+ * and the difference cost a wrong edit: a barrier in a planter was matched to
+ * the `barrier()` helper by shape and material - exactly the right geometry at
+ * exactly the right height, only two call sites - and the change moved a
+ * different prop entirely, because those two sites stand near the spawn at
+ * (-34, 2) and the defect was in the plaza. Matching a piece to its author by
+ * shape is a guess that looks like a deduction.
+ *
+ * ── Why opt-in, and not simply always on ──────────────────────────────────
+ *
+ * Capturing a stack costs an Error construction per authored piece, and the
+ * station authors 37,923 of them. That is a price a debugging session should
+ * pay and a player never should, so the game leaves it off and pays one
+ * boolean test per `add`. Measured with it ON, the build cost is in the
+ * commit message; measured OFF it is unchanged, because the branch is not
+ * taken.
+ *
+ * Frames from StationKit itself are skipped - `at` and `localAt` funnel into
+ * `add`, so the top frames are always this file and always useless. Up to
+ * three are kept because the wrapper layers are real: a zone bench is
+ * `Gym.js` -> `ZoneContext.put` -> `localAt`, and only the first of those
+ * three names the bench.
+ */
+let TRACE_CALL_SITES = false;
+
+/** Turn call-site capture on before building a world. Dev and tests only. */
+export function setTraceCallSites(on) { TRACE_CALL_SITES = !!on; }
+
+const SITE_RE = /\(?([^()\s]+\.js):(\d+):\d+\)?$/;
+
+function callSite() {
+  const stack = new Error().stack;
+  if (!stack) return null;
+  const out = [];
+  for (const raw of stack.split('\n').slice(2)) {
+    const m = SITE_RE.exec(raw.trim());
+    if (!m) continue;
+    const file = m[1].replace(/^.*[\\/]/, '');
+    if (file === 'StationKit.js') continue;
+    out.push(`${file}:${m[2]}`);
+    if (out.length === 3) break;
+  }
+  return out.length ? out.join(' <- ') : null;
+}
+
+/**
  * Pack `GeoBatch` part records into the parallel-typed-array form described
  * on `flush`. Kept out of the class so the shape has one definition and the
  * readers can be pointed at it.
  */
 function packParts(recs) {
   const n = recs.length;
-  const owners = [null], pieces = [null];
+  const owners = [null], pieces = [null], sites = [null];
   const ownerIx = new Map([[null, 0]]), pieceIx = new Map([[null, 0]]);
-  const ownerOf = new Uint16Array(n), pieceOf = new Uint16Array(n);
+  const siteIx = new Map([[null, 0]]);
+  const ownerOf = new Uint16Array(n), pieceOf = new Uint16Array(n), siteOf = new Uint16Array(n);
   const start = new Uint32Array(n), count = new Uint32Array(n);
   let at = 0;
   for (let i = 0; i < n; i++) {
@@ -1057,13 +1106,16 @@ function packParts(recs) {
     if (oi === undefined) { oi = owners.push(r.owner) - 1; ownerIx.set(r.owner, oi); }
     let pi = pieceIx.get(r.piece);
     if (pi === undefined) { pi = pieces.push(r.piece) - 1; pieceIx.set(r.piece, pi); }
+    let si = siteIx.get(r.site ?? null);
+    if (si === undefined) { si = sites.push(r.site) - 1; siteIx.set(r.site, si); }
     ownerOf[i] = oi;
     pieceOf[i] = pi;
+    siteOf[i] = si;
     start[i] = at;
     count[i] = r.n;
     at += r.n;
   }
-  return { owners, pieces, ownerOf, pieceOf, start, count, indices: at };
+  return { owners, pieces, sites, ownerOf, pieceOf, siteOf, start, count, indices: at };
 }
 
 export class GeoBatch {
@@ -1118,6 +1170,7 @@ export class GeoBatch {
     plist.push({
       owner: this._owner?._planOwner ?? null,
       piece: this._piece,
+      site: TRACE_CALL_SITES ? callSite() : null,
       n: geo.getIndex().count,
     });
     return geo;

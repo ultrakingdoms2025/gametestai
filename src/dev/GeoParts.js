@@ -65,7 +65,7 @@ export function collectParts(root) {
          * one - so a finding reads "(unnamed)#28" and cannot be looked up.
          * The group it hangs under is named, and that is the district. */
         const name = o.name || (o.parent?.name ? `${o.parent.name}:instanced` : '(unnamed)');
-        out.push({ mesh: name, obj: o, index: i, owner: null, piece: null, box, tris, instanced: true });
+        out.push({ mesh: name, obj: o, index: i, owner: null, piece: null, site: null, box, tris, instanced: true });
       }
       return;
     }
@@ -89,6 +89,7 @@ export function collectParts(root) {
         index: i,
         owner: p.owners[p.ownerOf[i]],
         piece: p.pieces[p.pieceOf[i]],
+        site: p.sites ? p.sites[p.siteOf[i]] : null,
         box,
         tris: n / 3,
         instanced: false,

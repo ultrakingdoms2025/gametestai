@@ -41,58 +41,60 @@ import { buildStation } from './world-kit.mjs';
  * Measured 2026-08-29, after the gateway flanks were nudged off the avenues
  * and the cargo straddle gantry's legs were moved outboard of the kerb.
  *
- * 20 -> 17 -> 16. Lowering it is the point of the file.
+ * 20 -> 17 -> 16, and then UP to 18 - not because anything regressed, but
+ * because the instrument was wrong. `StationPlan._rectCovers`, the confirm
+ * step behind every conflict and every `roleUnder` query, tested the rect
+ * MIRRORED. Corrected, it invented five conflicts that were never real and
+ * hid seven that were. The count a broken instrument produces is not a
+ * baseline, so this one is re-taken rather than defended.
  */
-const CEILING = 16;
+const CEILING = 18;
 
 /**
  * Conflicts by the build step that caused them.
  *
  * TRACED, 2026-08-29, by monkey-patching `claim` to keep a stack whenever it
- * returns 'carriageway'. Every one of the sixteen now names the line that
- * places it, so the next person starts from a work list and not a number.
+ * returns 'carriageway'. Then RE-TRACED after the mirror bug was fixed, which
+ * moved four of the eight groups. The numbers below are the corrected ones.
+ *
+ * `Spanning the great dome` 8 - StationWorld.js:10431, the outer ring's link
+ *   mouths. Was reported as 2 by the mirrored test; six more were hidden by
+ *   it. These are at r = 247 where the road runs out at the hull, and may be
+ *   correct as built - but there are four times as many as anyone thought.
  *
  * `Opening the commercial strip` 4 - StationWorld.js:7378 and :7384, the
  *   window promenade's raised deck and its balustrade. NOT a misplaced
  *   building: the promenade is an arc from r = 158 to 190 spanning +-48
- *   degrees, and bearing 0 is inside that arc, while every avenue - bearing 0
- *   included - is DRAWN as road out to `DECK_R - 12` = 188. So a player
- *   walking out avenue 0 meets a balustrade and a 2 m deck at r = 158. The fix
- *   is a design decision about the hero window sector - stop the avenue at the
- *   promenade, or open a gap on the axis - and not a nudge.
+ *   degrees, bearing 0 is inside that arc, and every avenue including bearing
+ *   0 is DRAWN as road out to `DECK_R - 12` = 188. So a player walking out
+ *   avenue 0 meets a balustrade and a 2 m deck at r = 158. The fix is a design
+ *   decision about the hero window sector - stop the avenue at the promenade,
+ *   or open a gap on the axis - not a nudge.
  *
  * `Erecting Gateway Plaza` 3 - StationWorld.js:6028, at r = 41-42, where the
- *   plaza and the avenues meet and the two roles necessarily abut.
+ *   plaza and the avenues meet.
  *
- * `Stacking habitat blocks` 3 - StationWorld.js:7779, the tower footprints on
- *   avenue 120. `off` is `ROAD_W / 2 + 6 + d / 2` with d = 22, so 26 m, and a
- *   24 x 22 tower reaches back inside the kerb.
+ * `dressing` 3 - StationWorld.js:3114, `_solidifyProps` boxing scattered
+ *   props. One appeared the moment the skyline flank stopped occupying that
+ *   patch of avenue: the scatter had always been willing to put a crate there
+ *   and the building was what stopped it.
  *
- * `Spanning the great dome` 2 - StationWorld.js:10431, at r = 247 on avenue
- *   180, which is the outer ring's link mouth. `Raising the pressure hull` 1 -
- *   :5047, at r = 204. Both are where the road runs out at the hull and may be
- *   correct as built; look before touching.
+ * GONE, and they were never real: `Stacking habitat blocks` 3, `Calibrating
+ * Traffic Control` 1 and `Raising the pressure hull` 1 were all artefacts of
+ * the mirrored rect. The habitat towers measure 4.70 m clear of the kerb.
+ * Nudging them - which is what the previous list implied - would have moved
+ * correct geometry to satisfy a broken instrument.
  *
- * `dressing` 2 - StationWorld.js:3114, `_solidifyProps` boxing scattered
- *   props. One of them, at (44.1, -96.9), appeared the moment the skyline
- *   flank stopped occupying that patch of avenue: the scatter had always been
- *   willing to put a crate there and the building was what stopped it.
- *
- * `Calibrating Traffic Control` 1 - StationWorld.js:7999.
- *
- * `Stacking the cargo yard` is absent, and so is
- `Raising the outer skyline`.
- * Each had conflicts until this session moved them, which is the point of the
- * file.
+ * `Stacking the cargo yard` and `Raising the outer skyline` are absent because
+ * this session moved them, and both were real by simple arithmetic as well as
+ * by the plan: gantry legs at 7 m across an 18 m road, and a skyline flank
+ * five degrees off an avenue with 13 m of reach at 9.94 m of offset.
  */
 const BY_OWNER = {
-  'Calibrating Traffic Control': 1,
   'Erecting Gateway Plaza': 3,
   'Opening the commercial strip': 4,
-  'Raising the pressure hull': 1,
-  'Spanning the great dome': 2,
-  'Stacking habitat blocks': 3,
-  dressing: 2,
+  'Spanning the great dome': 8,
+  dressing: 3,
 };
 
 test('nothing new stands in a carriageway', async () => {

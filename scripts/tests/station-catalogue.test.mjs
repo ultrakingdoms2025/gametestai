@@ -205,16 +205,26 @@ test('the collision the world derives from its own geometry is unchanged', async
    * dressing props stopped climbing onto planter and bench rims and now stand
    * on the deck, so seven of their triangles fall inside an authored box that
    * they used to sit above. Nothing entered or left the pass, which is what
-   * `found` holding still proves. Colliders 26761 -> 26772: `_solidifyProps`
+   * `found` holding still proves.
+   *
+   * ── And again, for the mirrored-rect fix ────────────────────────────────
+   * 364575 -> 363921 found, 166934 -> 166292 boxed, 8605 -> 8604 chunks. The
+   * skyline's carriageway guard calls `StationPlan.roleUnder`, which confirms
+   * through `_rectCovers` - so correcting that sign changed which gateway
+   * flanks get nudged clear and by how much. A plan fix reaching the world's
+   * collision is exactly what the guard being wired up MEANS; it is not a
+   * surprise, and `found` moving by 654 out of 364,575 is the size of it.
+   *
+   * Colliders 26761 -> 26772: `_solidifyProps`
    * boxes a prop from where it ends up, and a prop that stops standing on a
    * rim is boxed separately from the rim it used to share a column with. */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 364575, boxed: 166934, kept: 197641, planting: 1360 },
+    { found: 363921, boxed: 166292, kept: 197629, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8605, 'the chunking changed');
-  assert.equal(physics.colliders.length, 26772, 'the collider total changed');
+  assert.equal(chunks, 8604, 'the chunking changed');
+  assert.equal(physics.colliders.length, 26771, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

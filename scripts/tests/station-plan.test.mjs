@@ -138,6 +138,20 @@ test('the station, measured against its own plan', async () => {
    * both did contribute, 33 and 21, until the ground band was applied. They are
    * the canary for that band: if either reappears, the band is broken and every
    * other number here is noise. */
+  /* Re-taken 2 -> 8 on 2026-08-29, and NOT because the band broke.
+   *
+   * `_rectCovers` - the confirm step behind every conflict - tested the rect
+   * MIRRORED, and correcting it moved four of the eight builder groups. The
+   * dome went from 2 to 8: six of these were being hidden by the mirror, not
+   * prevented by the band. Measured against a real three.js matrix inverse,
+   * the old sign disagreed in 7,620 of 200,000 random cases and the new one in
+   * none.
+   *
+   * The canary still works, and 8 is what it reads with a correct instrument.
+   * The band is still doing its job - these eight are at r = 247, the outer
+   * ring's link mouths where the road runs out at the hull, not the 33 and 21
+   * the band was introduced to remove. Whether they are correct as built is
+   * open; see station-plan-conflicts.test.mjs. */
   const overhead = world.plan.conflicts.filter((c) => /dome|promenade/i.test(c.owner ?? ''));
-  assert.ok(overhead.length <= 2, `overhead structure is claiming ground again: ${JSON.stringify(overhead.slice(0, 4))}`);
+  assert.ok(overhead.length <= 8, `overhead structure is claiming ground again: ${JSON.stringify(overhead.slice(0, 4))}`);
 });

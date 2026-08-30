@@ -269,10 +269,37 @@ export class StationPlan {
     return hit;
   }
 
-  /** Is `(px, pz)` inside the true rotated rect centred at `(x, z)`? */
+  /**
+   * Is `(px, pz)` inside the true rotated rect centred at `(x, z)`?
+   *
+   * ── The sign, and why it is worth a comment ───────────────────────────────
+   * This read `Math.cos(-yaw)` / `Math.sin(-yaw)` and tested the rect MIRRORED
+   * - reflected about its own local X axis. Measured against a real three.js
+   * `Matrix4.makeRotationY(yaw).setPosition(x,0,z).invert()`, which is exactly
+   * what `Physics.containsPoint` does to a box collider: 7,620 disagreements
+   * in 200,000 random cases with the negated angle, and ZERO with this one.
+   *
+   * The negation is already carried by the shape of the two expressions - the
+   * pair `(dx*c - dz*s, dx*s + dz*c)` projects onto the rect's local axes when
+   * `c`/`s` are the cosine and sine of the yaw ITSELF. Negating the angle as
+   * well applies the inverse twice, which for a rotation is a reflection, and
+   * a reflection is invisible on anything square or axis-aligned. That is why
+   * it survived: it only shows on a rotated, non-square claim.
+   *
+   * It matters because this is the CONFIRM step for every conflict the plan
+   * reports and for every `roleUnder` query a builder makes. The rasterising
+   * step above it is symmetric (`Math.abs` on both axes) and was never wrong,
+   * so the effect was not noise - it was reporting some rotated claims against
+   * the mirror image of their own footprint.
+   *
+   * Found by three independent readers of this file disagreeing with my own
+   * hand-algebra, which said the code was right. The algebra was wrong; the
+   * 200,000-case comparison against three.js is what settled it. Do not
+   * re-derive this by hand - re-run the comparison.
+   */
   _rectCovers(x, z, hx, hz, yaw, px, pz) {
     const dx = px - x, dz = pz - z;
-    const c = Math.cos(-yaw), s = Math.sin(-yaw);
+    const c = Math.cos(yaw), s = Math.sin(yaw);
     return Math.abs(dx * c - dz * s) <= hx && Math.abs(dx * s + dz * c) <= hz;
   }
 

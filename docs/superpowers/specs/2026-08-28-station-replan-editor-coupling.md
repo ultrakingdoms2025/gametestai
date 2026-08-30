@@ -1248,3 +1248,42 @@ include `hull:instanced`, `zone:gym:hullIn` and the zone shells, each "containin
 them — which is true, and by design. Ray parity answers *is A inside B*, not *should A be inside B*. The
 second question is architectural and has to be stated per host class, which is what makes the backdrop
 rule worth a gate and a general containment sweep worth only a probe.
+
+### Fixed, 2026-08-30: 1,008 → 16, and how three attempts failed first
+
+**Two structural faults, not one bug.** *A boolean has no gradient* — the sweep took the first bearing off
+a carriageway and silently kept the original when nothing cleared; asked "is this clear?" a loop can only
+accept or give up, and it gave up thirteen times. *And it only knew about roads* — the skyline builds at
+0.92, after every district, so the plan already held every claim and was never asked.
+
+`StationPlan.occupancyUnder` is that question, and it is **Phase 4's `_footprintClear` becomes a plan
+query, arrived at from the far end**. It returns a fraction, not a boolean, so a placement loop can choose
+the least bad of two hundred candidates. One query replaces knowing about the plaza, the daises, the
+promenade, the commercial strip, the hangar, the habitat stacks, the residential terrace, traffic control
+and the cargo yard.
+
+**Two passes, because order matters and the rng stream may not move.** Pass 1 solves every block
+most-constrained-first; pass 2 draws in spec order, so `_block` is called once per spec in the original
+sequence and every block draws exactly the numbers it drew before.
+
+| | before | after |
+|---|---|---|
+| pieces inside backdrop | 1,008 (13 blocks) | **16** (3 blocks) |
+| block/interior clashes | 8 | 2 |
+| block-on-block | 0 | **0** |
+| kept collision triangles | 197,629 | 198,387 (+0.38%) |
+| colliders | 26,771 | 26,771 |
+| shader programs | 248 | 246 |
+
+**Three failed attempts, recorded in the tests rather than lost.** Folding the clash test into the sweep
+(interiors 8→4, but three new block-on-block overlaps — the same defect class, moved). Adding
+circumscribed-circle block avoidance (no effect: the blocks that needed to move were placed before the
+ones they hit existed). Using the spec's `w × d` as the block footprint (a drawn block overhangs it by
+~2 m a side — `block:1` is authored 20 × 18 and measures 27.9 m across).
+
+**And a measurement trap re-confirmed.** The first before/after showed `programs 184 → 246` and read as a
++62 regression. It was two differently-shaped harness runs being compared: `progs` is cumulative within a
+run. Re-measured over the *same twenty-one framings*, the original tree reads **248**, HEAD reads **248**,
+and the fix reads **246**. This is the third time in this repository's history that a program counter has
+been compared across runs that were not comparable; the rule stands — same views, same order, same run
+shape, or the number means nothing.

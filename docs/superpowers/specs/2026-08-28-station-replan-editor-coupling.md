@@ -520,6 +520,26 @@ abut); `Stacking habitat blocks` 3; `Spanning the great dome` 2 and `Raising the
 (r = 204-247, where the road runs out at the hull — these may be correct as built); `dressing` 2;
 `Calibrating Traffic Control` 1.
 
+**Delivered 2026-08-29, increment 2 — collider ownership for hand-authored solids.** `_solidRot` and
+`_solid` now pass `this._planOwner` to the collider as well as to the plan. Unowned colliders 1.0%
+(281 of 26,771), from most of them. This is listed here rather than under Phase 2 because it is not
+about the editor at all — the editor's ownership-first path is unchanged and its gates still pass. It
+is about **measurability**, and it is the prerequisite the rest of Phase 4 was silently blocked on:
+with no owner there is no way to ask "is this inside something that is not me", and three separate
+measurements in one session produced confident, wrong answers because of it (516 of 1,227 lamp posts
+"buried", every one detecting its own collider; a 12,918-pair overlap census whose whole top ranking
+was floors inside their own buildings).
+
+**Also corrected 2026-08-29 — `_rectCovers` tested every rotated claim MIRRORED.** 7,620 disagreements
+in 200,000 cases against a real three.js matrix inverse; zero after. It invented five carriageway
+conflicts (habitat ×3, traffic control ×1, pressure hull ×1 — the habitat towers are 4.70 m clear, and
+the previous work list implied nudging them) and hid seven (dome 2→8, dressing 2→3). Any number taken
+from the plan before this date is suspect.
+
+**Known limit of the ownership increment.** `Spanning the great dome` is one step that raises the whole
+outer ring including four zones, so at the ring step-level ownership cannot yet separate "a zone prop
+inside the deck the ring built for it" from a defect. Finer owners there are the next increment.
+
 **Not delivered.** Everything else the phase asks for: `_footprintClear` and `_markOccupancy` becoming
 plan queries, `_selfCollided` / `_enterableRoomFootprints` / `_backdropKeepOut` becoming published
 roles, the `StationAuditSelfTest` `_occupied` port, and the placement-Y diff against production. A

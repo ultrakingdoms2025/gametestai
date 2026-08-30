@@ -38,7 +38,7 @@ import { collectParts, fractionInside } from '../../src/dev/GeoParts.js';
  * debt and stops it growing.
  */
 
-const CEILING = 1008;
+const CEILING = 16;
 
 test('the backdrop skyline does not stand on top of the station', async () => {
   const { world } = await buildStation();

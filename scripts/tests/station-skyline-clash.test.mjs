@@ -32,7 +32,7 @@ import { collectParts } from '../../src/dev/GeoParts.js';
  * clear it: the count may fall, never rise.
  */
 
-const CEILING = 8;
+const CEILING = 2;
 
 /** Every skyline block, as the union of the pieces it raised. */
 async function blocks() {

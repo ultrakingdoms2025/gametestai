@@ -217,13 +217,25 @@ test('the collision the world derives from its own geometry is unchanged', async
    *
    * Colliders 26761 -> 26772: `_solidifyProps`
    * boxes a prop from where it ends up, and a prop that stops standing on a
-   * rim is boxed separately from the rim it used to share a column with. */
+   * rim is boxed separately from the rim it used to share a column with.
+   *
+   * ── Re-taken: the backdrop stopped standing on the station ─────────────
+   * 363921 -> 368736 found, 166292 -> 170349 boxed, 197629 -> 198387 kept,
+   * 8604 -> 8617 chunks. KEPT is the figure that matters and it rose 758,
+   * 0.38%, for a change that moved thirteen of the sixteen backdrop blocks.
+   * It rose at all because a block buried inside a habitat tower had its
+   * triangles counted as ALREADY INSIDE A BOX; standing in open air they are
+   * surfaces a player can walk into, so they have to be kept. That is the
+   * cost of the blocks being somewhere real, and it is the cheap direction:
+   * 1,008 pieces of the station stopped being inside scenery for 758
+   * triangles.
+   */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 363921, boxed: 166292, kept: 197629, planting: 1360 },
+    { found: 368736, boxed: 170349, kept: 198387, planting: 1360 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8604, 'the chunking changed');
+  assert.equal(chunks, 8617, 'the chunking changed');
   assert.equal(physics.colliders.length, 26771, 'the collider total changed');
 });
 

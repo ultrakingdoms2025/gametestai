@@ -339,6 +339,49 @@ export class StationPlan {
     return null;
   }
 
+  /**
+   * How much of a footprint stands on ground something else already claimed.
+   *
+   * This is Phase 4's "`_footprintClear` becomes a plan query", arrived at from
+   * the far end: the skyline is built at 0.92, after every district, so by the
+   * time it places a block the plan already holds the claims of the plaza, the
+   * daises, the promenade, the commercial strip, the hangar, the habitat
+   * stacks, the residential terrace, traffic control and the cargo yard. One
+   * query replaces knowing about any of them.
+   *
+   * A FRACTION, not a boolean, because a boolean has no gradient. Asked
+   * "is this spot clear?" a placement loop can only accept or give up, and
+   * giving up is what left thirteen of sixteen backdrop blocks standing on the
+   * station. Asked "how occupied is this spot?" it can choose the least bad of
+   * two hundred candidates, which is what a backdrop ring needs - it has to go
+   * somewhere, and somewhere is a comparison.
+   *
+   * The rasterisation is `roleUnder`'s, so the two agree on what a footprint
+   * covers. Returns 0 for a footprint too large to raster, matching
+   * `roleUnder`'s null - a caller cannot tell a huge clear area from a huge
+   * refused one, and neither should place a backdrop block.
+   *
+   * @returns {number} 0..1, the share of covered cells already claimed
+   */
+  occupancyUnder(x, z, hx, hz, yaw = 0) {
+    const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+    const ex = hx * c + hz * s;
+    const ez = hx * s + hz * c;
+    const gx0 = Math.floor((x - ex) / OCC_CELL), gx1 = Math.floor((x + ex) / OCC_CELL);
+    const gz0 = Math.floor((z - ez) / OCC_CELL), gz1 = Math.floor((z + ez) / OCC_CELL);
+    if ((gx1 - gx0 + 1) * (gz1 - gz0 + 1) > MAX_CLAIM_CELLS) return 0;
+    let covered = 0, taken = 0;
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const px = (gx + 0.5) * OCC_CELL, pz = (gz + 0.5) * OCC_CELL;
+        if (!this._rectCovers(x, z, hx, hz, yaw, px, pz)) continue;
+        covered++;
+        if (this._claimed.has(occCellKey(gx, gz))) taken++;
+      }
+    }
+    return covered ? taken / covered : 0;
+  }
+
   /** The role seeded at a world position, or null. */
   roleAt(x, z) {
     return this._role.get(occCellKey(Math.floor(x / OCC_CELL), Math.floor(z / OCC_CELL))) ?? null;

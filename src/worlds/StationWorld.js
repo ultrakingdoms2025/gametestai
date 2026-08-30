@@ -8492,15 +8492,50 @@ export class StationWorld extends World {
       specs.push({ deg: base, r: 146, w: 42, d: 26, floors: 9 });
     }
 
-    for (const [si, s] of specs.entries()) {
+    /* Blocks placed so far, as rotated rectangles, so a block moving off the
+     * station does not land on the block before it. Separating-axis rather
+     * than circumscribed circles: two 28 m blocks 42 m apart read as clashing
+     * under circles while their rectangles are clear, and over-refusal here is
+     * what pushed the first attempt at this into a worse arrangement. */
+    /* A drawn block overhangs its w x d spec by about two metres a side -
+     * trim, sills and balconies that _block adds outside the nominal box.
+     * block:1 is authored 20 x 18 and measures 27.9 m across. Using the spec
+     * dimensions here let two blocks pass the separation test and still
+     * overlap once drawn, which is how the first run of this search produced
+     * three block-on-block overlaps where there had been none. */
+    const BLOCK_OVERHANG = 2.5;
+    const placed = [];
+    /* ---- PASS 1: SOLVE, most constrained first --------------------------
+     *
+     * Placement is decided for every block before any block is drawn, and in
+     * DESCENDING FOOTPRINT ORDER rather than spec order. A 42 x 26 backdrop
+     * mass at r = 146 has far fewer places it can go than a 20 x 18 at
+     * r = 158, and taking them in spec order put the big ones last, after the
+     * small ones had eaten the space. Measured, that left three block-on-block
+     * overlaps where the authored layout had none.
+     *
+     * The rng stream is untouched by this, which is the reason for two passes
+     * rather than one reordered loop: the search draws no random numbers, and
+     * pass 2 still calls `_block` once per spec IN SPEC ORDER, so every block
+     * gets exactly the draws it got before. */
+    const solved = new Map();
+    const rectsClear = (ax, az, ahw, ahd, ayaw, b) => {
+      const ca = Math.cos(ayaw), sa = Math.sin(ayaw);
+      const cb = Math.cos(b.yaw), sb = Math.sin(b.yaw);
+      const dx = b.x - ax, dz = b.z - az;
+      for (const [ux, uz] of [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]]) {
+        const ra = ahw * Math.abs(ux * ca + uz * sa) + ahd * Math.abs(-ux * sa + uz * ca);
+        const rb = b.hw * Math.abs(ux * cb + uz * sb) + b.hd * Math.abs(-ux * sb + uz * cb);
+        if (Math.abs(dx * ux + dz * uz) > ra + rb) return true;
+      }
+      return false;
+    };
+
+    const byConstraint = [...specs.entries()].sort((a, b) => (b[1].w * b[1].d) - (a[1].w * a[1].d));
+    for (const [si, s] of byConstraint) {
       // Keep clear of the window sector's promenade.
       const wrapped = ((s.deg + 180) % 360) - 180;
       if (Math.abs(wrapped) < 22 && s.r > 140) continue;
-      /* One label per block, so the pieces this iteration raises can be told
-       * apart from the next block's. Without it every mid-rise in the skyline
-       * shares one owner ("Raising the outer skyline"), and two blocks standing
-       * inside each other are indistinguishable from one block's own walls. */
-      B._piece = `block:${si}`;
       /* Off the carriageway first, by MOVING rather than dropping.
        *
        * `base +- 25` is five degrees off a road, for both gateway bases and
@@ -8521,23 +8556,100 @@ export class StationWorld extends World {
        * per surviving spec and leaves the stream, and therefore the rest of
        * the skyline, exactly as it was.
        *
-       * Two degrees at a time, out to twenty, taking the first bearing that is
-       * clear. The flank at 295 needs eight of them; nothing else moves. */
-      let deg = s.deg;
-      if (this.plan) {
-        const hx = s.w / 2, hz = s.d / 2;
-        for (let t = 0; t <= 20; t += 2) {
+       * -- A SCORED SEARCH, NOT A FIRST-CLEAR-WINS SWEEP -----------------
+       *
+       * This used to take the first bearing within twenty degrees that was off
+       * a carriageway, and silently keep the original when nothing cleared.
+       * Measured, that left 1,008 pieces of the built station standing inside
+       * backdrop blocks across thirteen of the sixteen - 613 of them inside
+       * block:13 alone, including 502 pieces of a habitat tower.
+       *
+       * Two things were wrong and both are structural. First, a boolean has no
+       * gradient: asked "is this clear?" the loop can only accept or give up,
+       * and giving up is what happened. Second, it only knew about roads. The
+       * skyline builds at 0.92, after every district, so plan.occupancyUnder
+       * can tell it where the station already IS - one query standing in for
+       * the plaza, the daises, the promenade, the commercial strip, the
+       * hangar, the habitat stacks, the residential terrace, traffic control
+       * and the cargo yard.
+       *
+       * So: score every candidate and take the best. Bearing out to sixty
+       * degrees either way and five radial offsets, which is enough freedom
+       * that a block boxed in on its own ring can step out of the ring. The
+       * weights are ordered by how bad each fault is, not tuned: a carriageway
+       * is a road the player walks down, standing in the station is the defect
+       * this whole pass exists for, and the last two terms are small so a
+       * block with no fault anywhere stays where it was authored.
+       *
+       * Still a nudge and never a drop: _block is called once per surviving
+       * spec, so the shared rng stream is untouched. A continue here was
+       * measured to move the skyline from 49,056 collision triangles to
+       * 72,530 by re-rolling every block after it. */
+      const hx = s.w / 2, hz = s.d / 2;
+      const blockR = Math.hypot(hx + 0.4, hz + 0.4);
+      const clashesAt = (x, z) => {
+        for (const fp of this._selfCollided) {
+          if (Math.hypot(fp.x - x, fp.z - z) < blockR + Math.hypot(fp.hw, fp.hd)) return true;
+        }
+        /* Interiors that open instead of having a door. Distance from the
+         * block's circumscribed circle to the keep-out's own rotated
+         * rectangle, so a 62 m hangar excludes what is actually in it rather
+         * than everything within its 38 m circumscribed radius. */
+        for (const k of this._backdropKeepOut) {
+          const dx = x - k.x, dz = z - k.z;
+          const c2 = Math.cos(k.yaw), s2 = Math.sin(k.yaw);
+          const lx = Math.abs(dx * c2 - dz * s2) - k.hw;
+          const lz = Math.abs(dx * s2 + dz * c2) - k.hd;
+          if (Math.hypot(Math.max(0, lx), Math.max(0, lz)) < blockR) return true;
+        }
+        return false;
+      };
+
+      let best = null;
+      for (const dr of [0, 8, 16, 24, 32, -8]) {
+        for (let t = 0; t <= 60; t += 2) {
           for (const sign of (t === 0 ? [1] : [1, -1])) {
             const cand = s.deg + t * sign;
-            const q = roadPos(cand, s.r, 0, 0, _v2);
-            if (!this.plan.roleUnder(q.x, q.z, hx, hz, -cand * DEG + Math.PI, ROLE.CARRIAGEWAY)) {
-              deg = cand; t = 999; break;
+            const q = roadPos(cand, s.r + dr, 0, 0, _v2);
+            const cyaw = -cand * DEG + Math.PI;
+            let score = 0;
+            if (this.plan) {
+              if (this.plan.roleUnder(q.x, q.z, hx, hz, cyaw, ROLE.CARRIAGEWAY)) score += 1000;
+              score += this.plan.occupancyUnder(q.x, q.z, hx, hz, cyaw) * 600;
             }
+            if (clashesAt(q.x, q.z)) score += 500;
+            for (const b of placed) {
+              if (!rectsClear(q.x, q.z, hx + BLOCK_OVERHANG, hz + BLOCK_OVERHANG, cyaw, b)) { score += 500; break; }
+            }
+            score += t * 0.1 + Math.abs(dr) * 0.3;
+            if (!best || score < best.score) best = { score, deg: cand, dr };
+            if (best.score <= 0.001) break;
           }
+          if (best.score <= 0.001) break;
         }
+        if (best.score <= 0.001) break;
       }
-      const p = roadPos(deg, s.r, 0, 0, new THREE.Vector3());
+
+      const deg = best.deg;
+      const p = roadPos(deg, s.r + best.dr, 0, 0, new THREE.Vector3());
       const yaw = -deg * DEG + Math.PI;
+      placed.push({ x: p.x, z: p.z, hw: hx + BLOCK_OVERHANG, hd: hz + BLOCK_OVERHANG, yaw });
+      solved.set(si, { p, yaw });
+      /* A block that could not get clear anywhere is recorded rather than
+       * silently left standing in somebody's lobby. */
+      if (best.score >= 100) (this._skylineUnplaced ??= []).push({ piece: si, x: p.x, z: p.z, score: best.score });
+    }
+
+    /* ---- PASS 2: DRAW, in spec order so the rng stream is unchanged ----- */
+    for (const [si, s] of specs.entries()) {
+      const hit = solved.get(si);
+      if (!hit) continue;
+      const p = hit.p, yaw = hit.yaw;
+      /* One label per block, so the pieces this iteration raises can be told
+       * apart from the next block's. Without it every mid-rise in the skyline
+       * shares one owner ("Raising the outer skyline"), and two blocks standing
+       * inside each other are indistinguishable from one block's own walls. */
+      B._piece = `block:${si}`;
       /* Backdrop may not stand in a building you can walk into.
        *
        * ── The defect this removes ─────────────────────────────────────────
@@ -8570,23 +8682,6 @@ export class StationWorld extends World {
        * that misses a tower by a metre is not backdrop, it is a wall built
        * against somebody's front door.
        */
-      const blockR = Math.hypot(s.w / 2 + 0.4, s.d / 2 + 0.4);
-      let clash = false;
-      for (const f of this._selfCollided) {
-        if (Math.hypot(f.x - p.x, f.z - p.z) < blockR + Math.hypot(f.hw, f.hd)) { clash = true; break; }
-      }
-      /* And the same for interiors that have an opening instead of a door.
-       * Distance from the block's circumscribed circle to the keep-out's own
-       * rotated rectangle, so a 62 m hangar excludes what is actually in it
-       * rather than everything within its 38 m circumscribed radius. */
-      for (const k of this._backdropKeepOut) {
-        const dx = p.x - k.x, dz = p.z - k.z;
-        const c2 = Math.cos(k.yaw), s2 = Math.sin(k.yaw);
-        const lx = Math.abs(dx * c2 - dz * s2) - k.hw;
-        const lz = Math.abs(dx * s2 + dz * c2) - k.hd;
-        const gap = Math.hypot(Math.max(0, lx), Math.max(0, lz));
-        if (gap < blockR) { clash = true; break; }
-      }
       this._block(B, {
         x: p.x, z: p.z, yaw, w: s.w, d: s.d, floors: s.floors, rng,
         body: rng() < 0.4 ? 'panelWarm' : 'panel',

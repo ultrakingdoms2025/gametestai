@@ -447,7 +447,7 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
   {
     source_key: 'cosmetic_headgear_aurora',
     name: 'Aurora Racer Skin',
-    description: 'Limited-edition character colourway — glacier teal with a cyan pulse. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — glacier teal with a cyan pulse. Equip from Esc → Character.',
     category: 'cosmetic',
     game_action: 'cosmetic_char_skin',
     action_config: { effect: 'unlock_cosmetic', kind: 'character', cosmetic_id: 'char_aurora' },
@@ -461,7 +461,7 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
   {
     source_key: 'cosmetic_shirt_trail',
     name: 'Midnight Ops Skin',
-    description: 'Limited-edition character colourway — blacked-out kit with cold blue trim. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — blacked-out kit with cold blue trim. Equip from Esc → Character.',
     category: 'cosmetic',
     game_action: 'cosmetic_char_skin',
     action_config: { effect: 'unlock_cosmetic', kind: 'character', cosmetic_id: 'char_midnight' },
@@ -475,7 +475,7 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
   {
     source_key: 'cosmetic_pants_glide',
     name: 'Ember Vanguard Skin',
-    description: 'Limited-edition character colourway — scorched charcoal and molten orange. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — scorched charcoal and molten orange. Equip from Esc → Character.',
     category: 'cosmetic',
     game_action: 'cosmetic_char_skin',
     action_config: { effect: 'unlock_cosmetic', kind: 'character', cosmetic_id: 'char_ember' },
@@ -489,7 +489,7 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
   {
     source_key: 'cosmetic_skin_jade',
     name: 'Jade Sovereign Skin',
-    description: 'Limited-edition character colourway — deep jade with a gold edge. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — deep jade with a gold edge. Equip from Esc → Character.',
     category: 'cosmetic',
     game_action: 'cosmetic_char_skin',
     action_config: { effect: 'unlock_cosmetic', kind: 'character', cosmetic_id: 'char_jade' },
@@ -503,7 +503,7 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
   {
     source_key: 'cosmetic_skin_violet',
     name: 'Violet Mirage Skin',
-    description: 'Limited-edition character colourway — twilight violet with a magenta spark. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — twilight violet with a magenta spark. Equip from Esc → Character.',
     category: 'cosmetic',
     game_action: 'cosmetic_char_skin',
     action_config: { effect: 'unlock_cosmetic', kind: 'character', cosmetic_id: 'char_violet' },

@@ -354,9 +354,14 @@ export const ITEMS = {
   /* FERRO-BASALT, and the one place in this table where `kind` is a decision.
    *
    * It is magnetite-bearing basalt: a lodestone. Clipped to a belt it drags
-   * loose pickups in for half a minute and then bleeds its field off, which is
-   * exactly `loot_magnet_30s` and is why `ItemUse` routes it there rather than
-   * inventing an effect for it.
+   * loose pickups in for twenty seconds and then bleeds its field off, which
+   * is the same EFFECT as `loot_magnet_30s` and is why `ItemUse` routes it
+   * there rather than inventing one - but weaker on both axes, 20 s at 4.5 m
+   * against 30 s at 5.5 m, because a rock out of the ground should not beat
+   * the manufactured article. This note used to say "half a minute" and the
+   * item description used to say thirty seconds; both were the rune's numbers
+   * copied onto the rock, and the player read them three lines from a toast
+   * counting down from twenty.
    *
    * `consumable` and NOT `trinket`, and that is not flavour. `InventoryUI.js`
    * gates the Use button on `def.kind === 'consumable' || def.kind === 'skin'`
@@ -380,7 +385,7 @@ export const ITEMS = {
     value: 52,
     kind: 'consumable',
     colors: [0x4d5866, 0x232a33],
-    desc: 'Magnetite-heavy basalt out of the colonnade. Sells by the cubic metre — or clip one on and it pulls loose salvage to you for thirty seconds before the field bleeds off.',
+    desc: 'Magnetite-heavy basalt out of the colonnade. Sells by the cubic metre — or clip one on and it pulls loose salvage to you for twenty seconds before the field bleeds off.',
   },
   rheniite: {
     id: 'rheniite',

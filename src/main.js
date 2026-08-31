@@ -319,8 +319,8 @@ const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
  * itself, so "already has it" has to include "is carrying it" or every
  * portal out and back would respawn one the player has already collected. */
 const mapOverlay = new MapOverlay({ bus, physics, loot, engine, mounts, inventory, forceLayout: overrides.layout === 'sample' });
-// Permanent purchasable skins. Bought at a merchant, worn from the F2 (character)
-// or F10 (mount) menu, and round-tripped through both save paths so a
+// Permanent purchasable skins. Bought at a merchant, worn from Esc -> Character
+// or Esc -> Customise mount, and round-tripped through both save paths so a
 // limited-edition unlock sticks.
 const cosmetics = new Cosmetics({ bus });
 /* What the player has running, and for how much longer.
@@ -360,13 +360,16 @@ if (overrides.prefetch === 'off' || overrides.prefetch === 'all') worldPrefetch.
  * mount wheel above - `mapActionOwner` decides which of them M means in the
  * active world, so the two can never both open. */
 const mazeMap = new MazeMap({ root: uiRoot, bus, input, worldManager, player });
-// F6. Rebinds anything Input resolves; the panel keys stay fixed on purpose.
+// Esc -> Controls. Rebinds anything Input resolves; the panel keys stay fixed
+// on purpose. (F6 opened this before the Esc hub; F2-F10 are RESERVED_CODES
+// now and the game never sees them - see core/Input.js.)
 const keybindMenu = new KeybindMenu({ root: uiRoot, bus, input });
-// F2. Edits the avatar live and publishes `character:changed`, which SaveGame
-// snapshots and MountManager listens for so the rider on a mount is the same
-// person as the one on foot. F2 is character-only; mounts are customised from F10.
+// Esc -> Character. Edits the avatar live and publishes `character:changed`,
+// which SaveGame snapshots and MountManager listens for so the rider on a mount
+// is the same person as the one on foot. This panel is character-only; mounts
+// are customised from Esc -> Customise mount.
 const characterMenu = new CharacterMenu({ root: uiRoot, bus, input, avatar, player, cosmetics });
-// F10. Customises the mount being ridden (colour slots, skins, upgrade tiers);
+// Esc -> Customise mount. The mount being ridden (colour slots, skins, fittings);
 // generic over each mount's CUSTOM_SLOTS/STATS. Refuses to open on foot.
 const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, inventory, player });
 /* Hull liveries and upgrade tiers. It arms off a published field — `world.ships`

@@ -240,3 +240,85 @@ test('the HUD names Ember Cores the way the catalogue and the player do', async 
   assert.equal(itemDef('fireball_charge').name, 'Ember Cores', 'premise: the catalogue name');
   assert.match(js, /fireball_charge: 'ember cores'/, 'and the ammo panel agrees');
 });
+
+/* -- Audit: a medkit used while dead was consumed and healed nothing -------
+ * `_canApply` is asked BEFORE `consumeFromBag`, so a guard that answers true
+ * for a corpse spends the kit and then `Player.heal` refuses it. And opening
+ * the panel raises `gameplayBlocked`, which skips `player.fixedUpdate`, so the
+ * respawn tick does not run while the bag is open - the window is unbounded
+ * and a player could burn every medkit they own standing over their corpse. */
+
+test('a medkit is refused, and kept, while the player is down', async () => {
+  const { ItemUseSystem } = await import('../../src/systems/ItemUse.js');
+  const bag = new Map([['medkit', 3]]);
+  const inventory = {
+    bagCount: (id) => bag.get(id) ?? 0,
+    consumeFromBag: (id, n) => {
+      const have = bag.get(id) ?? 0;
+      if (have < n) return false;
+      bag.set(id, have - n);
+      return true;
+    },
+  };
+  const notices = [];
+  const bus = { emit: (name, e) => { if (name === 'hud:notify') notices.push(e.text); } };
+  // Player.heal's real contract: a dead player is healed by nothing.
+  const player = {
+    isDead: true, health: 0, maxHealth: 100,
+    heal(n) { return this.isDead ? 0 : n; },
+  };
+  const itemUse = new ItemUseSystem({ bus, player, inventory });
+
+  const dead = itemUse.use('medkit');
+  assert.equal(dead.ok, false, 'a corpse cannot be healed');
+  assert.equal(bag.get('medkit'), 3, 'and the kit must still be in the bag');
+  assert.match(notices.join(' '), /down|kept/i, 'the player is told why, not "no use effect"');
+
+  // Alive and hurt: it works and is spent.
+  player.isDead = false;
+  player.health = 40;
+  const alive = itemUse.use('medkit');
+  assert.equal(alive.ok, true);
+  assert.equal(bag.get('medkit'), 2, 'a real use debits exactly one');
+
+  // Alive and whole: refused, kept, and a different message from the dead one.
+  player.health = 100;
+  const whole = itemUse.use('medkit');
+  assert.equal(whole.ok, false);
+  assert.equal(bag.get('medkit'), 2, 'a refused use never debits');
+  assert.notEqual(whole.reason, 'dead', 'full health is not the same news as being dead');
+});
+
+test('every refusable effect explains itself rather than falling to the generic line', async () => {
+  const js = await readFile(path.join(root, 'src/systems/ItemUse.js'), 'utf8');
+  // `chart` could only be used in two of the game's worlds, so its refusal is
+  // the common case, not the edge case.
+  const chart = js.match(/case 'nav_chart':[\s\S]*?\n {6}case /)?.[0] ?? '';
+  assert.match(chart, /refusal/, 'nav_chart states why it cannot be read here');
+});
+
+test('the shop does not tell players to press a key the game ignores', async () => {
+  const { RESERVED_CODES } = await import('../../src/core/Input.js');
+  assert.ok(RESERVED_CODES.includes('F2'), 'premise: F2 is not a game key');
+  for (const f of ['site/lib/marketplaceCatalog.ts', 'src/systems/MarketplaceOffline.js']) {
+    const src = await readFile(path.join(root, f), 'utf8');
+    const rows = src.match(/description: '[^']*'/g) ?? [];
+    for (const row of rows) {
+      assert.doesNotMatch(
+        row,
+        /\bF([2-9]|10)\b/,
+        `${f} tells the player to press a reserved key: ${row.slice(0, 90)}`,
+      );
+    }
+  }
+});
+
+test('Ferro-Basalt says the duration it actually runs for', async () => {
+  const { itemDef } = await import('../../src/systems/ItemDefs.js');
+  const { ItemUseSystem } = await import('../../src/systems/ItemUse.js');
+  const effect = ItemUseSystem.prototype._effectFor.call({}, 'ferrobasalt');
+  assert.equal(effect.duration, 20, 'premise: the lodestone runs for twenty seconds');
+  const desc = itemDef('ferrobasalt').desc;
+  assert.doesNotMatch(desc, /thirty seconds|half a minute/i, 'the description must not quote the rune numbers');
+  assert.match(desc, /twenty seconds/i);
+});

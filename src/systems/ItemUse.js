@@ -230,7 +230,25 @@ export class ItemUseSystem {
   _effectFor(itemId) {
     switch (itemId) {
       case 'medkit':
-        return { type: 'heal', amount: 50 };
+        /* The refusal is chosen HERE rather than being one fixed string,
+         * because the two ways a medkit can be refused are not the same news:
+         * "you are already whole" is a shrug, and "you are dead" is the
+         * explanation for why the button did nothing at the exact moment the
+         * player most needed it to work. `_effectFor` is re-read on every use,
+         * so this reads live state and cannot go stale. */
+        return {
+          type: 'heal',
+          amount: 50,
+          refusal: this.player?.isDead
+            ? {
+              reason: 'dead',
+              text: 'You are down — a medkit cannot reach you until you are back on your feet. Kept, not spent.',
+            }
+            : {
+              reason: 'already-whole',
+              text: 'You are already at full health. Kept, not spent.',
+            },
+        };
       case 'speed_boost_25':
         return { type: 'speed', multiplier: 1.25, duration: 30 };
       case 'speed_boost_50':
@@ -278,7 +296,18 @@ export class ItemUseSystem {
       case 'firepower_boost_100':
         return { type: 'firepower', multiplier: 2.0, duration: 30 };
       case 'nav_chart':
-        return { type: 'chart' };
+        /* Only two worlds publish viewpoints, so a chart carried anywhere else
+         * - or one read after every district is already marked - is refused.
+         * Without its own refusal that arrived as the generic "Cannot use that
+         * right now", which does not tell a player whether the chart is broken,
+         * spent, or simply in the wrong sky. */
+        return {
+          type: 'chart',
+          refusal: {
+            reason: 'nothing-to-chart',
+            text: 'Nothing here left to chart — a chart marks a district you have not stood on, in a world that has them. Kept, not spent.',
+          },
+        };
       /* THE BAG EXPANSION RIGS. The only effect here that changes the
        * CONTAINER rather than what is in it.
        *
@@ -353,7 +382,21 @@ export class ItemUseSystem {
   _canApply(effect, itemId) {
     switch (effect.type) {
       case 'heal':
-        return this.player.health < this.player.maxHealth;
+        /* `!isDead` FIRST, and it is not redundant with the health test.
+         *
+         * A corpse has `_health = 0` (`Player._die`), so the health term alone
+         * answers TRUE - and `_canApply` is asked BEFORE `consumeFromBag`, so
+         * the kit was debited and only then did `Player.heal` refuse it with
+         * `if (this._dead) return 0`, which made `_apply` return null and the
+         * player read "That item has no use effect" about the one item in the
+         * game whose whole job is healing.
+         *
+         * It is not a narrow window either: opening the panel raises
+         * `gameplayBlocked`, which skips `player.fixedUpdate` entirely, so the
+         * respawn tick never runs while the bag is open. A player could stand
+         * over their own corpse and burn every medkit they owned, one
+         * three-second hold at a time. */
+        return !this.player.isDead && this.player.health < this.player.maxHealth;
       case 'speed':
         return typeof this.player.boostSpeed === 'function';
       case 'magnet':

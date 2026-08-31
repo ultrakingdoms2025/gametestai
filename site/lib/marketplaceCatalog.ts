@@ -280,7 +280,7 @@ export const MARKETPLACE_ACTIONS = [
   {
     id: 'cosmetic_char_skin',
     label: 'Unlock character skin',
-    description: 'Unlocks a limited-edition character colourway in the F2 customizer.',
+    description: 'Unlocks a limited-edition character colourway from Esc → Character.',
     effect: 'unlock_cosmetic',
   },
   {
@@ -1004,7 +1004,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_headgear_aurora',
     name: 'Aurora Racer Skin',
-    description: 'Limited-edition character colourway — glacier teal with a cyan pulse. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — glacier teal with a cyan pulse. Equip from Esc → Character.',
     category: 'cosmetic' as const,
     image_label: 'AURORA',
     image_color: '#2fe0ff',
@@ -1019,7 +1019,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_shirt_trail',
     name: 'Midnight Ops Skin',
-    description: 'Limited-edition character colourway — blacked-out kit with cold blue trim. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — blacked-out kit with cold blue trim. Equip from Esc → Character.',
     category: 'cosmetic' as const,
     image_label: 'MIDNGHT',
     image_color: '#1f6fd0',
@@ -1034,7 +1034,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_pants_glide',
     name: 'Ember Vanguard Skin',
-    description: 'Limited-edition character colourway — scorched charcoal and molten orange. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — scorched charcoal and molten orange. Equip from Esc → Character.',
     category: 'cosmetic' as const,
     image_label: 'EMBER',
     image_color: '#ff6a3a',
@@ -1049,7 +1049,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_skin_jade',
     name: 'Jade Sovereign Skin',
-    description: 'Limited-edition character colourway — deep jade with a gold edge. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — deep jade with a gold edge. Equip from Esc → Character.',
     category: 'cosmetic' as const,
     image_label: 'JADE',
     image_color: '#ffe14a',
@@ -1064,7 +1064,7 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
     source_key: 'cosmetic_skin_violet',
     name: 'Violet Mirage Skin',
-    description: 'Limited-edition character colourway — twilight violet with a magenta spark. Equip in the F2 Character menu.',
+    description: 'Limited-edition character colourway — twilight violet with a magenta spark. Equip from Esc → Character.',
     category: 'cosmetic' as const,
     image_label: 'VIOLET',
     image_color: '#ff3bd2',

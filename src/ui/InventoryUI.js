@@ -333,7 +333,7 @@ export class InventoryUI {
     cell.appendChild(qty);
     // Slot cost, spelled out on anything that spans more than one.
     cell.appendChild(el('div', 'inv-slots', row.slots > 1 ? `${row.slots} SLOTS` : '1 SLOT'));
-    if (this._recent.has(`${zone}:${row.id}`)) cell.classList.add('flash');
+    if (this._recent.has(`${zone}:${row.id}`)) cell.classList.add('inv-landed');
 
     cell.title = `${def?.name ?? row.id} — ${row.qty} held, stacks of ${stack}`;
     cell.addEventListener('mouseenter', () => this._setDetail(row, zone));
@@ -378,9 +378,24 @@ export class InventoryUI {
     return cell;
   }
 
-  /** Only bag items have an effect to apply; only consumables and skins have one at all. */
+  /** Only bag items have an effect to apply; only consumables, skins and mount upgrades have one at all. */
   _usable(def, zone) {
-    return !!def && zone === 'bag' && (def.kind === 'consumable' || def.kind === 'skin');
+    return !!def && zone === 'bag' && this._hasUse(def);
+  }
+
+  /**
+   * Whether this KIND of item can ever be used, ignoring which container it is
+   * sitting in. Split out from `_usable` so the detail pane can tell the
+   * difference between "this can never be used" and "this can be used, but not
+   * from here" - the second used to be silent, and a player looking at a
+   * medkit in the store saw exactly what they would have seen looking at a
+   * lump of scrap: no button, no ring, no explanation.
+   *
+   * @param {any} def
+   * @returns {boolean}
+   */
+  _hasUse(def) {
+    return !!def && (def.kind === 'consumable' || def.kind === 'skin' || def.kind === 'mountpower');
   }
 
   /* -- hold to use --------------------------------------------------------- */
@@ -389,6 +404,16 @@ export class InventoryUI {
     this._cancelHold();
     this._hold.begin(`${zone}:${row.id}`, performance.now());
     this._holdView = { cell, id: row.id, num };
+    /* Native HTML5 drag and a three-second hold cannot share one press.
+     * Blink promotes a press into a drag after about four pixels of travel,
+     * and `dragstart` tears the hold down - so asking a player to hold a
+     * `cursor: grab` cell perfectly still for three seconds was asking them
+     * to lose. Usable cells therefore stop being draggable for the duration
+     * of the press and become draggable again the moment it ends. Moving a
+     * consumable across is still a plain click (or shift-click for one), so
+     * no capability is lost; only the redundant gesture on this one cell is,
+     * and only while the button is actually down. */
+    cell.draggable = false;
     cell.classList.add('holding');
     cell.style.setProperty('--hold', '0');
     num.textContent = String(HOLD_TO_USE_MS / 1000);
@@ -424,6 +449,8 @@ export class InventoryUI {
     const view = this._holdView;
     this._holdView = null;
     if (!view) return;
+    // Hand the drag gesture back; see `_beginHold`.
+    view.cell.draggable = true;
     view.cell.classList.remove('holding');
     view.cell.style.removeProperty('--hold');
     view.num.textContent = 'HOLD';
@@ -449,6 +476,10 @@ export class InventoryUI {
     const stack = stackSize(def.id);
     const actions = [];
     if (usable) actions.push(`Hold the mouse button on it for <b>${HOLD_TO_USE_MS / 1000}s</b> to use it, or click <b>Use</b>.`);
+    // Usable, but not from the store: say so rather than showing nothing.
+    if (!usable && !inBag && this._hasUse(def)) {
+      actions.push('Move it to your <b>Active Bag</b> to use it — click the stack to send it across.');
+    }
     if (droppable) actions.push('Click <b>Drop</b> to leave it on the map.');
     this.detail.innerHTML =
       itemIconSVG(def.id, 30) +

@@ -42,6 +42,19 @@ const PAUSE_SUB = 'Esc resume · ↑↓ Enter · click';
 const PAUSE_SUB_TOUCH = 'Tap outside the menu to resume';
 const KF_LIFE = 6.5;
 const TOAST_LIFE = 3.6;
+/**
+ * Seconds left at which an effect chip starts reading as nearly over.
+ *
+ * Five, which is also the length of the shortest effect in the game
+ * (`shield_5s`) - so an Aegis Shard is amber for the whole of its life. That is
+ * the right answer rather than an accident of the number: a five-second shield
+ * IS nearly over from the moment it is used, and a player who has one running
+ * needs to know they are about to lose it, not that they have one.
+ *
+ * Anything larger would light a thirty-second boost for a sixth of its life,
+ * which is long enough that the amber stops meaning "hurry".
+ */
+const EFFECT_LOW_S = 5;
 const RELOAD_ARC_C = 2 * Math.PI * 18;
 
 /* Charge ring around the crosshair: r=30 inside a 100x100 viewBox. */
@@ -343,6 +356,20 @@ export class HUD {
     this._dmg = [];
     this._kf = [];
     this._toasts = [];
+    /**
+     * The active-effect chips, keyed by the ledger's effect id.
+     *
+     * A Map and not an array, because `effect:started` is also how an effect is
+     * RENEWED - a second Vacuum Rune extends the one magnet rather than starting
+     * a second, exactly as `Loot.setMagnet`'s `Math.max` does - so the handler
+     * has to find the existing chip by id rather than append beside it.
+     *
+     * Each value is `{ el, tag, left, endsAt, written }`; `written` is the last
+     * integer second put on screen, compared before every write like every other
+     * string in this file.
+     * @type {Map<string, {el:HTMLElement, left:HTMLElement, endsAt:number, written:number}>}
+     */
+    this._effects = new Map();
     /** @see setQuiet - true while the shader rehearsal is faking gameplay. */
     this._quiet = false;
     this._debugT = 0;
@@ -474,6 +501,7 @@ export class HUD {
     this._buildVitals(hud);
     this._buildAmmo(hud);
     this._buildMinimap(hud);
+    this._buildEffects(hud);
     this._buildMount(hud);
     this._buildPrompt(hud);
     this._buildStuck(hud);
@@ -1503,6 +1531,132 @@ export class HUD {
     hud.appendChild(this.killfeed);
   }
 
+  /**
+   * THE ACTIVE-EFFECT STRIP: what the player has running, and for how long.
+   *
+   * Six of the bag's consumables buy a duration and, before this, said so with
+   * a toast that lives 3.6 s and then nothing at all - so a sixty-second stasis
+   * field was invisible for fifty-six of its sixty seconds. This is the part of
+   * the interface that stays up while the effect does.
+   *
+   * ── It is fed by events, never by a poll ────────────────────────────────
+   *
+   * This class holds `player`, `worldManager`, `npcManager` and `portals`, and
+   * NOT `Combat` or `Loot`. `attach()` would hand it those and IS NEVER CALLED
+   * ANYWHERE, so `_updateSystems` resolves every late-bound system off
+   * `window.GAME` - which main.js only publishes under `?dev=1`. A poll of
+   * `combat._playerDamageBoostUntil` would therefore have worked in the
+   * screenshot harness (which runs with `?dev=1`) and shown nothing whatsoever
+   * to a real player. `effect:started` / `effect:ended` carry everything the
+   * strip needs and cost one listener each.
+   *
+   * ── Why it is in the right-hand column ──────────────────────────────────
+   *
+   * Because the left one is full. The vitals stack is 750 px tall on the
+   * 1280x800 desktop this layout was designed for, inside 800 px of screen with
+   * a 30 px inset: there is not another panel's worth of room in it at any
+   * viewport, and the layout gate would say so. The right column is the one
+   * with an arithmetic stack (`--map`, `--ammo-h`), so this joins it directly
+   * under the map and the rest of the column shifts down by `--eff-h` - a
+   * reserve that is zero until a chip actually exists. See `hud.css`.
+   */
+  _buildEffects(hud) {
+    const wrap = el('div', 'effects');
+    /* Outside `.hud`, exactly as the toast layer is, and for the same reason:
+     * `.hud` is positioned, carries `z-index: 10` and animates its opacity, so
+     * it is a stacking context nothing inside it can escape. Keeping the strip
+     * in there made it unhidden by `.hud.overlaid` but still PAINTED OVER by
+     * `.inv-root` (80) - and the inventory sheet is the one place a player
+     * activates these effects, so that is precisely where the countdown has to
+     * be readable. Measured before this change: `elementFromPoint` at the
+     * chip's centre returned `div.inv-root`, not the chip.
+     *
+     * `hud` stays the parameter so the call site reads like its siblings. */
+    void hud;
+    this.root.appendChild(wrap);
+    this.effectsEl = wrap;
+  }
+
+  /**
+   * Raise or renew one chip.
+   *
+   * @param {{id:string, tag:string, label:string, endsAt:number}} e the
+   *   `effect:started` payload. `endsAt` is in `engine.simElapsed` seconds -
+   *   see `systems/ActiveEffects.js` for why that clock and not the wall one.
+   */
+  _startEffect(e) {
+    const id = e?.id;
+    if (!id || !this.effectsEl) return;
+    let chip = this._effects.get(id);
+    if (!chip) {
+      const node = el('div', 'eff');
+      node.dataset.kind = e.kind ?? id;
+      const left = el('b', 'eff-left', '');
+      node.append(el('i', 'eff-tag', e.tag ?? ''), left);
+      this.effectsEl.appendChild(node);
+      chip = { el: node, left, endsAt: 0, written: -1 };
+      this._effects.set(id, chip);
+    }
+    /* A renewal restarts the entry animation, which is the only signal the
+     * player gets that the second charge landed - the number alone jumping back
+     * up is easy to miss on a chip 60 px wide. Same remove/reflow/add as the
+     * dry-fire shake on the ammo panel. */
+    chip.el.classList.remove('eff-in');
+    void chip.el.offsetWidth;
+    chip.el.classList.add('eff-in');
+    // The item that was used, not the effect's generic name: a player who
+    // clipped a lodestone to their belt should not read "Loot magnet".
+    if (e.label) chip.el.title = e.label;
+    chip.endsAt = Number(e.endsAt) || 0;
+    chip.written = -1;
+    this._syncEffectsPresence();
+    this._updateEffects();
+  }
+
+  /** Retire one chip. Idempotent - the ledger can end an effect twice. */
+  _endEffect(id) {
+    const chip = this._effects.get(id);
+    if (!chip) return;
+    this._effects.delete(id);
+    chip.el.remove();
+    this._syncEffectsPresence();
+  }
+
+  /**
+   * Toggle the layout reserve.
+   *
+   * On `#ui-root` rather than on `.hud`, because `--eff-h` has to reach the
+   * toast column too and the toasts are a sibling of `.hud`, not a child - see
+   * `_buildToasts`. Nothing below the strip moves until there is a strip.
+   */
+  _syncEffectsPresence() {
+    this.root?.classList.toggle('hud-effects-on', this._effects.size > 0);
+  }
+
+  /**
+   * Write each chip's remaining seconds.
+   *
+   * `engine.simElapsed`, which is PLAY time and stops with gameplay, because
+   * that is the clock every one of these deadlines was written against. Reading
+   * the wall clock here would run the countdown down while the player was
+   * standing in the very panel they used the item from.
+   *
+   * `Math.ceil`, so a chip reads 1 for the whole of its last second and 0 only
+   * once it really is over - the same rule `HoldToUse.advance` uses for the
+   * number under the hold bar, and for the same reason.
+   */
+  _updateEffects() {
+    if (this._effects.size === 0) return;
+    const now = this.engine?.simElapsed ?? 0;
+    for (const chip of this._effects.values()) {
+      const left = Math.max(0, Math.ceil(chip.endsAt - now));
+      if (left === chip.written) continue;
+      chip.written = left;
+      chip.left.textContent = `${left}s`;
+      chip.el.classList.toggle('eff-low', left <= EFFECT_LOW_S);
+    }
+  }
+
   _buildPrompt(hud) {
     const p = el('div', 'prompt');
     this.promptKey = el('div', 'prompt-key', 'E');
@@ -1514,7 +1668,19 @@ export class HUD {
 
   _buildToasts(hud) {
     this.toastWrap = el('div', 'toasts');
-    hud.appendChild(this.toastWrap);
+    /* Outside `.hud`, for the same reason the weapon wheel and the chat box
+     * are: `.hud` is positioned AND carries `z-index: 10` AND animates its
+     * opacity, so it is a stacking context its children can never escape.
+     * A toast raised to any z-index at all still painted below `.inv-root`
+     * (80), `.mkt-root` and the pause veil - which meant every message about
+     * an item the player had just tried to use was rendered behind the panel
+     * they were looking at, and a refused use looked like nothing happening.
+     * As a sibling with its own z-index it clears every panel.
+     *
+     * `hud` is still the parameter so the call site reads like its siblings;
+     * it is deliberately unused. */
+    void hud;
+    this.root.appendChild(this.toastWrap);
   }
 
   _buildDebug(hud) {
@@ -1927,6 +2093,15 @@ export class HUD {
     });
 
     this._on('hud:notify', ({ text, tone }) => this.notify(text, tone));
+
+    /* THE ACTIVE-EFFECT STRIP. `systems/ActiveEffects.js` is the only emitter
+     * of both, it is the only thing that knows the play clock, and it retires a
+     * chip on world change and on respawn as well as on expiry - so these two
+     * lines are the whole of the contract and this file needs no reference to
+     * `Combat`, `Loot`, `NPCManager` or `Portals` to draw a countdown for them.
+     * @see _buildEffects */
+    this._on('effect:started', (e) => this._startEffect(e));
+    this._on('effect:ended', ({ id }) => this._endEffect(id));
 
     // `no-key` is the expected state for a clone with no API key — the chat
     // header's offline badge already communicates it. Anything else is worth a
@@ -2587,6 +2762,12 @@ export class HUD {
     if (this._live) return;
     this._live = true;
     this.el.classList.add('is-live');
+    // Both detached layers (see `_buildToasts` / `_buildEffects`) have to be
+    // told about the fade-in rather than inheriting it from `.hud`.
+    this.effectsEl?.classList.add('is-live');
+    // The toast layer lives outside `.hud` (see `_buildToasts`), so it has to
+    // be told about the fade-in rather than inheriting it.
+    this.toastWrap?.classList.add('is-live');
     this.wheel.setLive(true);
     const w = this.worldManager?.active;
     if (w) {
@@ -2716,6 +2897,7 @@ export class HUD {
     this._updateDamageDirs(dt);
     this._updatePrompt();
     this._updateTransients(dt);
+    this._updateEffects();
     this._updateDebug(dt);
     this.wheel.update(dt);
     this.minimap.update(dt, elapsed);
@@ -3781,6 +3963,9 @@ export class HUD {
     this.wheel.dispose();
     for (const f of this._creditFloats) f.el.remove();
     this._creditFloats.length = 0;
+    for (const chip of this._effects.values()) chip.el.remove();
+    this._effects.clear();
+    this.root?.classList.remove('hud-effects-on');
     if (this._onPauseKey) window.removeEventListener('keydown', this._onPauseKey, true);
     if (this._onLockEsc) window.removeEventListener('keydown', this._onLockEsc, true);
     this.pauseMenu.dispose();

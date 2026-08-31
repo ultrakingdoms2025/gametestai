@@ -10,8 +10,10 @@
  * grid that week — read it as a Y problem. It was never a Y problem: a mount power is applied to the
  * rider, and at the time nothing in the game could lay one on the ground. For one release this module
  * hid the nine. Now the game CAN lay one down — `grantForPlacement` resolves a `grant_mount_power` row
- * to a grant, `Loot` spawns a pickup that carries it, and collecting it emits the purchase's own
- * `mount:power:buy` at cost 0, once per account — and the nine are offered again.
+ * to a grant, `Loot` spawns a pickup that carries it, and collecting it puts a `mountpower` bag item in
+ * the player's hands, once per account — and the nine are offered again. (Collecting one used to apply
+ * the tier on the spot and write no inventory row at all; `ItemUse._useMountPower` is where the player
+ * spends it now, and that is what emits the purchase's own `mount:power:buy` at cost 0.)
  *
  * ── The rule, mirrored from the game ──────────────────────────────────────────────────────────────
  *

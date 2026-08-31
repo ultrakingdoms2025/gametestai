@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ITEMS } from './ItemDefs.js';
+import { ITEMS, isItem, mountPowerItemId } from './ItemDefs.js';
 import { consumableItemFor, mountPowerGrantFor } from './Marketplace.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 import { planGrid, createJob, MAX_LAYERS, LAYOUT_SCHEMA } from './GroundSampler.js';
@@ -194,13 +194,17 @@ const SAMPLE_BUDGET_MS = 2;
  * of the same row grants — a placed item and a bought item must be the same
  * thing, or the editor is quietly authoring a second economy.
  *
- * A mount upgrade is not stock: it raises a power tier on the rider's mount.
- * Nine of them - Bicycle Speed I-III, Bicycle Acceleration I-III, Hoverboard
+ * A mount upgrade resolves to a GRANT rather than to an item id, even though
+ * collecting one now yields a `mountpower` bag item. The indirection earns its
+ * keep: the grant carries the CATALOGUE's own name, so the pickup on the floor
+ * is labelled as the shop labels it, and `_ownsGrant` can ask about a tier
+ * without having to un-parse an item id back into a mount and a stat. `Loot`
+ * does the resolving, once, at the moment of collection.
+ *
+ * Nine of these - Bicycle Speed I-III, Bicycle Acceleration I-III, Hoverboard
  * Speed I-III - were placed on station and refused, with nothing to say why
- * beyond `item`. They resolve here to `{ grant }`, through the SAME parser a
- * purchase uses (`mountPowerGrantFor`), carrying the catalogue's name so the
- * pickup is labelled as the shop labels it; `_applyPlace` and `Loot` do the
- * rest.
+ * beyond `item`. They resolve here through the SAME parser a purchase uses
+ * (`mountPowerGrantFor`); `_applyPlace` and `Loot` do the rest.
  *
  * @param {{source_key?:string, name?:string, config?:Record<string,any>}} item
  * @returns {{itemId:string, qty:number}|{grant:{effect:'grant_mount_power', mount:string, power:string, tier:number, name:string}}|null}
@@ -266,20 +270,24 @@ export class MapOverlay {
    * @param {{ bus: import('../core/EventBus.js').EventBus, physics?: import('../physics/Physics.js').Physics,
    *   loot?: import('./Loot.js').LootSystem, engine?: { onFrameUpdate(fn: (dt:number) => void): () => void },
    *   mounts?: { sellsPower(mount:string, power:string): boolean, getPowers(mount:string): Record<string, number> },
+   *   inventory?: { totalCount(itemId:string): number },
    *   forceLayout?: boolean, fetch?: typeof fetch, now?: () => number, endpoint?: string, reportEndpoint?: string,
    *   buildStamp?: string }} ctx
-   *   `engine` ticks the ground sampler; `mounts` is read - never written - so
-   *   a placed mount upgrade can be refused for a power the mount does not
-   *   sell and withheld from a rider who already owns it; `forceLayout` (the
-   *   `?layout=sample` dev switch) samples without an admin session and never
-   *   posts; `now` is the sampler's clock, injectable so a test can own the
-   *   frame.
+   *   `engine` ticks the ground sampler; `mounts` and `inventory` are read -
+   *   never written - so a placed mount upgrade can be refused for a power the
+   *   mount does not sell and withheld from a rider who already has it, either
+   *   fitted or still in the bag; `forceLayout` (the `?layout=sample` dev
+   *   switch) samples without an admin session and never posts; `now` is the
+   *   sampler's clock, injectable so a test can own the frame.
    */
-  constructor({ bus, physics, loot, engine, mounts, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint, buildStamp } = {}) {
+  constructor({ bus, physics, loot, engine, mounts, inventory, forceLayout, fetch: fetchImpl, now, endpoint, reportEndpoint, buildStamp } = {}) {
     this.bus = bus ?? null;
     this.physics = physics ?? null;
     this.loot = loot ?? null;
     this.mounts = mounts ?? null;
+    /* Read-only, and only by `_ownsGrant`. @see _ownsGrant for why a system
+     * about map placements has to know what is in the player's bag at all. */
+    this.inventory = inventory ?? null;
     this.forceLayout = forceLayout === true;
     this.endpoint = endpoint ?? READ_ENDPOINT;
     this.reportEndpoint = reportEndpoint ?? REPORT_ENDPOINT;
@@ -380,7 +388,14 @@ export class MapOverlay {
        * rider already holds - harmless in state (`grantPower` is a max) and
        * false as a promise. `game:started` fires after both restores; the
        * sweep there is what makes "once per account" true on the world the
-       * player boots into. */
+       * player boots into.
+       *
+       * All of that is now doubly true, because the second half of
+       * `_ownsGrant` reads the INVENTORY, and `SaveGame.load` restores that
+       * on the same `enter()` promise chain - also after the world is
+       * activated. Without the sweep, a returning player who is carrying an
+       * unfitted upgrade would find a second copy of it on the floor of the
+       * world they logged out in. */
       this._offs.push(bus.on('game:started', () => this._sweepOwned()));
     }
     /* Once, for the life of the system - not per world. Idle when there is
@@ -1268,21 +1283,57 @@ export class MapOverlay {
   /* ------------------------------------------------------------------ */
 
   /**
-   * True when the rider already holds `grant`'s tier, or a higher one, on
-   * that mount: `grantPower` is max(existing, tier), so collecting it would
-   * change nothing. Read at apply time (the fast path) and again at
-   * `game:started`, once the account's ledger is actually there.
+   * True when this placement has nothing left to give: the rider already holds
+   * `grant`'s tier or a higher one on that mount, OR the upgrade is already in
+   * their bag or store waiting to be fitted.
+   *
+   * The FIRST half is the original rule, and the reason is unchanged:
+   * `grantPower` is max(existing, tier), so collecting it would change
+   * nothing.
+   *
+   * ── Why the second half exists, and why it is not optional ──────────────
+   *
+   * A placed upgrade used to apply itself the moment it was collected, so
+   * "owns the power" and "has collected this pickup" were the same fact and
+   * one check covered both. They are no longer the same fact: the pickup now
+   * yields a `mountpower` ITEM, and a player who collects one and does not
+   * fit it owns no power at all. On that reading the pickup respawns on the
+   * next world build - every portal out and back - and can be farmed without
+   * limit. Holding the item has to count as owning it, or the fix to the bag
+   * defect would have opened a duplication bug.
+   *
+   * Bag AND store, because `Loot` overflows into the store and a player who
+   * tidies an upgrade away has not un-collected it.
+   *
+   * The residual gap is deliberate and small: an upgrade DROPPED on the floor
+   * is neither fitted nor held, so its placement comes back. That nets out -
+   * dropping spawns a world pickup holding the same thing - and it costs a
+   * deliberate act to reach a state the player could have stayed in for free.
+   * The other disposal route, selling it, is closed at the source: the
+   * generated items carry `noSell` and no vendor will take one.
+   *
+   * Both readers go through here - `_applyPlace`'s fast path and
+   * `_sweepOwned` - so the two cannot disagree about what "owned" means; they
+   * did not disagree before this change and must not start now.
    */
   _ownsGrant(grant) {
     const owned = Number(this.mounts?.getPowers?.(grant.mount)?.[grant.power] ?? 0);
-    return owned >= grant.tier;
+    if (owned >= grant.tier) return true;
+    const tier = Math.max(1, Math.floor(Number(grant.tier) || 1));
+    const held = Number(this.inventory?.totalCount?.(mountPowerItemId(grant.mount, grant.power, tier)) ?? 0);
+    return held > 0;
   }
 
   /**
-   * Take away every placed upgrade the restored ledger says the rider owns.
-   * Silent - `despawn`, never a collect - so no `loot:collected` and no
-   * `mount:power:buy` for a tier that was already theirs. Item pickups have
-   * no tier and are left alone. See the `game:started` subscription.
+   * Take away every placed upgrade the restored save says the player already
+   * has - fitted to the mount, or sitting in the bag. Silent - `despawn`,
+   * never a collect - so no `loot:collected` and no second copy of a thing
+   * that was already theirs. Item pickups carry no grant and are left alone.
+   *
+   * `game:started` is the moment for it because BOTH halves of `_ownsGrant`
+   * are restored by then and neither is at apply time: the entry world's
+   * overlay is applied before the local save's mounts AND before its
+   * inventory. See the `game:started` subscription.
    */
   _sweepOwned() {
     if (!this._placed.length) return;
@@ -1319,7 +1370,12 @@ export class MapOverlay {
      * these nine rows were always refused with, and the editor's row now
      * says so beside the name. An item is refused when it is `credits` (a
      * balance, not a pickup) or one `ITEMS` does not define. */
-    const refused = power ? !this.mounts?.sellsPower?.(power.mount, power.power) : NEVER_PLACEABLE.has(grant.itemId) || !ITEMS[grant.itemId];
+    /* `isItem`, not `ITEMS[...]`: the bare read inherits Object.prototype, so
+     * an item_id of `toString` or `constructor` passed this guard and reached
+     * the inventory, where it produced a NaN slot count. `grantForPlacement`
+     * a hundred lines up already used a hasOwnProperty check for exactly this
+     * reason; this is the same guard. @see ItemDefs.isItem */
+    const refused = power ? !this.mounts?.sellsPower?.(power.mount, power.power) : NEVER_PLACEABLE.has(grant.itemId) || !isItem(grant.itemId);
     if (refused) {
       unresolved.push({ id: String(entry.id ?? ''), reason: 'item' });
       return;
@@ -1335,16 +1391,18 @@ export class MapOverlay {
       return;
     }
 
-    /* ONCE PER ACCOUNT (owner decision). A rider who already holds the tier,
-     * or a higher one, finds no pickup: a pickup that changes nothing is one
-     * the player walks to for nothing. The entry is reported APPLIED, not
-     * unresolved - the grant's whole effect is already in force on this
-     * account, which is what "applied" means for it; there is nothing for
-     * the admin to fix, and no new field goes on the wire. The pickup dies
-     * on collection (`Loot._collect`), so the next visit lands here rather
-     * than spawning it again. This is the fast path; on the entry world the
-     * ledger is not yet restored when this runs, and `_sweepOwned` at
-     * `game:started` finishes the job. */
+    /* ONCE PER ACCOUNT (owner decision). A player who already has the
+     * upgrade - fitted at this tier or higher, or carrying it - finds no
+     * pickup: a pickup that changes nothing is one the player walks to for
+     * nothing. The entry is reported APPLIED, not unresolved - the grant has
+     * already reached this account, which is what "applied" means for it;
+     * there is nothing for the admin to fix, and no new field goes on the
+     * wire. The pickup dies on collection (`Loot._collect`), so the next
+     * visit lands here rather than spawning it again - and it keeps landing
+     * here even before the upgrade is fitted, which is the whole reason
+     * `_ownsGrant` reads the bag. This is the fast path; on the entry world
+     * neither the ledger nor the bag is restored when this runs, and
+     * `_sweepOwned` at `game:started` finishes the job. */
     if (power && this._ownsGrant(power)) {
       applied.push({ id: String(entry.id ?? ''), ok: true, colliders: 0 });
       return;

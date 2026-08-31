@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { ITEMS, itemDef, KIND_ACCENT } from './ItemDefs.js';
-import { STAT_META } from '../mounts/Livery.js';
+import { ITEMS, itemDef, KIND_ACCENT, mountPowerItemId, mountPowerName } from './ItemDefs.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -197,8 +196,20 @@ export const DROP_TABLES = {
   ],
 };
 
-/** Ordered so the pickup takes its colour from the rarest thing in it. */
-const ACCENT_PRIORITY = ['skin', 'trinket', 'consumable', 'ammo', 'currency'];
+/**
+ * Ordered so the pickup takes its colour from the rarest thing in it.
+ *
+ * `mountpower` sits with `skin` at the top because a mount upgrade lying on
+ * the ground is the rarest thing a pickup can hold - it is placed by hand in
+ * the map editor and by nothing else. It is here rather than only in
+ * `KIND_ACCENT` because `_buildPool` builds one material set per entry and
+ * `warmAccents` warms every set it finds: a kind that reaches a pickup
+ * without an entry here would either fall back to the currency amber (a lie
+ * about what is on the floor) or, if `_buildPool` had been keyed on
+ * `KIND_ACCENT` instead, link its shaders on first sight - the 1.65 s freeze
+ * this file's header records.
+ */
+const ACCENT_PRIORITY = ['skin', 'mountpower', 'trinket', 'consumable', 'ammo', 'currency'];
 
 /* ------------------------------------------------------------------ */
 /* What a pickup holds, and what collecting one does                    */
@@ -211,31 +222,42 @@ const ACCENT_PRIORITY = ['skin', 'trinket', 'consumable', 'ammo', 'currency'];
 /* A contents entry is `{ itemId, qty }` - stock for the bag - or, for  */
 /* a mount upgrade the map editor laid down, `{ grant, qty: 1 }` where   */
 /* `grant` is `{ effect:'grant_mount_power', mount, power, tier, name }` */
-/* (MapOverlay.grantForPlacement). A grant is not stock: collecting it  */
-/* raises a power tier on the rider's mount, exactly as buying the row  */
-/* would, and never touches the inventory.                              */
+/* (MapOverlay.grantForPlacement). A grant IS stock: it resolves to a    */
+/* `mountpower` bag item and goes through the same `acquire` everything  */
+/* else does. It did not always - see `collectEntry` for the defect that */
+/* cost, and for why the entry keeps its grant shape all the same.       */
 /* ------------------------------------------------------------------ */
-
-const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
-const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
 
 /**
  * What a grant is called: the catalogue's own name when the placement
  * carried one, else mount + stat + tier the way the shop spells its rows
  * (`Bicycle Speed III` - the stat label from `STAT_META`, since `power`'s
  * shop name is Speed and `strength`'s is Acceleration).
+ *
+ * The fallback is `ItemDefs.mountPowerName`, which is also what NAMES the bag
+ * item this pickup now yields. It used to be a second copy of the same three
+ * lines here, and a second copy is how the ground and the bag come to disagree
+ * about what one upgrade is called.
+ *
  * @param {{mount?:string, power?:string, tier?:number, name?:string}} grant
  */
 export function grantLabel(grant) {
   if (typeof grant?.name === 'string' && grant.name.trim()) return grant.name;
-  const tier = Math.max(1, Math.floor(Number(grant?.tier) || 1));
-  const stat = STAT_META[grant?.power]?.label ?? cap(grant?.power);
-  return `${cap(grant?.mount)} ${stat} ${ROMAN[tier - 1] ?? tier}`.trim();
+  return mountPowerName(grant?.mount, grant?.power, grant?.tier);
 }
 
-/** The accent kind one entry reads as: an item's catalogue kind, a grant the consumable's. */
+/**
+ * The accent kind one entry reads as: an item's catalogue kind, and for a
+ * grant the kind of the item that grant now yields.
+ *
+ * It used to read `consumable` for a grant, which was true when collecting one
+ * applied a power on the spot. It no longer does - a grant lands in the bag as
+ * a `mountpower` row - and a pickup painted the consumable green while holding
+ * an upgrade would be teaching the player the wrong colour for the one pickup
+ * that is only ever placed by hand.
+ */
 function kindOf(entry) {
-  return entry?.grant ? 'consumable' : ITEMS[entry?.itemId]?.kind;
+  return entry?.grant ? 'mountpower' : ITEMS[entry?.itemId]?.kind;
 }
 
 /** The strongest accent among the contents, in `ACCENT_PRIORITY` order; currency when nothing matches. */
@@ -271,24 +293,52 @@ export function labelFor(contents) {
  * as well made every real pickup count TWICE, because QuestSystem subscribes
  * to both. Measured in-game: one pickup, +2 progress.
  *
- * A grant emits `mount:power:buy` with the payload a purchase sends - main.js
- * routes that to `MountManager.grantPower` and schedules the local and
- * remote persists - at `cost: 0` and with no catalogue row (`catalogId:
- * null`), so nothing downstream can mistake it for a sale. Nothing new
- * listens; the purchase path IS the grant path. A grant is always taken:
- * there is no bag to be full.
+ * -- A GRANT LANDS IN THE BAG. It does not apply itself. -------------
+ *
+ * This branch used to emit `mount:power:buy` here and return `taken: true`
+ * without ever calling `inventory.acquire`. The player's report was exact:
+ * "it shows I picked them up, but the inventory does not show them so I
+ * cannot use them". The flourish, the toast and the tier were all real; the
+ * row was not, and the pickup was the only thing in the game that took an
+ * upgrade straight past the bag.
+ *
+ * So a grant is now stock like everything else: it resolves to its
+ * `mountpower` bag item (`ItemDefs.mountPowerItemId`) and goes through the
+ * SAME `acquire` the item branch below uses, with the same consequences - a
+ * full bag leaves it on the ground, and `taken` is false when nothing was
+ * accepted. `mount:power:buy` moved to `ItemUse._useMountPower`, which is
+ * where the player now decides to spend it.
+ *
+ * `loot:collected` keeps `itemId: null` and carries the `grant`. That is not
+ * a leftover: `HUD.js` returns early on a null `itemId` precisely so a grant
+ * names itself through the `hud:notify` below, and an id of
+ * `mountpower_bicycle_power_3` would reach `ITEM_LABELS`, miss, and toast the
+ * raw id beside a perfectly good name. QuestSystem reads the same event and
+ * has never matched on a grant.
  *
  * @param {{itemId?:string, grant?:object, qty:number}} entry
  * @param {{bus?:object, economy?:object, inventory?:object, fromCache:boolean, pickup:object|null}} deps
- * @returns {{taken:boolean, left:{itemId:string, qty:number}|null}}
+ * @returns {{taken:boolean, left:{itemId:string, qty:number}|{grant:object, qty:number}|null}}
  */
 export function collectEntry(entry, { bus, economy, inventory, fromCache, pickup }) {
   if (entry.grant) {
     const g = entry.grant;
-    bus?.emit('mount:power:buy', { mount: g.mount, power: g.power, tier: g.tier, catalogId: null, cost: 0 });
-    bus?.emit('loot:collected', { itemId: null, grant: g, qty: 1, fromCache, pickup });
-    bus?.emit('hud:notify', { text: `+${grantLabel(g)}`, tone: 'info' });
-    return { taken: true, left: null };
+    const itemId = mountPowerItemId(g.mount, g.power, Math.max(1, Math.floor(Number(g.tier) || 1)));
+    const res = inventory?.acquire(itemId, 1) ?? { taken: 0, dropped: 1 };
+    if (res.taken > 0) {
+      bus?.emit('loot:collected', { itemId: null, grant: g, qty: res.taken, fromCache, pickup });
+      bus?.emit('hud:notify', {
+        text: `+${grantLabel(g)}${res.toStore > 0 ? ' (store)' : ''}`,
+        tone: 'info',
+      });
+    }
+    /* The remainder keeps its GRANT shape, not the item id it resolved to.
+     * `_collect` writes what comes back straight into `pickup.contents`, and
+     * `labelFor`/`accentFor` read `contents[].grant`: hand back an `{itemId}`
+     * here and a refused upgrade would sit on the floor relabelled as a
+     * one-of-something with the wrong colour, and `MapOverlay._sweepOwned` -
+     * which looks for `contents[0].grant` - would stop recognising it. */
+    return { taken: res.taken > 0, left: res.taken > 0 ? null : { grant: g, qty: 1 } };
   }
   if (entry.itemId === 'credits') {
     economy?.add(entry.qty, 'loot');
@@ -843,7 +893,12 @@ export class Loot {
    */
   fixedUpdate(dt, elapsed) {
     if (this._fullNotifyT > 0) this._fullNotifyT -= dt;
-    if (elapsed >= this._magnetUntil) this._magnetRange = AUTO_RANGE;
+    /* `_buffNow()`, NOT the `elapsed` argument. The argument is wall time and
+     * the deadline is play time; they are the same number until the first time
+     * a panel is opened and different for ever afterwards. Everything below
+     * still uses `elapsed`, because a pickup bobbing on a sine wave is an
+     * animation and animations run on the wall clock. @see _buffNow */
+    if (this._buffNow() >= this._magnetUntil) this._magnetRange = AUTO_RANGE;
 
     /* NOT WHILE SOMETHING ELSE IS DRIVING THE BODY. See the same guard, with
      * the measurements, in `./Relics.js`: `player.position` is the SHIP while
@@ -930,10 +985,25 @@ export class Loot {
   /** Optional frame tick; the animation is time-absolute so this is a no-op. */
   update() {}
 
+  /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * A Vacuum Rune is bought for "30 seconds", used from inside the bag, and
+   * the bag is a panel that stops gameplay - so on `engine.elapsed` the rune
+   * spent part of its life on a screen where there is no loose salvage to
+   * pull. `simElapsed` stops when play does. It is also the clock the HUD
+   * chip counts down on, so the two cannot disagree.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? 0;
+  }
+
   setMagnet(duration, range = 5.5) {
     if (!(duration > 0)) return false;
     this._magnetRange = Math.max(this._magnetRange, range);
-    this._magnetUntil = Math.max(this._magnetUntil, (this.engine?.elapsed ?? 0) + duration);
+    this._magnetUntil = Math.max(this._magnetUntil, this._buffNow() + duration);
     return true;
   }
 

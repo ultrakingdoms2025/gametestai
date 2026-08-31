@@ -124,6 +124,32 @@
   --map: min(13.75rem, var(--hud-col-r));
   /** Vertical room reserved for the ammo panel when it sits under the map. */
   --ammo-h: 11rem;
+  /**
+   * Vertical room reserved for the active-effect strip, which sits directly
+   * under the map and pushes the rest of the right-hand column down.
+   *
+   * ZERO until a chip actually exists. `HUD._syncEffectsPresence` puts
+   * `hud-effects-on` on `#ui-root` while the strip has anything in it, and the
+   * rule below is the only thing that ever gives this a value - so a session
+   * in which the player never uses a consumable lays out to the pixel exactly
+   * as it did before the strip existed.
+   *
+   * The value is arithmetic, not a measurement: `.eff` is 1.25rem tall and a
+   * third of the column wide, there are exactly seven timed effects in the
+   * game, so seven chips in rows of three is THREE ROWS at every viewport -
+   * 3 x 1.25rem plus two 5px gaps is 70px, and 4.6875rem (75px) leaves five of
+   * air between the strip and the panel under it.
+   *
+   * IT WAS TWO ROWS AND 3.125rem UNTIL `gunSpread` MADE A SEVENTH, and both
+   * halves have to move together or the gate says so: the probe measures the
+   * panel below, a chip that grew an unbudgeted row shows up there as
+   * `.effects` sitting on `.ammo`, and it did - by five pixels - when this was
+   * 2.875rem and `.eff` had no height of its own. The harness starts every
+   * kind in `EFFECT_KINDS`, so the row count the gate measures is the row
+   * count the arithmetic above claims, and adding an eighth effect without
+   * touching this line would be caught rather than shipped.
+   */
+  --eff-h: 0rem;
 
   --wslot-w: 11rem;
   --wslot-gap: 0.5625rem;
@@ -2070,7 +2096,7 @@ body {
 .killfeed {
   position: absolute;
   right: var(--hud-r);
-  top: calc(var(--hud-t) + var(--map) + 1.125rem);
+  top: calc(var(--hud-t) + var(--map) + var(--eff-h) + 1.125rem);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2157,6 +2183,143 @@ body {
 }
 
 /* ==========================================================================
+   ACTIVE EFFECTS (right column, directly under the map)
+
+   What the player has running and how much of it is left. Six of the bag's
+   consumables buy a duration and, before this strip, said so with a toast that
+   lives 3.6 s and then nothing - so a sixty-second stasis field was invisible
+   for fifty-six of its sixty seconds.
+
+   IN THE RIGHT COLUMN BECAUSE THE LEFT ONE IS FULL. The vitals stack measures
+   750 px on the 1280x800 desktop this layout was designed for, inside 800 px of
+   screen with a 30 px inset: there is no room for another panel in it, and the
+   viewport gate says so. The right column is the one built as an arithmetic
+   stack (map, then ammo, then feed, then toasts, each offset by the sum of what
+   is above it), so the strip joins that stack and everything below it moves
+   down by `--eff-h` - which is 0 until there is something to show.
+
+   Rows of exactly THREE, by giving every chip a third of the column rather than
+   letting it size to its text. That is what makes `--eff-h` a fixed number
+   instead of a guess: seven effects exist, three fit a row, so the strip is
+   one, two or three rows and never a fourth.
+   ========================================================================== */
+/* A direct child of #ui-root, not of .hud - see `HUD._buildEffects`. z-index
+   85 puts it over the inventory and marketplace sheets (80), which is where
+   these effects are activated, while staying under the toast layer (90). */
+.effects {
+  position: absolute;
+  z-index: 85;
+  opacity: 0;
+  transition: opacity 0.6s ease 0.15s;
+  right: var(--hud-r);
+  top: calc(var(--hud-t) + var(--map) + 0.75rem);
+  width: var(--hud-col-r);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-start;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.effects.is-live {
+  opacity: 1;
+}
+
+.eff {
+  /* A third of the column, minus its share of the two gaps. Fixed rather than
+     content-sized so the row count - and therefore `--eff-h` - is arithmetic
+     rather than a measurement taken at one viewport. */
+  flex: 0 0 calc((100% - 10px) / 3);
+  /* Fixed, so the strip's height is arithmetic rather than a consequence of
+     two font sizes and a baseline. `--eff-h` is derived from it - see there. */
+  height: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 6px;
+  background: linear-gradient(90deg, rgba(6, 12, 20, 0.18), rgba(9, 16, 26, 0.74));
+  border-bottom: 2px solid var(--rule);
+  clip-path: var(--clip-bl);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.eff-tag {
+  font-family: var(--f-disp);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  color: var(--cy);
+  text-shadow: 0 0 8px var(--cy-glow);
+}
+
+.eff-left {
+  font-family: var(--f-disp);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--txt);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The last few seconds. The threshold is `EFFECT_LOW_S` in `HUD.js`, and it is
+   five because five is the shortest effect in the game - a longer threshold
+   would light every shield the instant it was used. */
+.eff-low {
+  border-bottom-color: var(--amber);
+  background: linear-gradient(90deg, rgba(6, 12, 20, 0.18), rgba(40, 25, 8, 0.72));
+}
+
+.eff-low .eff-tag {
+  color: var(--amber);
+  text-shadow: 0 0 8px rgba(255, 180, 74, 0.55);
+}
+
+.eff-low .eff-left {
+  color: #ffd9a0;
+}
+
+/* Entry, replayed on a renewal - see `HUD._startEffect`. Slides in from the
+   right like the kill feed does, because both belong to the same column and a
+   panel that arrives from a different direction reads as a different thing. */
+.eff-in {
+  animation: eff-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes eff-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Deliberately NOT hidden while a sheet owns the screen, unlike the reference
+   panels in the vitals column. The inventory sheet is the ONLY way to use one
+   of these items, so the frame in which a chip appears is a frame in which a
+   sheet owns the screen: hiding it there would hide the whole of the feedback
+   for the action that raised it. Being unhidden is not enough on its own,
+   which is why the strip is a sibling of `.hud` rather than a child - see
+   `HUD._buildEffects`; inside it, `.hud`'s stacking context left the chip
+   painted UNDER the very sheet it was meant to be legible over.
+
+   Death is different - the strip goes with everything else behind the SIGNAL
+   LOST card. Written `#ui-root:has(> .hud.dead)` rather than `.hud.dead
+   .effects` because the strip is no longer a descendant of `.hud`; this is
+   the same idiom `.wstrip` uses further down for the same reason. */
+#ui-root:has(> .hud.dead) .effects {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+/* ==========================================================================
    INTERACTION PROMPT (centre-bottom)
    ========================================================================== */
 .prompt {
@@ -2238,8 +2401,15 @@ body {
 /* ==========================================================================
    TOASTS (hud:notify)
    ========================================================================== */
+/* A direct child of #ui-root, not of .hud - see `HUD._buildToasts`. That is
+   what lets a message paint above an open panel; z-index 90 clears .inv-root
+   and .mkt-root (80), the pause veil (60) and the touch strip (62). It keeps
+   .hud's fade-in by mirroring the `is-live` class. */
 .toasts {
   position: absolute;
+  z-index: 90;
+  opacity: 0;
+  transition: opacity 0.6s ease 0.15s;
   left: 50%;
   top: calc(var(--hud-t) + 2.875rem);
   transform: translateX(-50%);
@@ -2249,6 +2419,33 @@ body {
   gap: 7px;
   width: max-content;
   max-width: 46vw;
+}
+
+.toasts.is-live {
+  opacity: 1;
+}
+
+/* With a full-screen panel open, the top rail belongs to that panel's header.
+   Toasts paint above the panel now (that is the point - a message about an
+   item you just tried to use is useless behind the sheet you are looking at),
+   but landing them on the header covers the capacity rule the panel exists to
+   teach. Drop them to the foot of the screen for as long as a menu is up.
+   `inv-menu-open` is set by `menuFocusIn`, which the inventory AND the
+   marketplace share, so both are covered. */
+body.inv-menu-open .toasts {
+  top: auto;
+  bottom: 5.5rem;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+/* The strip's reserve, on #ui-root rather than on .hud because the toast column
+   is a SIBLING of .hud (see `HUD._buildToasts`) and has to shift with the rest
+   of the right-hand stack. */
+#ui-root.hud-effects-on {
+  --eff-h: 4.6875rem;
 }
 
 .toast {
@@ -2365,7 +2562,14 @@ body {
   will-change: opacity;
 }
 
-.flash {
+/* Scoped to a direct child of .hud on purpose. This used to be a bare
+   `.flash`, which is a class name generic enough that another panel was
+   always going to want it - and InventoryUI did, for the landing-cell flash
+   on a moved stack (`_slot` adds `flash`). A bare rule setting opacity: 0
+   matched those cells too, and since .inv-slot declares no opacity of its
+   own the moved item rendered invisible until the next redraw, which is why
+   Sort or reopening the panel fixed it. Keep this scoped. */
+.hud > .flash {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -5439,7 +5643,7 @@ body.sm-open .wstrip {
   /* Under the map rather than on the bottom rail. Same panel, same width
      token, right-aligned either way - only the anchor moved. */
   .ammo {
-    top: calc(var(--hud-t) + var(--map) + 0.75rem);
+    top: calc(var(--hud-t) + var(--map) + var(--eff-h) + 0.75rem);
     bottom: auto;
     right: var(--hud-r);
   }
@@ -5448,13 +5652,13 @@ body.sm-open .wstrip {
      direction - each is the sum of what is above it - so a taller map or a
      wider ammo panel moves the whole column rather than colliding with it. */
   .killfeed {
-    top: calc(var(--hud-t) + var(--map) + var(--ammo-h) + 1.25rem);
+    top: calc(var(--hud-t) + var(--map) + var(--eff-h) + var(--ammo-h) + 1.25rem);
   }
 
   .toasts {
     left: auto;
     right: var(--hud-r);
-    top: calc(var(--hud-t) + var(--map) + var(--ammo-h) + 7.25rem);
+    top: calc(var(--hud-t) + var(--map) + var(--eff-h) + var(--ammo-h) + 7.25rem);
     transform: none;
     align-items: flex-end;
     max-width: var(--hud-col-r);
@@ -5557,6 +5761,28 @@ body.sm-open .wstrip {
     display: none;
   }
 
+  /* THE EFFECT CHIPS, at a 186 px column.
+     Rows of three make a 58 px chip here against 86 px on a desktop, and
+     "SHLD 30s" at the full size is 60 px - so the badge and the number both
+     come down a point and the gap with them. Measured, not guessed: the strip
+     clips its text with `overflow: hidden`, so a chip that does not fit reads
+     as a truncated word rather than as a layout failure, and the viewport gate
+     cannot see it. The chip's HEIGHT is untouched, because `--eff-h` is derived
+     from it. */
+  .eff {
+    padding: 0 4px;
+    gap: 3px;
+  }
+
+  .eff-tag {
+    font-size: 9px;
+    letter-spacing: 0.04em;
+  }
+
+  .eff-left {
+    font-size: 10px;
+  }
+
   .pause-in {
     --pause-pad-y: 1.5rem;
     --pause-pad-x: 1.25rem;
@@ -5595,6 +5821,27 @@ body.sm-open .wstrip {
     --hud-gap-lg: 0.875rem;
     --map: min(7.5rem, var(--hud-col-r));
     --ammo-h: 7.25rem;
+  }
+
+  /* THE EFFECT STRIP, SHORTER, AND BOTH HALVES MOVE TOGETHER.
+     See `--eff-h` at the top of this file: the reserve is derived from the
+     chip height, so a viewport that shortens one has to shorten the other in
+     the same block or the gate catches it - and it did. `gunSpread` made a
+     seventh timed effect, which makes the strip three rows deep instead of
+     two, and at 844 x 390 those extra 25 px pushed `.ammo` 5.8 px into
+     `.touch-primary`: the whole right-hand stack is map + strip + ammo and on
+     a 390 px-tall screen it already reaches the thumb cluster. `--map` and
+     `--ammo-h` above are shortened for the same reason and this is the third
+     term of the same sum.
+     16 px tall against 10 px and 11 px of text is still a centred line with
+     air around it; the arithmetic is 3 x 1rem plus two 5px gaps plus 5 of
+     clearance = 63px. */
+  .eff {
+    height: 1rem;
+  }
+
+  #ui-root.hud-effects-on {
+    --eff-h: 3.9375rem;
   }
 
   /* The pack total. `.ammo-res` already prints the reserve two lines above it,

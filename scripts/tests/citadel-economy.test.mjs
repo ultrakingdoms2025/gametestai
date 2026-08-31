@@ -57,15 +57,32 @@ function cacheTable(world) {
 const kindOf = (id) => ITEMS[id]?.kind ?? null;
 
 /**
- * Expected units of `kind` in one drop, ignoring the three-type cap in
- * `_dropFor`. The cap applies identically to every world, so it cancels out of
- * a comparison between worlds and only makes each figure a slight over-estimate
- * of itself.
+ * Expected units of `kind` in one drop for `world`, ignoring the three-type cap
+ * in `_dropFor`. The cap applies identically to every world, so it cancels out
+ * of a comparison between worlds and only makes each figure a slight
+ * over-estimate of itself.
+ *
+ * AN ITEM WITH ITS OWN `itemBuy` MULTIPLIER IN THAT WORLD IS NOT COUNTED, and
+ * that is the same carve-out the law below already makes for trinkets, applied
+ * by rule instead of by hand. `buyMultiplier` returns `itemBuy[id]` when there
+ * is one and only falls through to `buy[kind]` when there is not - so for an
+ * item the world prices per unit, the kind multiplier is not what the region
+ * is saying about it, and counting its drop against that multiplier ranks the
+ * world on a number nothing reads.
+ *
+ * It became load-bearing rather than tidy when `laser_cell` stopped being
+ * `ammo`: the yard drops 19.84 cells a body, which as a `consumable` would
+ * have swamped a bucket whose other member is a 0.18-medkit chance and made
+ * the yard look a hundred times better stocked with medicine than a first-aid
+ * post. `WORLD_MARKETS.dock.itemBuy.laser_cell` is what says the yard prices
+ * cells as cells, and this is what reads it.
  */
-function expectedPerDrop(table, kind) {
+function expectedPerDrop(world, kind) {
+  const perItem = WORLD_MARKETS[world]?.itemBuy ?? {};
   let sum = 0;
-  for (const e of table) {
+  for (const e of DROP_TABLES[world]) {
     if (kindOf(e.id) !== kind) continue;
+    if (perItem[e.id] !== undefined) continue;
     sum += e.chance * ((e.min + e.max) / 2);
   }
   return sum;
@@ -169,11 +186,30 @@ test('what a corpse carries falls as the region\'s price for that kind rises', (
    * by `itemBuy` for exactly the three trinkets that drop (`relic_coin`,
    * `alloy_scrap`, `nexus_shard`), so the kind-level multiplier is not the
    * signal there - it is checked against `itemBuy` in the test above instead.
+   * `expectedPerDrop` now applies that same carve-out per item rather than per
+   * kind; see its note.
+   *
+   * AND A WORLD THAT DROPS NONE OF A KIND IS NOT ON THE LADDER AT ALL.
+   *
+   * The law reads "carries LESS as the price RISES", which is a statement
+   * about relative abundance between worlds that have some. Zero is not the
+   * bottom of that ordering, it is off it: the yard has priced ammunition at
+   * 0.9 since it opened - it sells rifle packs to people who carried a rifle
+   * through the gateway - while no yard worker has ever dropped a round in
+   * their life, and there is nothing inconsistent about either fact. Forcing
+   * that row into the ranking made the law demand that every world dearer than
+   * 0.9 carry less than nothing, which is not a claim about the economy, it is
+   * an artefact of listing a world with no entry in the bucket.
+   *
+   * The `>= 4` floor below is what stops this becoming a way to make the law
+   * pass by emptying tables: drop the kind out of one more world and there are
+   * too few rows left to rank and the case fails outright.
    */
   for (const kind of ['ammo', 'consumable']) {
     const rows = Object.keys(DROP_TABLES)
       .filter((w) => WORLD_MARKETS[w]?.buy?.[kind] !== undefined)
-      .map((w) => ({ w, price: WORLD_MARKETS[w].buy[kind], qty: expectedPerDrop(DROP_TABLES[w], kind) }))
+      .map((w) => ({ w, price: WORLD_MARKETS[w].buy[kind], qty: expectedPerDrop(w, kind) }))
+      .filter((r) => r.qty > 0)
       .sort((a, b) => a.price - b.price);
     assert.ok(rows.length >= 4, `only ${rows.length} worlds price ${kind} - the law has stopped being a law`);
     for (let i = 1; i < rows.length; i++) {

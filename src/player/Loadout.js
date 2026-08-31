@@ -313,9 +313,14 @@ export class Loadout {
         // rather than one flat number: 300 arrows is absurd, 300 rounds is a
         // couple of minutes of suppressing fire.
         const stat = WEAPON_STATS[b.id];
+        /* `resupplyTarget` is stated per weapon in WeaponStats. The old
+         * `magazine * 6` derivation silently mis-sized any weapon without a
+         * magazine: the fireball has none, so it fell through to the `?? 20`
+         * default and asked for 120 Ember Cores. The derivation stays only as
+         * a fallback for a weapon that declares neither. */
         const want = rounds > 0
           ? rounds
-          : Math.max(30, (stat?.magazine ?? 20) * 6);
+          : (stat?.resupplyTarget ?? Math.max(30, (stat?.magazine ?? 20) * 6));
         const have = this._bagCount(b.item);
         // Capped to what the *bag* will take. Overflow would land in the world
         // store, which no reserve ever reads, and would raise `inventory:full`
@@ -362,6 +367,66 @@ export class Loadout {
   }
 
   /**
+   * How low the bag may run for one weapon before the store is tapped.
+   *
+   * A magazine's worth, so a reload never finds the bag empty while the player
+   * still owns rounds. Weapons with no magazine (the fireball) fall back to a
+   * small floor for the same reason.
+   *
+   * @param {{id:string}} b
+   * @returns {number}
+   */
+  _lowWaterFor(b) {
+    const stat = WEAPON_STATS[b.id];
+    return Math.max(1, stat?.magazine ?? 10);
+  }
+
+  /**
+   * Draw ammunition from the store into the bag when the bag runs low.
+   *
+   * The bag is the only thing a weapon can see (`_bagCount`), but almost every
+   * way of ACQUIRING ammunition fills the bag first and spills the remainder
+   * into the store: `Inventory.acquire` is bag-first with store overflow, and a
+   * fresh game seeds 120 bullets and 30 arrows straight into the store. Nothing
+   * used to move them back. The result a player reported is exactly what the
+   * code says should happen - the rifle says OUT OF ROUNDS, the HUD bag row
+   * says 0, and the inventory panel is sat there showing 120 rounds they own
+   * and cannot spend.
+   *
+   * So: whenever a weapon's ammunition falls below one magazine and the store
+   * holds more, move it across. Capped by `bagRoomFor`, which enforces the slot
+   * rule, so this can never overfill the bag or raise `inventory:full` at the
+   * player. It runs from `_syncAmmo`, i.e. once a frame, and does nothing at
+   * all in the overwhelmingly common case where the bag is already stocked.
+   */
+  _topUpFromStore() {
+    const inv = this._inv();
+    if (!inv || typeof inv.moveToBag !== 'function') return;
+    for (const b of this._brokers) {
+      if (!b.item) continue;
+      if (this._bagCount(b.item) >= this._lowWaterFor(b)) continue;
+      const store = inv.count?.(b.item) ?? 0;
+      if (store <= 0) continue;
+      const room = inv.bagRoomFor?.(b.item) ?? 0;
+      /* Capped at a working load, not "everything the store holds". The store
+       * is the depot; emptying it into the bag on the first dry magazine would
+       * spend slots the player was keeping for loot, and they never asked for
+       * that. `resupplyTarget` is the same figure the admin resupply fills to. */
+      const target = WEAPON_STATS[b.id]?.resupplyTarget ?? 0;
+      const want = Math.min(store, room, target > 0 ? target : store);
+      if (want <= 0) continue;
+      try {
+        const moved = inv.moveToBag(b.item, want);
+        if (moved > 0) {
+          this.bus?.emit('loadout:restocked', { id: b.id, itemId: b.item, qty: moved });
+        }
+      } catch (err) {
+        console.warn(`[Loadout] could not restock "${b.item}" from the store:`, err);
+      }
+    }
+  }
+
+  /**
    * Mirror the bag into every reserve-backed weapon and play any decrease back
    * to the inventory. Called once per frame, before input is read, so a reload
    * that finished this frame is already accounted for.
@@ -369,6 +434,10 @@ export class Loadout {
   _syncAmmo() {
     const inv = this._inv();
     if (!inv) return;
+    /* Before the mirror, not after: a top-up that landed this frame has to be
+     * visible to the reserve write below, or the weapon would keep reporting
+     * empty for one more frame and the player would hear one more dry click. */
+    this._topUpFromStore();
     for (const b of this._brokers) {
       if (!b.reserveKey) continue;
       const cur = b.weapon[b.reserveKey];
@@ -407,7 +476,13 @@ export class Loadout {
   _canFire(weapon) {
     const b = this._brokerFor(weapon.id);
     if (!b || !b.spendOnFire) return true;
-    if (this._bagCount(b.item) > 0) return true;
+    /* The whole cost of the shot, not merely "some". `_doRelease` spends
+     * through the ATOMIC `consumeFromBag`, which refuses a partial debit - so
+     * a weapon costing three charges, fired on a bag holding one, would fire
+     * for free and debit nothing. Every weapon costs one today; this is the
+     * guard that keeps that from being load-bearing. */
+    const need = Math.max(1, WEAPON_STATS[weapon.id]?.ammoPerShot ?? 1);
+    if (this._bagCount(b.item) >= need) return true;
     // Dry click: the same twitch the weapon plays for itself when it runs out,
     // driven from here because the weapon has no idea the bag is empty.
     if (this._time - this._lastNoAmmo >= NOAMMO_COOLDOWN) {

@@ -40,6 +40,7 @@ import { MapOverlay } from './systems/MapOverlay.js';
 import { Marketplace } from './systems/Marketplace.js';
 import { Cosmetics } from './systems/Cosmetics.js';
 import { ItemUseSystem } from './systems/ItemUse.js';
+import { ActiveEffects } from './systems/ActiveEffects.js';
 import { HelpMenu } from './ui/HelpMenu.js';
 import { MountWheel } from './ui/MountWheel.js';
 import { TouchControls } from './ui/TouchControls.js';
@@ -313,13 +314,26 @@ const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
  * existed. It never writes world source -- see src/systems/MapOverlay.js.
  * `mounts` is read-only there, as it is for the Marketplace: a placed mount
  * upgrade is refused for a power the mount does not sell and withheld from a
- * rider who already owns the tier. */
-const mapOverlay = new MapOverlay({ bus, physics, loot, engine, mounts, forceLayout: overrides.layout === 'sample' });
+ * rider who already owns the tier. `inventory` is read-only for the same
+ * question: a placed upgrade now yields a bag item rather than applying
+ * itself, so "already has it" has to include "is carrying it" or every
+ * portal out and back would respawn one the player has already collected. */
+const mapOverlay = new MapOverlay({ bus, physics, loot, engine, mounts, inventory, forceLayout: overrides.layout === 'sample' });
 // Permanent purchasable skins. Bought at a merchant, worn from the F2 (character)
 // or F10 (mount) menu, and round-tripped through both save paths so a
 // limited-edition unlock sticks.
 const cosmetics = new Cosmetics({ bus });
-const itemUse = new ItemUseSystem({ bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics });
+/* What the player has running, and for how much longer.
+ *
+ * Built before `itemUse` because that is its only writer, and handed the engine
+ * rather than a clock because `engine.simElapsed` is the one clock every timed
+ * consumable in the game now dates its deadline from. The HUD learns about it
+ * over the bus and never sees this object - see the header of
+ * `systems/ActiveEffects.js` for why a poll would have been dev-only. */
+const effects = new ActiveEffects({ bus, engine });
+const itemUse = new ItemUseSystem({
+  bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, effects,
+});
 // `mounts` is passed read-only so preview() can refuse a mount power the player
 // already owns - see the `owned` branch in Marketplace.preview().
 const market = new Marketplace({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root: uiRoot });
@@ -415,7 +429,19 @@ const spaceCombat = new SpaceCombat({
   piloting,
   ships,
   economy,
+  /* For `_buffNow` and nothing else: `engine.simElapsed` is play time, which
+   * stops while the inventory sheet a `laser_cell` is used from holds
+   * gameplay. Every other timed consumable dates against the same reading and
+   * the HUD chip counts down on it. @see systems/ActiveEffects.js */
+  engine,
 });
+/* The gun `laser_cell` widens. Assigned here rather than passed to the
+ * `ItemUseSystem` constructor a hundred lines above, for exactly the reason
+ * `itemUse.viewpoints` is: `SpaceCombat` needs `piloting`, which needs the
+ * world manager, and moving the item system down would only move the knot.
+ * `ItemUse._canApply` treats a null `spaceCombat` as "cannot widen", so the
+ * wire being absent refuses the use instead of eating the cell. */
+itemUse.spaceCombat = spaceCombat;
 const flightHUD = new FlightHUD({ root: uiRoot, bus, piloting, combat: spaceCombat });
 /* The consumer `world.mineralNodes` has been waiting for. Ore goes into the
  * SHIP, not the bag, and pays nothing until it is sold at the yard - which is
@@ -1105,7 +1131,7 @@ if (overrides.dev) {
      * place that says which of an admin's edits actually resolved against the
      * world that was built, and only playing into the world produces it. */
     mapOverlay,
-    waterVolumes, stamina, inventory, loot, itemUse, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
+    waterVolumes, stamina, inventory, loot, itemUse, effects, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
     worldPrefetch,
   cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
@@ -2698,6 +2724,11 @@ engine.onFrameUpdate((dt, elapsed) => {
   characterMenu.update?.(dt);
   mountMenu.update?.(dt);
   shipMenu.update?.(dt);
+  /* Outside the `uiPaused` gate on purpose, and safe there BECAUSE the clock it
+   * reads is `engine.simElapsed`, which has already stopped. Running it here
+   * means a chip that expires on the frame a panel closes disappears in that
+   * frame rather than a frame later. */
+  effects.update();
   raceUI.update(dt);
   // Outside the `uiPaused` gate, like every other panel: its own sheets are
   // what raise the pause, so a UI that stopped ticking when they opened could
@@ -2725,6 +2756,12 @@ function setGameplayBlocked(id, blocked) {
   if (!id) return;
   if (blocked) gameplayUiBlocks.add(id);
   else gameplayUiBlocks.delete(id);
+  /* THE PLAY CLOCK FOLLOWS THIS SET, and it has to be told here rather than
+   * in the frame loop: the loop reads `gameplayBlocked()` once, at the top,
+   * and every deadline written between that read and the next one would
+   * otherwise be dated against a clock that had already moved on. This is the
+   * one place the set changes. @see core/Engine.js `setSimulating` */
+  engine.setSimulating(!gameplayBlocked());
 }
 
 /* ?dev=1 only: let the harness run gameplay without a pointer lock.

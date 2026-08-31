@@ -261,7 +261,7 @@ const MEASURE = `(() => {
    * that IS on it. */
   const NAMED = [
     '.vitals', '.credits', '.health', '.stamina', '.questtrack', '.collect',
-    '.objectives', '.charter', '.minimap', '.killfeed', '.ammo', '.wstrip',
+    '.objectives', '.charter', '.minimap', '.effects', '.killfeed', '.ammo', '.wstrip',
     '.helpchip', '.mount', '.chat', '.debug', '.toasts', '.prompt', '.stuck',
     '.cammode', '.pause-in', '.help-card', '.pm-root', '.touch-primary',
     '.touch-left', '.touch-tray',
@@ -488,6 +488,17 @@ const READOUT_PAIRS = [
   ['.ammo', '.killfeed'],
   ['.ammo', '.toasts'],
   ['.killfeed', '.toasts'],
+  /* The active-effect strip, which joins that stack directly under the map and
+   * pushes everything below it down by `--eff-h`. Graded against every
+   * neighbour in the column AND against the left column and the weapon strip,
+   * because the reserve is a fixed number in `hud.css` and a chip row that
+   * outgrew it would show up here as the panel underneath moving into it. */
+  ['.minimap', '.effects'],
+  ['.effects', '.ammo'],
+  ['.effects', '.killfeed'],
+  ['.effects', '.toasts'],
+  ['.effects', '.vitals'],
+  ['.effects', '.wstrip'],
 ];
 
 function assertCase(m, vp, scene) {

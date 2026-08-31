@@ -1990,7 +1990,8 @@ export class NPCManager {
    * live on the character (`_simAccum`, `_simPhase`).
    */
   fixedUpdate(dt, elapsed) {
-    if (elapsed < this._pauseUntil) return;
+    // `_buffNow()`, not `elapsed`: the deadline is in play time. @see _buffNow
+    if (this._buffNow() < this._pauseUntil) return;
     this._coverToken = 0;
     const step = ++this._simStep;
     for (const npc of this._npcs) {
@@ -2109,16 +2110,30 @@ export class NPCManager {
   }
 
   update(dt, elapsed) {
-    if (elapsed < this._pauseUntil) return;
+    if (this._buffNow() < this._pauseUntil) return;
     this._updateLOD();
     for (const npc of this._npcs) npc.update(dt, elapsed);
     this._updateContactShadows();
   }
 
+  /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * A Stasis Rune stops the crowd for five seconds of PLAY. On the wall clock
+   * those five seconds could be spent entirely inside the bag the rune was
+   * used from, and the player would close the panel onto a crowd that had
+   * never stopped moving. `simElapsed` stops when play does, and it is the
+   * clock the HUD chip counts down on.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? 0;
+  }
+
   pauseFor(seconds) {
     if (!(seconds > 0)) return false;
-    const elapsed = this.engine?.elapsed ?? 0;
-    this._pauseUntil = Math.max(this._pauseUntil, elapsed + seconds);
+    this._pauseUntil = Math.max(this._pauseUntil, this._buffNow() + seconds);
     return true;
   }
 

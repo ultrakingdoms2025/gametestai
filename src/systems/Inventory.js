@@ -1,4 +1,4 @@
-import { ITEMS, itemDef, slotsFor, stackSize } from './ItemDefs.js';
+import { isItem, itemDef, slotsFor, stackSize } from './ItemDefs.js';
 
 /**
  * Player inventory: an unbounded-ish **store** plus a 30-slot **active bag**.
@@ -420,12 +420,15 @@ export class Inventory {
   /* Internals                                                              */
   /* ====================================================================== */
 
+  /* `isItem`, not a bare `ITEMS[id]`: the bare read also answers true for
+   * every key on `Object.prototype`, so an id of `toString` used to pass this
+   * gate and then poison the slot arithmetic with NaN. @see ItemDefs.isItem */
   _known(id) {
-    return typeof id === 'string' && !!ITEMS[id];
+    return isItem(id);
   }
 
   _isVirtual(id) {
-    return ITEMS[id]?.virtual === true;
+    return itemDef(id)?.virtual === true;
   }
 
   _sanitise(qty) {
@@ -577,5 +580,13 @@ export class Inventory {
   }
 }
 
-/** Sort weighting so ammo leads a sorted panel and trinkets trail it. */
-const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3, skin: 8 };
+/**
+ * Sort weighting so ammo leads a sorted panel and trinkets trail it.
+ *
+ * `mountpower` sits beside `skin` at the back rather than with the
+ * consumables it behaves like, because both are one-slot things you apply to
+ * a mount and then never see again: a player sorting their bag is looking for
+ * the ammunition and the medkits, and a wall of 57 possible upgrade cells in
+ * front of those would be the sort making the panel worse.
+ */
+const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3, mountpower: 7, skin: 8 };

@@ -304,6 +304,96 @@ export const GUN = Object.freeze({
 export const CONVERGE = 380;
 export const MAX_SPAN = 3.2;
 
+/**
+ * WIDE DISPERSAL: the fan a `laser_cell` buys, and the arithmetic for it.
+ *
+ * The gun is a capacitor and it stays one - see `GUN` above and the note over
+ * `laser_cell` in `systems/ItemDefs.js`. A cell does not feed it. What a cell
+ * buys is thirty seconds during which the same trigger pull lays down SEVEN
+ * bolts across an arc instead of two down one line, so a pass through a wing
+ * can touch more than one craft.
+ *
+ * ── THE GEOMETRY IS THE PAIR'S, GENERALISED ────────────────────────────────
+ *
+ * `_playerGun`'s two bolts are indexed by `s = -1, +1`; the fan indexes seven
+ * by `t = -1, -2/3, -1/3, 0, +1/3, +2/3, +1` and uses `t` twice:
+ *
+ *     muzzle = keel + right * (span * t)                 (as now, at t = +-1)
+ *     aim    = convergence point + right * (FAN_PITCH * t)
+ *
+ * Setting `FAN_PITCH = 0` and `t = +-1` reproduces today's gun exactly, which
+ * is the point: the fan is not a second weapon bolted alongside the first, it
+ * is the same weapon with the aim points walked apart. Off-axis error at range
+ * `d` follows straight from that, and it is linear in `t`:
+ *
+ *     off(d, t) = t * [ span * (1 - d/CONVERGE) + FAN_PITCH * (d/CONVERGE) ]
+ *               = t * W(d)
+ *
+ * TWO THINGS FALL OUT OF THAT AND BOTH ARE THE REASON FOR THE ODD COUNT.
+ * `off(d, 0) = 0` at EVERY range, so the middle bolt is on the nose line
+ * always - the crosshair is exactly as true with the fan up as without it, and
+ * a player who turns this on never loses the shot they already had. And `W`
+ * is the pair's own half-span formula with one term added, so the cap that
+ * fixed the Dray (`MAX_SPAN`) still governs the near end.
+ *
+ * ── THE TABLE. `span = MAX_SPAN` (3.2), which is every hull but the Kestrel;
+ * the Kestrel's 14 m gives 3.08 and moves nothing below by more than 0.12 m ──
+ *
+ *              W(d)      adjacent      full fan     bolts on a 4.2 m
+ *            half-width  separation      width      sphere on the pip
+ *     110 m    11.83 m     3.94 m       23.7 m            3
+ *     275 m    24.77 m     8.26 m       49.5 m            1   <- the median
+ *     380 m    33.00 m    11.00 m       66.0 m            1
+ *     700 m    58.10 m    19.37 m      116.2 m            1
+ *
+ * WHY 33 M AT THE CONVERGENCE PLANE. Because it is the widest fan that is
+ * still GAPLESS at the range the fight is actually fought at. A skiff's hit
+ * sphere is 4.2 m, so a target slips between two bolts once they are more than
+ * 8.4 m apart; `W(d)/3 = 8.4` solves to d = 280 m, and 275 m is the median of
+ * the envelope this file's `CONVERGE` note is written against. Inside 280 m
+ * the fan is a continuous wall 50 m across with nowhere for a craft to sit;
+ * outside it, it is a comb, and that is stated rather than hidden.
+ *
+ * WHY 50 M IS THE RIGHT WALL TO BUILD. `AlienShip._intercept` carries the only
+ * measurement in the repository of how far apart a wing actually flies: three
+ * skiffs over seven seconds of run-in separated by 452-504 m on average and
+ * CLOSEST 21-33 m. A fan sized to the mean would be hundreds of metres wide
+ * and would be aiming at nothing; sized to the closest approach it catches the
+ * pair that has converged on you, which is the moment worth catching.
+ *
+ * ── WHAT IT COSTS, WHICH IS SINGLE-TARGET DAMAGE ───────────────────────────
+ *
+ * The last column of the table is the whole balance answer and it is why no
+ * per-bolt damage adjustment is applied here. Seven bolts do NOT mean 3.5x on
+ * one hull: past 120 m only the middle bolt is within 4.2 m of a target on the
+ * pip, against the pair's two (both stay inside `MAX_SPAN` of the axis at
+ * every range in the envelope). So against a single craft the fan is
+ *
+ *     x1.5   inside 120 m   (three bolts land, and `BREAK_RANGE` is 130 m,
+ *                            so this is exactly the merge)
+ *     x0.5   beyond 120 m   (one bolt lands where two used to)
+ *
+ * Docking per-bolt damage on top of that would make the effect a straight
+ * downgrade against one target, which is not a trade, it is a punishment. The
+ * gain is the width and the price is paid in the same currency.
+ *
+ * ── AND IT COSTS NOTHING EXTRA AT THE CAPACITOR ────────────────────────────
+ *
+ * `GUN.cost` is unchanged while the fan is up. A wider shot that also drained
+ * faster would cut the rate of fire as well, so the player would pay twice for
+ * one effect - and given the x0.5 above, twice for something that is already
+ * worse against the target in front of them. The cell is the price.
+ *
+ * ── THE POOL ───────────────────────────────────────────────────────────────
+ *
+ * `MAX_BOLTS` is 128. Seven bolts at the burst rate of five a second is 35 a
+ * second, each alive `GUN.range / GUN.speed` = 0.44 s, so 15 of the player's
+ * are in flight at the peak and 10 at the sustained 3.33/s. Six hostiles
+ * firing bursts do not come close to the remaining 113.
+ */
+export const FAN_BOLTS = 7;
+export const FAN_PITCH = 33;
+
 /** Shield pool per point of `shieldTier`. See the ladder note in the header. */
 export const SHIELD_PER_TIER = 55;
 /** Floor, so a hull with no shield bias is still not made of paper. */
@@ -522,6 +612,10 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _prevDir = new THREE.Vector3();
+/* The aim point of one bolt of the fan. `_v3` holds the fan's CENTRE for the
+ * whole burst, so the per-bolt offset needs somewhere of its own to live - and
+ * the house rule above says a frame handler allocates nothing. */
+const _fanAim = new THREE.Vector3();
 const _mtx = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
@@ -536,11 +630,11 @@ export class SpaceCombat {
   /**
    * @param {{scene:THREE.Scene, camera:THREE.PerspectiveCamera, bus:any,
    *          input:any, player:any, worldManager:any, piloting:any,
-   *          ships?:any, economy?:any, rnd?:()=>number}} ctx
+   *          ships?:any, economy?:any, engine?:any, rnd?:()=>number}} ctx
    */
   constructor({
     scene, camera, bus, input, player, worldManager, piloting,
-    ships = null, economy = null, rnd = Math.random,
+    ships = null, economy = null, engine = null, rnd = Math.random,
   }) {
     this.scene = scene;
     this.camera = camera ?? null;
@@ -551,6 +645,18 @@ export class SpaceCombat {
     this.piloting = piloting ?? null;
     this.ships = ships ?? null;
     this.economy = economy ?? null;
+    /* ONLY for `_buffNow`, and it is the whole reason it is here.
+     *
+     * `engine.simElapsed` is PLAY time: it stops while a UI panel holds
+     * gameplay, and the panel that holds gameplay is the inventory sheet the
+     * player uses the cell FROM. Dating the deadline off wall time would burn
+     * a slice of the thirty seconds they just paid for while they were still
+     * looking at the bag. Every other timed consumable in the game already
+     * dates against this clock - see `Combat._buffNow` and the header of
+     * `systems/ActiveEffects.js` - and the HUD chip counts down on it, so an
+     * effect on a different clock would be an indicator that disagrees with
+     * the thing it describes. */
+    this.engine = engine ?? null;
     this.rnd = rnd;
 
     /** Everything this system draws hangs off one node, so it is one remove. */
@@ -583,6 +689,14 @@ export class SpaceCombat {
     this.gunCharge = GUN.capacity;
     this._fireCool = 0;
     this._gunIdle = 0;
+    /**
+     * Bolts the gun lays down per shot, or 0 for the stock pair.
+     * Raised by `setGunSpread`, cleared by `update` when the deadline passes.
+     * @see setGunSpread
+     */
+    this._spreadBolts = 0;
+    /** Seconds of `engine.simElapsed`. @see _buffNow */
+    this._spreadUntil = 0;
     this._shieldIdle = 0;
     /** Seconds of screen flash left, and which kind. */
     this.hitFlash = 0;
@@ -688,6 +802,97 @@ export class SpaceCombat {
   /** Damage one of the player's bolts does. The panel's own 15% per tier. */
   boltDamage(shipId = this.piloting?.shipId) {
     return GUN.damage * (1 + (SHIP_STAT_META.fire.perTier / 100) * this.tiers(shipId).fire);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Wide dispersal                                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * Byte for byte `Combat._buffNow`, and deliberately so. `engine.simElapsed`
+   * is the one clock every timed consumable in the game dates its deadline
+   * from, and it is the clock `systems/ActiveEffects.js` counts the HUD chip
+   * down on - so the chip and the effect it describes cannot disagree. Wall
+   * time would run while the inventory sheet that spent the cell was still
+   * open, which is a slice of the player's thirty seconds spent on nothing.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? 0;
+  }
+
+  /**
+   * Bolts the next shot will lay down, or 0 while the gun is stock.
+   *
+   * Read by `_playerGun` and by the tests. It is the raw field rather than a
+   * deadline comparison on purpose: `update()` is the ONE place that decides
+   * the effect has ended, exactly as `Combat.update` is for the damage boost.
+   * A getter that re-derived it here would be a second opinion about the same
+   * number, and this file's own `_locked` note is about what happens when two
+   * places describe one fact.
+   */
+  get spreadBolts() {
+    return this._spreadBolts;
+  }
+
+  /**
+   * Is there a gun to widen right now?
+   *
+   * Asked by `ItemUse._canApply` BEFORE the cell is taken out of the bag, so a
+   * cell used on foot is refused and KEPT. That is the whole reason this is
+   * public.
+   *
+   * `_playable()` is the same predicate that gates `_playerGun` itself - a
+   * live seat, not mid-seam, not landed, and in `space`, which is the only
+   * world that publishes encounters and therefore the only world the gun ever
+   * fires in. Asking the same question both places means "can I widen the
+   * guns" and "is there a gun running" cannot drift apart; a looser test here
+   * would let a player spend a cell while walking round the yard and get
+   * thirty seconds of an effect on a weapon that is not in their hands.
+   *
+   * The `shipId` term is the honest half of "there is a hull": `piloting.flight`
+   * is a `Flight` instance from the moment `Piloting` is constructed and is
+   * never null, so testing it would be testing that the constructor ran.
+   * `shipId` is null until `board()` and is what `_playerGun` reads to size the
+   * muzzle span.
+   *
+   * @returns {boolean}
+   */
+  canWidenGuns() {
+    return this._playable() && !!this.piloting?.shipId;
+  }
+
+  /**
+   * Run the wide-dispersal fan for `duration` seconds.
+   *
+   * Shaped on `Combat.boostPlayerDamage` deliberately, down to the refusals:
+   * a non-positive or non-finite argument is not an effect, and a second
+   * charge on a running one EXTENDS it (`Math.max` on both fields) rather than
+   * replacing it. `ActiveEffects.start` raises one chip per kind and moves its
+   * deadline forward the same way, so a player who burns two cells sees one
+   * chip with a longer clock rather than two chips for one gun.
+   *
+   * `bolts` is snapped UP to an odd number and floored at 3. Odd because the
+   * middle bolt is what keeps the crosshair true at every range - see the
+   * `FAN_BOLTS` note above, where the whole balance argument rests on there
+   * being a `t = 0`; three because a "fan" of one bolt is a nerf and of two is
+   * the gun the player already has.
+   *
+   * @param {number} duration seconds of play time
+   * @param {number} [bolts] bolts per shot
+   * @returns {boolean} false if nothing was applied
+   */
+  setGunSpread(duration, bolts = FAN_BOLTS) {
+    if (!(duration > 0) || !Number.isFinite(duration)) return false;
+    const asked = Math.floor(Number(bolts));
+    if (!Number.isFinite(asked) || asked < 3) return false;
+    const odd = asked % 2 === 0 ? asked + 1 : asked;
+    this._spreadBolts = Math.max(this._spreadBolts, odd);
+    this._spreadUntil = Math.max(this._spreadUntil, this._buffNow() + duration);
+    return true;
   }
 
   /**
@@ -1032,14 +1237,37 @@ export class SpaceCombat {
      * The span comes from `SHIP_CLASSES[...].length`, public catalogue data.
      * The flown model's own radius is on `Piloting._model`, and reading a
      * private field to place a muzzle is how two descriptions of one ship
-     * start to drift. */
+     * start to drift.
+     *
+     * ── AND THE LOOP NOW WRITES BOTH GUNS, WHICH IS WHY IT IS INDEXED BY `t`
+     *
+     * Wide dispersal (`setGunSpread`, bought with a `laser_cell`) walks the
+     * AIM POINTS apart while leaving every word above intact - the muzzles
+     * still sit on the capped span, the bolts are still aimed at a plane
+     * `CONVERGE` metres up the nose line, and the crosshair is still exact
+     * where they cross. `t` runs -1..+1 across whatever number of bolts is
+     * live, so `n = 2, pitch = 0` is the pair described above expressed in the
+     * new index and nothing about it has changed. The seven-bolt case, the
+     * arithmetic that sizes `FAN_PITCH`, and what it costs in single-target
+     * damage are all in the `FAN_BOLTS` note at the top of this file, because
+     * a change to gun geometry without the table written down is exactly what
+     * put the Dray in the paragraph above. */
     const len = SHIP_CLASSES[this.piloting.shipId]?.length ?? 14;
     const span = Math.min(len * 0.22, MAX_SPAN);
     const dmg = this.boltDamage();
+    /* Damage per bolt is NOT scaled by the fan. See `FAN_BOLTS`: past 120 m a
+     * fan lands ONE bolt on a target sitting on the pip where the pair landed
+     * two, so seven bolts is not seven times anything and a scale-down here
+     * would make the effect a punishment. */
+    const wide = this._spreadBolts > 0;
+    const n = wide ? this._spreadBolts : 2;
+    const pitch = wide ? FAN_PITCH : 0;
     _v3.copy(f.position).addScaledVector(_fwd, CONVERGE);
-    for (let s = -1; s <= 1; s += 2) {
-      _v.copy(f.position).addScaledVector(_right, span * s).addScaledVector(_up, -0.6);
-      _v2.copy(_v3).sub(_v).normalize();
+    for (let i = 0; i < n; i++) {
+      const t = (2 * i) / (n - 1) - 1;
+      _v.copy(f.position).addScaledVector(_right, span * t).addScaledVector(_up, -0.6);
+      _fanAim.copy(_v3).addScaledVector(_right, pitch * t);
+      _v2.copy(_fanAim).sub(_v).normalize();
       this._spawnBolt(_v, _v2, GUN.speed, dmg, GUN.range, 0);
       /* The muzzle bloom, and both numbers in it were wrong first time.
        *
@@ -1054,7 +1282,7 @@ export class SpaceCombat {
       this._flare(_v, _v2, 0.62, 0.055, 0.7, 3.2, 4.2, 26);
     }
     this.stats.shotsFired++;
-    this.bus?.emit?.('combat:fire', { position: f.position, ship: this.piloting.shipId });
+    this.bus?.emit?.('combat:fire', { position: f.position, ship: this.piloting.shipId, bolts: n });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1790,8 +2018,17 @@ export class SpaceCombat {
   /* ================================================================== */
 
   /**
-   * Visual only, and it runs even when the player is not flying so that a
-   * wreck finishes burning after they walk away from the seat.
+   * Drawing, plus the one deadline this system owns.
+   *
+   * It runs even when the player is not flying so that a wreck finishes
+   * burning after they walk away from the seat - and that is also why the
+   * dispersal deadline is checked here rather than inside `fixedUpdate`'s
+   * `_playable()` branch. A player who buys thirty seconds of fan, docks, and
+   * walks off must have it expire on schedule; expiring it only while flying
+   * would leave the effect banked and the HUD chip - which counts down on the
+   * same `engine.simElapsed` seconds and does NOT wait for a seat - lying
+   * about it. This is the same one-place-decides shape `Combat.update` uses
+   * for the damage boost, on the same clock. `_playerGun` reads the field.
    *
    * Runs AFTER `piloting.update` in `main.js`, because the aim marks below are
    * projected through the camera that `Piloting._composeCamera` has just
@@ -1799,6 +2036,7 @@ export class SpaceCombat {
    * behind the nose, which at 1.4 rad/s of roll is visibly detached.
    */
   update(dt) {
+    if (this._spreadBolts > 0 && this._buffNow() >= this._spreadUntil) this._spreadBolts = 0;
     this._drawBolts();
     this._drawFlares(dt);
     this._drawSalvage(dt);

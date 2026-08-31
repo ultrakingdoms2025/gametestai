@@ -61,6 +61,12 @@ function makeManager(npcs) {
   return {
     _npcs: npcs,
     _pauseUntil: 0,
+    /* The play clock the stasis deadline is measured on. `fixedUpdate` asks it
+     * before it does anything else, so a `this` assembled by hand has to answer
+     * it for the same reason it stubs the four methods below - and zero is the
+     * right answer here, because `_pauseUntil` is zero and no test in this file
+     * is about the crowd being frozen. @see NPCManager._buffNow */
+    _buffNow: () => 0,
     _coverToken: 0,
     _simStep: 0,
     _separateBodies() {},

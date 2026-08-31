@@ -335,7 +335,7 @@ test("main.js sets the provider on the manager's ctx, gated on the session, befo
   assert.ok(prefetch > 0, 'the entry world is not prefetched, so its fetch no longer overlaps the loading gate');
   assert.ok(build > 0 && provider < build && prefetch < build, 'the provider or the prefetch lands after the entry build, which then builds at version 0');
   // Two lines other suites pin must not have moved with this edit.
-  assert.match(src, /new MapOverlay\(\{ bus, physics, loot, engine, mounts, forceLayout: overrides\.layout === 'sample' \}\)/, 'the MapOverlay constructor line changed');
+  assert.match(src, /new MapOverlay\(\{ bus, physics, loot, engine, mounts, inventory, forceLayout: overrides\.layout === 'sample' \}\)/, 'the MapOverlay constructor line changed');
   assert.match(boot, /if \(overrides\.prefetch === 'all'\) scheduleBackgroundBuilds\(startWorld\);/, 'the eager-chain line changed');
 });
 

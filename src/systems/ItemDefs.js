@@ -1,4 +1,5 @@
 import { MOUNT_SKINS } from './Cosmetics.js';
+import { MOUNT_STATS, STAT_META } from '../mounts/Livery.js';
 
 /**
  * Item catalogue, pack prices and the procedural icon set.
@@ -14,10 +15,13 @@ import { MOUNT_SKINS } from './Cosmetics.js';
  *
  * One extra item is generated per catalogued mount skin (`MOUNT_SKINS` in
  * `Cosmetics.js`) - see the loop after the `ITEMS` literal below - so a skin
- * bought at a merchant has a bag item to sit in until it is applied.
+ * bought at a merchant has a bag item to sit in until it is applied. One more
+ * is generated per mount power tier (`MOUNT_STATS` x I-III), for the same
+ * reason and by the same shape: a mount upgrade the map editor laid on the
+ * ground has to be something a player can pick up and carry.
  */
 
-/** @typedef {'ammo'|'consumable'|'trinket'|'currency'|'skin'} ItemKind */
+/** @typedef {'ammo'|'consumable'|'trinket'|'currency'|'skin'|'mountpower'} ItemKind */
 
 /** Accent colours, shared by the UI panels and the world pickups. */
 export const KIND_ACCENT = {
@@ -26,6 +30,11 @@ export const KIND_ACCENT = {
   trinket: '#d46bff',
   currency: '#ffb44a',
   skin: '#ff9ad5',
+  /* The one free quadrant of the wheel the other five leave: cyan is ammo at
+   * ~195 deg, green consumable at ~85, violet trinket at ~285, amber currency
+   * at ~40 and pink skin at ~325. A blue at ~228 is the only accent a player
+   * can tell from all five at pickup range, which is the whole job of these. */
+  mountpower: '#6f8cff',
 };
 
 /**
@@ -34,7 +43,8 @@ export const KIND_ACCENT = {
  *
  * @type {Record<string, {id:string, name:string, short:string, stack:number,
  *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string,
- *   skinId?:string, colors?:number[]}>}
+ *   skinId?:string, colors?:number[], noSell?:boolean,
+ *   mount?:string, power?:string, tier?:number}>}
  */
 export const ITEMS = {
   credits: {
@@ -915,25 +925,49 @@ export const ITEMS = {
    * and/or `CACHE_TABLES` for `dock`, and `hull_plate` and `thruster_coil`
    * are what `SUPPLY_WANTS.dock` asks for.
    *
-   * `laser_cell` IS THE ODD ONE, AND THE OLD NOTE HERE PROMISED SOMETHING
-   * THAT DID NOT HAPPEN. It said "the flight drop turns it into ammunition".
-   * The flight drop shipped and it did not: `SpaceCombat` contains no
-   * reference to ammo, inventory or `laser_cell` at all - the ship gun runs
-   * off a self-recharging capacitor (`GUN.capacity` / `GUN.regen`), which is
-   * a deliberate design and a good one, because a dry gun 60 km from the yard
-   * is a walk home.
+   * `laser_cell` IS THE ODD ONE, AND ITS NOTE HAS NOW BEEN WRONG TWICE. THIS
+   * IS THE THIRD VERSION AND THE FIRST ONE THE CODE AGREES WITH.
    *
-   * That left an item described as "charged capacitor cells for a ship-mounted
-   * laser" which no ship-mounted laser consumes, handed out 20 and 40 at a
-   * time by the first two rungs of the KILL ladder - the two rungs most
-   * players reach - as if it were combat resupply. A reward that reads as
-   * ammunition for the gun you just used and is not is worse than no reward.
+   * The FIRST said "the flight drop turns it into ammunition". The flight drop
+   * shipped and it did not, so the item was described as "charged capacitor
+   * cells for a ship-mounted laser" that no ship-mounted laser consumed, and
+   * handed out 20 and 40 at a time by the first two rungs of the KILL ladder -
+   * the two rungs most players reach - as if it were combat resupply. A reward
+   * that reads as ammunition for the gun you just used and is not is worse
+   * than no reward.
    *
-   * Its real sinks, both of which are live: the Test-Fire Butts burn eight a
-   * plate (`minigames/TestFire.js`), and the Fitter buys them at 0.75. The
-   * description below says so. The stack stays 240 because a rack is 40 and
+   * The SECOND fixed the description by declaring the gap deliberate, and half
+   * of that still stands. THE SHIP GUN IS STILL NOT AMMO-GATED, and it never
+   * will be: `SpaceCombat.GUN` is a capacitor (100 units, 9 a shot, 30 a
+   * second back, no vent), and it is a capacitor because a dry gun 60 km from
+   * the yard is a walk home - a failure state the player cannot fly out of,
+   * cannot shoot out of, and did not choose. Nothing below changes that. Empty
+   * the bag of cells and the gun fires exactly as it always has.
+   *
+   * WHAT IS NEW IS THAT A CELL NOW BUYS WIDTH INSTEAD OF SHOTS. Held for three
+   * seconds in the bag it runs `SpaceCombat.setGunSpread` for thirty seconds:
+   * the same trigger pull, the same capacitor cost, the same damage a bolt has
+   * always done, but SEVEN bolts walked apart across a fifty-metre arc at the
+   * range the fight is fought at instead of two down one line - so a pass
+   * through a wing can touch more than one craft. The arithmetic that sizes
+   * the arc, and the single-target damage it costs to get it, are in the
+   * `FAN_BOLTS` note in `ships/SpaceCombat.js`. That is why the kind is
+   * `consumable` and not `ammo`: `InventoryUI._hasUse` draws the hold-to-use
+   * ring for `consumable`, `skin` and `mountpower`, and an item with an effect
+   * and no way to reach it is the defect this file keeps re-learning.
+   *
+   * IT REFUSES POLITELY ON FOOT. `ItemUse._canApply` asks
+   * `SpaceCombat.canWidenGuns()` BEFORE `consumeFromBag`, so a cell used on
+   * the concourse is kept and the toast says to launch first. Widening a gun
+   * the player is nowhere near is the unit-destroyed-for-nothing failure this
+   * file names under `chart`.
+   *
+   * ITS OLDER SINKS ARE UNTOUCHED AND STILL LIVE: the Test-Fire Butts burn
+   * eight a plate (`minigames/TestFire.js`), and the Fitter trades them by the
+   * rack (`WORLD_MARKETS.dock`). The stack stays 240 because a rack is 40 and
    * six racks to a slot is the same "one pack is one slot" rule the 60-round
-   * rifle pack is sized by. */
+   * rifle pack is sized by - a cell is still bought, sold and carried in
+   * industrial quantities, whatever the label on it says. */
   laser_cell: {
     id: 'laser_cell',
     name: 'Laser Cells',
@@ -941,8 +975,8 @@ export const ITEMS = {
     stack: 240,
     icon: 'cell',
     value: 4,
-    kind: 'ammo',
-    desc: 'Charged capacitor cells, cut and wound in this yard. Ship guns run off their own capacitors — these are for the Test-Fire Butts, and the Fitter buys them by the rack.',
+    kind: 'consumable',
+    desc: 'Charged capacitor cells, cut and wound in this yard. A ship gun runs off its own capacitor and never runs dry — dump a cell into it and for thirty seconds it throws a seven-bolt fan wide enough to catch two craft at once. The Test-Fire Butts burn them by the plate, and the Fitter takes them by the rack.',
   },
   hull_plate: {
     id: 'hull_plate',
@@ -1010,7 +1044,7 @@ export function skinIdFromItem(itemId) {
   return def && def.kind === 'skin' ? def.skinId : null;
 }
 
-/** Bag-item `short` prefix per mount, so dropped skin pickups are distinguishable. */
+/** Bag-item `short` prefix per mount, so dropped skin and upgrade pickups are distinguishable. */
 export const MOUNT_ABBR = { car: 'CAR', dragon: 'DRG', eagle: 'EGL', horse: 'HRS', hoverboard: 'HVR', bicycle: 'BKE' };
 
 /*
@@ -1035,6 +1069,135 @@ for (const skin of MOUNT_SKINS) {
     colors,
     desc: `${skin.blurb} Apply to your ${skin.mount} from the Esc menu → Customise mount, while riding; one use.`,
   };
+}
+
+/* ====================================================================== */
+/* Mount upgrades, as things you can carry                                */
+/* ====================================================================== */
+
+/**
+ * How many tiers of one stat a mount sells. The marketplace catalogue seeds
+ * exactly I, II and III for every mount/stat pair (57 `grant_mount_power`
+ * rows, checked against `MOUNT_STATS` by scripts/tests/mount-catalog.test.mjs),
+ * and `scripts/tests/mount-power-item.test.mjs` checks the other direction -
+ * that no catalogue row names a tier this number does not generate.
+ */
+export const MOUNT_POWER_TIERS = 3;
+
+/** Roman numerals for the tier ladder, as the shop spells its own rows. */
+const MOUNT_POWER_ROMAN = ['I', 'II', 'III', 'IV', 'V'];
+
+const capWord = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+
+/**
+ * Base worth of one tier, in credits.
+ *
+ * Deliberately far under what the shop charges for the same upgrade - the
+ * cheapest tier I row is 260 CR against a 40 CR sell-back here, the dearest
+ * tier III is 1071 against 116 - because a bag item that is worth anything
+ * near its shop price turns a placed pickup into a buy-low arbitrage the
+ * moment a vendor is willing to take it. `noSell` below closes that door
+ * outright; these numbers make sure it stays shut even if a future vendor
+ * opens it, and the ratio is pinned by a test the way the skin rows' is.
+ */
+const MOUNT_POWER_VALUE = [100, 200, 290];
+
+/**
+ * Bag item id for one tier of one mount stat, e.g. `mountpower_bicycle_power_3`.
+ * @param {string} mount @param {string} power @param {number} tier
+ * @returns {string}
+ */
+export function mountPowerItemId(mount, power, tier) {
+  return `mountpower_${mount}_${power}_${tier}`;
+}
+
+/**
+ * The grant a mount-power bag item stands for, or null if the item is not one.
+ *
+ * Reads the def rather than parsing the id back apart, because the id is not
+ * unambiguously parseable - a mount or a stat could one day contain an
+ * underscore, and the split would then hand back a mount that does not exist.
+ * The def carries the three fields the generator put on it.
+ *
+ * @param {unknown} itemId
+ * @returns {{mount:string, power:string, tier:number}|null}
+ */
+export function mountPowerFromItem(itemId) {
+  const def = typeof itemId === 'string' ? itemDef(itemId) : null;
+  if (!def || def.kind !== 'mountpower') return null;
+  return { mount: def.mount, power: def.power, tier: def.tier };
+}
+
+/**
+ * What one tier of one mount stat is called: `Bicycle Speed III`.
+ *
+ * The single speller. `Loot.grantLabel` falls back to this for a placed grant
+ * that carries no catalogue name, so the pickup on the ground, the toast that
+ * names it and the row that lands in the bag cannot drift apart - they did
+ * once, and a player who reads `+Bicycle Speed III` on collection and then
+ * finds `Bicycle Power 3` in their bag has no way to know it is the same
+ * thing. The stat's shop-facing label comes from `STAT_META` (`power` is
+ * sold as Speed; nobody calls it Power in the shop).
+ *
+ * @param {string} mount @param {string} power @param {number} tier
+ * @returns {string}
+ */
+export function mountPowerName(mount, power, tier) {
+  const t = Math.max(1, Math.floor(Number(tier) || 1));
+  const stat = STAT_META[power]?.label ?? capWord(power);
+  return `${capWord(mount)} ${stat} ${MOUNT_POWER_ROMAN[t - 1] ?? t}`.trim();
+}
+
+/*
+ * One bag item per mount power tier.
+ *
+ * ── The defect this exists to end ─────────────────────────────────────────
+ * A mount upgrade placed with the map editor used to apply itself the instant
+ * it was collected: `Loot.collectEntry` emitted `mount:power:buy` and never
+ * called `inventory.acquire`. The flourish played, the HUD said
+ * `+Bicycle Speed I`, and the bag stayed empty. The reported symptom was
+ * exactly that - "it shows I picked them up, but the inventory does not show
+ * them so I cannot use them" - and the fix is to make the pickup yield the
+ * thing every other pickup yields: a row.
+ *
+ * Generated from `MOUNT_STATS` (the game's own ladder, not the site's
+ * catalogue) so a mount that grows a fourth stat gets its three items for
+ * free, exactly as a new skin does. `stack: 1`, because a tier is not a
+ * quantity: holding two Bicycle Speed III does not make you faster, and one
+ * slot each is what keeps that visible.
+ *
+ * `noSell` because a mount upgrade has never been sellable. Bought at a
+ * merchant it applies straight to the rider and no item ever exists, so a
+ * vendor has never had one to buy back; letting them buy back the placed
+ * copy would invent a second economy in which a placed pickup - which
+ * respawns for anyone who does not own the power - prints credits on a loop.
+ * @see Marketplace.sellables
+ */
+for (const mount of Object.keys(MOUNT_STATS)) {
+  for (const power of MOUNT_STATS[mount]) {
+    for (let tier = 1; tier <= MOUNT_POWER_TIERS; tier++) {
+      const id = mountPowerItemId(mount, power, tier);
+      const meta = STAT_META[power];
+      ITEMS[id] = {
+        id,
+        name: mountPowerName(mount, power, tier),
+        // Falls back to the mount id for a mount with no entry in the
+        // abbreviation table, the same rule the skin items use, so a new
+        // mount's upgrades still get a legible prefix instead of `undefined`.
+        short: `${MOUNT_ABBR[mount] ?? mount.slice(0, 3).toUpperCase()} ${MOUNT_POWER_ROMAN[tier - 1] ?? tier}`,
+        stack: 1,
+        icon: 'mountpower',
+        value: MOUNT_POWER_VALUE[tier - 1] ?? MOUNT_POWER_VALUE[MOUNT_POWER_VALUE.length - 1],
+        kind: 'mountpower',
+        noSell: true,
+        mount,
+        power,
+        tier,
+        desc: `A fitting kit for your ${mount}. Using it raises that ${mount}'s ${meta?.label?.toLowerCase() ?? power} to tier ${MOUNT_POWER_ROMAN[tier - 1] ?? tier}`
+          + `${meta ? ` — about ${meta.perTier * tier}% ${meta.unit}` : ''}. One use, and it is spent on the mount, not on you.`,
+      };
+    }
+  }
 }
 
 /** Fraction of `value` a vendor pays when buying an item back off the player. */
@@ -1131,7 +1294,21 @@ export const WORLD_MARKETS = {
      * multiplier on them would be read by nothing). The yard is where Cinder
      * ore is refined and it is the only counter in the Nexus that knows what
      * a lodestone is worth. */
-    itemBuy: { alloy_scrap: 0.6, hull_plate: 0.7, thruster_coil: 0.75, relic_coin: 1.7, nexus_shard: 1.6, ferrobasalt: 1.35 },
+    /* `laser_cell` is priced per item AND AT ITS OLD FIGURE ON PURPOSE.
+     *
+     * 0.9 is what `buy.ammo` paid for it before it became a `consumable`, and
+     * without this row the kind change alone would have quietly moved the
+     * Fitter's payout to `buy.consumable`'s 0.95. A relabelling that pays the
+     * player more is still a balance change, and one nobody would ever find in
+     * a diff of `ItemDefs`. It is also what keeps the cell out of the
+     * kind-level census `citadel-economy.test.mjs` ranks the drop tables by -
+     * for the same reason the three trinkets are already out of it, which is
+     * that the kind multiplier is not the signal for an item that has its
+     * own. */
+    itemBuy: {
+      alloy_scrap: 0.6, hull_plate: 0.7, thruster_coil: 0.75, laser_cell: 0.9,
+      relic_coin: 1.7, nexus_shard: 1.6, ferrobasalt: 1.35,
+    },
     itemSell: { pack_laser_cell: 0.75 },
     note: 'A yard makes hull plate and coil by the ton and cannot get a relic for love nor money.',
   },
@@ -1280,14 +1457,38 @@ export const PACKS = [
   },
 ];
 
+/**
+ * Own-property membership test for the catalogue.
+ *
+ * `ITEMS` is an object literal, so a bare `ITEMS[id]` also answers for
+ * everything on `Object.prototype`: `ITEMS['toString']`, `ITEMS['valueOf']`
+ * and `ITEMS['constructor']` are all truthy. Every "do we know this id?"
+ * check in the game used to be a bare read, which meant a string like
+ * `toString` could pass as a real item id - and then `stackSize` would return
+ * `undefined` (a function has no `.stack`), `slotsFor` would return
+ * `Math.ceil(qty / undefined)` = NaN, and that NaN would spread through
+ * `bagUsed` and into the panel's grid-padding loop, which stops drawing empty
+ * cells entirely once its counter is NaN.
+ *
+ * `Marketplace.consumableItemFor` and `MapOverlay.grantForPlacement` already
+ * guarded themselves this way; this is that same guard, named once so the
+ * rest of the game can share it instead of each caller remembering.
+ *
+ * @param {unknown} id
+ * @returns {boolean}
+ */
+export function isItem(id) {
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(ITEMS, id);
+}
+
 /** @param {string} id @returns {(typeof ITEMS)[keyof typeof ITEMS]|null} */
 export function itemDef(id) {
-  return ITEMS[id] ?? null;
+  return isItem(id) ? ITEMS[id] : null;
 }
 
 /** Stack size for an id; unknown ids stack at 1 so they can never overflow a slot silently. */
 export function stackSize(id) {
-  const def = ITEMS[id];
+  const def = itemDef(id);
   return def ? def.stack : 1;
 }
 
@@ -1299,7 +1500,7 @@ export function stackSize(id) {
  */
 export function slotsFor(id, qty) {
   if (qty <= 0) return 0;
-  const def = ITEMS[id];
+  const def = itemDef(id);
   if (def?.virtual) return 0;
   const s = stackSize(id);
   return s === Infinity ? 1 : Math.ceil(qty / s);
@@ -1474,6 +1675,26 @@ const ICONS = {
     <rect x="5" y="5" width="22" height="22" rx="4" fill="${hex(c1)}" stroke="${a}" stroke-width="1"/>
     <path d="M27 5 L27 27 L5 27 z" fill="${hex(c2)}" opacity="0.95"/>
     <path d="M9 22 q7 -9 14 -12" stroke="#ffffff" stroke-width="1.2" fill="none" opacity="0.55"/>`;
+  },
+  /* ---- Mount upgrade -------------------------------------------------
+   *
+   * A crest with an up-arrow, and the tier spelled out underneath as pips
+   * filled left to right. The pips are the point: `stack: 1` means a bag full
+   * of upgrades is a wall of near-identical cells, and at 44 px the roman
+   * numeral in the name is unreadable while three squares are not. Drawn from
+   * the item's own `tier` the way `skin` draws from its own `colors`. */
+  mountpower: (g, a, def) => {
+    const tier = Math.max(1, Math.min(3, Math.floor(Number(def?.tier) || 1)));
+    const pip = (i) => `<rect x="${10 + i * 4.4}" y="25.4" width="3.2" height="3.2" rx="0.7" `
+      + `fill="${i < tier ? a : 'none'}" stroke="${a}" stroke-width="0.8" opacity="${i < tier ? 0.95 : 0.4}"/>`;
+    return `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#161d38"/><stop offset="1" stop-color="#43539f"/>
+    </linearGradient></defs>
+    <path d="M16 2.5 L26.5 7.5 v7.5 q0 5.5 -10.5 8.5 Q5.5 20.5 5.5 15 V7.5 z" fill="url(#${g}a)" stroke="${a}" stroke-width="1" stroke-linejoin="round"/>
+    <path d="M16 7 l5.6 6.6 h-3.2 v5.2 h-4.8 v-5.2 h-3.2 z" fill="${a}" opacity="0.95"/>
+    <path d="M16 8.6 l3.6 4.3 h-2 v5.2 h-3.2 v-5.2 h-2 z" fill="#eef2ff" opacity="0.35"/>
+    ${pip(0)}${pip(1)}${pip(2)}`;
   },
   /* ---- Cinder ore ----------------------------------------------------
    *

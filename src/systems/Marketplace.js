@@ -248,6 +248,16 @@ export class Marketplace {
 
   /**
    * What the player can sell right now, merged across store and bag.
+   *
+   * `noSell` items are skipped alongside the virtual ones, and for a related
+   * reason: neither is goods. Credits are a balance rather than a stack; a
+   * mount upgrade is an entitlement the shop has never bought back, because
+   * buying one there applies it to the rider and no item is ever created. The
+   * only mount-upgrade items in existence come off pickups the map editor
+   * placed, and those respawn for anyone who does not have the upgrade - so a
+   * vendor willing to take one would be an unbounded credit printer, not a
+   * trade. @see ItemDefs, the mount power generator.
+   *
    * @returns {Array<{id:string, def:any, store:number, bag:number, total:number, unit:number}>}
    */
   get sellables() {
@@ -256,7 +266,7 @@ export class Marketplace {
     const rows = new Map();
     const push = (list, key) => {
       for (const row of list) {
-        if (ITEMS[row.id]?.virtual) continue;
+        if (ITEMS[row.id]?.virtual || ITEMS[row.id]?.noSell) continue;
         let r = rows.get(row.id);
         if (!r) {
           r = { id: row.id, def: row.def ?? itemDef(row.id), store: 0, bag: 0, total: 0, unit: sellValue(row.id, 1) };
@@ -594,7 +604,11 @@ export class Marketplace {
     const inv = this.inventory;
     const def = itemDef(itemId);
     const n = Math.max(1, Math.floor(qty) || 1);
-    if (!inv || !def || def.virtual) return { ok: false, reason: 'unavailable' };
+    // `noSell` beside `virtual`, and checked HERE and not only in `sellables`:
+    // the list is what the panel draws, this is what actually moves goods and
+    // credits, and a caller that never opened the panel must meet the same
+    // refusal. @see sellables for what a mount upgrade is doing on that list.
+    if (!inv || !def || def.virtual || def.noSell) return { ok: false, reason: 'unavailable' };
 
     let sold = 0;
     if (from !== 'bag') sold += inv.remove(itemId, n);

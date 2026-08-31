@@ -94,9 +94,28 @@ export class Engine {
     this.fixedStep = 1 / 60;
     this.maxSubSteps = 5;
     this.elapsed = 0;
+    /**
+     * SIMULATION TIME: seconds the game has actually been PLAYED.
+     *
+     * `elapsed` is wall time since boot and never stops - not while the
+     * inventory is open, not behind the Esc hub, not while a market sheet is
+     * up. This one stops whenever gameplay does, and it exists because a
+     * *duration* the player was promised - thirty seconds of a speed boost,
+     * five of a shield - is a duration of PLAY. A shield dated from the wall
+     * clock and used from inside the bag is over before the bag closes.
+     *
+     * Every timed consumable dates its deadline from here, and so does the
+     * HUD's countdown for it. That is the whole point of there being one: a
+     * chip on screen and the effect it describes cannot disagree if they read
+     * the same clock. See `setSimulating`, `systems/ActiveEffects.js`, and the
+     * buff-clock note in `player/Player.js`.
+     */
+    this.simElapsed = 0;
     this.frame = 0;
     this.running = false;
     this._paused = false;
+    /** @see setSimulating */
+    this._simulating = true;
 
     /** @type {Set<(dt:number, elapsed:number)=>void>} */
     this._fixedUpdaters = new Set();
@@ -223,6 +242,22 @@ export class Engine {
   }
 
   /**
+   * Say whether gameplay is actually simulating, which is what `simElapsed`
+   * counts.
+   *
+   * NOT the same question as `setPaused`. The engine keeps rendering, keeps
+   * flushing the bus and keeps ticking every overlay while a panel is open -
+   * it is only the *gameplay* half of the frame that stands down, and the
+   * engine has no idea which panels exist. So main.js, which owns
+   * `gameplayBlocked`, tells it here; nothing else may call this.
+   *
+   * @param {boolean} on false while a UI panel holds gameplay
+   */
+  setSimulating(on) {
+    this._simulating = !!on;
+  }
+
+  /**
    * Register what to run once a lost context comes back.
    *
    * Handed in rather than reached for: the warm that has to run is the boot's
@@ -321,6 +356,12 @@ export class Engine {
     this.frame++;
 
     if (!this._paused) {
+      /* Advanced HERE - inside the pause gate, beside the updaters it has to
+       * agree with - rather than beside `elapsed` above. A frame in which
+       * nothing simulated must not shorten a shield. `_simulating` is the
+       * UI-panel gate (main.js's `gameplayBlocked`); `_paused` is the engine's
+       * own, and both have to be clear for play time to pass. */
+      if (this._simulating) this.simElapsed += dt;
       this._accumulator += dt;
       let steps = 0;
       while (this._accumulator >= this.fixedStep && steps < this.maxSubSteps) {

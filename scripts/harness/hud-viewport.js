@@ -69,6 +69,7 @@ import { TouchControls } from '../../src/ui/TouchControls.js';
 import { Charters } from '../../src/systems/Charters.js';
 import { Onboarding } from '../../src/systems/Onboarding.js';
 import { Retention, dayKey } from '../../src/systems/Retention.js';
+import { ActiveEffects, EFFECT_KINDS } from '../../src/systems/ActiveEffects.js';
 
 /* The panels. Each one brings its own stylesheet in with it. */
 import { QuestBoard } from '../../src/ui/QuestBoard.js';
@@ -146,7 +147,11 @@ const inputStub = {
 const stubs = {
   bus,
   root,
-  engine: { camera: null },
+  /* `simElapsed` is what the HUD counts an effect chip down against, and zero
+   * is the honest reading for a harness that never runs a frame: every chip
+   * then shows its full duration, which is also the widest number it can show
+   * and therefore the right one to lay out against. */
+  engine: { camera: null, simElapsed: 0 },
   input: inputStub,
   player: {
     maxHealth: 100, health: 100, position: { x: 0, y: 0, z: 0 },
@@ -499,6 +504,14 @@ function dressPlayScene() {
 
   hud.notify('Relic recovered — 120 CR when sold', 'loot');
   hud.notify('Quest updated: The Long Dark of the Coil', 'info');
+
+  /* THE ACTIVE-EFFECT STRIP, from the REAL ledger on the real bus rather than
+   * by appending chips by hand - so this measures the payload `ItemUse` will
+   * actually raise. ALL SIX kinds at once: nothing stops a player using six
+   * consumables in a row, it is the widest the strip ever gets, and it is the
+   * case `--eff-h` is sized for (rows of three, six effects, two rows). */
+  const effects = new ActiveEffects({ bus, clock: () => 0 });
+  for (const kind of Object.keys(EFFECT_KINDS)) effects.start(kind, 30);
 
   hud.setDebugVisible(true);
 

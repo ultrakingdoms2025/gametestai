@@ -152,8 +152,8 @@ export class CombatSystem {
     this._npcShotIndex = 0;
     this._playerDead = false;
     this._respawnTimer = 0;
-    this._elapsed = 0;
     this._playerDamageMul = 1;
+    /** Seconds of `engine.simElapsed`. @see _buffNow */
     this._playerDamageBoostUntil = 0;
     /** Set by main.js once MountManager exists; Dragon Fire tiers read through it. */
     this.mounts = null;
@@ -847,10 +847,28 @@ export class CombatSystem {
     }
   }
 
+  /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * This used to be a private `_elapsed` accumulated by `update(dt)`, which
+   * was correct - `update` only runs while gameplay simulates, so the boost
+   * was already measured in play time rather than wall time - but it was a
+   * clock with its own origin that nothing else could read. The HUD chip for
+   * a firepower boost has to count down on the SAME seconds the boost expires
+   * on, and `engine.simElapsed` is the one clock every timed consumable and
+   * `systems/ActiveEffects.js` now share. Same rate as the old accumulator
+   * (both stop when gameplay stops); the only thing that changed is that
+   * somebody else can now read it.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? 0;
+  }
+
   /** @param {number} dt frame seconds */
   update(dt) {
-    this._elapsed += dt;
-    if (this._elapsed >= this._playerDamageBoostUntil) this._playerDamageMul = 1;
+    if (this._buffNow() >= this._playerDamageBoostUntil) this._playerDamageMul = 1;
     this.vfx.update(dt);
     this.decals.update(dt);
     this._updateFlashes(dt);
@@ -866,7 +884,7 @@ export class CombatSystem {
   boostPlayerDamage(multiplier, duration) {
     if (!(multiplier > 1) || !(duration > 0)) return false;
     this._playerDamageMul = Math.max(this._playerDamageMul, multiplier);
-    this._playerDamageBoostUntil = Math.max(this._playerDamageBoostUntil, this._elapsed + duration);
+    this._playerDamageBoostUntil = Math.max(this._playerDamageBoostUntil, this._buffNow() + duration);
     return true;
   }
 

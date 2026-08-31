@@ -52,6 +52,8 @@ export const WEAPON_STATS = {
     ammoPerShot: 1,
     /** Rounds held in the receiver; the bag is the reserve behind it. */
     magazine: 40,
+    /** Bag target for an admin resupply. Six magazines of suppressing fire. */
+    resupplyTarget: 240,
     range: 300,
     /** Flat damage out to here, then eased down to `falloffFloor` at `range`. */
     falloffStart: 40,
@@ -79,6 +81,14 @@ export const WEAPON_STATS = {
     aoeRadius: 4.5,
     ammoItem: 'fireball_charge',
     ammoPerShot: 1,
+    /**
+     * Stated, not derived. `Loadout.resupplyAll` used to size a grant as
+     * `magazine * 6`, and the fireball has no magazine - so it fell to the
+     * `?? 20` default and asked for 120 Ember Cores, ten times the starting
+     * kit, filling the bag with charges and leaving no slots for loot.
+     * A charge is a heavy, slow, area-denial shot; two dozen is a lot of them.
+     */
+    resupplyTarget: 24,
     range: 140,
     /** `Fireball.js` `damageMax` - i.e. its full-charge, no-headshot output. */
     reference: 118,
@@ -95,6 +105,8 @@ export const WEAPON_STATS = {
     ammoPerShot: 1,
     /** Arrows nocked and ready; the bag is the quiver behind them. */
     magazine: 12,
+    /** Bag target for an admin resupply: six quivers. */
+    resupplyTarget: 72,
     range: 220,
     /** `Bow.js` `damageMax` - its full-draw, no-headshot output. */
     reference: 102,

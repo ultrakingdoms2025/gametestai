@@ -2,16 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as LootMod from '../../src/systems/Loot.js';
+import { mountPowerItemId } from '../../src/systems/ItemDefs.js';
 
 /**
  * A PICKUP THAT GRANTS A MOUNT POWER.
  *
  * The map editor can place a marketplace mount upgrade in a world. Its pickup
  * holds a GRANT - `{ grant: { effect, mount, power, tier, name }, qty: 1 }` -
- * where every other pickup holds an item id, and collecting it must do
- * exactly what buying the row does: emit `mount:power:buy`, which main.js
- * already routes to `MountManager.grantPower` and persists locally and
- * remotely. Nothing new listens; the purchase path is the grant path.
+ * where every other pickup holds an item id.
+ *
+ * WHAT CHANGED, and why some of these assertions are the reverse of the ones
+ * that stood here: collecting a grant used to emit `mount:power:buy` on the
+ * spot and never call `inventory.acquire`, so the upgrade applied itself and
+ * the bag stayed empty. The player's report was "it shows I picked them up,
+ * but the inventory does not show them so I cannot use them". A grant now
+ * lands as a `mountpower` bag item which the player fits from the inventory
+ * panel (`ItemUse._useMountPower`); that is where `mount:power:buy` is emitted
+ * now, and the pickup is stock like every other - a full bag leaves it lying
+ * there.
  *
  * `Loot`'s constructor paints canvas textures and cannot run under Node, so
  * the decision is a module function `collectEntry` that `_collect` calls
@@ -20,16 +28,20 @@ import * as LootMod from '../../src/systems/Loot.js';
  */
 
 const GRANT = { effect: 'grant_mount_power', mount: 'bicycle', power: 'power', tier: 3, name: 'Bicycle Speed III' };
+const GRANT_ITEM = mountPowerItemId('bicycle', 'power', 3);
 
 function makeBus() {
   const emitted = [];
   return { emitted, emit: (name, payload) => emitted.push({ name, payload }) };
 }
 
-/** An inventory that records every call, so "never touched" is an assertion and not a hope. */
-function makeInventory() {
+/** An inventory that records every call, so "was asked, and for what" is an assertion. */
+function makeInventory(result = null) {
   const calls = [];
-  return { calls, acquire: (itemId, qty) => (calls.push({ itemId, qty }), { taken: qty, dropped: 0 }) };
+  return {
+    calls,
+    acquire: (itemId, qty) => (calls.push({ itemId, qty }), result ?? { taken: qty, toBag: qty, toStore: 0, dropped: 0 }),
+  };
 }
 
 test('the pure parts are exported: collectEntry, labelFor, accentFor, grantLabel', () => {
@@ -38,24 +50,53 @@ test('the pure parts are exported: collectEntry, labelFor, accentFor, grantLabel
   }
 });
 
-test('collecting a grant emits exactly the purchase event, at no cost and with no catalogue row, and counts as taken', () => {
+test('collecting a grant puts a row in the bag and does NOT fit the upgrade', () => {
   const bus = makeBus();
   const inventory = makeInventory();
   const pickup = { tag: 'overlay:p5' };
   const out = LootMod.collectEntry({ grant: GRANT, qty: 1 }, { bus, inventory, economy: null, fromCache: false, pickup });
 
   assert.deepEqual(out, { taken: true, left: null });
-  const buys = bus.emitted.filter((e) => e.name === 'mount:power:buy');
-  assert.equal(buys.length, 1, 'one purchase event, exactly');
-  assert.deepEqual(buys[0].payload, { mount: 'bicycle', power: 'power', tier: 3, catalogId: null, cost: 0 });
+  assert.deepEqual(inventory.calls, [{ itemId: GRANT_ITEM, qty: 1 }], 'exactly one unit of the upgrade item');
+  assert.equal(
+    bus.emitted.filter((e) => e.name === 'mount:power:buy').length, 0,
+    'a pickup must not fit the upgrade; the player does that from the bag',
+  );
   const collected = bus.emitted.filter((e) => e.name === 'loot:collected');
   assert.equal(collected.length, 1, 'the canonical pickup event, once');
   assert.equal(collected[0].payload.pickup, pickup);
   assert.equal(collected[0].payload.fromCache, false);
+  assert.equal(collected[0].payload.itemId, null, 'null, so HUD.js lets the grant name itself');
   assert.deepEqual(collected[0].payload.grant, GRANT);
   assert.equal(collected[0].payload.qty, 1);
-  assert.ok(bus.emitted.some((e) => e.name === 'hud:notify' && /Bicycle Speed III/.test(e.payload.text)), 'the HUD names what was granted');
-  assert.deepEqual(inventory.calls, [], 'a grant is not stock: the inventory is never asked');
+  assert.ok(bus.emitted.some((e) => e.name === 'hud:notify' && /Bicycle Speed III/.test(e.payload.text)), 'the HUD names what was collected');
+});
+
+test('a full bag leaves the upgrade on the ground, still shaped as a grant, and reports nothing taken', () => {
+  const bus = makeBus();
+  const inventory = makeInventory({ taken: 0, toBag: 0, toStore: 0, dropped: 1 });
+  const out = LootMod.collectEntry({ grant: GRANT, qty: 1 }, { bus, inventory, economy: null, fromCache: false, pickup: null });
+
+  assert.deepEqual(out, { taken: false, left: { grant: GRANT, qty: 1 } });
+  assert.equal(bus.emitted.length, 0, 'nothing was collected, so nothing is announced');
+
+  // The remainder must still read as a grant, or the pickup left behind would
+  // relabel itself and MapOverlay._sweepOwned would stop recognising it.
+  assert.equal(LootMod.labelFor([out.left]), 'Bicycle Speed III');
+  assert.equal(LootMod.accentFor([out.left]), 'mountpower');
+});
+
+test('an inventory that is not wired refuses the grant rather than swallowing it', () => {
+  const out = LootMod.collectEntry({ grant: GRANT, qty: 1 }, { bus: makeBus(), inventory: null, economy: null, fromCache: false, pickup: null });
+  assert.deepEqual(out, { taken: false, left: { grant: GRANT, qty: 1 } });
+});
+
+test('an overflow into the store is taken, and says so', () => {
+  const bus = makeBus();
+  const inventory = makeInventory({ taken: 1, toBag: 0, toStore: 1, dropped: 0 });
+  const out = LootMod.collectEntry({ grant: GRANT, qty: 1 }, { bus, inventory, economy: null, fromCache: false, pickup: null });
+  assert.deepEqual(out, { taken: true, left: null });
+  assert.ok(bus.emitted.some((e) => e.name === 'hud:notify' && /\(store\)/.test(e.payload.text)));
 });
 
 test('the item branches are unchanged: credits go to the economy, an item to the inventory, and what will not fit is left', () => {
@@ -86,9 +127,12 @@ test('a grant is labelled by its catalogue name, or by mount, stat and roman tie
   assert.equal(LootMod.labelFor([{ itemId: 'bullet', qty: 60 }, { grant: GRANT, qty: 1 }]), '60 RND · Bicycle Speed III');
 });
 
-test('a grant takes the consumable accent, and never outranks a skin or a trinket in a mixed pickup', () => {
-  assert.equal(LootMod.accentFor([{ grant: GRANT, qty: 1 }]), 'consumable');
-  assert.equal(LootMod.accentFor([{ itemId: 'bullet', qty: 60 }, { grant: GRANT, qty: 1 }]), 'consumable');
-  assert.equal(LootMod.accentFor([{ itemId: 'nexus_shard', qty: 1 }, { grant: GRANT, qty: 1 }]), 'trinket');
+test('a grant takes the accent of the item it yields, and outranks everything but a skin', () => {
+  // It used to read `consumable`, which was true while collecting one applied
+  // a power on the spot. It yields a `mountpower` row now, and the pickup on
+  // the floor has to be the colour of the thing that lands in the bag.
+  assert.equal(LootMod.accentFor([{ grant: GRANT, qty: 1 }]), 'mountpower');
+  assert.equal(LootMod.accentFor([{ itemId: 'bullet', qty: 60 }, { grant: GRANT, qty: 1 }]), 'mountpower');
+  assert.equal(LootMod.accentFor([{ itemId: 'nexus_shard', qty: 1 }, { grant: GRANT, qty: 1 }]), 'mountpower');
   assert.equal(LootMod.accentFor([{ itemId: 'credits', qty: 4 }]), 'currency');
 });

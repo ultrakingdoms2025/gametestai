@@ -887,6 +887,21 @@ export class PortalSystem {
   }
 
   /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * The one clock every timed consumable and `systems/ActiveEffects.js` share,
+   * so a Gatefinder highlight and the HUD chip counting it down cannot
+   * disagree. Distinct from `engine.elapsed`, which this file also uses in
+   * quantity - every `uTime` uniform, the preview throttle and `_armAt` are
+   * animation and arming, not durations a player was sold.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? 0;
+  }
+
+  /**
    * Light the nearest gateway up for `seconds`, and hand it back.
    *
    * The Gatefinder consumable promised, in the catalogue and in `ItemDefs`, to
@@ -920,7 +935,9 @@ export class PortalSystem {
       }
     }
     if (!best) return null;
-    const now = this.engine?.elapsed ?? 0;
+    /* Play time, not wall time - the highlight is bought by the second and the
+     * seconds are meant to be seconds of looking for a gateway. @see _buffNow */
+    const now = this._buffNow();
     const hold = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
     best._pingUntil = Math.max(best._pingUntil ?? 0, now + hold);
     this.bus?.emit('portal:ping', {
@@ -1223,7 +1240,7 @@ export class PortalSystem {
       _side: 0,
       _lightPhase: index * 1.7,
       _proximity: 0,
-      /** engine.elapsed until which `pingNearest` keeps this gateway lit. */
+      /** Play time (`_buffNow()`) until which `pingNearest` keeps this lit. */
       _pingUntil: 0,
       /** True while that hold is running. Read by anything drawing the world. */
       pinged: false,
@@ -3368,7 +3385,10 @@ export class PortalSystem {
       // of it: a pinged gateway you are also standing next to must not get
       // *dimmer* than one you are only pointing at. 0 when not pinged, so every
       // term below collapses back to exactly the maths it had before.
-      p.pinged = elapsed < p._pingUntil;
+      /* `_buffNow()` and not `elapsed`: `_pingUntil` is play time, and the
+       * `elapsed` on the next line is a shader phase, which is animation and
+       * belongs on the wall clock. @see _buffNow */
+      p.pinged = this._buffNow() < p._pingUntil;
       const ping = p.pinged ? 0.5 + 0.5 * Math.sin(elapsed * 4.2) : 0;
 
       const stability = p.ready ? 1 : 0.18 + 0.1 * Math.sin(elapsed * 3.1 + i);

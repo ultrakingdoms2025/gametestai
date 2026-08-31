@@ -511,8 +511,12 @@ test('?layout=sample reaches applyUrlOverrides as layout: "sample" beside dev=1 
 
 test('main.js hands the engine and the switch to MapOverlay', async () => {
   const main = await readCode('src/main.js');
-  assert.match(main, /new MapOverlay\(\{ bus, physics, loot, engine, mounts, forceLayout: overrides\.layout === 'sample' \}\)/,
-    'MapOverlay is constructed without the engine, the mounts, or the ?layout=sample switch');
+  /* `inventory` joined the list when a placed mount upgrade stopped applying
+   * itself and started landing in the bag: `_ownsGrant` has to be able to see
+   * that the player is CARRYING one, or every world build respawns a pickup
+   * they already collected. @see MapOverlay._ownsGrant */
+  assert.match(main, /new MapOverlay\(\{ bus, physics, loot, engine, mounts, inventory, forceLayout: overrides\.layout === 'sample' \}\)/,
+    'MapOverlay is constructed without the engine, the mounts, the inventory, or the ?layout=sample switch');
 });
 
 test('frame-gaps can switch the sampler on, waits for it, records whether it finished, and gates on that', async () => {

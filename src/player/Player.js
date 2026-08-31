@@ -318,6 +318,11 @@ export class Player {
     this._health = P.maxHealth;
     this._dead = false;
     this._lastDamageAt = -999;
+    /* ---- the two deadlines on the BUFF clock ------------------------------
+     *
+     * Both are seconds of `engine.simElapsed`, not of `_elapsed`. Everything
+     * else in this block is on `_elapsed`, so read `_buffNow()` before
+     * touching either of them. @see _buffNow */
     this._invulnUntil = 0;
     this._speedBoostUntil = 0;
     this._speedBoostMul = 1;
@@ -625,13 +630,45 @@ export class Player {
     return this._sprinting;
   }
 
-  /** True while respawn invulnerability is active. */
+  /**
+   * THE BUFF CLOCK: seconds of gameplay, from the engine.
+   *
+   * `_elapsed` is the wrong clock for anything a player is promised a DURATION
+   * of, and the failure is not a rounding error. `_elapsed` is *assigned* from
+   * the engine inside `fixedUpdate`/`update`, and main.js runs neither while a
+   * UI panel holds gameplay - so while the inventory is open this clock is
+   * frozen at the moment the bag opened, and the instant the bag closes it
+   * jumps forward by however long the player was in there.
+   *
+   * Measured consequence: a Velocity Crown used forty seconds into a browse
+   * wrote `_speedBoostUntil = (open + 30)`, `_elapsed` then snapped to
+   * `open + 45`, and the thirty-second boost was over before the panel closed.
+   * The player watched the item leave the bag and got nothing. A five-second
+   * Aegis Shard could not survive being used AT ALL, because the bag cannot be
+   * opened, navigated and closed in under five seconds.
+   *
+   * `engine.simElapsed` is the same seconds without the jump: it stops while
+   * gameplay stops, so a deadline written against it is a deadline in play
+   * time. It is also the clock `systems/ActiveEffects.js` counts the HUD chip
+   * down on, which is why the chip and the buff cannot disagree.
+   *
+   * Falls back to `_elapsed` for a Player built without an engine (the unit
+   * tests do this), which restores the old behaviour exactly rather than
+   * freezing every buff at zero.
+   *
+   * @returns {number} seconds
+   */
+  _buffNow() {
+    return this.engine?.simElapsed ?? this._elapsed;
+  }
+
+  /** True while respawn invulnerability or a shield is active. */
   get isInvulnerable() {
-    return this._elapsed < this._invulnUntil;
+    return this._buffNow() < this._invulnUntil;
   }
 
   get speedMultiplier() {
-    return this._elapsed < this._speedBoostUntil ? this._speedBoostMul : 1;
+    return this._buffNow() < this._speedBoostUntil ? this._speedBoostMul : 1;
   }
 
   /** Eye position in world space. A fresh vector each call, per the contract. */
@@ -1754,7 +1791,8 @@ export class Player {
    */
   applyDamage(amount, sourcePosition = null, sourceId = null) {
     if (this._dead || amount <= 0) return 0;
-    if (this._elapsed < this._invulnUntil) return 0;
+    // `_buffNow`, because `_invulnUntil` is written against it. @see _buffNow
+    if (this._buffNow() < this._invulnUntil) return 0;
 
     // Purchased Armour on the mount being ridden: -10% per tier.
     const shield = this.mounts?.mounted ? Math.max(0, Number(this.mounts.active?.shieldTier) || 0) : 0;
@@ -2005,7 +2043,7 @@ export class Player {
   boostSpeed(multiplier, duration) {
     if (!(multiplier > 1) || !(duration > 0)) return false;
     this._speedBoostMul = Math.max(this.speedMultiplier, multiplier);
-    this._speedBoostUntil = Math.max(this._speedBoostUntil, this._elapsed + duration);
+    this._speedBoostUntil = Math.max(this._speedBoostUntil, this._buffNow() + duration);
     this.bus.emit('player:buffed', { kind: 'speed', multiplier: this._speedBoostMul, duration });
     return true;
   }
@@ -2027,7 +2065,7 @@ export class Player {
    */
   grantIFrames(duration) {
     if (!(duration > 0)) return false;
-    this._invulnUntil = Math.max(this._invulnUntil, this._elapsed + duration);
+    this._invulnUntil = Math.max(this._invulnUntil, this._buffNow() + duration);
     return true;
   }
 
@@ -2068,7 +2106,7 @@ export class Player {
     this._kick.pitch = this._kick.yaw = this._kick.roll = 0;
     this._kick.vp = this._kick.vy = this._kick.vr = 0;
     this._lastDamageAt = -999;
-    this._invulnUntil = this._elapsed + SPAWN_INVULN;
+    this._invulnUntil = this._buffNow() + SPAWN_INVULN;
     this._speedBoostUntil = 0;
     this._speedBoostMul = 1;
     this._velocity.set(0, 0, 0);

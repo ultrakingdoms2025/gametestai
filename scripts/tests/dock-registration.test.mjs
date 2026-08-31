@@ -606,9 +606,17 @@ test('every new item is real, priced, and reachable by some means', () => {
       `${id} has kind "${def.kind}", which is not one the inventory understands`);
     assert.ok(def.desc.length > 40, `${id} has no real description`);
   }
-  /* `laser_cell`'s stack is sized like ammunition on purpose - it becomes
-   * ammunition in the flight drop - and 240 is four racks of sixty, matching
-   * `bullet`'s one-stack-one-slot rule. */
+  /* `laser_cell`'s stack is sized like ammunition on purpose, and it stays
+   * that way now the item is a `consumable` rather than `ammo`.
+   *
+   * The old note here said the stack was sized that way because the cell
+   * "becomes ammunition in the flight drop". It never did and it never will -
+   * `SpaceCombat.GUN` is a capacitor, deliberately, because a dry gun 60 km
+   * from the yard is a walk home. A cell buys thirty seconds of a wider bolt
+   * fan instead (`ItemUse._effectFor`), which is why the kind moved. What is
+   * unchanged is the QUANTITY a cell is traded in: the Fitter sells them 40 to
+   * a rack and the Test-Fire Butts burn eight a plate, so 240 is still four
+   * racks of sixty, matching `bullet`'s one-stack-one-slot rule. */
   assert.equal(ITEMS.laser_cell.stack % ITEMS.bullet.stack, 0,
     'a laser cell rack should be a whole number of bullet stacks, or the slot maths stops reading');
 });

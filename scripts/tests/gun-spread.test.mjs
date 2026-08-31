@@ -33,12 +33,23 @@ const read = (rel) => readFile(path.join(root, rel), 'utf8');
  *   quietly reintroducing a magazine, and it is deliberately the first thing
  *   in the file.
  *
- *   A CELL BUYS WIDTH. Thirty seconds of a seven-bolt fan, and the whole of
- *   its value is geometric - so the cases that measure it FLY THE REAL GUN and
- *   read the real bolts out of the real pool. Nothing here asserts that
- *   `_playerGun` "was called with" anything; the claim is about where seven
- *   bolts actually are at 275 m, which is the only claim worth making about a
- *   spread weapon and the only one a stub cannot fake.
+ *   A CELL BUYS WIDTH, AND BUYS IT FOR NOTHING. Thirty seconds of an
+ *   eight-bolt fan whose middle two bolts ARE the stock gun's convergent pair,
+ *   so single-target damage on a craft sitting on the crosshair is never worse
+ *   than the unmodified weapon at any range. The whole of that is geometric,
+ *   so the cases that measure it FLY THE REAL GUN and read the real bolts out
+ *   of the real pool. Nothing here asserts that `_playerGun` "was called with"
+ *   anything; the claims are about where eight bolts actually are at 275 m and
+ *   how many of them reach a target on the pip, which are the only claims
+ *   worth making about a spread weapon and the only ones a stub cannot fake.
+ *
+ * THE INVARIANT CASE IS THE POINT OF THE FILE. An earlier build of this fan
+ * walked the core pair outward with everything else and was x0.5 against a
+ * single craft past 120 m. It was rejected on a product argument that no
+ * amount of comment could answer: a cell is a kill-ladder reward, so a player
+ * spends their first one straight out of a dogfight and would meet a gun that
+ * had got worse. `the fan never lands fewer bolts on an on-pip target than the
+ * stock gun` below is what stops anyone re-widening the core.
  *
  * The refusal cases matter as much as the effect. A cell used on foot has to
  * be REFUSED AND KEPT: this repository's recorded failure mode is the unit
@@ -133,9 +144,8 @@ test('a wider shot costs the capacitor exactly what a narrow one does', () => {
   /* Stated as a case rather than left to a comment because it is a design
    * decision a later "balance pass" would find tempting to reverse. A fan
    * that also drained faster would cut the rate of fire as well, so the
-   * player would pay twice for one effect - and per `FAN_BOLTS`, past 120 m
-   * the fan already lands ONE bolt on a single target where the pair landed
-   * two. The cell is the price; the capacitor is not. */
+   * player would pay twice for one effect - and the effect is already priced:
+   * a cell is what buys it. The capacitor is not. */
   const engine = { simElapsed: 0 };
   const combat = bareCombat(engine);
   const before = combat.gunCharge;
@@ -180,20 +190,20 @@ test('a second cell extends the fan rather than replacing it, and a wider fan wi
   const engine = { simElapsed: 0 };
   const combat = bareCombat(engine);
 
-  combat.setGunSpread(30, 7);
+  combat.setGunSpread(30, 8);
   engine.simElapsed = 20;
-  combat.setGunSpread(30, 5);
+  combat.setGunSpread(30, 6);
 
   /* `Math.max` on BOTH fields, which is what `Combat.boostPlayerDamage` does
    * and what `ActiveEffects.start` assumes when it raises one chip per kind
    * and moves its deadline forward. A replace would have cut ten seconds off
    * and narrowed the fan for the privilege. */
   assert.equal(combat._spreadUntil, 50);
-  assert.equal(combat.spreadBolts, 7, 'the narrower second charge shrank the fan');
+  assert.equal(combat.spreadBolts, 8, 'the narrower second charge shrank the fan');
 
   engine.simElapsed = 49.9;
   combat.update(DT);
-  assert.equal(combat.spreadBolts, 7);
+  assert.equal(combat.spreadBolts, 8);
   engine.simElapsed = 50;
   combat.update(DT);
   assert.equal(combat.spreadBolts, 0);
@@ -206,27 +216,29 @@ test('setGunSpread refuses what is not an effect, and refusing changes nothing',
   for (const bad of [0, -5, NaN, Infinity, -Infinity, null, undefined, '30']) {
     assert.equal(combat.setGunSpread(bad), false, `accepted a duration of ${String(bad)}`);
   }
-  /* Two bolts is the gun the player already has and one is a nerf, so neither
-   * is a fan. A refusal at this line is what stops a future caller shipping
-   * an "effect" that quietly narrows the weapon. */
-  for (const bad of [2, 1, 0, -7, NaN, 'seven']) {
+  /* Two bolts IS the gun the player already has, and anything under it is a
+   * nerf, so neither is a fan. A refusal at this line is what stops a future
+   * caller shipping an "effect" that quietly narrows the weapon. */
+  for (const bad of [3, 2, 1, 0, -8, NaN, 'eight']) {
     assert.equal(combat.setGunSpread(30, bad), false, `accepted a fan of ${String(bad)} bolts`);
   }
   assert.equal(combat.spreadBolts, 0);
   assert.equal(combat._spreadUntil, 0, 'a refusal still moved the deadline');
 });
 
-test('an even bolt count is snapped up to odd, because the middle bolt is the guarantee', () => {
-  /* `FAN_BOLTS` rests the whole balance argument on there being a `t = 0`:
-   * `off(d, 0)` is zero at EVERY range, so the crosshair is exactly as true
-   * with the fan up as without it and a player who turns this on never loses
-   * the shot they already had. An even count has no middle bolt and would
-   * quietly delete that promise. */
+test('an odd bolt count is snapped up to even, because the fan is a pair plus rings', () => {
+  /* The fan is the stock convergent pair with `(bolts - 2) / 2` rings hung
+   * either side of it, so an odd count has nowhere to put the spare bolt
+   * except ON THE AXIS - and a bolt on the axis is a third permanent hit on a
+   * target sitting on the pip, which is a flat x1.5 single-target damage buff
+   * nobody asked for. Snapping up rather than down keeps `setGunSpread` from
+   * ever quietly handing back less than it was asked for. */
   const engine = { simElapsed: 0 };
   const combat = bareCombat(engine);
-  assert.equal(combat.setGunSpread(30, 6), true);
-  assert.equal(combat.spreadBolts, 7);
-  assert.equal(combat.spreadBolts % 2, 1);
+  assert.equal(combat.setGunSpread(30, 7), true);
+  assert.equal(combat.spreadBolts, 8);
+  assert.equal(combat.spreadBolts % 2, 0);
+  assert.equal(FAN_BOLTS % 2, 0, 'the published fan is odd, so it has a bolt on the axis');
 });
 
 /* ================================================================== */
@@ -343,7 +355,7 @@ test('a cell used in flight is spent exactly once and raises one WIDE chip', () 
   assert.equal(inventory.bagCount('laser_cell'), 39);
 
   // And the gun was asked for the published fan, once.
-  assert.deepEqual(gun.calls, [[30, 7]]);
+  assert.deepEqual(gun.calls, [[30, 8]]);
   assert.equal(gun.calls[0][1], FAN_BOLTS,
     'the item hands out a different fan from the one SpaceCombat sizes its arc for');
 
@@ -358,7 +370,7 @@ test('a cell used in flight is spent exactly once and raises one WIDE chip', () 
 
   // And a toast that says what happened, not that something happened.
   const toast = bus.of('hud:notify').at(-1);
-  assert.match(toast.payload.text, /7/);
+  assert.match(toast.payload.text, /8/);
   assert.match(toast.payload.text, /30s/);
   assert.equal(toast.payload.tone, 'info');
 
@@ -393,7 +405,7 @@ test('the ledger is optional: without one the cell still widens the gun', () => 
   const { sys, inventory } = useSystem({ gun, effects: null });
   assert.equal(sys.use('laser_cell').ok, true);
   assert.equal(inventory.bagCount('laser_cell'), 39);
-  assert.deepEqual(gun.calls, [[30, 7]]);
+  assert.deepEqual(gun.calls, [[30, 8]]);
 });
 
 /* ================================================================== */
@@ -494,7 +506,7 @@ function teardown(r, combat) {
   r.input.state.fire = false;
 }
 
-test('the stock gun fires a converging PAIR, the fan fires seven, and it reverts', async () => {
+test('the stock gun fires a converging PAIR, the fan fires eight, and it reverts', async () => {
   const { r, combat, engine } = await flownGun();
   try {
     /* ---- stock ---------------------------------------------------- */
@@ -531,15 +543,17 @@ test('the stock gun fires a converging PAIR, the fan fires seven, and it reverts
   }
 });
 
-test('the fan is the arc FAN_BOLTS claims: gapless at the median, true on the pip', async () => {
+test('the fan is the arc FAN_BOLTS claims: a stock core, gapless at the median', async () => {
   const { r, combat } = await flownGun();
 
-  /* The hull's own muzzle span, which is the one term of `W(d)` that varies -
-   * a Kestrel is 14 m, so 3.08, against `MAX_SPAN` for every other hull. */
+  /* The hull's own muzzle span, which is the one term that varies - a Kestrel
+   * is 14 m, so 3.08, against `MAX_SPAN` for every other hull. */
   const span = Math.min(SHIP_CLASSES.kestrel.length * 0.22, MAX_SPAN);
-  const W = (d) => span * (1 - d / CONVERGE) + FAN_PITCH * (d / CONVERGE);
+  /** Off-axis position of ring `k` on the `+1` side at range `d`. */
+  const ring = (d, k) => span * (1 - d / CONVERGE) + k * FAN_PITCH * (d / CONVERGE);
   /** A skiff's hit sphere, `ALIEN_CLASSES.skiff.radius`. */
   const HIT = 4.2;
+  const RINGS = (FAN_BOLTS - 2) / 2;
 
   try {
     clearBolts(combat);
@@ -550,30 +564,42 @@ test('the fan is the arc FAN_BOLTS claims: gapless at the median, true on the pi
       const off = offAxisAt(d);
       assert.equal(off.length, FAN_BOLTS);
 
-      /* THE MIDDLE BOLT IS ON THE NOSE LINE AT EVERY RANGE. `off(d, 0) = 0`
-       * falls out of the geometry and it is the reason the count is odd: the
-       * crosshair is exactly as true with the fan up as without it, so turning
-       * this on never costs the player the shot they already had. */
-      const middle = off[(FAN_BOLTS - 1) / 2];
-      assert.ok(Math.abs(middle) < 0.01,
-        `the middle bolt is ${middle.toFixed(3)} m off the crosshair at ${d} m`);
+      /* Symmetric about the nose line, ring by ring, and where the table says.
+       *
+       * MAGNITUDES, because past `CONVERGE` the core pair has CROSSED - at
+       * 700 m `ring(d, 0)` is -2.59, meaning the bolt from the left muzzle is
+       * 2.59 m to the RIGHT of the axis. That is convergence doing exactly
+       * what it is for and the table records it; comparing signed values here
+       * would fail on the geometry working. */
+      for (let k = 0; k <= RINGS; k++) {
+        const want = Math.abs(ring(d, k));
+        const lo = off[RINGS - k];
+        const hi = off[RINGS + 1 + k];
+        assert.ok(Math.abs(hi - want) < 0.05,
+          `ring ${k} at ${d} m is ${hi.toFixed(2)} m off axis, not the ${want.toFixed(2)} m claimed`);
+        assert.ok(Math.abs(lo + want) < 0.05, `ring ${k} is lopsided at ${d} m`);
+      }
+    }
 
-      // Symmetric about it, and as wide as the table says.
-      assert.ok(Math.abs(off[0] + off[off.length - 1]) < 0.01, `the fan is lopsided at ${d} m`);
-      assert.ok(Math.abs(off[off.length - 1] - W(d)) < 0.05,
-        `half-width at ${d} m is ${off[off.length - 1].toFixed(2)} m, not the ${W(d).toFixed(2)} m claimed`);
-
-      // Evenly spaced, which is what makes "adjacent separation" a number.
-      const gaps = [];
-      for (let i = 1; i < off.length; i++) gaps.push(off[i] - off[i - 1]);
-      assert.ok(Math.max(...gaps) - Math.min(...gaps) < 0.02,
-        `the bolts are not evenly spaced at ${d} m`);
+    /* THE CORE PAIR IS THE STOCK GUN, BOLT FOR BOLT. The two innermost bolts
+     * sit at `+-span * (1 - d/CONVERGE)` - the formula the Dray note derives
+     * for the unmodified weapon, with nothing added - which is why the
+     * invariant case below can hold at all. */
+    for (const d of [110, 275, 700]) {
+      const off = offAxisAt(d);
+      const core = [off[RINGS], off[RINGS + 1]];
+      for (const c of core) {
+        assert.ok(Math.abs(Math.abs(c) - Math.abs(span * (1 - d / CONVERGE))) < 0.02,
+          `a core bolt is ${c.toFixed(2)} m off axis at ${d} m - the pair has been widened`);
+        assert.ok(Math.abs(c) <= MAX_SPAN + 1e-6,
+          `a core bolt is outside MAX_SPAN at ${d} m`);
+      }
     }
 
     /* GAPLESS AT THE RANGE THE FIGHT IS FOUGHT AT, which is the whole reason
-     * `FAN_PITCH` is 33 and not larger. Two bolts more than a hit sphere apart
+     * `FAN_PITCH` is 11 and not larger. Two bolts more than a hit sphere apart
      * leave a hole a skiff can sit in; at 275 m - the median of the envelope
-     * the `CONVERGE` note is written against - they are 8.26 m apart against
+     * the `CONVERGE` note is written against - the ring step is 7.96 m against
      * an 8.4 m sphere, so there is nowhere in the fifty metres the fan covers
      * for a craft to be missed. */
     const near = offAxisAt(275);
@@ -585,22 +611,66 @@ test('the fan is the arc FAN_BOLTS claims: gapless at the median, true on the pi
 
     /* AND WIDE ENOUGH TO BE WORTH TURNING ON. `AlienShip._intercept` carries
      * the only measurement in the repository of how far apart a wing actually
-     * flies: mean 452-504 m, CLOSEST 21-33 m over seven seconds of run-in. A
-     * fan narrower than that closest approach catches one craft however many
-     * bolts it has, which would make the item a lie. */
-    const width = near[near.length - 1] - near[0];
-    assert.ok(width >= 33,
-      `${width.toFixed(1)} m of fan at 275 m cannot span the 21-33 m a wing closes to`);
+     * flies: mean 452-504 m, CLOSEST 21-33 m over seven seconds of run-in. The
+     * band a second craft can be caught in is `+-(widest + HIT)`, and a fan
+     * narrower than that closest approach catches one craft however many bolts
+     * it has, which would make the item a lie. */
+    const band = near[near.length - 1] + HIT;
+    assert.ok(band >= 21,
+      `a +-${band.toFixed(1)} m band at 275 m cannot reach the 21-33 m a wing closes to`);
+  } finally {
+    teardown(r, combat);
+  }
+});
 
-    /* WHAT IT COSTS, AND THE CASE IS HERE SO THE COST CANNOT BE FORGOTTEN.
-     * Against ONE craft on the crosshair the fan lands three bolts inside
-     * 120 m (the merge - `BREAK_RANGE` is 130) and ONE beyond it, where the
-     * pair landed two. So this is x1.5 in the knife fight and x0.5 outside it,
-     * never x3.5, and that is why no per-bolt damage adjustment is applied. */
-    const onTarget = (d) => offAxisAt(d).filter((o) => Math.abs(o) <= HIT).length;
-    assert.equal(onTarget(110), 3, 'the fan no longer pays for itself in the merge');
-    assert.equal(onTarget(275), 1, 'the fan has quietly become a damage upgrade too');
-    assert.equal(onTarget(700), 1);
+test('the fan never lands fewer bolts on an on-pip target than the stock gun', async () => {
+  /* THE INVARIANT, AND THE REASON THIS FILE EXISTS IN ITS CURRENT SHAPE.
+   *
+   * An earlier build fanned the core pair outward along with everything else.
+   * It kept a bolt exactly on the axis, so the crosshair stayed true, but past
+   * 120 m a craft sitting on the pip took ONE bolt where the stock gun lands
+   * two - half damage, bought with an item the game hands out 20 and 40 at a
+   * time immediately after a dogfight. A player would meet that as a bug.
+   *
+   * So this measures BOTH guns through the same code path at the same ranges
+   * and compares the counts. It is written as `>=` and not as an equality on
+   * purpose: inside about 50 m the first ring is still within a hit sphere of
+   * the axis and the fan is x2.0, which is allowed. What is not allowed, ever,
+   * is a range where the fan lands fewer. Re-widen the core and this fails. */
+  const { r, combat } = await flownGun();
+  const HIT = 4.2;
+  const RANGES = [110, 150, 200, 275, 340, 380, 450, 550, 700];
+  const onPip = (offAxisAt, d) => offAxisAt(d).filter((o) => Math.abs(o) <= HIT).length;
+
+  try {
+    clearBolts(combat);
+    const stock = fireOnce(r, combat);
+    assert.equal(stock.bolts.length, 2, 'premise: the unmodified gun fires the pair');
+
+    clearBolts(combat);
+    combat.setGunSpread(30, FAN_BOLTS);
+    const wide = fireOnce(r, combat);
+    assert.equal(wide.bolts.length, FAN_BOLTS, 'premise: the fan is up');
+
+    const rows = [];
+    for (const d of RANGES) {
+      const was = onPip(stock.offAxisAt, d);
+      const now = onPip(wide.offAxisAt, d);
+      rows.push(`${String(d).padStart(3)} m  stock ${was}  wide ${now}  x${(now / was).toFixed(1)}`);
+      assert.equal(was, 2, `the stock gun landed ${was} bolts at ${d} m, so the comparison is void`);
+      assert.ok(now >= was,
+        `WIDE DISPERSAL IS A DOWNGRADE AT ${d} m: ${now} bolts on an on-pip target against `
+        + `the stock gun's ${was}. The core pair has been widened - see FAN_BOLTS.`);
+    }
+    console.log('     single target on the pip, stock vs wide:\n       ' + rows.join('\n       '));
+
+    /* The two bands, named. The floor is x1.0 and there is nothing below it;
+     * the x2.0 band is inside `BREAK_RANGE` (130 m), which is nearer than a
+     * hostile willingly comes, so in practice the fan is x1.0 on one target
+     * and every scrap of what it buys is lateral. */
+    assert.equal(onPip(wide.offAxisAt, 40), 4, 'the first ring no longer reaches in close');
+    assert.equal(onPip(wide.offAxisAt, 110), 2);
+    assert.equal(onPip(wide.offAxisAt, 700), 2);
   } finally {
     teardown(r, combat);
   }
@@ -629,6 +699,7 @@ test('laser_cell is a consumable, and the bag will therefore offer it a Use', as
   assert.ok(effect.type in EFFECT_KINDS, 'the effect has no chip');
   assert.equal(effect.duration, 30);
   assert.equal(effect.bolts, FAN_BOLTS);
+  assert.equal(effect.bolts, 8, 'the published fan size moved and the item desc may now be wrong');
 });
 
 test('the kind census moved by exactly one item, from ammo to consumable', () => {

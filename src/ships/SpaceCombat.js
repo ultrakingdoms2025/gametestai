@@ -309,90 +309,133 @@ export const MAX_SPAN = 3.2;
  *
  * The gun is a capacitor and it stays one - see `GUN` above and the note over
  * `laser_cell` in `systems/ItemDefs.js`. A cell does not feed it. What a cell
- * buys is thirty seconds during which the same trigger pull lays down SEVEN
+ * buys is thirty seconds during which the same trigger pull lays down EIGHT
  * bolts across an arc instead of two down one line, so a pass through a wing
  * can touch more than one craft.
  *
- * ── THE GEOMETRY IS THE PAIR'S, GENERALISED ────────────────────────────────
+ * -- THE CORE PAIR SURVIVES INSIDE THE FAN, AND THAT IS THE WHOLE DESIGN ----
  *
- * `_playerGun`'s two bolts are indexed by `s = -1, +1`; the fan indexes seven
- * by `t = -1, -2/3, -1/3, 0, +1/3, +2/3, +1` and uses `t` twice:
+ * The first build of this walked ALL the bolts apart, the middle of them
+ * included, and it was measured and rejected. It kept a bolt exactly on the
+ * nose line at every range - so the crosshair stayed true - but it moved the
+ * CONVERGENT PAIR OUT, and past 120 m a single craft sitting on the pip then
+ * took one bolt where the stock gun lands two. Half damage. A cell is handed
+ * out 20 and 40 at a time by the first two rungs of the kill ladder, which a
+ * player reaches straight out of a dogfight, so the first thing most players
+ * would ever do with one is spend it and find their gun worse against the next
+ * skiff. That reads as a bug rather than as a trade, and no comment in this
+ * file is ever read by the person forming that opinion.
  *
- *     muzzle = keel + right * (span * t)                 (as now, at t = +-1)
- *     aim    = convergence point + right * (FAN_PITCH * t)
+ * So the requirement is an invariant now rather than a balance judgement:
  *
- * Setting `FAN_PITCH = 0` and `t = +-1` reproduces today's gun exactly, which
- * is the point: the fan is not a second weapon bolted alongside the first, it
- * is the same weapon with the aim points walked apart. Off-axis error at range
- * `d` follows straight from that, and it is linear in `t`:
+ *     SINGLE-TARGET DAMAGE ON A CRAFT SITTING ON THE CROSSHAIR IS NEVER
+ *     WORSE THAN THE UNMODIFIED GUN, AT ANY RANGE IN [110 m, 700 m].
  *
- *     off(d, t) = t * [ span * (1 - d/CONVERGE) + FAN_PITCH * (d/CONVERGE) ]
- *               = t * W(d)
+ * and it is bought structurally rather than by tuning. TWO CORE BOLTS ARE THE
+ * STOCK GUN, UNTOUCHED - muzzle at `span * +-1`, aimed at the convergence
+ * point, zero pitch. Everything the Dray paragraph in `_playerGun` says about
+ * them is still true of them, because they ARE them: they land on a target on
+ * the pip at every range exactly as they do today. The extra bolts are then
+ * hung OUTWARD from those two, in rings.
  *
- * TWO THINGS FALL OUT OF THAT AND BOTH ARE THE REASON FOR THE ODD COUNT.
- * `off(d, 0) = 0` at EVERY range, so the middle bolt is on the nose line
- * always - the crosshair is exactly as true with the fan up as without it, and
- * a player who turns this on never loses the shot they already had. And `W`
- * is the pair's own half-span formula with one term added, so the cap that
- * fixed the Dray (`MAX_SPAN`) still governs the near end.
+ * -- THE GEOMETRY -----------------------------------------------------------
  *
- * ── THE TABLE. `span = MAX_SPAN` (3.2), which is every hull but the Kestrel;
- * the Kestrel's 14 m gives 3.08 and moves nothing below by more than 0.12 m ──
+ * Every bolt still leaves one of the two muzzles the ship has always had. The
+ * fan is made entirely by walking AIM POINTS outboard, which is what a gun
+ * spreading its dispersion actually does and is why no new gun ports appear on
+ * the hull. For muzzle side `s = +-1` and ring `k = 0..RINGS`:
  *
- *              W(d)      adjacent      full fan     bolts on a 4.2 m
- *            half-width  separation      width      sphere on the pip
- *     110 m    11.83 m     3.94 m       23.7 m            3
- *     275 m    24.77 m     8.26 m       49.5 m            1   <- the median
- *     380 m    33.00 m    11.00 m       66.0 m            1
- *     700 m    58.10 m    19.37 m      116.2 m            1
+ *     muzzle = keel + right * (span * s)                        (as now)
+ *     aim    = convergence point + right * (FAN_PITCH * k * s)
+ *     off(d, s, k) = s * [ span * (1 - d/CONVERGE) + k * FAN_PITCH * (d/CONVERGE) ]
  *
- * WHY 33 M AT THE CONVERGENCE PLANE. Because it is the widest fan that is
- * still GAPLESS at the range the fight is actually fought at. A skiff's hit
- * sphere is 4.2 m, so a target slips between two bolts once they are more than
- * 8.4 m apart; `W(d)/3 = 8.4` solves to d = 280 m, and 275 m is the median of
- * the envelope this file's `CONVERGE` note is written against. Inside 280 m
- * the fan is a continuous wall 50 m across with nowhere for a craft to sit;
- * outside it, it is a comb, and that is stated rather than hidden.
+ * `k = 0` is `off(d, s, 0) = s * span * (1 - d/CONVERGE)`, which is the stock
+ * pair's own formula with nothing added - so `RINGS = 0` is today's gun rather
+ * than an approximation of it, and the loop in `_playerGun` collapses to the
+ * one it has always had.
  *
- * WHY 50 M IS THE RIGHT WALL TO BUILD. `AlienShip._intercept` carries the only
- * measurement in the repository of how far apart a wing actually flies: three
- * skiffs over seven seconds of run-in separated by 452-504 m on average and
- * CLOSEST 21-33 m. A fan sized to the mean would be hundreds of metres wide
- * and would be aiming at nothing; sized to the closest approach it catches the
- * pair that has converged on you, which is the moment worth catching.
+ * -- THE TABLE. `span = MAX_SPAN` (3.2), which is every hull but the Kestrel;
+ * the Kestrel's 14 m gives 3.08 and moves nothing below by more than 0.12 m --
  *
- * ── WHAT IT COSTS, WHICH IS SINGLE-TARGET DAMAGE ───────────────────────────
+ *              core pair    ring step    widest bolt   full fan   bolts on a
+ *              (= today)    (adjacent)                  width     4.2 m sphere
+ *                                                                 on the pip
+ *     110 m     +-2.27 m      3.18 m      +-11.83 m     23.7 m         2
+ *     275 m     +-0.88 m      7.96 m      +-24.77 m     49.5 m         2 <- median
+ *     380 m     +-0.00 m     11.00 m      +-33.00 m     66.0 m         2
+ *     700 m     -+2.69 m     20.26 m      +-58.09 m    116.2 m         2
  *
- * The last column of the table is the whole balance answer and it is why no
- * per-bolt damage adjustment is applied here. Seven bolts do NOT mean 3.5x on
- * one hull: past 120 m only the middle bolt is within 4.2 m of a target on the
- * pip, against the pair's two (both stay inside `MAX_SPAN` of the axis at
- * every range in the envelope). So against a single craft the fan is
+ * (At 700 m the core pair has CROSSED - the bolt from the left muzzle is
+ * 2.69 m right of the axis - which is convergence doing precisely what it is
+ * for, and is why that row is written the other way up.)
  *
- *     x1.5   inside 120 m   (three bolts land, and `BREAK_RANGE` is 130 m,
- *                            so this is exactly the merge)
- *     x0.5   beyond 120 m   (one bolt lands where two used to)
+ * WHY 11 M A RING. Because it is the widest step that is still GAPLESS at the
+ * range the fight is actually fought at. A skiff's hit sphere is 4.2 m, so a
+ * craft slips between two bolts once they are more than 8.4 m apart; the step
+ * is `FAN_PITCH * d / CONVERGE`, and `8.4 = P * 275/380` solves to P = 11.61.
+ * 11 is that rounded down, which puts the last gapless range at
+ * `8.4 * 380 / 11 = 290 m` - fifteen metres past the median rather than right
+ * on top of it. Inside 290 m the fan is a continuous wall with nowhere for a
+ * craft to sit; outside it, it is a comb, and that is stated rather than
+ * hidden. The core pair is never the hole: `2 * span * |1 - d/CONVERGE|` peaks
+ * at 6.4 m (d = 0) and is 5.39 m at 700, under 8.4 everywhere in the envelope.
  *
- * Docking per-bolt damage on top of that would make the effect a straight
- * downgrade against one target, which is not a trade, it is a punishment. The
- * gain is the width and the price is paid in the same currency.
+ * WHY THREE RINGS, AND WHY AN EVEN COUNT. Three because `3 * 11 = 33`, which
+ * puts the outermost bolt on `span * (1 - d/C) + 33 * (d/C)` - the exact
+ * envelope of the rejected build, at every range in the table above. What was
+ * reviewed and sent back was the SHAPE and not the width, so the width is
+ * deliberately unchanged and the whole of the difference is that the middle of
+ * the fan is now the stock pair instead of a single on-axis bolt. Even,
+ * therefore, and no centre bolt: with a convergent core the crosshair is
+ * already true, so a bolt on the axis would be a THIRD permanent on-pip hit -
+ * a flat x1.5 single-target damage buff at every range, which is a balance
+ * change nobody asked for and the mirror image of the error being fixed.
  *
- * ── AND IT COSTS NOTHING EXTRA AT THE CAPACITOR ────────────────────────────
+ * WHAT THE WIDTH IS WORTH. A second craft is caught wherever some bolt is
+ * within 4.2 m of it, so the fan covers a continuous band of
+ * `+-(widest + 4.2)`: +-16.0 m at 110 m and +-29.0 m at 275 m.
+ * `AlienShip._intercept` carries the only measurement in the repository of how
+ * far apart a wing actually flies - three skiffs over seven seconds of run-in
+ * separated by 452-504 m on average and CLOSEST 21-33 m - and +-29 m at the
+ * median is sized to that closest approach. Sized to the MEAN it would be
+ * hundreds of metres wide and aiming at nothing.
+ *
+ * -- WHAT IT COSTS, WHICH IS NOW NOTHING ------------------------------------
+ *
+ * The last column of the table is the invariant, held: two bolts on an on-pip
+ * target at every range, which is exactly what the stock gun does. By band:
+ *
+ *     x2.0   inside ~50 m   (48.7 m at `MAX_SPAN`, 53.7 m on a Kestrel - the
+ *                            first ring is still within 4.2 m of the axis
+ *                            there. `BREAK_RANGE` is 130 m, so this is nearer
+ *                            than a hostile will willingly come.)
+ *     x1.0   50 m to 700 m  (the core pair, and only the core pair)
+ *
+ * The floor is x1.0 and there is no band beneath it. That is also why no
+ * per-bolt damage adjustment is applied: there is nothing left to compensate
+ * for, and scaling damage down would now BREAK the invariant this arrangement
+ * exists to hold.
+ *
+ * The gain is entirely lateral, and it is real. The stock pair misses anything
+ * more than about 7.4 m off the crosshair; the fan puts a bolt on anything
+ * within 29 m of it at the median range. That is a second craft, and it is
+ * also forgiveness on the first.
+ *
+ * -- AND IT COSTS NOTHING EXTRA AT THE CAPACITOR ----------------------------
  *
  * `GUN.cost` is unchanged while the fan is up. A wider shot that also drained
  * faster would cut the rate of fire as well, so the player would pay twice for
- * one effect - and given the x0.5 above, twice for something that is already
- * worse against the target in front of them. The cell is the price.
+ * one effect. The cell is the price.
  *
- * ── THE POOL ───────────────────────────────────────────────────────────────
+ * -- THE POOL ---------------------------------------------------------------
  *
- * `MAX_BOLTS` is 128. Seven bolts at the burst rate of five a second is 35 a
- * second, each alive `GUN.range / GUN.speed` = 0.44 s, so 15 of the player's
- * are in flight at the peak and 10 at the sustained 3.33/s. Six hostiles
- * firing bursts do not come close to the remaining 113.
+ * `MAX_BOLTS` is 128. Eight bolts at the burst rate of five a second is 40 a
+ * second, each alive `GUN.range / GUN.speed` = 0.44 s, so 18 of the player's
+ * are in flight at the peak and 12 at the sustained 3.33/s. Six hostiles
+ * firing bursts do not come close to the remaining 110.
  */
-export const FAN_BOLTS = 7;
-export const FAN_PITCH = 33;
+export const FAN_BOLTS = 8;
+export const FAN_PITCH = 11;
 
 /** Shield pool per point of `shieldTier`. See the ladder note in the header. */
 export const SHIELD_PER_TIER = 55;
@@ -875,22 +918,24 @@ export class SpaceCombat {
    * deadline forward the same way, so a player who burns two cells sees one
    * chip with a longer clock rather than two chips for one gun.
    *
-   * `bolts` is snapped UP to an odd number and floored at 3. Odd because the
-   * middle bolt is what keeps the crosshair true at every range - see the
-   * `FAN_BOLTS` note above, where the whole balance argument rests on there
-   * being a `t = 0`; three because a "fan" of one bolt is a nerf and of two is
-   * the gun the player already has.
+   * `bolts` is snapped UP to an EVEN number and floored at 4, and both halves
+   * of that are the geometry rather than tidiness. Even because the fan is the
+   * stock pair plus symmetric rings hung either side of it - `(bolts - 2) / 2`
+   * rings a side - so an odd count has nowhere to put the spare except on the
+   * axis, and a bolt on the axis is a third permanent hit on an on-pip target:
+   * a flat x1.5 damage buff nobody asked for. Four because two IS the gun the
+   * player already has, and an "effect" that grants it is not an effect.
    *
    * @param {number} duration seconds of play time
-   * @param {number} [bolts] bolts per shot
+   * @param {number} [bolts] bolts per shot, counting the two core bolts
    * @returns {boolean} false if nothing was applied
    */
   setGunSpread(duration, bolts = FAN_BOLTS) {
     if (!(duration > 0) || !Number.isFinite(duration)) return false;
     const asked = Math.floor(Number(bolts));
-    if (!Number.isFinite(asked) || asked < 3) return false;
-    const odd = asked % 2 === 0 ? asked + 1 : asked;
-    this._spreadBolts = Math.max(this._spreadBolts, odd);
+    if (!Number.isFinite(asked) || asked < 4) return false;
+    const even = asked % 2 === 0 ? asked : asked + 1;
+    this._spreadBolts = Math.max(this._spreadBolts, even);
     this._spreadUntil = Math.max(this._spreadUntil, this._buffNow() + duration);
     return true;
   }
@@ -1239,50 +1284,58 @@ export class SpaceCombat {
      * private field to place a muzzle is how two descriptions of one ship
      * start to drift.
      *
-     * ── AND THE LOOP NOW WRITES BOTH GUNS, WHICH IS WHY IT IS INDEXED BY `t`
+     * ── AND THE LOOP NOW HANGS RINGS OFF THAT PAIR, WITHOUT MOVING IT ────
      *
-     * Wide dispersal (`setGunSpread`, bought with a `laser_cell`) walks the
-     * AIM POINTS apart while leaving every word above intact - the muzzles
-     * still sit on the capped span, the bolts are still aimed at a plane
-     * `CONVERGE` metres up the nose line, and the crosshair is still exact
-     * where they cross. `t` runs -1..+1 across whatever number of bolts is
-     * live, so `n = 2, pitch = 0` is the pair described above expressed in the
-     * new index and nothing about it has changed. The seven-bolt case, the
-     * arithmetic that sizes `FAN_PITCH`, and what it costs in single-target
-     * damage are all in the `FAN_BOLTS` note at the top of this file, because
-     * a change to gun geometry without the table written down is exactly what
-     * put the Dray in the paragraph above. */
+     * Wide dispersal (`setGunSpread`, bought with a `laser_cell`) leaves every
+     * word above not merely true but LOAD-BEARING: the two bolts described
+     * there are still fired, still from the capped span, still aimed at the
+     * convergence point, and they are what guarantees that turning the effect
+     * on can never cost the player damage on the craft in their crosshair. The
+     * extra bolts are hung outboard of them by walking the AIM POINT - and only
+     * the aim point - out in steps of `FAN_PITCH`.
+     *
+     * That makes `rings = 0` the stock gun EXACTLY rather than approximately:
+     * the inner loop runs once per side with a zero offset, which is the two
+     * lines this method has always had. The eight-bolt case, the table of
+     * off-axis error that sizes `FAN_PITCH`, and the single-target invariant
+     * are all in the `FAN_BOLTS` note at the top of this file, because a change
+     * to gun geometry without the arithmetic written down is precisely what put
+     * the Dray in the paragraph above. */
     const len = SHIP_CLASSES[this.piloting.shipId]?.length ?? 14;
     const span = Math.min(len * 0.22, MAX_SPAN);
     const dmg = this.boltDamage();
-    /* Damage per bolt is NOT scaled by the fan. See `FAN_BOLTS`: past 120 m a
-     * fan lands ONE bolt on a target sitting on the pip where the pair landed
-     * two, so seven bolts is not seven times anything and a scale-down here
-     * would make the effect a punishment. */
-    const wide = this._spreadBolts > 0;
-    const n = wide ? this._spreadBolts : 2;
-    const pitch = wide ? FAN_PITCH : 0;
+    /* Damage per bolt is NOT scaled by the fan, and now it must not be. The
+     * core pair is the stock gun, so a scale-down here would put single-target
+     * output BELOW the unmodified weapon - the exact defect this arrangement
+     * was rebuilt to remove. See `FAN_BOLTS`. */
+    const rings = this._spreadBolts > 0 ? (this._spreadBolts - 2) / 2 : 0;
     _v3.copy(f.position).addScaledVector(_fwd, CONVERGE);
-    for (let i = 0; i < n; i++) {
-      const t = (2 * i) / (n - 1) - 1;
-      _v.copy(f.position).addScaledVector(_right, span * t).addScaledVector(_up, -0.6);
-      _fanAim.copy(_v3).addScaledVector(_right, pitch * t);
-      _v2.copy(_fanAim).sub(_v).normalize();
-      this._spawnBolt(_v, _v2, GUN.speed, dmg, GUN.range, 0);
-      /* The muzzle bloom, and both numbers in it were wrong first time.
-       *
-       * It was 1.9 m across for 0.09 s in (2.4, 0.32, 3.4) - and (2.4, 0.32,
-       * 3.4) is MAGENTA, which matched nothing on either side of the fight and
-       * looked like a bug; at 1.9 m, sitting on the wingtips of a hull that
-       * fills the middle of the chase view, two of them covered a third of the
-       * plate every fifth of a second. Screenshotted, and unmistakable.
-       *
-       * It is now the bolt's own cyan at a fifth the size and a shorter life:
-       * a spark where the gun is, not a firework. */
-      this._flare(_v, _v2, 0.62, 0.055, 0.7, 3.2, 4.2, 26);
+    for (let s = -1; s <= 1; s += 2) {
+      /* One muzzle per side, shared by that side's whole comb. A ring is a
+       * different aim, not a different gun port. */
+      _v.copy(f.position).addScaledVector(_right, span * s).addScaledVector(_up, -0.6);
+      for (let k = 0; k <= rings; k++) {
+        _fanAim.copy(_v3).addScaledVector(_right, FAN_PITCH * k * s);
+        _v2.copy(_fanAim).sub(_v).normalize();
+        this._spawnBolt(_v, _v2, GUN.speed, dmg, GUN.range, 0);
+        /* The muzzle bloom, and both numbers in it were wrong first time.
+         *
+         * It was 1.9 m across for 0.09 s in (2.4, 0.32, 3.4) - and (2.4, 0.32,
+         * 3.4) is MAGENTA, which matched nothing on either side of the fight
+         * and looked like a bug; at 1.9 m, sitting on the wingtips of a hull
+         * that fills the middle of the chase view, two of them covered a third
+         * of the plate every fifth of a second. Screenshotted, and
+         * unmistakable.
+         *
+         * It is now the bolt's own cyan at a fifth the size and a shorter
+         * life: a spark where the gun is, not a firework. */
+        this._flare(_v, _v2, 0.62, 0.055, 0.7, 3.2, 4.2, 26);
+      }
     }
     this.stats.shotsFired++;
-    this.bus?.emit?.('combat:fire', { position: f.position, ship: this.piloting.shipId, bolts: n });
+    this.bus?.emit?.('combat:fire', {
+      position: f.position, ship: this.piloting.shipId, bolts: 2 * (rings + 1),
+    });
   }
 
   /* ------------------------------------------------------------------ */

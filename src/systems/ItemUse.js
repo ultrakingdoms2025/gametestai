@@ -260,8 +260,11 @@ export class ItemUseSystem {
        * recharges at 30 a second forever, and the reason is written over
        * `laser_cell` in `ItemDefs`: a dry gun 60 km from the yard is a walk
        * home. What a cell buys is thirty seconds during which the same trigger
-       * pull lays down seven bolts across a fifty-metre arc instead of two
+       * pull lays down eight bolts across a fifty-metre arc instead of two
        * down one line, so a pass through a wing can touch more than one craft.
+       * Two of the eight are the stock gun's own convergent pair, unmoved,
+       * which is what makes the effect incapable of costing the player damage
+       * on the craft already in their crosshair - see `FAN_BOLTS`.
        *
        * Thirty seconds because that is what every other timed thing in this
        * switch costs a player in duration (`speed`, `magnet`, `firepower`,
@@ -276,7 +279,7 @@ export class ItemUseSystem {
         return {
           type: 'gunSpread',
           duration: 30,
-          bolts: 7,
+          bolts: 8,
           refusal: {
             reason: 'not-flying',
             text: 'Board a ship and launch first — a cell widens SHIP guns. Kept, not spent.',

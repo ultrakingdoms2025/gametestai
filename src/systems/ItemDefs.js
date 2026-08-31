@@ -947,11 +947,14 @@ export const ITEMS = {
    * WHAT IS NEW IS THAT A CELL NOW BUYS WIDTH INSTEAD OF SHOTS. Held for three
    * seconds in the bag it runs `SpaceCombat.setGunSpread` for thirty seconds:
    * the same trigger pull, the same capacitor cost, the same damage a bolt has
-   * always done, but SEVEN bolts walked apart across a fifty-metre arc at the
-   * range the fight is fought at instead of two down one line - so a pass
-   * through a wing can touch more than one craft. The arithmetic that sizes
-   * the arc, and the single-target damage it costs to get it, are in the
-   * `FAN_BOLTS` note in `ships/SpaceCombat.js`. That is why the kind is
+   * always done, but EIGHT bolts across a fifty-metre arc at the range the
+   * fight is fought at instead of two down one line - so a pass through a
+   * wing can touch more than one craft. Two of the eight are the stock gun's
+   * own convergent pair, left exactly where they are, so the cell can never
+   * make the gun WORSE against the craft already on the crosshair: it is
+   * width bought for nothing, not width traded for damage. That invariant and
+   * the arithmetic that sizes the arc are in the `FAN_BOLTS` note in
+   * `ships/SpaceCombat.js`. That is why the kind is
    * `consumable` and not `ammo`: `InventoryUI._hasUse` draws the hold-to-use
    * ring for `consumable`, `skin` and `mountpower`, and an item with an effect
    * and no way to reach it is the defect this file keeps re-learning.
@@ -976,7 +979,7 @@ export const ITEMS = {
     icon: 'cell',
     value: 4,
     kind: 'consumable',
-    desc: 'Charged capacitor cells, cut and wound in this yard. A ship gun runs off its own capacitor and never runs dry — dump a cell into it and for thirty seconds it throws a seven-bolt fan wide enough to catch two craft at once. The Test-Fire Butts burn them by the plate, and the Fitter takes them by the rack.',
+    desc: 'Charged capacitor cells, cut and wound in this yard. A ship gun runs off its own capacitor and never runs dry — dump a cell into it and for thirty seconds it throws an eight-bolt fan wide enough to catch two craft at once, without giving up a scrap of its aim on the one in front. The Test-Fire Butts burn them by the plate, and the Fitter takes them by the rack.',
   },
   hull_plate: {
     id: 'hull_plate',

@@ -109,6 +109,24 @@ export const MARKETPLACE_ACTIONS = [
     description: 'Consumes one item and adds a worked piece of planetary ore to the player bag.',
     effect: 'grant_item',
   },
+  /* Bag expansion rigs. ONE action id for all three rows, which is the same
+   * shape `ship_part` and `refined_ore` already have: the action names the KIND
+   * of thing being sold and `action_config.item_id` names which one, so adding
+   * a fourth rung later is a `BASE_ITEMS` row and not a widening of the
+   * `MarketplaceActionId` union.
+   *
+   * `grant_item`, the generic effect `Marketplace._purchaseGrant` already
+   * reads, so this skips step 7 of the nine-step item registration - the
+   * `MARKETPLACE_CONSUMABLE_ITEMS` mapping whose recorded failure is a
+   * `source_key` resolving to nothing and every purchase returning
+   * `unsupported` (Marketplace.js:605-613). Nothing here needs a bespoke
+   * grant, so nothing here takes that risk. */
+  {
+    id: 'bag_expand',
+    label: 'Bag expansion rig',
+    description: 'Consumes one item and adds a bag expansion rig to the player bag; using the rig permanently enlarges the bag.',
+    effect: 'grant_item',
+  },
   {
     id: 'heal_25',
     label: 'Small heal',
@@ -879,6 +897,110 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
     pricing_kind: 'consumable' as const,
     sort_order: 173,
   },
+  /* ==================================================================== */
+  /* Bag expansion rigs                                                   */
+  /* ==================================================================== */
+  /*
+   * Three rows that sell the one thing no other row in this file sells: the
+   * SIZE OF THE BAG. Using one runs `Inventory.expandBag`, which raises the
+   * bag's 30 starting slots towards a hard ceiling of 60.
+   *
+   * ── NO `worlds` ALLOWLIST, AND THAT IS CHECKED RATHER THAN ASSUMED ──────
+   * The yard's five rows carry one because `ships` is stocked by exactly one
+   * counter in the Nexus. `tools` is not like that: every medieval trade in
+   * `TRADE` (Population.js) carries it, the citadel's Cosmetic counter carries
+   * it, a yard counter carries it, and station, sports and race declare no
+   * `vendorCategories` at all - which `Marketplace._readVendorCategories` reads
+   * as a general trader stocking everything. So a `tools` row is reachable in
+   * all six worlds, and restricting these would be inventing scarcity in a
+   * thing that is not scarce: a rucksack.
+   *
+   * ── `pricing_kind: 'fixed'`, WHICH IS A BALANCE DECISION ────────────────
+   * Not `consumable`. The regional consumable multipliers run from 0.7
+   * (Meridian) to 1.45 (Sunspire), and a permanent, account-wide, irreversible
+   * upgrade priced through them would mean the correct play is always to fly
+   * to the athletics grounds and buy your entire bag at 30% off, once, forever.
+   * Every other permanent grant in this file - liveries, mount upgrades, mount
+   * skins - is `fixed` for exactly that reason, and these are more permanent
+   * than any of them.
+   *
+   * ── THE PRICES, AND WHY THEY RISE FASTER THAN THE SLOTS ─────────────────
+   * 480 / 1,150 / 2,100, which is 96, 115 and 140 credits a slot. Deliberately
+   * super-linear: cost(15) is 2,100 against 3 x cost(5) = 1,440, so the big rig
+   * is NOT a bulk discount.
+   *
+   * Two reasons, and the second is the load-bearing one.
+   *
+   * Slots are the most powerful thing in the catalogue. Everything else here is
+   * consumed in thirty seconds or worn on a mount; a slot is carried for the
+   * rest of the account's life and multiplies every ore run, every corpse and
+   * every cache after it. Against `pack_medkit` at 95 and `mount_power_3` at
+   * 820 - the dearest hand-authored row before these - the entry rung at 480 is
+   * priced as a serious purchase and the top rung at 2,100 as the largest
+   * single decision a player can make at a counter. Cheap capacity would end
+   * the store, the drop tables' overflow rules and the whole reason
+   * `inventory:full` exists.
+   *
+   * And a bulk DISCOUNT would collapse the ladder into one row. If two +15s
+   * were the cheap route to 60 nobody would ever buy the other two, and the
+   * request was explicitly for three items. What the big rigs sell instead is
+   * time and bag space: one purchase, one three-second hold, and a stack size
+   * (`ItemDefs.bagSlots` neighbours) sized so a full 30-slot upgrade always
+   * fits in one bag slot whichever rung you buy. Six trips to a merchant is the
+   * cheap way; two is the quick one. That is an honest trade, and it is the one
+   * the player can see from the prices.
+   *
+   * `cost_sell` is 0.4 x `cost_buy`, the same ratio every `fixed` row uses, and
+   * still an order of magnitude above what the game pays for the bag item
+   * itself (`ItemDefs.value` x SELL_RATE = 48 / 116 / 210), so no buy-sell-buy
+   * loop prints credits at any regional multiplier.
+   */
+  {
+    source_key: 'bag_expand_5',
+    name: 'Stowage Webbing',
+    description: 'A coil of load-bearing webbing and five clip points, lashed across the back of a pack. Hold it in your bag to fit it: +5 bag slots, permanently. No bag holds more than 60.',
+    category: 'tools' as const,
+    image_label: 'WEB +5',
+    image_color: '#7fa86a',
+    game_action: 'bag_expand' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_5', amount: 1 },
+    quantity: null,
+    cost_buy: 480,
+    cost_sell: 192,
+    pricing_kind: 'fixed' as const,
+    sort_order: 180,
+  },
+  {
+    source_key: 'bag_expand_10',
+    name: 'Expedition Harness',
+    description: 'A frame harness with side panniers, cut for a long walk away from a counter. Hold it in your bag to fit it: +10 bag slots, permanently. No bag holds more than 60.',
+    category: 'tools' as const,
+    image_label: 'HRN +10',
+    image_color: '#5f8f52',
+    game_action: 'bag_expand' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_10', amount: 1 },
+    quantity: null,
+    cost_buy: 1150,
+    cost_sell: 460,
+    pricing_kind: 'fixed' as const,
+    sort_order: 181,
+  },
+  {
+    source_key: 'bag_expand_15',
+    name: 'Quartermaster Rig',
+    description: "The rig a supply officer wears to carry a squad's worth of everything at once. Hold it in your bag to fit it: +15 bag slots, permanently. No bag holds more than 60.",
+    category: 'tools' as const,
+    image_label: 'RIG +15',
+    image_color: '#43703c',
+    game_action: 'bag_expand' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_15', amount: 1 },
+    quantity: null,
+    cost_buy: 2100,
+    cost_sell: 840,
+    pricing_kind: 'fixed' as const,
+    sort_order: 182,
+  },
+
   {
     source_key: 'cosmetic_headgear_aurora',
     name: 'Aurora Racer Skin',

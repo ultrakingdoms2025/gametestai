@@ -1,7 +1,8 @@
 import { isItem, itemDef, slotsFor, stackSize } from './ItemDefs.js';
 
 /**
- * Player inventory: an unbounded-ish **store** plus a 30-slot **active bag**.
+ * Player inventory: an unbounded-ish **store** plus an **active bag** that
+ * starts at 30 slots and can be grown, permanently, to at most 60.
  *
  * Two rules shape the whole file.
  *
@@ -18,8 +19,31 @@ import { isItem, itemDef, slotsFor, stackSize } from './ItemDefs.js';
  * occupy a slot and always live in `Economy`.
  */
 
-/** Active bag capacity, in slots. Contract-mandated. */
-const BAG_CAPACITY = 30;
+/**
+ * Active bag capacity AT THE START OF A RUN, in slots. Contract-mandated.
+ *
+ * Still 30, and still the number `CONTRACTS-V3.md` names - what changed is that
+ * it is now the floor rather than the whole story. `expandBag` raises
+ * `_bagCapacity` above it and nothing lowers it back, so this constant is read
+ * in exactly three places: the fresh-instance default, the clamp `deserialize`
+ * applies to a save's `capacity`, and the tests that pin both.
+ */
+export const BAG_CAPACITY = 30;
+/**
+ * The most slots a bag can ever hold, however many expansion rigs are used.
+ *
+ * 60 for two reasons that happen to agree. It is double the start, so the
+ * ladder has an obvious top; and it is exactly `STORE_CAPACITY`, which means
+ * the fully-grown bag is the size of a container the panel has drawn since the
+ * day it shipped - the 60-cell grid, the scroll behaviour and the column
+ * widths are all already proven at this number, so growing the bag needs no
+ * new layout and cannot invent a viewport the panel has never been measured at.
+ *
+ * Named, and exported, because THREE files need the same 60: this one clamps
+ * to it, `ItemUse` refuses a rig at it, and the tests assert both. A literal
+ * scattered across those would be three chances to disagree.
+ */
+export const BAG_CAPACITY_MAX = 60;
 /** Store capacity, in slots. Generous, but finite so "both full" is reachable. */
 const STORE_CAPACITY = 60;
 
@@ -87,9 +111,14 @@ export class Inventory {
   /* Contract surface                                                       */
   /* ====================================================================== */
 
-  /** @returns {number} bag capacity in slots (30) */
+  /** @returns {number} bag capacity in slots - 30 on a fresh run, up to 60 grown */
   get bagCapacity() {
     return this._bagCapacity;
+  }
+
+  /** @returns {number} the most slots this bag can ever hold (60) */
+  get bagCapacityMax() {
+    return BAG_CAPACITY_MAX;
   }
 
   /** @returns {number} slots currently occupied in the bag */
@@ -278,6 +307,22 @@ export class Inventory {
 
     this._store.clear();
     this._bag.clear();
+    /* CAPACITY FIRST, ROWS SECOND. THE ORDER IS THE BUG.
+     *
+     * `serialize()` has always emitted `capacity`, and this method used to
+     * ignore it and re-accept the rows against whatever capacity the instance
+     * happened to be carrying - which for a freshly constructed `Inventory` is
+     * always 30. So a 60-slot save loaded into a 30-slot bag and `_accept`
+     * silently dropped everything past slot 30. Not a warning, not an
+     * `inventory:full` (that event is raised by `add`/`moveToBag`, not by the
+     * restore path): thirty slots of a player's carried kit, gone on load.
+     *
+     * Restoring the capacity here, before a single row is accepted, is the fix.
+     * `_clampCapacity` is what makes it safe to trust a file the player can
+     * edit: a hand-written `capacity: 500` restores at 60, and a missing,
+     * zero, negative or non-numeric one restores at 30 - which is exactly what
+     * every save written before bag expansion existed will hand us. */
+    this._bagCapacity = this._clampCapacity(data.capacity);
     // Re-add through the accept path so a save written under a bigger capacity
     // (or with an item that has since been removed) cannot overfill the bag.
     for (const entry of bag ?? []) {
@@ -295,6 +340,48 @@ export class Inventory {
   /* ====================================================================== */
   /* Additions (documented in the agent report)                             */
   /* ====================================================================== */
+
+  /**
+   * Grow the active bag, permanently, and say how much of the ask landed.
+   *
+   * ── THE RETURN VALUE IS THE WHOLE CONTRACT ──────────────────────────────
+   * It is how many slots were ACTUALLY added, not how many were asked for, and
+   * the caller is expected to tell the player that number rather than the one
+   * on the item. A bag at 55 given a +10 rig grows by 5, and `ItemUse` says
+   * "+5 slots" - because a use that quietly reported 10 while granting 5 is
+   * the game lying about the only thing the player bought.
+   *
+   * At the cap it returns 0 and changes nothing, which is a legitimate answer
+   * and NOT the way the refusal is meant to be reached: `ItemUse._canApply`
+   * asks `bagCapacity < bagCapacityMax` BEFORE `consumeFromBag`, so a rig used
+   * at 60 is kept rather than eaten. This zero is the backstop for any caller
+   * that forgets to ask first.
+   *
+   * ── NO DEDICATED EVENT, AND THAT IS A DECISION ──────────────────────────
+   * `_changed()` alone, so this raises the same `inventory:changed` every other
+   * mutation raises - and that event has ALWAYS carried `bagCapacity` in its
+   * payload. The panel's capacity bar is rebuilt inside `InventoryUI._render`,
+   * which runs on `inventory:changed` and again on `open()`, so a bar built for
+   * 30 ticks is corrected whether the panel was open when the rig was used or
+   * not. A second `inventory:capacity` event would be a second subscription
+   * driving the identical redraw, and the failure that shape produces is one
+   * listener being wired and the other forgotten - the panel then under-reports
+   * capacity forever, silently, which is precisely the bug this note exists to
+   * avoid. One event, one redraw path.
+   *
+   * @param {number} slots how many slots to add
+   * @returns {number} how many slots were actually added (0 at the cap)
+   */
+  expandBag(slots) {
+    const want = this._sanitise(slots);
+    if (!want) return 0;
+    const next = Math.min(BAG_CAPACITY_MAX, this._bagCapacity + want);
+    const added = next - this._bagCapacity;
+    if (added <= 0) return 0;
+    this._bagCapacity = next;
+    this._changed();
+    return added;
+  }
 
   /**
    * Add straight to the bag, respecting slots.
@@ -434,6 +521,26 @@ export class Inventory {
   _sanitise(qty) {
     const n = Math.floor(Number(qty));
     return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  /**
+   * A bag capacity that is safe to install, from anything at all.
+   *
+   * Clamped to `[BAG_CAPACITY, BAG_CAPACITY_MAX]` rather than merely floored,
+   * because the input is a save file. Below the floor the panel would draw
+   * fewer cells than the starter kit fills; above the ceiling a hand-edited
+   * `capacity: 500` would hand out 470 free slots and the shop would have
+   * nothing left to sell. Anything that is not a finite number at all -
+   * absent, `null`, `"lots"`, `NaN` - reads as a pre-expansion save and
+   * restores at 30, never at 0 and never at `undefined`.
+   *
+   * @param {unknown} value
+   * @returns {number}
+   */
+  _clampCapacity(value) {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return BAG_CAPACITY;
+    return Math.min(BAG_CAPACITY_MAX, Math.max(BAG_CAPACITY, n));
   }
 
   _addCredits(n) {

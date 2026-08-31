@@ -705,11 +705,22 @@ test('laser_cell is a consumable, and the bag will therefore offer it a Use', as
 test('the kind census moved by exactly one item, from ammo to consumable', () => {
   /* Pinned rather than derived. A prior audit counted ammo 4, consumable 18,
    * trinket 51; moving `laser_cell` is a deliberate one-item change, and this
-   * is what makes a SECOND, accidental one visible in a diff. */
+   * is what makes a SECOND, accidental one visible in a diff.
+   *
+   * ── consumable 19 -> 22: THE THREE BAG EXPANSION RIGS ────────────────────
+   * `bag_expand_5`, `_10` and `_15` were added to `ITEMS` as `consumable`,
+   * which is not a taste call: `InventoryUI._hasUse` draws the hold-to-use ring
+   * for `consumable`, `skin` and `mountpower` only, and a rig is used from the
+   * bag by that ring. Any other kind would have been an effect with no way to
+   * reach it - the failure `laser_cell` is in this file for. Three deliberate
+   * additions, counted here so a fourth accidental one is still visible.
+   *
+   * The bucket totals are what this case protects, not any one item, so it is
+   * updated by adding the three rather than by re-deriving the whole map. */
   const census = {};
   for (const def of Object.values(ITEMS)) census[def.kind] = (census[def.kind] ?? 0) + 1;
   assert.deepEqual(census, {
-    currency: 1, ammo: 3, consumable: 19, trinket: 51, skin: 20, mountpower: 57,
+    currency: 1, ammo: 3, consumable: 22, trinket: 51, skin: 20, mountpower: 57,
   });
 
   /* The three that are still ammunition all feed a weapon that really does

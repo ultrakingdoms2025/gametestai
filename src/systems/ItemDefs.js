@@ -43,7 +43,7 @@ export const KIND_ACCENT = {
  *
  * @type {Record<string, {id:string, name:string, short:string, stack:number,
  *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string,
- *   skinId?:string, colors?:number[], noSell?:boolean,
+ *   skinId?:string, colors?:number[], noSell?:boolean, bagSlots?:number,
  *   mount?:string, power?:string, tier?:number}>}
  */
 export const ITEMS = {
@@ -1033,6 +1033,81 @@ export const ITEMS = {
     kind: 'consumable',
     desc: 'A rolled survey chart of one district, drawn from a height somebody else climbed to. Reading it marks that ground on your map; it does not put you on it.',
   },
+
+  /* ---- Bag expansion rigs -------------------------------------------
+   *
+   * Three items that do one thing nothing else in this file does: they change
+   * the container instead of what is in it. `ItemUse` routes each of them to
+   * `Inventory.expandBag`, which raises `bagCapacity` from its starting 30
+   * towards a hard ceiling of 60 (`BAG_CAPACITY_MAX` in `Inventory.js` - the
+   * number is defined there and imported, never re-typed here).
+   *
+   * ── `bagSlots` IS THE SINGLE SOURCE OF THE NUMBER ────────────────────────
+   * `ItemUse._effectFor` reads this field rather than carrying its own 5/10/15,
+   * so re-tuning a rig is one edit in one file. A second copy in the effect
+   * switch would be the two-descriptions-of-one-thing failure this repository
+   * keeps writing down, at the smallest possible scale and therefore the
+   * easiest to get away with for a year.
+   *
+   * ── THE STACK SIZES ARE THE LADDER, NOT A GUESS ─────────────────────────
+   * 6, 3 and 2. Each is exactly the number of that rig it takes to carry a
+   * fresh 30-slot bag all the way to the 60-slot cap - 6x5, 3x10, 2x15 - so
+   * whichever rung a player buys on, THE WHOLE UPGRADE FITS IN ONE BAG SLOT.
+   * That matters more here than anywhere else in the catalogue, because the
+   * one thing a bag expander must never do is fail to fit in the bag it is
+   * meant to expand. It also reads correctly as bulk: a coil of webbing packs
+   * six to a slot, a full quartermaster's rig two.
+   *
+   * ── PURCHASE-ONLY, DELIBERATELY ─────────────────────────────────────────
+   * These appear in NO drop table, NO cache table and NO supply contract, and
+   * that is a decision rather than an omission. `Loot._dropFor` and
+   * `Caches._contentsFor` roll consumables by the handful; a permanent,
+   * irreversible capacity upgrade falling off a guard would hand the player
+   * the entire ladder for free and delete the sink it was authored to be. So
+   * the only way to one is a counter, and `quest-content.test.mjs` already
+   * states the consequence out loud for shop-only goods: "no drop, cache or
+   * stash table anywhere contains it", which makes `collect` quests over them
+   * impossible to author by accident.
+   *
+   * ── AND THEY ARE NOT IN `PACKS` ─────────────────────────────────────────
+   * `PACKS` is the legacy vendor's shelf, and every row on it grants ammunition
+   * or medicine by the bundle. A rig is bought from the DB-backed marketplace
+   * through the generic `grant_item` path (`BASE_ITEMS` in
+   * site/lib/marketplaceCatalog.ts), which is the same route the yard's ship
+   * parts and the lodestone take. */
+  bag_expand_5: {
+    id: 'bag_expand_5',
+    name: 'Stowage Webbing',
+    short: 'WEB',
+    stack: 6,
+    icon: 'stowage',
+    value: 120,
+    kind: 'consumable',
+    bagSlots: 5,
+    desc: 'A coil of load-bearing webbing and five clip points, lashed across the back of a pack. Fitting it adds five slots to your bag, for good.',
+  },
+  bag_expand_10: {
+    id: 'bag_expand_10',
+    name: 'Expedition Harness',
+    short: 'HRN',
+    stack: 3,
+    icon: 'stowage',
+    value: 290,
+    kind: 'consumable',
+    bagSlots: 10,
+    desc: 'A frame harness with side panniers, cut for a long walk away from a counter. Fitting it adds ten slots to your bag, for good.',
+  },
+  bag_expand_15: {
+    id: 'bag_expand_15',
+    name: 'Quartermaster Rig',
+    short: 'RIG',
+    stack: 2,
+    icon: 'stowage',
+    value: 525,
+    kind: 'consumable',
+    bagSlots: 15,
+    desc: 'The rig a supply officer wears to carry a squad\'s worth of everything at once. Fitting it adds fifteen slots to your bag, for good — and no bag anywhere holds more than sixty.',
+  },
 };
 
 /** Bag item id for a mount skin id. */
@@ -1775,6 +1850,31 @@ const ICONS = {
     </g>
     <circle cx="21" cy="12" r="1.6" fill="none" stroke="${a}" stroke-width="1"/>
     <path d="M21 10.4 v3.2 M19.4 12 h3.2" stroke="${a}" stroke-width="0.8"/>`,
+  /* The three bag expansion rigs. One renderer, three sizes.
+   *
+   * The third argument is the item's own catalogue row - the same door `skin`
+   * uses - so the pip count is read off `bagSlots` rather than off the icon
+   * key. One pip per five slots gives 1, 2 and 3, which is the ladder the
+   * player is buying drawn on the thing they are buying it as. Clamped to four
+   * so a re-tuned rig can widen the strap without drawing pips off the edge of
+   * a 32-unit grid.
+   *
+   * NOT `ICONS.unknown`: that renderer is the question mark, and an item that
+   * falls through to it is the recorded `planet-minerals` failure - an icon key
+   * with no renderer, invisible because a question mark still looks like art. */
+  stowage: (g, a, def) => {
+    const pips = Math.max(1, Math.min(4, Math.round(Number(def?.bagSlots ?? 5) / 5)));
+    const strap = Array.from({ length: pips }, (_, i) => `<circle cx="${11 + i * 3.4}" cy="21.5" r="1.15"/>`).join('');
+    return `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a6a4a"/><stop offset="1" stop-color="#1b2a1e"/>
+    </linearGradient></defs>
+    <path d="M11 9 q0 -4 5 -4 q5 0 5 4" fill="none" stroke="${a}" stroke-width="1.2"/>
+    <rect x="7" y="9" width="18" height="17" rx="3.2" fill="url(#${g}a)" stroke="${a}" stroke-width="1.1"/>
+    <path d="M7 15 h18" stroke="${a}" stroke-width="0.9" opacity="0.85"/>
+    <path d="M12.5 9 v6 M19.5 9 v6" stroke="#d8f0d0" stroke-width="0.8" opacity="0.55"/>
+    <g fill="${a}" opacity="0.95">${strap}</g>`;
+  },
   unknown: (g, a) => `
     <rect x="6" y="6" width="20" height="20" rx="3" fill="rgba(120,180,210,0.12)" stroke="${a}" stroke-width="1"/>
     <path d="M16 20 v-2 q3 -1 3 -3.5 a3 3 0 1 0 -6 0" fill="none" stroke="${a}" stroke-width="1.5"/>

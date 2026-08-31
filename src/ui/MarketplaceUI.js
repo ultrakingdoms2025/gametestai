@@ -1,5 +1,5 @@
 import './inventory.css';
-import { el, menuFocusIn, menuFocusOut } from './InventoryUI.js';
+import { el, menuFocusIn, menuFocusOut, syncCapTicks } from './InventoryUI.js';
 import {
   itemIconSVG, itemDef, sellValue, SELL_RATE, packPrice, priceSignal, marketInfo,
 } from '../systems/ItemDefs.js';
@@ -186,8 +186,11 @@ export class MarketplaceUI {
     capRow.append(this.capVal, el('span', 'inv-cap-unit', 'bag slots'));
     this.capEl = cap;
     this.capBar = el('div', 'inv-cap-bar');
-    const capacity = this.inventory?.bagCapacity ?? 30;
-    for (let i = 0; i < capacity; i++) this.capBar.appendChild(el('i'));
+    /* The shared rebuild, not a one-off loop. This panel SELLS the bag
+     * expansion rigs, so it is the one that most obviously must not still be
+     * drawing thirty ticks when the player walks back to the counter with a
+     * 45-slot bag. `_render` calls the same function. @see InventoryUI */
+    syncCapTicks(this.capBar, this.inventory?.bagCapacity ?? 30);
     const note = el('div', 'inv-cap-note');
     note.innerHTML = 'A pack is bought as one <b>stack</b> — 60 rounds fill a single bag slot.';
     cap.append(capRow, this.capBar, note);
@@ -304,6 +307,7 @@ export class MarketplaceUI {
       this.capVal.textContent = `${used} / ${capacity}`;
       this.capEl.classList.toggle('near', used >= capacity * 0.8 && used < capacity);
       this.capEl.classList.toggle('full', used >= capacity);
+      syncCapTicks(this.capBar, capacity);
       const ticks = this.capBar.children;
       for (let i = 0; i < ticks.length; i++) ticks[i].classList.toggle('on', i < used);
     }

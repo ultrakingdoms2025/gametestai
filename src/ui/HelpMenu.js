@@ -146,7 +146,7 @@ const GROUPS = [
 const NOTES = [
   ['Portals', 'Each world holds a gateway to the others. Walk into the ring and press E. The destination keeps building while the transition holds — the spinner means it is working, not stuck.'],
   ['Credits', 'Earned from kills and loot, spent in the marketplace. The counter sits top-left; every award floats up from it.'],
-  ['Marketplace', 'Stand near a vendor and press B to buy ammo packs or sell trinkets back. Your bag holds 30 slots — a stack of 60 bullets is one slot, not sixty.'],
+  ['Marketplace', 'Stand near a vendor and press B to buy ammo packs or sell trinkets back. Your bag starts at 30 slots — a stack of 60 bullets is one slot, not sixty — and expansion rigs bought from a merchant grow it as far as 60.'],
   ['Swimming', 'Enter any lake, moat or pool and you switch to a swim stroke. Space rises, C dives. Stamina drains slowly; at zero you sink and start drowning.'],
   ['Climbing', 'Face a ledge above jump height and press Space to mantle up. Costs stamina, and only works when there is room to stand on top.'],
   ['Stamina', 'The bar under your health. Sprinting, swimming and climbing spend it; it refills after a short pause. Sprint is gated on it.'],

@@ -118,7 +118,8 @@ export class Inventory {
   bagCount(itemId) -> number
   consumeFromBag(itemId, qty) -> boolean  // atomic; false if insufficient
   get items() / get bag()
-  get bagUsed() / get bagCapacity()     // capacity 30
+  get bagUsed() / get bagCapacity()     // starts at 30, grows to at most 60
+  expandBag(slots)                      // permanent, returns slots actually added
   serialize() / deserialize(data)
 }
 ```
@@ -126,8 +127,12 @@ export class Inventory {
 Required ids: `bullet`, `arrow`, `fireball_charge`, `credits` (virtual — routes to Economy),
 plus at least a medkit and a couple of sellable trinkets.
 
-**Bag capacity is 30 *slots*, not 30 items** — a stack of 60 bullets is one slot. State
-that clearly in the UI so it is not confusing.
+**Bag capacity is counted in *slots*, not items** — a stack of 60 bullets is one slot.
+State that clearly in the UI so it is not confusing. **A bag starts at 30 slots**, which
+is what this contract has always required and still does; bag expansion rigs bought from
+a merchant (`bag_expand_5` / `_10` / `_15`) call `Inventory.expandBag` and raise it, one
+purchase at a time, to a hard ceiling of 60. Nothing lowers it, and the panel reads the
+live capacity rather than printing 30.
 
 **Loot:** listen to `npc:killed` with `byPlayer`. Roll a random drop table (credits plus
 ammo appropriate to the world), spawn a visible, pooled pickup in the world with a glow

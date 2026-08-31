@@ -1,6 +1,11 @@
 import { itemDef, mountPowerFromItem, skinIdFromItem } from './ItemDefs.js';
 import { applyMountSkin } from './MountSkins.js';
 import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';
+/* The bag's ceiling, imported rather than re-typed. `Inventory` owns the
+ * number, clamps `deserialize` to it and stops `expandBag` at it; this file
+ * needs the same 60 to refuse a rig BEFORE the consume and to word the toast.
+ * A literal here would be a second copy of the cap that nothing compares. */
+import { BAG_CAPACITY_MAX } from './Inventory.js';
 
 /**
  * Inventory item use dispatcher.
@@ -274,6 +279,41 @@ export class ItemUseSystem {
         return { type: 'firepower', multiplier: 2.0, duration: 30 };
       case 'nav_chart':
         return { type: 'chart' };
+      /* THE BAG EXPANSION RIGS. The only effect here that changes the
+       * CONTAINER rather than what is in it.
+       *
+       * The three ids are listed explicitly and the SIZE is read off the item,
+       * which is the whole shape of this case. Listing them means an id that
+       * merely happens to grow a `bagSlots` field can never become a bag
+       * expander by accident; reading `bagSlots` means the 5, the 10 and the 15
+       * live in `ItemDefs` and only in `ItemDefs`, so a re-tune is one edit and
+       * cannot leave the shop selling one number while the effect grants
+       * another.
+       *
+       * `refusal` for the same reason `laser_cell` carries one: without it the
+       * false from `_canApply` becomes main.js's "Cannot use that right now",
+       * which is true, useless, and says nothing about the sixty-slot ceiling
+       * the player has just hit. The reason code is its own (`bag-full`) so
+       * that generic branch does not also fire and stack a second toast.
+       *
+       * Like `laser_cell`'s, the wording names the likeliest of the two
+       * conditions `_canApply` folds together - at the cap, or an inventory
+       * with no `expandBag` - and the second is unreachable in the shipped
+       * game, where `ItemUse` is constructed with the real `Inventory`. */
+      case 'bag_expand_5':
+      case 'bag_expand_10':
+      case 'bag_expand_15': {
+        const slots = Math.floor(Number(itemDef(itemId)?.bagSlots) || 0);
+        if (!(slots > 0)) return null;
+        return {
+          type: 'bagSlots',
+          slots,
+          refusal: {
+            reason: 'bag-full',
+            text: `Your bag already holds the maximum of ${BAG_CAPACITY_MAX} slots — kept, not spent.`,
+          },
+        };
+      }
       /* LASER CELLS. Width, not ammunition.
        *
        * The ship gun is a capacitor and it stays one - `SpaceCombat.GUN`
@@ -347,6 +387,25 @@ export class ItemUseSystem {
          * Optional-chained, so an unwired or absent `SpaceCombat` answers
          * false and refuses the use rather than eating the cell. */
         return this.spaceCombat?.canWidenGuns?.() === true;
+      case 'bagSlots':
+        /* Asked BEFORE the consume, which is the whole reason a rig used at
+         * the cap is KEPT rather than eaten - `use()` only reaches
+         * `consumeFromBag` after this answers true.
+         *
+         * `<` and not `<=`: a bag at 59 given a +15 rig is NOT refused. It
+         * gains the one slot that fits, the rig is consumed, and `_apply` says
+         * so in the toast. Refusing a use that delivers real value would be
+         * the mirror of the failure this file keeps naming - not a unit
+         * destroyed for nothing, but a unit withheld for nothing - and a
+         * player at 59/60 would be left holding an item the game will not let
+         * them spend on the only thing it does.
+         *
+         * The `typeof` half is the same guard `magnet` and `chart` make: an
+         * inventory without `expandBag` cannot vouch for the grant, so the rig
+         * stays in the bag rather than being swallowed by an `_apply` that
+         * would return null after the consume had already happened. */
+        return typeof this.inventory?.expandBag === 'function'
+          && this.inventory.bagCapacity < BAG_CAPACITY_MAX;
       case 'chart':
         /* Asked BEFORE the consume, and it asks two things: that the system
          * exists at all, and that there is something left in this world for a
@@ -420,6 +479,37 @@ export class ItemUseSystem {
           tone: 'info',
         });
         return { amount: effect.duration, bolts: effect.bolts };
+      }
+      case 'bagSlots': {
+        /* THE PARTIAL GRANT IS THE INTERESTING CASE, AND IT IS NOT A REFUSAL.
+         *
+         * `expandBag` returns what it ACTUALLY added, which is less than the
+         * rig promises whenever the bag was within the rig's size of the cap -
+         * 55 slots given a +10 grows by 5. Three ways to handle that, and only
+         * one of them is honest:
+         *
+         *   Refuse and keep the item. The player is then holding a +10 rig
+         *   they can never use, because the bag will never be further from the
+         *   cap than it is now. That is a unit withheld for nothing.
+         *   Grant 5 and say "+10". The panel then shows 60 while the toast
+         *   claims 65, and the player's next question is which one is lying.
+         *   Grant 5, consume the rig, and SAY FIVE. This.
+         *
+         * So the number in the toast is the return value, never `effect.slots`,
+         * and when the bag lands on the ceiling the message names the ceiling
+         * rather than reporting a total that is about to stop moving. A player
+         * who reads "your bag is now at its maximum of 60" knows not to buy a
+         * fourth rig, which is the one thing they most need to be told here. */
+        const added = this.inventory?.expandBag?.(effect.slots) ?? 0;
+        if (!(added > 0)) return null;
+        const capacity = this.inventory.bagCapacity;
+        this.bus?.emit('hud:notify', {
+          text: capacity >= BAG_CAPACITY_MAX
+            ? `+${added} slots — your bag is now at its maximum of ${BAG_CAPACITY_MAX}.`
+            : `+${added} slots — your bag now holds ${capacity}.`,
+          tone: 'info',
+        });
+        return { amount: added, capacity };
       }
       case 'chart': {
         const marked = this.viewpoints.chartNearest();

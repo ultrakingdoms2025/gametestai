@@ -42,9 +42,10 @@ import { WORLD_MARKETS } from './ItemDefs.js';
  * The two GENERATED arrays in that file - `MOUNT_SKIN_ROWS` and the 60
  * `MOUNT_UPGRADE_ROWS` for the non-car mounts - are deliberately NOT copied.
  * They are a product of three tables and copying a product is how a copy rots.
- * Offline, a vendor stocks the 43 hand-authored rows, which includes every
- * yard row and every consumable; the mount upgrade wall is the one thing that
- * needs the API up. `offlineCatalog` says so in its return value.
+ * Offline, a vendor stocks the 46 hand-authored rows, which includes every
+ * yard row, every consumable and all three bag expansion rigs; the mount
+ * upgrade wall is the one thing that needs the API up. `offlineCatalog` says
+ * so in its return value.
  *
  * ===========================================================================
  *  PRICING
@@ -394,6 +395,53 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
     cost_sell: 196,
     pricing_kind: 'consumable',
     sort_order: 173,
+    worlds: null,
+  },
+  /* The three bag expansion rigs. Bundled like every other hand-authored row,
+   * and for a sharper reason than most: the one purchase a player makes to stop
+   * their bag overflowing must not be the purchase that is missing when the API
+   * is down and the bag is overflowing. `marketplace-offline.test.mjs` compares
+   * every field below against the TypeScript. */
+  {
+    source_key: 'bag_expand_5',
+    name: 'Stowage Webbing',
+    description: 'A coil of load-bearing webbing and five clip points, lashed across the back of a pack. Hold it in your bag to fit it: +5 bag slots, permanently. No bag holds more than 60.',
+    category: 'tools',
+    game_action: 'bag_expand',
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_5', amount: 1 },
+    quantity: null,
+    cost_buy: 480,
+    cost_sell: 192,
+    pricing_kind: 'fixed',
+    sort_order: 180,
+    worlds: null,
+  },
+  {
+    source_key: 'bag_expand_10',
+    name: 'Expedition Harness',
+    description: 'A frame harness with side panniers, cut for a long walk away from a counter. Hold it in your bag to fit it: +10 bag slots, permanently. No bag holds more than 60.',
+    category: 'tools',
+    game_action: 'bag_expand',
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_10', amount: 1 },
+    quantity: null,
+    cost_buy: 1150,
+    cost_sell: 460,
+    pricing_kind: 'fixed',
+    sort_order: 181,
+    worlds: null,
+  },
+  {
+    source_key: 'bag_expand_15',
+    name: 'Quartermaster Rig',
+    description: "The rig a supply officer wears to carry a squad's worth of everything at once. Hold it in your bag to fit it: +15 bag slots, permanently. No bag holds more than 60.",
+    category: 'tools',
+    game_action: 'bag_expand',
+    action_config: { effect: 'grant_item', item_id: 'bag_expand_15', amount: 1 },
+    quantity: null,
+    cost_buy: 2100,
+    cost_sell: 840,
+    pricing_kind: 'fixed',
+    sort_order: 182,
     worlds: null,
   },
   {

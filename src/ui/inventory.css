@@ -227,13 +227,27 @@ body.inv-menu-open .pause {
   font-weight: 600;
 }
 
-/* 30 ticks, one per slot. Nothing states "30 slots, not 30 items" better. */
+/* One tick per slot. Nothing states "slots, not items" better.
+ *
+ * The column count here is only the pre-expansion default: a bag can be grown
+ * to 60 slots, and `InventoryUI._syncCapTicks` writes the real number as an
+ * inline `grid-template-columns` every time the capacity moves. The stylesheet
+ * cannot know how many rigs this player has fitted, so it must not be the one
+ * holding the number. */
 .inv-cap-bar {
   display: grid;
   grid-template-columns: repeat(30, 1fr);
   gap: 2px;
   height: 9px;
   width: min(420px, 100%);
+}
+
+/* Past thirty ticks the gutters start to outweigh the ticks: sixty 2 px gaps
+ * inside a phone-width header leave each tick barely a pixel of its own, and
+ * the bar reads as a solid block rather than as a count. Halving the gutter is
+ * what keeps a grown bag's bar legible at 390 px. Set by `_syncCapTicks`. */
+.inv-cap-bar.dense {
+  gap: 1px;
 }
 
 .inv-cap-bar i {

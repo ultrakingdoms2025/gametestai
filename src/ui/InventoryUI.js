@@ -3,14 +3,21 @@ import { itemIconSVG, stackSize } from '../systems/ItemDefs.js';
 import { HoldToUse, HOLD_TO_USE_MS } from './HoldToUse.js';
 
 /**
- * The inventory panel: store on the left, 30-slot active bag on the right.
+ * The inventory panel: store on the left, active bag on the right.
  *
  * The design brief the panel is answering is "make it obvious that the bag
- * holds 30 *slots*, not 30 items", so the bag is drawn as a fixed 30-cell grid
- * with the empty cells visible, every filled cell states how many slots that
- * stack costs, and the header carries a 30-tick capacity bar plus the rule in
- * words. A player should never have to guess why a 60-round pack "only" took
- * one square.
+ * holds *slots*, not items", so the bag is drawn as a full grid of cells with
+ * the empty ones visible, every filled cell states how many slots that stack
+ * costs, and the header carries a one-tick-per-slot capacity bar plus the rule
+ * in words. A player should never have to guess why a 60-round pack "only"
+ * took one square.
+ *
+ * THE CELL COUNT AND THE TICK COUNT ARE BOTH READ, NEVER WRITTEN DOWN. A bag
+ * starts at 30 slots and expansion rigs grow it to at most 60
+ * (`Inventory.expandBag`), so every "30" that used to be a literal in this file
+ * - the grid padding, the tick loop, the detail line, the two full-bag
+ * messages - now asks `inventory.bagCapacity`. The grid scrolls, so sixty
+ * cells cost the panel height rather than layout.
  *
  * Interaction is deliberately redundant: drag between the grids, or click a
  * stack to send it across, or shift-click to send a single unit. Whichever a
@@ -23,6 +30,60 @@ import { HoldToUse, HOLD_TO_USE_MS } from './HoldToUse.js';
  * `inventory:use` event the Use button fires. Let go early and nothing
  * happens. The timing lives in `HoldToUse` so it can be tested off the DOM.
  */
+
+/**
+ * Tick count past which the capacity bar tightens its gutter.
+ *
+ * A UI threshold, not the model's starting capacity that happens to share its
+ * value: the bar is 2 px-gutter comfortable up to about thirty ticks in a
+ * phone-width header and is not past it. Named so the `dense` class has a
+ * reason written beside it rather than a bare 30 in a comparison.
+ */
+const DENSE_TICK_THRESHOLD = 30;
+
+/**
+ * Make a `.inv-cap-bar` hold exactly `capacity` ticks.
+ *
+ * ── WHY THIS IS A REBUILD, AND WHY IT IS A MODULE FUNCTION ──────────────
+ * `Inventory.expandBag` deliberately raises no capacity-specific event; it
+ * raises `inventory:changed` like every other mutation, and that event has
+ * always carried `bagCapacity`. So the bar is corrected from the ONE place a
+ * panel already redraws from, on both routes into a redraw - the bus listener
+ * while the panel is open, and `open()`'s own render for a bag that grew while
+ * it was shut. A dedicated event would have been a second subscription doing
+ * the same job, and the failure that shape produces is the one being fixed
+ * here: a bar that stops agreeing with the bag and never says so.
+ *
+ * TWO PANELS DRAW THIS BAR. `InventoryUI` and `MarketplaceUI` both build a
+ * `.inv-cap-bar` in their own `_build`, and both used to fill it once, with a
+ * loop, and never touch the count again. The shop's copy is the worse of the
+ * two: it is the panel that SELLS the expansion rig, so a player who bought
+ * one, fitted it and walked back to the counter would have read "45 / 60" over
+ * a bar of thirty ticks, all of them lit. One function, called from both
+ * renders, is what stops that being fixed in one place and not the other.
+ *
+ * Cheap enough to call every render: it compares a child count first and
+ * touches the DOM only when the number has actually moved, which for the
+ * overwhelming majority of redraws is never.
+ *
+ * The column count is written INLINE because it is data, not styling - the
+ * stylesheet cannot know how many slots this player has bought. `dense`
+ * tightens the 2 px gutter to 1 px past thirty ticks, because sixty ticks and
+ * fifty-nine 2 px gaps inside a phone-width header leaves each tick barely a
+ * pixel of its own.
+ *
+ * @param {HTMLElement} bar the `.inv-cap-bar` element
+ * @param {number} capacity slots the bag can hold right now
+ */
+export function syncCapTicks(bar, capacity) {
+  if (!bar) return;
+  const want = Math.max(0, Math.floor(Number(capacity) || 0));
+  if (bar.childElementCount === want) return;
+  bar.textContent = '';
+  for (let i = 0; i < want; i++) bar.appendChild(el('i'));
+  bar.style.gridTemplateColumns = `repeat(${want}, 1fr)`;
+  bar.classList.toggle('dense', want > DENSE_TICK_THRESHOLD);
+}
 
 export function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -157,7 +218,13 @@ export class InventoryUI {
     this.capVal = el('span', 'inv-cap-val', '0 / 30');
     capRow.append(this.capVal, el('span', 'inv-cap-unit', 'bag slots'));
     this.capBar = el('div', 'inv-cap-bar');
-    for (let i = 0; i < this.inventory.bagCapacity; i++) this.capBar.appendChild(el('i'));
+    /* Built through the same method `_render` re-runs, NOT by a loop that only
+     * happens once. The bar used to be filled here and nowhere else, which was
+     * correct for exactly as long as the bag could never grow: a player who
+     * fitted a +15 rig got a 45-slot bag with a 30-tick bar, and the bar then
+     * under-reported for the rest of the session with no way to notice except
+     * counting the squares. @see syncCapTicks */
+    syncCapTicks(this.capBar, this.inventory.bagCapacity);
     const note = el('div', 'inv-cap-note');
     note.innerHTML = 'Capacity is counted in <b>slots</b>, not items — one full stack fills one slot, so <b>60 rounds = 1 slot</b>.';
     cap.append(capRow, this.capBar, note);
@@ -294,6 +361,7 @@ export class InventoryUI {
     this.capVal.textContent = `${used} / ${capacity}`;
     this.capEl.classList.toggle('near', used >= capacity * 0.8 && used < capacity);
     this.capEl.classList.toggle('full', used >= capacity);
+    syncCapTicks(this.capBar, capacity);
     const ticks = this.capBar.children;
     for (let i = 0; i < ticks.length; i++) ticks[i].classList.toggle('on', i < used);
 
@@ -309,8 +377,9 @@ export class InventoryUI {
   }
 
   /**
-   * Draw a container. Empty cells are rendered too - a grid of 30 squares is
-   * what makes the capacity rule legible at a glance.
+   * Draw a container. Empty cells are rendered too - a grid of `capacity`
+   * squares is what makes the capacity rule legible at a glance, and it grows
+   * with the bag because the count comes from the caller, not from a literal.
    */
   _fillGrid(grid, rows, zone, capacity) {
     grid.textContent = '';
@@ -469,8 +538,12 @@ export class InventoryUI {
     this.dropBtn.disabled = !droppable;
     this.detail.textContent = '';
     if (!def) {
+      /* The capacity is READ, never written down. This line said "30 slots"
+       * for as long as 30 was the only number a bag could be; a player who had
+       * fitted an expansion rig was then being told by the panel that their
+       * 45-slot bag held 30, directly under a bar drawing 45 ticks. */
       this.detail.innerHTML = `<div class="inv-detail-body"><div class="inv-detail-name">Select an item</div>
-        <div class="inv-detail-sub">Hover a stack to inspect it. The bag holds <b>30 slots</b>; each slot holds one full stack.</div></div>`;
+        <div class="inv-detail-sub">Hover a stack to inspect it. The bag holds <b>${this.inventory.bagCapacity} slots</b>; each slot holds one full stack.</div></div>`;
       return;
     }
     const stack = stackSize(def.id);
@@ -514,16 +587,32 @@ export class InventoryUI {
     const moved = fromZone === 'bag' ? inv.moveToStore(id, want) : inv.moveToBag(id, want);
     if (moved <= 0) {
       this._recent.delete(destKey);
-      this._reject(fromZone === 'bag' ? 'Store is full' : 'Bag is full — 30 slots is the limit');
+      this._reject(fromZone === 'bag' ? 'Store is full' : this._bagFullMessage());
       return;
     }
     // _render() was already called by the inventory:changed listener above.
   }
 
   _fullMessage(e) {
-    if (e?.where === 'bag') return 'Bag is full — 30 slots is the limit';
+    if (e?.where === 'bag') return this._bagFullMessage();
     if (e?.where === 'store') return 'Store is full';
     return 'No space left';
+  }
+
+  /**
+   * "Bag is full" in the player's own numbers.
+   *
+   * Two callers, one string, and it is built from `bagCapacity` rather than
+   * from the 30 that used to be written into both of them - a player who has
+   * bought their way to 45 slots being told that "30 slots is the limit" would
+   * reasonably conclude the rig they paid for had done nothing. Where the bag
+   * has actually been grown the message says so, because at that point the
+   * limit is a thing the player bought and is entitled to see acknowledged.
+   *
+   * @returns {string}
+   */
+  _bagFullMessage() {
+    return `Bag is full — ${this.inventory.bagCapacity} slots is the limit`;
   }
 
   /** Brief red line in the footer. Only meaningful while the panel is open. */

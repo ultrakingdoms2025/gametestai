@@ -533,9 +533,14 @@ function dressPlayScene() {
 
   /* THE ACTIVE-EFFECT STRIP, from the REAL ledger on the real bus rather than
    * by appending chips by hand - so this measures the payload `ItemUse` will
-   * actually raise. ALL SIX kinds at once: nothing stops a player using six
-   * consumables in a row, it is the widest the strip ever gets, and it is the
-   * case `--eff-h` is sized for (rows of three, six effects, two rows). */
+   * actually raise. EVERY kind in `EFFECT_KINDS` at once - nine of them today -
+   * because nothing stops a player using nine consumables in a row, it is the
+   * widest the strip ever gets, and it is the case `--eff-h` is sized for
+   * (rows of three, nine effects, three rows).
+   *
+   * Deliberately iterated rather than listed: a tenth kind added to that map
+   * turns up here on its own and the gate measures the fourth row it needs,
+   * which is what makes the reserve in `hud.css` checkable instead of trusted. */
   const effects = new ActiveEffects({ bus, clock: () => 0 });
   for (const kind of Object.keys(EFFECT_KINDS)) effects.start(kind, 30);
 

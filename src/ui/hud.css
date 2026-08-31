@@ -135,10 +135,10 @@
    * as it did before the strip existed.
    *
    * The value is arithmetic, not a measurement: `.eff` is 1.25rem tall and a
-   * third of the column wide, there are exactly seven timed effects in the
-   * game, so seven chips in rows of three is THREE ROWS at every viewport -
-   * 3 x 1.25rem plus two 5px gaps is 70px, and 4.6875rem (75px) leaves five of
-   * air between the strip and the panel under it.
+   * third of the column wide, there are exactly NINE timed effects in the game
+   * (`EFFECT_KINDS`), so nine chips in rows of three is THREE ROWS at every
+   * viewport - 3 x 1.25rem plus two 5px gaps is 70px, and 4.6875rem (75px)
+   * leaves five of air between the strip and the panel under it.
    *
    * IT WAS TWO ROWS AND 3.125rem UNTIL `gunSpread` MADE A SEVENTH, and both
    * halves have to move together or the gate says so: the probe measures the
@@ -146,8 +146,14 @@
    * `.effects` sitting on `.ammo`, and it did - by five pixels - when this was
    * 2.875rem and `.eff` had no height of its own. The harness starts every
    * kind in `EFFECT_KINDS`, so the row count the gate measures is the row
-   * count the arithmetic above claims, and adding an eighth effect without
-   * touching this line would be caught rather than shipped.
+   * count the arithmetic above claims.
+   *
+   * `ward` and `stamina` were the eighth and ninth, and they cost this line
+   * NOTHING: seven chips already needed three rows and nine is three FULL
+   * rows, so the reserve was re-derived, checked against the gate, and left
+   * where it was. Nine is the ceiling. A TENTH kind is a fourth row, and it
+   * has to move this token and its counterpart in the short-viewport query
+   * below on the same commit.
    */
   --eff-h: 0rem;
 
@@ -5930,7 +5936,8 @@ body.sm-open .wstrip {
      term of the same sum.
      16 px tall against 10 px and 11 px of text is still a centred line with
      air around it; the arithmetic is 3 x 1rem plus two 5px gaps plus 5 of
-     clearance = 63px. */
+     clearance = 63px. Still three rows at nine effect kinds, for the reason
+     `--eff-h` gives above: nine chips at three to a row is three of them. */
   .eff {
     height: 1rem;
   }

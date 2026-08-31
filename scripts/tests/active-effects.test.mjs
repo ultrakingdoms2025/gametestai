@@ -182,10 +182,17 @@ test('a world change ends what a world change actually ends, and no more', () =>
    * `SpaceCombat._adopt` is the only thing that answers `world:changed` there,
    * it swaps encounter zones and stands the wing down, and it does not touch
    * `_spreadBolts` - there is no `SpaceCombat.reset()` at all. So a pilot who
-   * buys a fan, docks and launches again really does still have it. */
+   * buys a fan, docks and launches again really does still have it.
+   *
+   * `ward` and `stamina` are the sixth and seventh, and each was traced the
+   * same way rather than inherited from a neighbour that looks like it.
+   * `Player` has no `world:changed` handler at all, so `_wardUntil` crosses a
+   * gateway exactly as `_speedBoostUntil` does. `Stamina` subscribes to
+   * `player:respawned` and `player:spawned` and to nothing else, so nothing
+   * about a traversal touches `_drainScale`. */
   assert.deepEqual(
     fx.list().map((e) => e.kind).sort(),
-    ['gunSpread', 'magnet', 'pauseNpcs', 'shield', 'speed'],
+    ['gunSpread', 'magnet', 'pauseNpcs', 'shield', 'speed', 'stamina', 'ward'],
   );
 });
 
@@ -196,12 +203,24 @@ test('a respawn ends exactly what Player.respawn clears', () => {
 
   bus.emit('player:respawned', {});
 
-  /* `respawn()` sets `_speedBoostUntil = 0` and overwrites `_invulnUntil`, and
-   * that is the whole of it - it has never held a reference to `SpaceCombat`,
-   * so the gun fan survives a death exactly as the firepower boost does. */
+  /* `respawn()` sets `_speedBoostUntil = 0`, sets `_wardUntil = 0` and
+   * overwrites `_invulnUntil`, and that is the whole of it - it has never held
+   * a reference to `SpaceCombat`, so the gun fan survives a death exactly as
+   * the firepower boost does.
+   *
+   * `ward` LEAVES and `stamina` STAYS, and the asymmetry is the point of this
+   * case rather than an accident of two features landing together. The ward is
+   * held in `Player`, and `respawn` zeroes it in the same breath as the speed
+   * boost - so a chip still counting down over one would be describing a
+   * multiplier that had already gone back to 1. The draught is held in
+   * `Stamina`, whose `player:respawned` handler is `reset()`, and `reset()`
+   * writes the POOL - `_value`, `_exhausted`, `_lastDrainAt` - and deliberately
+   * not `_drainScale`. Both lists are written under the rule that they must
+   * describe what the owning system actually does, so this case is what stops
+   * the tidier-looking answer (both, or neither) being written by hand. */
   assert.deepEqual(
     fx.list().map((e) => e.kind).sort(),
-    ['firepower', 'gunSpread', 'magnet', 'pauseNpcs', 'portalPing'],
+    ['firepower', 'gunSpread', 'magnet', 'pauseNpcs', 'portalPing', 'stamina'],
   );
 });
 

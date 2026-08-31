@@ -445,6 +445,27 @@ export const SHIELD_FLOOR = 40;
 export const SHIELD_REGEN = 9;
 export const SHIELD_DELAY = 4.5;
 
+/**
+ * What one Shield Recharge Cell puts back into the absorption pool.
+ *
+ * 110, which is `SHIELD_PER_TIER * 2` and is derived rather than picked: a
+ * cell is worth two tiers of pool, so it is decisive on the `SHIELD_FLOOR`
+ * hull a new pilot flies (40, refilled outright and then some) and still short
+ * of a full refill on a well-fitted one (tier 3 is 165). A cell that always
+ * filled the bar would make the shield ladder in the Fitting Shop pointless -
+ * why buy a bigger tank when a bottle fills any tank - and one sized off the
+ * floor alone would be a rounding error to the pilots who fight the longest.
+ *
+ * ── WHY THE POOL NEEDED A BOTTLE AT ALL ───────────────────────────────────
+ * `_playerHit` sets `_shieldIdle = 0` on every hit and `_regen` only refills
+ * after `SHIELD_DELAY` seconds without one. In a live engagement that gap does
+ * not occur, so the shield structurally cannot recover during the fight it
+ * exists for: it is a one-shot buffer that empties and stays empty until the
+ * player disengages. This is the only thing in the game that refills it under
+ * fire, and it is the only consumable space has that is not a weapon.
+ */
+export const SHIELD_CELL_CHARGE = 110;
+
 /** No hostile may exist within this of the yard mouth. Rule 2 in the header. */
 export const SAFE_RADIUS = 9000;
 /**
@@ -938,6 +959,68 @@ export class SpaceCombat {
     this._spreadBolts = Math.max(this._spreadBolts, even);
     this._spreadUntil = Math.max(this._spreadUntil, this._buffNow() + duration);
     return true;
+  }
+
+  /**
+   * Is there a shield to recharge right now?
+   *
+   * `canWidenGuns()` directly above, plus one term. Asked by
+   * `ItemUse._canApply` BEFORE the cell is taken out of the bag, so a cell used
+   * on the concourse is refused and KEPT - the same contract, for the same
+   * reason, as the laser cell it sits beside on the yard shelf.
+   *
+   * ── THE EXTRA TERM, AND WHY IT IS AN INEQUALITY AND NOT A THRESHOLD ───────
+   * `shield < shieldMax` refuses a cell that would put nothing anywhere: a full
+   * pool cannot absorb a charge, so spending the unit on one is the
+   * unit-destroyed-for-nothing failure this file's neighbours keep naming.
+   *
+   * It is deliberately NOT "the shield is low enough to be worth a cell".
+   * `_apply` clamps the charge to what fits, so a pilot one point down gets one
+   * point back and keeps nothing else - a partial grant, which is real value,
+   * and refusing it would be the mirror failure the bag rigs record at 59 of 60
+   * slots: a unit WITHHELD for nothing. The player decides when a cell is worth
+   * spending; this only refuses the case where it cannot be.
+   *
+   * @returns {boolean}
+   */
+  canChargeShield() {
+    return this._playable() && !!this.piloting?.shipId && this.shield < this.shieldMax;
+  }
+
+  /**
+   * Put `amount` back into the absorption pool, up to its ceiling.
+   *
+   * Shaped on `setGunSpread` above deliberately, down to the refusals: a
+   * non-positive or non-finite argument is not an effect, and the method
+   * answers with what it DID rather than with what it was asked for.
+   *
+   * ── IT WRITES THE SHIELD THE WAY `_chargeShield` DOES ─────────────────────
+   * Clamped to `shieldMax` and followed by `_shieldIdle = SHIELD_DELAY`, which
+   * is the second half of the item and not a tidy-up. `_playerHit` zeroes that
+   * counter on every hit and `_regen` only tops the pool up once it has passed
+   * `SHIELD_DELAY`, so a cell that only wrote `shield` would hand the pilot the
+   * charge and leave them still locked out of their own regeneration for four
+   * and a half seconds of the fight. Setting it to the delay means the pool
+   * starts trickling back on the very next step, exactly as it does when a hull
+   * is boarded, and the next hit re-locks it exactly as it always did.
+   *
+   * NO DEADLINE AND NO CHIP. This is instantaneous the way `Player.heal` is -
+   * it changes a number once and there is nothing left running to count down -
+   * so it is absent from `ActiveEffects.EFFECT_KINDS` for the reason `heal`
+   * is. @see ../systems/ActiveEffects.js
+   *
+   * @param {number} [amount] points of shield to restore
+   * @returns {number} points actually restored, 0 if nothing was
+   */
+  chargeShield(amount = SHIELD_CELL_CHARGE) {
+    const asked = Number(amount);
+    if (!(asked > 0) || !Number.isFinite(asked)) return 0;
+    const room = this.shieldMax - this.shield;
+    if (!(room > 0)) return 0;
+    const put = Math.min(room, asked);
+    this.shield += put;
+    this._shieldIdle = SHIELD_DELAY;
+    return put;
   }
 
   /**

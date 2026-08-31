@@ -19,7 +19,7 @@ import { BAG_CAPACITY_MAX } from './Inventory.js';
 export class ItemUseSystem {
   constructor({
     bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, viewpoints, effects,
-    spaceCombat,
+    spaceCombat, stamina,
   } = {}) {
     this.bus = bus ?? null;
     this.player = player ?? null;
@@ -28,6 +28,15 @@ export class ItemUseSystem {
     this.portals = portals ?? null;
     this.npcManager = npcManager ?? null;
     this.combat = combat ?? null;
+    /* The pool the stamina draughts scale. Passed rather than reached through
+     * `player.stamina`, which is the same choice `loot`, `combat` and
+     * `npcManager` already got: this system's collaborators arrive at the
+     * constructor, and a system that went hunting for one of them through
+     * another object would be a second way to find the same thing. Optional
+     * like all of them - `_canApply` answers false without it, which refuses
+     * the use BEFORE `consumeFromBag`, so an unwired pool is a draught the
+     * player still has. @see ./Stamina.js */
+    this.stamina = stamina ?? null;
     /* Read - never written - by `_useSkin` and by `_useMountPower`, which asks
      * it the two questions the marketplace asks before a mount purchase: does
      * this mount sell this stat, and does the rider already have this tier.
@@ -295,6 +304,101 @@ export class ItemUseSystem {
         return { type: 'firepower', multiplier: 1.75, duration: 30 };
       case 'firepower_boost_100':
         return { type: 'firepower', multiplier: 2.0, duration: 30 };
+      /* THE DAMAGE-REDUCTION WARDS. The defensive mirror of the four above.
+       *
+       * Thirty seconds, the same as the firepower rungs they mirror and the
+       * same as every other timed thing in this switch, so the one number that
+       * differs between an offensive rung and a defensive one is the number on
+       * the label.
+       *
+       * The multipliers stop at 0.5 and there are three rungs rather than
+       * four, and both of those are argued at length over the items in
+       * `ItemDefs` - the short version is that the fourth rung of a
+       * damage-reduction ladder is immunity, and `shield_5s` two cases above
+       * already sells it, for five seconds, by name. */
+      case 'ward_20':
+        return this._wardEffect(0.80);
+      case 'ward_35':
+        return this._wardEffect(0.65);
+      case 'ward_50':
+        return this._wardEffect(0.50);
+      /* THE STAMINA DRAUGHTS. Four rungs against the one player resource that
+       * had nothing to buy for it.
+       *
+       * ── THIRTY SECONDS FOR THREE OF THEM, AND FIFTEEN FOR THE FOURTH ─────
+       *
+       * Thirty is what every other timed rung in this switch costs a player in
+       * duration, and a new ladder that quietly ran longer than its neighbours
+       * would be a balance decision hidden in a constant - the argument written
+       * over `laser_cell` below.
+       *
+       * `stamina_draught_100` breaks that on purpose, and the break is the
+       * decision this family needed most. x0 is not "one more rung of a
+       * ladder": the other three make exertion cheaper and leave the resource
+       * in the game, and this one REMOVES THE RESOURCE for its duration.
+       * Nothing the player does costs anything - and because `Stamina.drain`
+       * treats a scaled cost of zero as no drain at all rather than as a drain
+       * of zero, the pool also refills underneath a sprint. The game has
+       * exactly one other total-negation consumable, the Aegis Shard, and it is
+       * priced in SECONDS rather than in a full window for precisely this
+       * reason: five, against the thirty every graded effect gets.
+       *
+       * So this is priced the same way. Fifteen seconds, which is derived and
+       * not picked: the pool is 100 and a sprint drains `sprintStaminaDrain`
+       * = 15 a second, so one full pool is 6.7 s of unbroken sprint and this is
+       * two of them. That is a real, felt window - long enough to cross ground
+       * or take a wall that stamina would otherwise have stopped - and short
+       * enough that it does not delete free-climbing, which is the system where
+       * the pool is the actual challenge rather than a tax.
+       *
+       * KEPT AT x0 RATHER THAN ARGUED DOWN. The alternative was a top rung of
+       * x0.1, and it was rejected because the action id this row is sold under
+       * is `stamina_slowdown_100`, whose catalogue label is "Stamina drain off"
+       * and whose description is "Temporarily pauses stamina drain". An effect
+       * that left a tenth of the drain running would make the shop text a lie
+       * about the only thing the item does. Duration is the honest lever, and
+       * it is the one this game already reaches for. */
+      case 'stamina_draught_25':
+        return this._staminaEffect(0.75, 30);
+      case 'stamina_draught_50':
+        return this._staminaEffect(0.5, 30);
+      case 'stamina_draught_75':
+        return this._staminaEffect(0.25, 30);
+      case 'stamina_draught_100':
+        return this._staminaEffect(0, 15);
+      /* THE SHIELD RECHARGE CELL. Space's first defensive consumable.
+       *
+       * `laser_cell` below was the only thing space sold, and it is a gun. The
+       * ship's absorption pool takes every hit before the hull does
+       * (`SpaceCombat._playerHit`) and structurally cannot recover during a
+       * fight - `_shieldIdle` is zeroed by every hit and `_regen` waits
+       * `SHIELD_DELAY` seconds of quiet that a live engagement never gives.
+       *
+       * Instantaneous, like `heal`, so there is deliberately NO `duration` and
+       * therefore no chip: `ActiveEffects.start` answers false to an undefined
+       * duration, which is how a medkit and a nav chart get no countdown
+       * without this file keeping a second list of which effects are timed.
+       *
+       * `amount` is stated here rather than defaulted for the reason
+       * `laser_cell` states its `bolts`: the number a player actually gets
+       * should be visible from the item that grants it. It is
+       * `SpaceCombat.SHIELD_CELL_CHARGE`, and the test pins the two together.
+       *
+       * `refusal` copied line for line from `laser_cell`, including the fact of
+       * having one at all: without it `_canApply`'s false becomes main.js's
+       * "Cannot use that right now", which says nothing about the two
+       * conditions that actually produce it. The wording names the likelier -
+       * a cell used on the concourse - and `_canApply` also refuses a full
+       * shield, which the toast covers in its second clause. */
+      case 'shield_cell':
+        return {
+          type: 'shipShield',
+          amount: 110,
+          refusal: {
+            reason: 'no-shield',
+            text: 'Board a ship and launch first — a cell charges a SHIP shield, and only one with room in it. Kept, not spent.',
+          },
+        };
       case 'nav_chart':
         /* Only two worlds publish viewpoints, so a chart carried anywhere else
          * - or one read after every district is already marked - is refused.
@@ -379,6 +483,73 @@ export class ItemUseSystem {
     }
   }
 
+  /**
+   * One ward rung, with the refusal chosen off live state.
+   *
+   * A helper rather than three copies of one object literal, for the reason
+   * the medkit's refusal is picked inside `_effectFor` rather than being a
+   * fixed string: the two ways a ward can be refused are not the same news,
+   * and `_effectFor` is re-read on every use so this cannot go stale.
+   *
+   * THE DEAD CASE IS THE ONE THAT MATTERS, and it is the medkit's defect
+   * exactly. A corpse can open the bag - `gameplayBlocked` skips
+   * `player.fixedUpdate`, so the respawn tick does not run while a panel is up
+   * - and `Player.respawn` ZEROES the ward. A ward used over your own body is
+   * therefore not merely useless (`applyDamage` returns 0 while dead anyway),
+   * it is guaranteed to be erased by the very next thing that happens to you.
+   * That is the unit destroyed for nothing, with a receipt.
+   *
+   * @param {number} mul incoming damage multiplier, 0..1
+   * @returns {{type:string, multiplier:number, duration:number, refusal:object}}
+   */
+  _wardEffect(mul) {
+    return {
+      type: 'ward',
+      multiplier: mul,
+      duration: 30,
+      refusal: this.player?.isDead
+        ? {
+          reason: 'dead',
+          text: 'You are down — and getting back up wipes a ward, so this one would be gone before you could feel it. Kept, not spent.',
+        }
+        : {
+          reason: 'no-ward',
+          text: 'A ward cannot be fixed to you right now. Kept, not spent.',
+        },
+    };
+  }
+
+  /**
+   * One draught rung, with the refusal chosen off live state.
+   *
+   * `_wardEffect` above in the mirror, and the dead case is the same argument
+   * one step weaker: a corpse exerts nothing, so every second of the window
+   * ticks away over a body that cannot spend a point of the pool it was bought
+   * to protect. `Stamina.reset()` also refills the pool outright on respawn,
+   * so what the player gets up with is a full bar and a draught that has
+   * already spent part of itself on nothing.
+   *
+   * @param {number} scale what an exertion is multiplied by, 0..1
+   * @param {number} duration seconds of play time
+   * @returns {{type:string, scale:number, duration:number, refusal:object}}
+   */
+  _staminaEffect(scale, duration) {
+    return {
+      type: 'stamina',
+      scale,
+      duration,
+      refusal: this.player?.isDead
+        ? {
+          reason: 'dead',
+          text: 'You are down — a draught spends its whole minute on a body that is not exerting. Kept, not spent.',
+        }
+        : {
+          reason: 'no-stamina',
+          text: 'Your wind cannot be read right now. Kept, not spent.',
+        },
+    };
+  }
+
   _canApply(effect, itemId) {
     switch (effect.type) {
       case 'heal':
@@ -411,6 +582,20 @@ export class ItemUseSystem {
         return typeof this.npcManager?.pauseFor === 'function';
       case 'shield':
         return typeof this.player.grantShield === 'function';
+      case 'ward':
+        /* `!isDead` FIRST, and it is load-bearing rather than defensive: this
+         * is the only effect in the switch that a respawn actively DELETES
+         * (`Player.respawn` sets `_wardUntil = 0`), so a ward applied to a
+         * corpse is a unit spent on something the game is about to throw away
+         * three seconds later. The probe half is the same guard every other
+         * case makes - a Player old enough not to have `grantWard` cannot
+         * vouch for the effect, so the charm stays in the bag. */
+        return !this.player.isDead && typeof this.player.grantWard === 'function';
+      case 'stamina':
+        /* Same two questions, same order, and the same reasoning one step
+         * weaker: a corpse exerts nothing, so every second of a draught used
+         * over one is spent on nobody. @see _staminaEffect */
+        return !this.player.isDead && typeof this.stamina?.setDrainScale === 'function';
       case 'firepower':
         return typeof this.combat?.boostPlayerDamage === 'function';
       case 'gunSpread':
@@ -430,6 +615,18 @@ export class ItemUseSystem {
          * Optional-chained, so an unwired or absent `SpaceCombat` answers
          * false and refuses the use rather than eating the cell. */
         return this.spaceCombat?.canWidenGuns?.() === true;
+      case 'shipShield':
+        /* The `gunSpread` guard directly above, asked of the other method, and
+         * copied deliberately down to the `=== true` and the optional chain -
+         * an unwired `SpaceCombat` must answer "no" and keep the cell, not
+         * throw and not pass.
+         *
+         * `canChargeShield()` carries one term `canWidenGuns()` does not:
+         * `shield < shieldMax`. A cell dumped into a full pool would be
+         * consumed and absorb nothing, which is the unit-destroyed-for-nothing
+         * failure this file keeps naming under `chart`; the check belongs in
+         * `SpaceCombat` beside the pool it is about, and this asks it. */
+        return this.spaceCombat?.canChargeShield?.() === true;
       case 'bagSlots':
         /* Asked BEFORE the consume, which is the whole reason a rig used at
          * the cap is KEPT rather than eaten - `use()` only reaches
@@ -508,6 +705,39 @@ export class ItemUseSystem {
         if (!this.player.grantShield(effect.duration)) return null;
         this.bus?.emit('hud:notify', { text: `Shield active for ${effect.duration}s`, tone: 'info' });
         return { amount: effect.duration };
+      case 'ward': {
+        if (!this.player.grantWard(effect.multiplier, effect.duration)) return null;
+        /* The RUNNING rate, not this item's rate. `grantWard` keeps the better
+         * of the two when a second ward is fixed over a first, so a Bulwark
+         * used under an Adamant leaves 50% off and not 20% - and a toast
+         * quoting `effect.multiplier` would tell the player their protection
+         * had just got worse at the exact moment it got longer. Reading it back
+         * off the player is the same discipline the bag rigs use when they
+         * report what `expandBag` actually added rather than what the rig
+         * promised. */
+        const cut = Math.round((1 - this.player.wardMultiplier) * 100);
+        this.bus?.emit('hud:notify', {
+          text: `Ward fixed — ${cut}% less damage taken for ${effect.duration}s`,
+          tone: 'info',
+        });
+        return { amount: effect.duration, multiplier: this.player.wardMultiplier };
+      }
+      case 'stamina': {
+        if (!this.stamina.setDrainScale(effect.scale, effect.duration)) return null;
+        /* The running scale, for the reason the ward above reads the running
+         * multiplier: a weak draught drunk under a strong one extends the
+         * strong one, and a toast quoting this item's own number would be
+         * announcing a downgrade that did not happen. */
+        const scale = this.stamina.drainScale;
+        const cut = Math.round((1 - scale) * 100);
+        this.bus?.emit('hud:notify', {
+          text: scale <= 0
+            ? `Wellspring — nothing you do costs stamina for ${effect.duration}s`
+            : `Draught taken — ${cut}% less stamina spent for ${effect.duration}s`,
+          tone: 'info',
+        });
+        return { amount: effect.duration, scale };
+      }
       case 'firepower':
         if (!this.combat.boostPlayerDamage(effect.multiplier, effect.duration)) return null;
         this.bus?.emit('hud:notify', {
@@ -522,6 +752,26 @@ export class ItemUseSystem {
           tone: 'info',
         });
         return { amount: effect.duration, bolts: effect.bolts };
+      }
+      case 'shipShield': {
+        /* THE PARTIAL CHARGE IS NOT A REFUSAL, and the number in the toast is
+         * the return value rather than `effect.amount` - the bag rigs'
+         * argument, in a ship. `chargeShield` clamps to what fits, so a pool
+         * 30 points down takes 30 of the cell's 110 and the other 80 are gone.
+         * Refusing that would be a unit WITHHELD for nothing (the pool will
+         * never be further from full than it is now, if the player is winning),
+         * and reporting 110 while the bar moves 30 would leave the player
+         * asking which of the two is lying. Grant what fits, spend the cell,
+         * and say the true number. */
+        const put = this.spaceCombat.chargeShield(effect.amount);
+        if (!(put > 0)) return null;
+        const shield = Math.round(this.spaceCombat.shield);
+        const max = Math.round(this.spaceCombat.shieldMax);
+        this.bus?.emit('hud:notify', {
+          text: `Shield recharged +${Math.round(put)} — ${shield} of ${max}`,
+          tone: 'info',
+        });
+        return { amount: Math.round(put), shield, shieldMax: max };
       }
       case 'bagSlots': {
         /* THE PARTIAL GRANT IS THE INTERESTING CASE, AND IT IS NOT A REFUSAL.

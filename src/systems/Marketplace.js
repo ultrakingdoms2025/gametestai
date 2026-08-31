@@ -54,6 +54,24 @@ const MARKETPLACE_CONSUMABLE_ITEMS = {
   firepower_boost_50: 'firepower_boost_50',
   firepower_boost_75: 'firepower_boost_75',
   firepower_boost_100: 'firepower_boost_100',
+  /* The three damage-reduction wards, wired exactly like the four firepower
+   * rows above them because that is what they are the mirror of - one entry per
+   * item, keyed by the bare `source_key` the catalogue authors. */
+  ward_20: 'ward_20',
+  ward_35: 'ward_35',
+  ward_50: 'ward_50',
+  /* The four stamina draughts. THE KEY ON THE LEFT IS THE CATALOGUE
+   * `source_key` AND THE ID ON THE RIGHT IS THE BAG ITEM, and here they are
+   * genuinely different strings rather than the same one twice: the actions
+   * `stamina_slowdown_*` were authored years before the items and the
+   * catalogue rows are keyed to them, while `ItemDefs` names the things a
+   * player actually carries. Both halves are pinned by a test for exactly that
+   * reason - a mapping that looks like a typo is a mapping somebody will
+   * "correct". */
+  stamina_slowdown_25: 'stamina_draught_25',
+  stamina_slowdown_50: 'stamina_draught_50',
+  stamina_slowdown_75: 'stamina_draught_75',
+  stamina_slowdown_100: 'stamina_draught_100',
 };
 
 /**

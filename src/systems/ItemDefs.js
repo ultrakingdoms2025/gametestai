@@ -249,6 +249,133 @@ export const ITEMS = {
     kind: 'consumable',
     desc: 'Temporarily doubles weapon damage.',
   },
+
+  /* ---- Stamina draughts ---------------------------------------------
+   *
+   * Four rungs against the one player resource that had nothing to buy for it.
+   *
+   * Health has medkits, all four weapons have ammunition, the bag now has three
+   * expansion rigs - and stamina, which gates the sprint, both climbs, the
+   * mantle, the leap, the swim and the eagle's wingbeat, had no row anywhere in
+   * the catalogue. A draught scales what every one of those exertions costs,
+   * through `Stamina.drain` - the single funnel all eight reach the pool
+   * through, which is why this is one multiply and not eight.
+   *
+   * ── THE FOUR ARE x0.75 / x0.5 / x0.25 / x0 ──────────────────────────────
+   * Named for the reduction the way the speed and firepower ladders are named
+   * for their gain, and mapped one-for-one onto the four `stamina_slowdown_*`
+   * action ids that have sat unused in `MarketplaceActionId` since the
+   * catalogue was written. `ItemUse._effectFor` is where the durations live and
+   * where the top rung's shorter window is argued.
+   *
+   * ── `stack: 1`, LIKE EVERY OTHER TIMED LADDER IN THIS FILE ──────────────
+   * The speed, stasis and firepower rungs all stack 1, and a draught is the
+   * same shape of purchase: one unit, one effect, one window. A larger stack
+   * here would be a balance decision hidden in a number - it is bag pressure,
+   * and bag pressure is what the expansion rigs are for.
+   *
+   * ── PURCHASE-ONLY ───────────────────────────────────────────────────────
+   * No drop table, no cache table, no supply contract, for the reason the
+   * bag rigs give and one of their own: `Loot._dropFor` rolls consumables by
+   * the handful, and a resource whose whole design is that it runs out is not
+   * one to hand back off a guard by the fistful. */
+  stamina_draught_25: {
+    id: 'stamina_draught_25',
+    name: 'Second Wind Draught',
+    short: 'STAM',
+    stack: 1,
+    icon: 'draught',
+    value: 30,
+    kind: 'consumable',
+    desc: 'A field tonic that takes the edge off a hard hour. Every exertion costs a quarter less stamina for thirty seconds.',
+  },
+  stamina_draught_50: {
+    id: 'stamina_draught_50',
+    name: 'Longstride Draught',
+    short: 'STAM',
+    stack: 1,
+    icon: 'draught',
+    value: 44,
+    kind: 'consumable',
+    desc: 'Brewed for people who walk further than they meant to. Every exertion costs half as much stamina for thirty seconds.',
+  },
+  stamina_draught_75: {
+    id: 'stamina_draught_75',
+    name: 'Ironlung Draught',
+    short: 'STAM',
+    stack: 1,
+    icon: 'draught',
+    value: 62,
+    kind: 'consumable',
+    desc: 'Thick, bitter and worth it. Every exertion costs a quarter of its usual stamina for thirty seconds.',
+  },
+  stamina_draught_100: {
+    id: 'stamina_draught_100',
+    name: 'Wellspring Draught',
+    short: 'STAM',
+    stack: 1,
+    icon: 'draught',
+    value: 84,
+    kind: 'consumable',
+    desc: 'Fifteen seconds during which nothing you do costs you anything at all — sprint, climb, swim, leap. Short, because a minute of it would be a different game.',
+  },
+
+  /* ---- Damage-reduction wards ---------------------------------------
+   *
+   * Three rungs of the thing this catalogue had exactly one of.
+   *
+   * It sold four tiers of offence (firepower), four of mobility (speed) and
+   * four of crowd control (stasis) against a single defensive row: the Aegis
+   * Shard, which is five seconds of `Player.grantIFrames` and therefore TOTAL
+   * immunity. There was nothing between nothing and invulnerable.
+   *
+   * ── WHY THREE RUNGS AND NOT FOUR ────────────────────────────────────────
+   * Because the fourth rung of a damage-reduction ladder is 100%, and the game
+   * already sells it under another name. Mirroring the firepower ladder exactly
+   * would have put a x0 ward on the shelf next to the shard at six times the
+   * duration, which is not a fourth rung, it is the shard deleted. The ladder
+   * therefore stops at half - x0.50 is exactly double effective health, which
+   * is where "a middle ground" ends and "a better shard" begins - and
+   * `Player.WARD_MUL_MIN` is the floor that stops any future rung, save or
+   * cheat walking past it.
+   *
+   * ── AND WHY THE FIRST RUNG IS 20% AND NOT 25% ──────────────────────────
+   * Purchased mount Armour is 10% a tier (`Player.applyDamage`), and a ward
+   * compounds with it rather than replacing it. 20 / 35 / 50 puts the entry
+   * ward a clear tier above the cheapest thing that already reduces damage, and
+   * leaves the top rung a full Armour ladder clear of the floor.
+   *
+   * Purchase-only, for the reason the draughts above give. */
+  ward_20: {
+    id: 'ward_20',
+    name: 'Bulwark Ward',
+    short: 'WARD',
+    stack: 1,
+    icon: 'ward',
+    value: 44,
+    kind: 'consumable',
+    desc: 'A struck-iron charm that turns the worst of a blow aside. Takes 20% off everything that hits you for thirty seconds.',
+  },
+  ward_35: {
+    id: 'ward_35',
+    name: 'Bastion Ward',
+    short: 'WARD',
+    stack: 1,
+    icon: 'ward',
+    value: 70,
+    kind: 'consumable',
+    desc: 'Cast for a garrison, sold to anybody. Takes 35% off everything that hits you for thirty seconds.',
+  },
+  ward_50: {
+    id: 'ward_50',
+    name: 'Adamant Ward',
+    short: 'WARD',
+    stack: 1,
+    icon: 'ward',
+    value: 100,
+    kind: 'consumable',
+    desc: 'Halves everything that hits you for thirty seconds. It will not make you untouchable — that is an Aegis Shard, and it lasts five.',
+  },
   alloy_scrap: {
     id: 'alloy_scrap',
     name: 'Alloy Scrap',
@@ -985,6 +1112,43 @@ export const ITEMS = {
     value: 4,
     kind: 'consumable',
     desc: 'Charged capacitor cells, cut and wound in this yard. A ship gun runs off its own capacitor and never runs dry — dump a cell into it and for thirty seconds it throws an eight-bolt fan wide enough to catch two craft at once, without giving up a scrap of its aim on the one in front. The Test-Fire Butts burn them by the plate, and the Fitter takes them by the rack.',
+  },
+  /* ---- The shield recharge cell -------------------------------------
+   *
+   * The second consumable space has ever had, and the first that is not a gun.
+   *
+   * Before it, `laser_cell` was the whole of it: one item, offensive, and the
+   * ship's absorption pool had no way back up during a fight at all.
+   * `SpaceCombat._playerHit` sets `_shieldIdle = 0` on every hit and `_regen`
+   * only refills after `SHIELD_DELAY` seconds without one, so in a live
+   * engagement the shield is structurally a one-shot buffer: it empties, and it
+   * stays empty until the pilot breaks off. A pilot who wanted to keep fighting
+   * had nothing to spend on staying alive.
+   *
+   * `ItemUse` routes it to `SpaceCombat.chargeShield`, which puts
+   * `SHIELD_CELL_CHARGE` back and clears the regeneration lockout the way
+   * boarding a hull does. Instantaneous - no deadline, no HUD chip - the way a
+   * medkit is, which is also why it is absent from `EFFECT_KINDS`.
+   *
+   * IT REFUSES POLITELY, TWICE. `canChargeShield()` is asked BEFORE
+   * `consumeFromBag`: on foot it answers false because `_playable()` does, and
+   * at a full shield it answers false because there is nowhere for the charge
+   * to go. Both keep the cell.
+   *
+   * `stack: 6` because a capacitor bank is crate freight, not the pocket-sized
+   * article `laser_cell` is at 240 to a slot - hull plate stacks 20 and a
+   * thruster coil 10, and this sits below both. Six is two full engagements'
+   * worth of top-ups in one slot, which is what a pilot actually leaves the
+   * yard carrying. */
+  shield_cell: {
+    id: 'shield_cell',
+    name: 'Shield Recharge Cell',
+    short: 'SHC',
+    stack: 6,
+    icon: 'shieldcell',
+    value: 90,
+    kind: 'consumable',
+    desc: 'A sealed capacitor bank wound for a deflector coil, not a gun. Dumped into the ship it puts the absorption pool back up and unsticks the regulator that a hit locks out — the only thing in the Nexus that refills a shield while somebody is still shooting at it. Useless in your hands on the deck.',
   },
   hull_plate: {
     id: 'hull_plate',
@@ -1723,6 +1887,51 @@ const ICONS = {
     </linearGradient></defs>
     <path d="M16 4 l3.5 6.5 L26 12 l-5 5 1.2 7 -6.2 -3.4 -6.2 3.4 1.2 -7 -5 -5 6.5 -1.5 z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
     <circle cx="16" cy="16" r="2.1" fill="#fff7ea"/>`,
+  /* ---- Stamina draught ----------------------------------------------
+   *
+   * A stoppered field flask with a meniscus and two breath curls beside it.
+   *
+   * The curls are what stop it reading as `medkit` or as the ember `crystal`
+   * at 32 px: a bottle alone is any of half a dozen things, and a bottle with
+   * breath coming off it is the one about wind. Four items share this
+   * renderer - the ladder is a strength, not four different articles - the way
+   * the four `speed` rungs already share theirs. NOT `ICONS.unknown`: an icon
+   * key with no renderer is the recorded `planet-minerals` failure, invisible
+   * because a question mark still looks like art. */
+  draught: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#1d5f3a"/><stop offset="1" stop-color="#9dfbb0"/>
+    </linearGradient></defs>
+    <rect x="12.6" y="3" width="6.8" height="3" rx="1.1" fill="${a}"/>
+    <path d="M13.4 6 h5.2 v5.4 l4.4 9.6 a3.2 3.2 0 0 1 -2.9 4.5 h-8.2 A3.2 3.2 0 0 1 9 21 z"
+          fill="rgba(10,20,14,0.55)" stroke="${a}" stroke-width="1.15" stroke-linejoin="round"/>
+    <path d="M10.5 18 h11 l1.6 3.6 a3.2 3.2 0 0 1 -2.9 4.5 h-8.2 A3.2 3.2 0 0 1 9 21 z" fill="url(#${g}a)"/>
+    <path d="M11.4 18 q2.3 -1.6 4.6 0 q2.3 1.6 4.6 0" fill="none" stroke="#eafff0" stroke-width="0.9" opacity="0.75"/>
+    <g fill="none" stroke="${a}" stroke-width="1" stroke-linecap="round" opacity="0.85">
+      <path d="M23.8 7.5 q3.4 1.5 0 3"/><path d="M22.8 12.4 q2.9 1.2 0 2.4"/>
+    </g>`,
+  /* ---- Damage-reduction ward -----------------------------------------
+   *
+   * A translucent hex barrier with a strike glancing off the top-left face.
+   *
+   * DELIBERATELY NOT THE `shield` HEATER SHIELD. Those two are the game's two
+   * defensive consumables and they do different things - one is total immunity
+   * for five seconds, the other is a fraction off for thirty - so a player
+   * looking at a full bag has to be able to tell them apart without reading.
+   * The hex silhouette is shared with `plate`, and that is safe rather than
+   * sloppy: `plate` is an opaque steel-grey trinket with four rivets and a fold
+   * line drawn in violet accent, and a ward is a blue barrier with a ricochet
+   * drawn in consumable green. The ricochet is the whole idea in two strokes -
+   * something arrived, and it did not go where it was aimed. */
+  ward: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e3f2ff"/><stop offset="0.55" stop-color="#8ec2ea"/>
+      <stop offset="1" stop-color="#2b4d70"/>
+    </linearGradient></defs>
+    <path d="M17 4 L26.5 9.4 v11 L17 25.8 L7.5 20.4 V9.4 z" fill="url(#${g}a)" stroke="${a}" stroke-width="1.05" stroke-linejoin="round"/>
+    <path d="M17 8.2 L22.8 11.5 v7.2 L17 22 L11.2 18.7 v-7.2 z" fill="none" stroke="#0b1720" stroke-width="0.9" opacity="0.45"/>
+    <path d="M2.5 5 L11 12.2" stroke="#ffc46a" stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M11 12.2 L4.6 15.6" stroke="#ffc46a" stroke-width="1.35" stroke-linecap="round" opacity="0.9"/>`,
   credits: (g, a) => `
     <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffe3b6"/><stop offset="1" stop-color="#b6741a"/>
@@ -1823,6 +2032,21 @@ const ICONS = {
     <g stroke="#eafcff" stroke-width="1" opacity="0.9">
       <path d="M12.5 12 h7"/><path d="M12.5 16 h7"/><path d="M12.5 20 h7"/>
     </g>`,
+  /* The shield cell. The same cell BODY as `cell` above, carrying a shield
+   * instead of three charge bars - because the two sit on the same yard shelf,
+   * in the same bag, and the difference between them is what they are wound
+   * FOR. Sharing the silhouette says "both of these are cells" and the face
+   * says which; two unrelated drawings would have said neither. */
+  shieldcell: (g, a) => `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#10303f"/><stop offset="1" stop-color="#6fd8f5"/>
+    </linearGradient></defs>
+    <rect x="8" y="7" width="16" height="19" rx="2.4" fill="url(#${g}a)" stroke="${a}" stroke-width="1.05"/>
+    <rect x="13.5" y="4.4" width="5" height="3" rx="1" fill="${a}"/>
+    <path d="M16 10.4 L21 12 v4.6 c0 3.4 -2.5 5.6 -5 7.4 -2.5 -1.8 -5 -4 -5 -7.4 V12 z"
+          fill="#eafcff" opacity="0.92" stroke="${a}" stroke-width="0.7"/>
+    <path d="M16 13 v8" stroke="#0b1720" stroke-width="0.9" opacity="0.5"/>
+    <path d="M13 15.6 h6" stroke="#0b1720" stroke-width="0.9" opacity="0.5"/>`,
   plate: (g, a) => `
     <defs><linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#4a5560"/><stop offset="1" stop-color="#b8c6d4"/>

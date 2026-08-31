@@ -715,12 +715,27 @@ test('the kind census moved by exactly one item, from ammo to consumable', () =>
    * reach it - the failure `laser_cell` is in this file for. Three deliberate
    * additions, counted here so a fourth accidental one is still visible.
    *
+   * ── consumable 22 -> 30: THREE NEW FAMILIES, EIGHT NEW ROWS ─────────────
+   * Four stamina draughts (`stamina_draught_25/50/75/100`), three damage-
+   * reduction wards (`ward_20/35/50`) and one ship shield recharge cell
+   * (`shield_cell`). Every one of them is `consumable` for the same reason
+   * `laser_cell` moved and the bag rigs arrived that way: `InventoryUI._hasUse`
+   * draws the hold-to-use ring for `consumable`, `skin` and `mountpower` ONLY,
+   * so any other kind would be an effect with no way to reach it - the exact
+   * failure this whole file exists for.
+   *
+   * The count is the point. `shield_cell` in particular could plausibly have
+   * been authored as `trinket` (it is ship freight, like `hull_plate` and
+   * `thruster_coil` beside it on the shelf) and that would have shipped an item
+   * with a `SpaceCombat.chargeShield` behind it and no ring to press. The
+   * census is what makes that visible in a diff instead of in play.
+   *
    * The bucket totals are what this case protects, not any one item, so it is
-   * updated by adding the three rather than by re-deriving the whole map. */
+   * updated by adding the eight rather than by re-deriving the whole map. */
   const census = {};
   for (const def of Object.values(ITEMS)) census[def.kind] = (census[def.kind] ?? 0) + 1;
   assert.deepEqual(census, {
-    currency: 1, ammo: 3, consumable: 22, trinket: 51, skin: 20, mountpower: 57,
+    currency: 1, ammo: 3, consumable: 30, trinket: 51, skin: 20, mountpower: 57,
   });
 
   /* The three that are still ammunition all feed a weapon that really does

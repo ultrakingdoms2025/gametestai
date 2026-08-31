@@ -58,6 +58,21 @@ const STRIDE = 1.55;
 const RESPAWN_DELAY = 3.2;
 const SPAWN_INVULN = 2.5;
 
+/**
+ * The deepest a damage-reduction ward may ever cut incoming damage.
+ *
+ * 0.35, i.e. 65% off, and the number is the ceiling on a LADDER rather than a
+ * tuning knob: the catalogue's deepest ward is x0.50 and this leaves a rung of
+ * headroom above it for a future one without anybody having to re-argue where
+ * the top is. It stops short of zero on purpose - zero is `grantIFrames`, the
+ * five-second shield the player buys by name, and a ward that could reach it
+ * would be that item sold cheaper and for six times as long.
+ *
+ * Enforced in `grantWard`, so a save, a cheat or a mis-authored catalogue row
+ * cannot walk past it. @see grantWard
+ */
+const WARD_MUL_MIN = 0.35;
+
 /** Fraction of the usual ground friction that applies during a stagger. */
 const IMPULSE_FRICTION = 0.22;
 /** How long ground friction stays reduced after an impulse, seconds. */
@@ -318,14 +333,22 @@ export class Player {
     this._health = P.maxHealth;
     this._dead = false;
     this._lastDamageAt = -999;
-    /* ---- the two deadlines on the BUFF clock ------------------------------
+    /* ---- the three deadlines on the BUFF clock ----------------------------
      *
-     * Both are seconds of `engine.simElapsed`, not of `_elapsed`. Everything
-     * else in this block is on `_elapsed`, so read `_buffNow()` before
-     * touching either of them. @see _buffNow */
+     * All three are seconds of `engine.simElapsed`, not of `_elapsed`.
+     * Everything else in this block is on `_elapsed`, so read `_buffNow()`
+     * before touching any of them. @see _buffNow */
     this._invulnUntil = 0;
     this._speedBoostUntil = 0;
     this._speedBoostMul = 1;
+    /**
+     * The damage-reduction ward: what incoming damage is multiplied by while a
+     * ward runs, and when it stops. A third deadline on the same buff clock as
+     * the two above, and it is read in exactly one place - `applyDamage`.
+     * @see grantWard
+     */
+    this._wardUntil = 0;
+    this._wardMul = 1;
     this._deathAt = 0;
     this._regenCarry = 0;
     this._elapsed = 0;
@@ -669,6 +692,21 @@ export class Player {
 
   get speedMultiplier() {
     return this._buffNow() < this._speedBoostUntil ? this._speedBoostMul : 1;
+  }
+
+  /**
+   * What a running ward multiplies incoming damage by. 1 while none is running.
+   *
+   * `speedMultiplier` in the mirror, and it exists for the same two callers:
+   * `grantWard` reads it so a second ward compares against the LIVE rate
+   * rather than against an expired one still sitting in `_wardMul`, and the
+   * tests read it so the effect is observable without reaching into a private
+   * field. `applyDamage` deliberately does NOT use it - it already has the
+   * deadline comparison in hand and a second read would be a second clock
+   * sample inside one damage event.
+   */
+  get wardMultiplier() {
+    return this._buffNow() < this._wardUntil ? this._wardMul : 1;
   }
 
   /** Eye position in world space. A fresh vector each call, per the contract. */
@@ -1798,6 +1836,23 @@ export class Player {
     const shield = this.mounts?.mounted ? Math.max(0, Number(this.mounts.active?.shieldTier) || 0) : 0;
     if (shield > 0) amount *= Math.max(0.1, 1 - 0.10 * shield);
 
+    /* A running damage-reduction ward, in the SAME SHAPE as the Armour term
+     * directly above: a floored multiplier on `amount`, applied after the
+     * invulnerability gate and before the pool is touched.
+     *
+     * It compounds with the mount's Armour rather than replacing it, and that
+     * is bounded rather than hoped for: Armour bottoms out at x0.10 and
+     * `grantWard` clamps a ward to `WARD_MUL_MIN`, so the deepest combination
+     * the game can produce is a fixed, known number and no pair of purchases
+     * can reach immunity through this door. Immunity has exactly one seller -
+     * `grantIFrames`, five lines up, which returns before any of this - and it
+     * is the shield the player buys by name.
+     *
+     * `_buffNow()` and not `_elapsed`, because `_wardUntil` was written against
+     * the play clock the same way `_invulnUntil` and `_speedBoostUntil` are.
+     * @see grantWard */
+    if (this._buffNow() < this._wardUntil) amount *= this._wardMul;
+
     const applied = Math.min(this._health, amount);
     this._health -= applied;
     this._lastDamageAt = this._elapsed;
@@ -2049,6 +2104,54 @@ export class Player {
   }
 
   /**
+   * Run a damage-reduction ward: multiply incoming damage for `duration`.
+   *
+   * ── WHY THIS EXISTS AT ALL ────────────────────────────────────────────────
+   *
+   * The catalogue sold four rungs of offence, four of mobility and four of
+   * crowd control against ONE defensive row - `shield_5s`, which is five
+   * seconds of `grantIFrames` and therefore total immunity. There was nothing
+   * between nothing and invulnerable. A ward is that middle ground: it is
+   * always worse than the shard while the shard is up and it lasts six times
+   * as long, so buying one is a real choice rather than a cheaper shard.
+   *
+   * ── IT CANNOT REACH IMMUNITY ──────────────────────────────────────────────
+   *
+   * `WARD_MUL_MIN` is the floor, and it is a floor and not a documented
+   * convention because `applyDamage` multiplies this in beside the mount's
+   * Armour term. Two independently-bought reductions compounding is fine and
+   * intended; two compounding to zero would be `shield_5s` sold by accident,
+   * for longer, at a lower price. The clamp is here rather than at the call
+   * site so a save, a cheat or a mis-authored item cannot walk past it.
+   *
+   * ── A SECOND WARD EXTENDS, IT DOES NOT COMPOUND ───────────────────────────
+   *
+   * `Math.min` on the multiplier and `Math.max` on the deadline - `boostSpeed`
+   * directly above, read for a number where smaller is stronger. Two wards
+   * drunk together are one ward at the better rate for the longer window, not
+   * a product of two rates, and `ActiveEffects.start` draws the one chip that
+   * describes. Compounding them WOULD have reached immunity: three of the
+   * deepest row is 0.5^3 = 0.125, and four is nearly nothing.
+   *
+   * @param {number} mul incoming damage multiplier, 0..1
+   * @param {number} duration seconds of play time
+   * @returns {boolean} false if nothing was applied
+   */
+  grantWard(mul, duration) {
+    if (!(duration > 0) || !Number.isFinite(duration)) return false;
+    /* `typeof` BEFORE the range test, for the reason `Stamina.setDrainScale`
+     * gives: `Number(null)` is 0, and 0 is the STRONGEST value this method
+     * accepts. A caller that passed a missing argument would be handed the
+     * floor ward for free. */
+    if (typeof mul !== 'number' || !Number.isFinite(mul)) return false;
+    if (!(mul < 1) || mul < 0) return false;
+    this._wardMul = Math.min(this.wardMultiplier, Math.max(WARD_MUL_MIN, mul));
+    this._wardUntil = Math.max(this._wardUntil, this._buffNow() + duration);
+    this.bus.emit('player:buffed', { kind: 'ward', multiplier: this._wardMul, duration });
+    return true;
+  }
+
+  /**
    * Raise invulnerability without announcing a buff.
    *
    * The silent half of {@link grantShield}. A shield is a PICKUP - it has an
@@ -2109,6 +2212,14 @@ export class Player {
     this._invulnUntil = this._buffNow() + SPAWN_INVULN;
     this._speedBoostUntil = 0;
     this._speedBoostMul = 1;
+    /* The ward goes with the speed boost, and it is written HERE rather than
+     * left to expire because a corpse getting up under thirty seconds of half
+     * damage is the buff outliving the body that bought it. That is also the
+     * whole of why `ward` is in `ActiveEffects.ENDED_BY_RESPAWN`: that list is
+     * required to describe what this method actually clears, so these two
+     * lines and that entry move together or the chip starts lying. */
+    this._wardUntil = 0;
+    this._wardMul = 1;
     this._velocity.set(0, 0, 0);
     this._dip = 0;
     this._dipVel = 0;

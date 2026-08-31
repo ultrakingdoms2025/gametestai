@@ -42,10 +42,11 @@ import { WORLD_MARKETS } from './ItemDefs.js';
  * The two GENERATED arrays in that file - `MOUNT_SKIN_ROWS` and the 60
  * `MOUNT_UPGRADE_ROWS` for the non-car mounts - are deliberately NOT copied.
  * They are a product of three tables and copying a product is how a copy rots.
- * Offline, a vendor stocks the 46 hand-authored rows, which includes every
- * yard row, every consumable and all three bag expansion rigs; the mount
- * upgrade wall is the one thing that needs the API up. `offlineCatalog` says
- * so in its return value.
+ * Offline, a vendor stocks the 54 hand-authored rows, which includes every
+ * yard row, every consumable - the four stamina draughts and three damage
+ * wards included - and all three bag expansion rigs; the mount upgrade wall is
+ * the one thing that needs the API up. `offlineCatalog` says so in its return
+ * value.
  *
  * ===========================================================================
  *  PRICING
@@ -129,6 +130,20 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
     cost_sell: 64,
     pricing_kind: 'ammo',
     sort_order: 50,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'part_shield_cell',
+    name: 'Shield Recharge Cell',
+    description: 'A sealed capacitor bank wound for a deflector coil rather than a gun. Dumped into a flying ship it refills the absorption pool and unsticks the regulator a hit locks out.',
+    category: 'ships',
+    game_action: 'shield_cell',
+    action_config: { effect: 'grant_item', item_id: 'shield_cell', amount: 1 },
+    quantity: null,
+    cost_buy: 240,
+    cost_sell: 105,
+    pricing_kind: 'consumable',
+    sort_order: 51,
     worlds: ['dock'],
   },
   {
@@ -395,6 +410,114 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
     cost_sell: 196,
     pricing_kind: 'consumable',
     sort_order: 173,
+    worlds: null,
+  },
+  /* The three damage-reduction wards, the defensive mirror of the four rows
+   * above. Bundled for a reason that is sharper than "every row is bundled":
+   * these and the Aegis Shard are the only two things in the catalogue a player
+   * can buy to survive a fight, and a build with the API down is exactly the
+   * build the campaign is play-tested on. */
+  {
+    source_key: 'ward_20',
+    name: 'Bulwark Ward',
+    description: 'Spell consumable that reduces all damage taken by 20% for 30 seconds.',
+    category: 'spells',
+    game_action: 'ward_20',
+    action_config: { effect: 'modify_damage_taken', percent: 20, seconds: 30 },
+    quantity: null,
+    cost_buy: 160,
+    cost_sell: 70,
+    pricing_kind: 'consumable',
+    sort_order: 174,
+    worlds: null,
+  },
+  {
+    source_key: 'ward_35',
+    name: 'Bastion Ward',
+    description: 'Spell consumable that reduces all damage taken by 35% for 30 seconds.',
+    category: 'spells',
+    game_action: 'ward_35',
+    action_config: { effect: 'modify_damage_taken', percent: 35, seconds: 30 },
+    quantity: null,
+    cost_buy: 245,
+    cost_sell: 108,
+    pricing_kind: 'consumable',
+    sort_order: 175,
+    worlds: null,
+  },
+  {
+    source_key: 'ward_50',
+    name: 'Adamant Ward',
+    description: 'Spell consumable that halves all damage taken for 30 seconds.',
+    category: 'spells',
+    game_action: 'ward_50',
+    action_config: { effect: 'modify_damage_taken', percent: 50, seconds: 30 },
+    quantity: null,
+    cost_buy: 360,
+    cost_sell: 158,
+    pricing_kind: 'consumable',
+    sort_order: 176,
+    worlds: null,
+  },
+  /* The four stamina draughts. `source_key` is the `stamina_slowdown_*` action
+   * id and not the `stamina_draught_*` item id, which looks like a mistake and
+   * is not: `Marketplace.consumableItemFor` maps one to the other, and the
+   * catalogue key has to be the mapping key or the purchase resolves to nothing
+   * and returns `unsupported`. @see MARKETPLACE_CONSUMABLE_ITEMS */
+  {
+    source_key: 'stamina_slowdown_25',
+    name: 'Second Wind Draught',
+    description: 'Field tonic that cuts the stamina cost of every exertion by 25% for 30 seconds.',
+    category: 'health',
+    game_action: 'stamina_slowdown_25',
+    action_config: { effect: 'modify_stamina_drain', percent: 25, seconds: 30 },
+    quantity: null,
+    cost_buy: 120,
+    cost_sell: 52,
+    pricing_kind: 'consumable',
+    sort_order: 190,
+    worlds: null,
+  },
+  {
+    source_key: 'stamina_slowdown_50',
+    name: 'Longstride Draught',
+    description: 'Field tonic that halves the stamina cost of every exertion for 30 seconds.',
+    category: 'health',
+    game_action: 'stamina_slowdown_50',
+    action_config: { effect: 'modify_stamina_drain', percent: 50, seconds: 30 },
+    quantity: null,
+    cost_buy: 175,
+    cost_sell: 77,
+    pricing_kind: 'consumable',
+    sort_order: 191,
+    worlds: null,
+  },
+  {
+    source_key: 'stamina_slowdown_75',
+    name: 'Ironlung Draught',
+    description: 'Field tonic that cuts the stamina cost of every exertion by 75% for 30 seconds.',
+    category: 'health',
+    game_action: 'stamina_slowdown_75',
+    action_config: { effect: 'modify_stamina_drain', percent: 75, seconds: 30 },
+    quantity: null,
+    cost_buy: 250,
+    cost_sell: 110,
+    pricing_kind: 'consumable',
+    sort_order: 192,
+    worlds: null,
+  },
+  {
+    source_key: 'stamina_slowdown_100',
+    name: 'Wellspring Draught',
+    description: 'Field tonic that stops stamina draining at all for 15 seconds. Half the window of the rungs below it, because nothing you do costs anything.',
+    category: 'health',
+    game_action: 'stamina_slowdown_100',
+    action_config: { effect: 'modify_stamina_drain', percent: 100, seconds: 15 },
+    quantity: null,
+    cost_buy: 340,
+    cost_sell: 150,
+    pricing_kind: 'consumable',
+    sort_order: 193,
     worlds: null,
   },
   /* The three bag expansion rigs. Bundled like every other hand-authored row,

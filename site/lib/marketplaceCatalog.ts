@@ -93,6 +93,19 @@ export const MARKETPLACE_ACTIONS = [
     description: 'Consumes one item and adds a fitting-out part to the player bag.',
     effect: 'grant_item',
   },
+  /* The shield recharge cell, on the generic `grant_item` path for exactly the
+   * reason the three rows above it are: it is the documented way past step 7 of
+   * the nine-step item registration - the `MARKETPLACE_CONSUMABLE_ITEMS`
+   * mapping whose recorded failure is a `source_key` resolving to nothing and
+   * every purchase returning `unsupported` (Marketplace.js:605-613). The cell
+   * needs no bespoke grant: it is a bag item, and `ItemUse` is what turns it
+   * into shield when the pilot is in a seat with room in the pool. */
+  {
+    id: 'shield_cell',
+    label: 'Shield recharge cell',
+    description: 'Consumes one item and adds a ship shield recharge cell to the player bag.',
+    effect: 'grant_item',
+  },
   {
     id: 'nav_chart',
     label: 'Navigation chart',
@@ -145,6 +158,25 @@ export const MARKETPLACE_ACTIONS = [
     description: 'Consumes one item and restores health to full.',
     effect: 'restore_health_full',
   },
+  /* THE FOUR STAMINA ACTIONS, WHICH FINALLY HAVE ROWS BEHIND THEM.
+   *
+   * These ids were authored with the rest of the catalogue and sold nothing for
+   * as long as they existed - the dead actions the old INVENTORY-AUDIT.md
+   * flagged. `BASE_ITEMS` now carries four rows against them and `ItemUse`
+   * implements the effect through `Stamina.setDrainScale`, so the union, the
+   * `game_action` normaliser and the API validators were untouched by the work
+   * that made them real: the ids were already legal, they simply pointed at
+   * nothing.
+   *
+   * They resolve through `MARKETPLACE_CONSUMABLE_ITEMS` in
+   * `src/systems/Marketplace.js` rather than through the generic `grant_item`
+   * path the yard rows use, which is the same wiring the speed, stasis, shield
+   * and firepower ladders have - and it carries the same rule, stated here
+   * because breaking it is silent: THE `source_key` OF EACH ROW MUST BE THE
+   * BARE MAPPING KEY. `consumableItemFor` probes the exact key and then retries
+   * once with a trailing `:<world>` stripped, so a prettier `spell_` prefix
+   * would resolve to nothing and every purchase would come back
+   * `reason: 'unsupported'`. */
   {
     id: 'stamina_slowdown_25',
     label: 'Stamina drain -25%',
@@ -246,6 +278,37 @@ export const MARKETPLACE_ACTIONS = [
     label: 'Shield 5s',
     description: 'Creates a short damage shield.',
     effect: 'shield',
+  },
+  /* The damage-reduction wards: the middle ground between `shield_5s` (total
+   * immunity, five seconds) and nothing at all, which is the whole of what the
+   * catalogue offered a player who wanted to take a hit.
+   *
+   * THREE IDS AND NOT ONE, unlike `bag_expand` which names a KIND and lets
+   * `action_config.item_id` name the rung. The difference is the path: a rig is
+   * a `grant_item` and reads its rung out of the config, whereas a ward is a
+   * timed consumable resolved through `MARKETPLACE_CONSUMABLE_ITEMS` by
+   * `source_key`, exactly as the four firepower rows it mirrors are - and that
+   * mapping is keyed one entry per item. Same wiring as the ladder it is the
+   * mirror of, so the two read as one decision in the shop and in the code.
+   *
+   * There is deliberately no fourth rung: 100% off is `shield_5s`. */
+  {
+    id: 'ward_20',
+    label: 'Damage ward -20%',
+    description: 'Temporarily reduces all damage taken by 20%.',
+    effect: 'modify_damage_taken',
+  },
+  {
+    id: 'ward_35',
+    label: 'Damage ward -35%',
+    description: 'Temporarily reduces all damage taken by 35%.',
+    effect: 'modify_damage_taken',
+  },
+  {
+    id: 'ward_50',
+    label: 'Damage ward -50%',
+    description: 'Temporarily halves all damage taken.',
+    effect: 'modify_damage_taken',
   },
   {
     id: 'loot_magnet_30s',
@@ -531,13 +594,13 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   /* Lodestar Yard                                                        */
   /* ==================================================================== */
   /*
-   * Four rows, and every one of them carries a `worlds` allowlist - the first
+   * Five rows, and every one of them carries a `worlds` allowlist - the first
    * use of a field that shipped with the comment "currently unused; kept for
    * future world-specific stock".
    *
    * ── Why an allowlist and not the usual six copies ────────────────────────
-   * A `BASE_ITEMS` row without one is seeded into all six worlds, and three of
-   * these four have nowhere to be bought outside the yard: `MARKETPLACE_WORLDS`
+   * A `BASE_ITEMS` row without one is seeded into all six worlds, and four of
+   * these five have nowhere to be bought outside the yard: `MARKETPLACE_WORLDS`
    * has one counter carrying the `ships` category in the entire Nexus (Suri
    * Vane, `DockWorld._publish`), and `Marketplace.refreshCatalog` filters the
    * open window by the standing vendor's `vendorCategories`. A `ships` row in
@@ -568,6 +631,45 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
     cost_sell: 64,
     pricing_kind: 'ammo' as const,
     sort_order: 50,
+    worlds: ['dock'] as const,
+  },
+  /* THE SHIELD RECHARGE CELL. The yard's fifth row, and space's second
+   * consumable of any kind.
+   *
+   * `pack_laser_cell` directly above was the whole of what space sold, and it
+   * is a gun. The ship's absorption pool takes every hit before the hull does
+   * and cannot recover under fire - `SpaceCombat._playerHit` zeroes the idle
+   * counter on every hit and `_regen` waits `SHIELD_DELAY` seconds of quiet a
+   * live engagement never gives - so a pilot who wanted to spend credits on
+   * staying alive had nothing to spend them on.
+   *
+   * `category: 'ships'` and `worlds: ['dock']`, and the two go together: the
+   * whole Nexus has ONE counter carrying `ships` (Suri Vane, `DockWorld`), so a
+   * `ships` row seeded anywhere else is a row no NPC alive can show you. That
+   * pairing is asserted over every `ships` row in dock-economy.test.mjs.
+   *
+   * `pricing_kind: 'consumable'` rather than `fixed`, and this was checked
+   * rather than assumed. The regional multipliers only bite where a row is
+   * seeded into more than one world - that is the arbitrage the bag rigs are
+   * `fixed` to prevent - and this one exists in exactly one, so `consumable`
+   * produces a single price at the yard's own 0.95 and nothing to fly between.
+   * What it buys is that the cell moves with the yard's consumable rate if
+   * that rate is ever re-tuned, which is what a thing that gets consumed should
+   * do. `pack_nav_chart` two rows down is the same call for the same reason. */
+  {
+    source_key: 'part_shield_cell',
+    name: 'Shield Recharge Cell',
+    description: 'A sealed capacitor bank wound for a deflector coil rather than a gun. Dumped into a flying ship it refills the absorption pool and unsticks the regulator a hit locks out.',
+    category: 'ships' as const,
+    image_label: 'SHCELL',
+    image_color: '#6fd8f5',
+    game_action: 'shield_cell' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shield_cell', amount: 1 },
+    quantity: null,
+    cost_buy: 240,
+    cost_sell: 105,
+    pricing_kind: 'consumable' as const,
+    sort_order: 51,
     worlds: ['dock'] as const,
   },
   {
@@ -896,6 +998,192 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
     cost_sell: 196,
     pricing_kind: 'consumable' as const,
     sort_order: 173,
+  },
+
+  /* ==================================================================== */
+  /* Damage-reduction wards                                               */
+  /* ==================================================================== */
+  /*
+   * The defensive mirror of the four rows directly above, and they are placed
+   * directly above deliberately: the shop's sort order is what a player reads
+   * as "these go together", and the choice this family exists to offer is
+   * exactly the choice between the sigil and the ward.
+   *
+   * ── THE GAP ─────────────────────────────────────────────────────────────
+   * Four tiers of offence, four of mobility (`spell_velocity_*`), four of crowd
+   * control (`spell_stasis_*`), and ONE defensive row - `shield_5s`, five
+   * seconds of total immunity through `Player.grantIFrames`. Nothing between
+   * nothing and invulnerable.
+   *
+   * ── THREE RUNGS, STOPPING AT HALF ───────────────────────────────────────
+   * 20 / 35 / 50 per cent off, all 30 seconds, applied in `Player.applyDamage`
+   * as a floored multiplier in the same shape as the mount Armour term already
+   * there. There is no fourth rung because the fourth rung of a
+   * damage-reduction ladder is 100% and `shield_5s` already sells it: a x0 ward
+   * at six times the shard's duration would not be a rung, it would be the
+   * shard deleted. Half is where a middle ground ends - exactly double
+   * effective health - and `WARD_MUL_MIN` in `player/Player.js` is the hard
+   * floor that stops a future rung, a save or a cheat going past it.
+   *
+   * The entry rung is 20 and not 25 because purchased mount Armour is 10% a
+   * tier, and the cheapest ward has to be worth buying by a rider who already
+   * owns some: the two compound.
+   *
+   * ── `spells`, LIKE THE SHARD, AND FOR THE SAME COUNTER ──────────────────
+   * `shield_5s` is a `spells` row and this is the item a player buys INSTEAD of
+   * it, so both have to be on the same shelf or the choice is not a choice.
+   * That does mean the wards inherit the shard's reach: `spells` is carried in
+   * the citadel, the vale and the yard, and station, sports and race declare
+   * counters that do not stock it. That is the shard's existing footprint, not
+   * a new restriction, and putting the wards anywhere else to widen it would
+   * separate them from the row they are the alternative to.
+   */
+  {
+    source_key: 'ward_20',
+    name: 'Bulwark Ward',
+    description: 'Spell consumable that reduces all damage taken by 20% for 30 seconds.',
+    category: 'spells' as const,
+    image_label: 'WARD 20',
+    image_color: '#8ec2ea',
+    game_action: 'ward_20' as MarketplaceActionId,
+    action_config: { effect: 'modify_damage_taken', percent: 20, seconds: 30 },
+    quantity: null,
+    cost_buy: 160,
+    cost_sell: 70,
+    pricing_kind: 'consumable' as const,
+    sort_order: 174,
+  },
+  {
+    source_key: 'ward_35',
+    name: 'Bastion Ward',
+    description: 'Spell consumable that reduces all damage taken by 35% for 30 seconds.',
+    category: 'spells' as const,
+    image_label: 'WARD 35',
+    image_color: '#8ec2ea',
+    game_action: 'ward_35' as MarketplaceActionId,
+    action_config: { effect: 'modify_damage_taken', percent: 35, seconds: 30 },
+    quantity: null,
+    cost_buy: 245,
+    cost_sell: 108,
+    pricing_kind: 'consumable' as const,
+    sort_order: 175,
+  },
+  {
+    source_key: 'ward_50',
+    name: 'Adamant Ward',
+    description: 'Spell consumable that halves all damage taken for 30 seconds.',
+    category: 'spells' as const,
+    image_label: 'WARD 50',
+    image_color: '#8ec2ea',
+    game_action: 'ward_50' as MarketplaceActionId,
+    action_config: { effect: 'modify_damage_taken', percent: 50, seconds: 30 },
+    quantity: null,
+    cost_buy: 360,
+    cost_sell: 158,
+    pricing_kind: 'consumable' as const,
+    sort_order: 176,
+  },
+
+  /* ==================================================================== */
+  /* Stamina draughts                                                     */
+  /* ==================================================================== */
+  /*
+   * Four rows against the one player resource that had nothing to buy for it.
+   * Health has the Trauma Twin-Pack, all four weapons have ammunition, the bag
+   * has three expansion rigs - and stamina, which gates the sprint, both
+   * climbs, the mantle, the leap, the swim and the eagle's wingbeat, was sold
+   * nothing at any counter in the Nexus.
+   *
+   * ── THE `source_key` IS THE MAPPING KEY, AND THAT IS NOT COSMETIC ───────
+   * These four resolve through `MARKETPLACE_CONSUMABLE_ITEMS` in
+   * `src/systems/Marketplace.js` the way every other timed ladder does, and
+   * `consumableItemFor` probes the EXACT key before retrying without a trailing
+   * `:<world>`. A prettier `spell_stamina_25` would resolve to nothing and every
+   * purchase would return `reason: 'unsupported'` - the recorded step-7 failure
+   * the shield and firepower rows carry the same warning about.
+   *
+   * ── `health`, AND THE ONE PLACE THAT COSTS SOMETHING ────────────────────
+   * A draught is medicine, it lands beside the only other `health` row in the
+   * file, and `health` is carried by counters in the station, the vale, the
+   * citadel and the yard. Vellum Ridge is the exception - its single counter
+   * carries `mounts` and `tools` - so a draught cannot be bought at the
+   * circuit. That is the Trauma Twin-Pack's existing footprint exactly, not a
+   * new hole, and filing medicine under `tools` to dodge it would be a lie
+   * about what the item is in five worlds to fix one.
+   *
+   * ── THE PRICES, AND THE SHAPE OF THE TOP RUNG ──────────────────────────
+   * 120 / 175 / 250 / 340, which sits just under the speed ladder's
+   * 135 / 195 / 280 / 410 at every rung: a draught spends a resource down
+   * rather than moving the player, and mobility is the more decisive purchase
+   * of the two.
+   *
+   * The top rung is dearer per second than any of them, and deliberately: it
+   * runs FIFTEEN seconds where the other three run thirty, because x0 does not
+   * make exertion cheaper, it removes the resource. `ItemUse._effectFor` is
+   * where that duration is derived (two full pools of unbroken sprint) and
+   * where the alternative - arguing the top rung down to x0.1 - is rejected,
+   * because the action id it is sold under is `stamina_slowdown_100`, whose
+   * label above says "Stamina drain off".
+   */
+  {
+    source_key: 'stamina_slowdown_25',
+    name: 'Second Wind Draught',
+    description: 'Field tonic that cuts the stamina cost of every exertion by 25% for 30 seconds.',
+    category: 'health' as const,
+    image_label: 'STAM 25',
+    image_color: '#7cf0a8',
+    game_action: 'stamina_slowdown_25' as MarketplaceActionId,
+    action_config: { effect: 'modify_stamina_drain', percent: 25, seconds: 30 },
+    quantity: null,
+    cost_buy: 120,
+    cost_sell: 52,
+    pricing_kind: 'consumable' as const,
+    sort_order: 190,
+  },
+  {
+    source_key: 'stamina_slowdown_50',
+    name: 'Longstride Draught',
+    description: 'Field tonic that halves the stamina cost of every exertion for 30 seconds.',
+    category: 'health' as const,
+    image_label: 'STAM 50',
+    image_color: '#7cf0a8',
+    game_action: 'stamina_slowdown_50' as MarketplaceActionId,
+    action_config: { effect: 'modify_stamina_drain', percent: 50, seconds: 30 },
+    quantity: null,
+    cost_buy: 175,
+    cost_sell: 77,
+    pricing_kind: 'consumable' as const,
+    sort_order: 191,
+  },
+  {
+    source_key: 'stamina_slowdown_75',
+    name: 'Ironlung Draught',
+    description: 'Field tonic that cuts the stamina cost of every exertion by 75% for 30 seconds.',
+    category: 'health' as const,
+    image_label: 'STAM 75',
+    image_color: '#7cf0a8',
+    game_action: 'stamina_slowdown_75' as MarketplaceActionId,
+    action_config: { effect: 'modify_stamina_drain', percent: 75, seconds: 30 },
+    quantity: null,
+    cost_buy: 250,
+    cost_sell: 110,
+    pricing_kind: 'consumable' as const,
+    sort_order: 192,
+  },
+  {
+    source_key: 'stamina_slowdown_100',
+    name: 'Wellspring Draught',
+    description: 'Field tonic that stops stamina draining at all for 15 seconds. Half the window of the rungs below it, because nothing you do costs anything.',
+    category: 'health' as const,
+    image_label: 'STAM OFF',
+    image_color: '#7cf0a8',
+    game_action: 'stamina_slowdown_100' as MarketplaceActionId,
+    action_config: { effect: 'modify_stamina_drain', percent: 100, seconds: 15 },
+    quantity: null,
+    cost_buy: 340,
+    cost_sell: 150,
+    pricing_kind: 'consumable' as const,
+    sort_order: 193,
   },
   /* ==================================================================== */
   /* Bag expansion rigs                                                   */

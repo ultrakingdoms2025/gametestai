@@ -3,7 +3,7 @@
  *
  * -- The problem this exists for -------------------------------------------
  *
- * Seven of the bag's consumables buy the player a DURATION - thirty seconds of
+ * Nine kinds of bag consumable buy the player a DURATION - thirty seconds of
  * doubled speed, five of a shield, sixty of a frozen crowd, thirty of a widened
  * gun on a ship - and until this
  * file the only acknowledgement any of them got was a toast that lives 3.6 s
@@ -34,11 +34,11 @@
  * `Portals` and `ships/SpaceCombat`), which is what makes the chip on screen
  * and the effect it describes incapable of disagreeing. See `core/Engine.js`.
  *
- * -- Why the ledger owns expiry rather than the five systems ----------------
+ * -- Why the ledger owns expiry rather than the owning systems -------------
  *
- * Because there is one deadline per kind and six different places that could
+ * Because there is one deadline per kind and seven different places that could
  * notice it passing, each inside an update that is itself gated on gameplay
- * not being blocked. Six expiry announcements would be six chances to
+ * not being blocked. Seven expiry announcements would be seven chances to
  * disagree about a number they all derive identically. One `update()` over one
  * map, on the one clock, cannot.
  */
@@ -48,23 +48,34 @@
  *
  * KEYED BY THE `type` `ItemUse._effectFor` PUBLISHES, so an effect that exists
  * in the game and not here shows no chip rather than a wrong one, and an entry
- * here with no effect behind it can never be started. `heal` and `chart` are
- * absent on purpose: a medkit and a nav chart are instantaneous - they change
- * the world once and there is nothing left running to count down. `chart` in
- * particular is a PERMANENT map reveal, so a countdown against it would be
- * inventing an expiry the game does not have.
+ * here with no effect behind it can never be started. `heal`, `chart`,
+ * `bagSlots` and `shipShield` are absent on purpose: a medkit, a nav chart, a
+ * bag rig and a shield recharge cell are all instantaneous - they change the
+ * world once and there is nothing left running to count down. `chart` and
+ * `bagSlots` in particular are PERMANENT, so a countdown against either would
+ * be inventing an expiry the game does not have.
  *
  * `tag` is the same short badge `ItemDefs` already prints on the item itself
  * (`short`), so the chip and the bag row speak one vocabulary.
+ *
+ * ── THE COUNT IS LOAD-BEARING, AND IT IS NINE ─────────────────────────────
+ * `--eff-h` in `ui/hud.css` reserves the strip's height ARITHMETICALLY: a chip
+ * is a third of the column wide, so the strip is `ceil(kinds / 3)` rows and the
+ * reserve is written for three of them. Nine is exactly three full rows. A
+ * TENTH kind needs that token moved in both of its media queries, and the
+ * layout gate - which starts every kind in this map - is what says so rather
+ * than a player finding the strip sitting on the ammo panel.
  */
 export const EFFECT_KINDS = {
   speed: { tag: 'SPD', label: 'Speed' },
   shield: { tag: 'SHLD', label: 'Shield' },
+  ward: { tag: 'WARD', label: 'Damage ward' },
   firepower: { tag: 'POWR', label: 'Firepower' },
   magnet: { tag: 'LOOT', label: 'Loot magnet' },
   pauseNpcs: { tag: 'STAS', label: 'Stasis' },
   portalPing: { tag: 'PING', label: 'Gatefinder' },
   gunSpread: { tag: 'WIDE', label: 'Wide dispersal' },
+  stamina: { tag: 'STAM', label: 'Stamina' },
 };
 
 /**
@@ -73,10 +84,15 @@ export const EFFECT_KINDS = {
  * NOT "everything". `Combat.reset()` is wired to `world:changed` and zeroes the
  * damage boost, and a gateway ping lives on a portal object that is thrown away
  * and rebuilt with the new world - so those two really are over. A speed boost,
- * a shield, a magnet and a stasis field are all held in fields nothing resets
- * on a traversal, so they really do follow the player through the gate, and
- * clearing their chips would be the indicator lying in the tidy direction
+ * a shield, a ward, a magnet and a stasis field are all held in fields nothing
+ * resets on a traversal, so they really do follow the player through the gate,
+ * and clearing their chips would be the indicator lying in the tidy direction
  * rather than not lying.
+ *
+ * `ward` was traced and not inherited from `shield`'s row: `Player` has no
+ * `world:changed` handler at all, so `_wardUntil` survives a gateway exactly as
+ * `_speedBoostUntil` does. It is on the RESPAWN list instead, because that is
+ * the one thing that really does clear it.
  */
 const ENDED_BY_WORLD_CHANGE = ['firepower', 'portalPing'];
 
@@ -95,8 +111,9 @@ const ENDED_BY_WORLD_CHANGE = ['firepower', 'portalPing'];
  *   have it, and a chip that vanished at the gate would be the indicator
  *   lying in the tidy direction.
  *
- *   A RESPAWN. `Player.respawn` clears `_speedBoostUntil` and `_invulnUntil`
- *   and nothing else; it has never had a reference to `SpaceCombat`. Dying in
+ *   A RESPAWN. `Player.respawn` clears `_speedBoostUntil`, `_wardUntil` and
+ *   `_invulnUntil`, and nothing else; it has never had a reference to
+ *   `SpaceCombat`. Dying in
  *   the seat runs `Piloting._onDied`, which flies the hull home and raises
  *   `pilot:left` - and `SpaceCombat`'s handler for that is `standDown`, which
  *   retires hostiles and clears the interdiction and, again, does not touch
@@ -107,14 +124,42 @@ const ENDED_BY_WORLD_CHANGE = ['firepower', 'portalPing'];
  * STARTED somewhere it would do nothing: `SpaceCombat.canWidenGuns()` is asked
  * before the cell leaves the bag. */
 
+/* WHY `stamina` IS IN NEITHER LIST, WHICH IS A STATEMENT ABOUT Stamina.js.
+ *
+ * Traced the way `gunSpread` was, and it comes out the same way twice:
+ *
+ *   A WORLD CHANGE. `Stamina` subscribes to `player:respawned` and
+ *   `player:spawned` and to nothing else. There is no `world:changed` handler
+ *   in that file and no `reset()` call anywhere near a traversal, so a draught
+ *   really does follow the player through a gateway.
+ *
+ *   A RESPAWN. `Stamina.reset()` IS wired to `player:respawned`, and it was
+ *   read rather than assumed: it writes `_value`, `_exhausted` and
+ *   `_lastDrainAt` - the POOL - and deliberately does not touch `_drainScale`
+ *   or `_drainScaleUntil`. The note over `reset` argues that: dying refills
+ *   what a corpse should not get up empty-handed with, and it does not make
+ *   the thirty seconds the player paid for stop being thirty seconds.
+ *
+ * So the deadline is the only thing that ends it, on both sides. If `reset`
+ * ever grows a line clearing the scale, this entry has to appear in the list
+ * below on the same commit - that is the rule both lists are written under.
+ */
+
 /**
  * What a respawn ends: exactly what `Player.respawn` clears.
  *
- * It sets `_speedBoostUntil = 0` and overwrites `_invulnUntil` with the spawn
- * grace, which is not the shield the player bought - so both chips go. Nothing
- * in `respawn` touches the magnet, the crowd or a lit gateway.
+ * It sets `_speedBoostUntil = 0`, sets `_wardUntil = 0`, and overwrites
+ * `_invulnUntil` with the spawn grace, which is not the shield the player
+ * bought - so all three chips go. Nothing in `respawn` touches the magnet, the
+ * crowd or a lit gateway.
+ *
+ * `ward` is here because `respawn` genuinely does zero it, and the two were
+ * written together for that reason: a corpse getting up under thirty seconds
+ * of half damage would be a buff outliving the body that bought it, and a chip
+ * still counting down over a ward that had been cleared would be this
+ * indicator telling the exact lie it exists to prevent.
  */
-const ENDED_BY_RESPAWN = ['speed', 'shield'];
+const ENDED_BY_RESPAWN = ['speed', 'shield', 'ward'];
 
 export class ActiveEffects {
   /**
@@ -222,7 +267,7 @@ export class ActiveEffects {
 
   /**
    * Retire whatever the clock has passed. Cheap enough to call every frame:
-   * the map holds at most six entries and usually none.
+   * the map holds at most nine entries and usually none.
    *
    * Takes no arguments on purpose. A `now` parameter would be a second place a
    * caller could disagree with `start()` about what time it is, and the whole

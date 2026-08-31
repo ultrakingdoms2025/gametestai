@@ -302,9 +302,17 @@ const unstuck = new UnstuckSystem({ bus, player, physics, worldManager, input })
 // It subscribes to world:changed itself, so it only needs constructing.
 const waterVolumes = new WaterVolumes({ bus });
 
-// Stamina attaches itself to the player, and Player.fixedUpdate drives it -
-// deliberately NOT ticked from here, or it would drain at double rate.
-const stamina = new Stamina({ bus, player });
+/* Stamina attaches itself to the player, and Player.fixedUpdate drives it -
+ * deliberately NOT ticked from here, or it would drain at double rate.
+ *
+ * `engine` is read for exactly one thing: `Stamina._buffNow`, the play clock a
+ * purchased stamina draught's deadline is dated against. `fixedUpdate` is
+ * handed `engine.elapsed`, which keeps running while the inventory sheet the
+ * draught was drunk from holds gameplay - so a thirty-second draught measured
+ * on it would spend part of itself on a paused game. Every other timed
+ * consumable dates against `simElapsed` and the HUD chip counts down on it.
+ * @see systems/ActiveEffects.js */
+const stamina = new Stamina({ bus, player, engine });
 
 const inventory = new Inventory({ bus, economy, input, root: uiRoot });
 const loot = new Loot({ ...ctx, player, inventory, economy, npcManager });
@@ -331,8 +339,14 @@ const cosmetics = new Cosmetics({ bus });
  * over the bus and never sees this object - see the header of
  * `systems/ActiveEffects.js` for why a poll would have been dev-only. */
 const effects = new ActiveEffects({ bus, engine });
+/* `stamina` is the pool the four stamina draughts scale, and it is constructed
+ * a couple of dozen lines above this - so unlike `viewpoints` and
+ * `spaceCombat`, which are assigned after the fact because they need the world
+ * manager, it can simply be passed. `ItemUse._canApply` treats a null pool as
+ * "cannot apply", so an unwired one refuses the use instead of eating the
+ * draught. */
 const itemUse = new ItemUseSystem({
-  bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, effects,
+  bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, effects, stamina,
 });
 // `mounts` is passed read-only so preview() can refuse a mount power the player
 // already owns - see the `owned` branch in Marketplace.preview().

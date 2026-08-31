@@ -3278,6 +3278,16 @@ export class HUD {
    * into multipliers, so the badge cannot claim a tier the mount is not
    * actually carrying. Tiers are small integers; a missing or zero tier draws
    * nothing rather than a "0".
+   *
+   * Each badge is also the SWITCH for that fitting. A real `<button>`, for two
+   * reasons: `#ui-root` is `pointer-events: none` and `#ui-root button` is one
+   * of the four selectors that opt back in (hud.css), so a button is clickable
+   * here without a bespoke `.interactive` class; and it is what the weapon
+   * strip already does for the one other clickable thing on the HUD
+   * (`WeaponWheel.setWeapons`), down to the `mousedown` handler that
+   * `preventDefault`s so the pause card underneath does not read the press as
+   * "resume". A switched-off fitting is DIMMED AND STRUCK, never removed: the
+   * player still owns the tier, and a badge that disappears reads as a refund.
    * @param {string} [mountId] only redraw if this is the mount being ridden
    */
   _setMountPowers(mountId) {
@@ -3285,13 +3295,32 @@ export class HUD {
     if (mountId && mountId !== this._mountId) return;
     this.mountPow.textContent = '';
     if (!this._mountId) return;
-    const bag = this._mounts?.getPowers?.(this._mountId) ?? null;
+    const id = this._mountId;
+    const bag = this._mounts?.getPowers?.(id) ?? null;
     if (!bag) return;
     for (const key of ['power', 'strength', 'shield', 'fire']) {
       const tier = Math.floor(Number(bag[key]) || 0);
       if (tier <= 0) continue;
-      const b = el('span', `mount-pip ${key}`, `${POWER_LABELS[key]}${tier}`);
-      b.title = `${key} tier ${tier}`;
+      // Anything but an explicit false is on, so a manager without the switch
+      // (an older save-only stub, a test double) draws every badge lit rather
+      // than every badge struck through.
+      const on = this._mounts?.isPowerEnabled?.(id, key) !== false;
+      const b = el('button', `mount-pip ${key}${on ? '' : ' off'}`, `${POWER_LABELS[key]}${tier}`);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.title = on
+        ? `${key} tier ${tier} — click to switch off`
+        : `${key} tier ${tier}, switched off — click to switch back on`;
+      b.addEventListener('mousedown', (e) => {
+        // Same two lines the weapon strip carries: the press must not reach the
+        // pause card behind the HUD, which treats a background press as resume.
+        e.preventDefault();
+        e.stopPropagation();
+        // The redraw arrives through `mount:powers`, which this class already
+        // listens for - so nothing here touches the DOM, and the badge cannot
+        // disagree with the manager about what just happened.
+        this._mounts?.setPowerEnabled?.(id, key, !on);
+      });
       this.mountPow.appendChild(b);
     }
   }

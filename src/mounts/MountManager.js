@@ -263,6 +263,27 @@ export class MountManager {
      * @type {Object<string, Object<string, number>>}
      */
     this._powers = {};
+    /**
+     * Which purchased fittings the player has switched OFF, keyed by mount id
+     * then by power id → `true`. Only ever holds `true`; an enabled fitting is
+     * absent, and a mount with nothing switched off has no entry at all.
+     *
+     * Deliberately a SECOND record rather than a tier of 0 in `_powers`.
+     * `_powers` is the ownership ledger - monotonic, the thing the player paid
+     * for - and three other systems read it as exactly that. The loudest is
+     * `MapOverlay._ownsGrant`, which treats "owns this power" as "has already
+     * collected the pickup that grants it": if switching a fitting off made the
+     * mount read as un-owned, every placed upgrade for it would respawn on the
+     * next world build and could be farmed for free. So a switch may never
+     * touch `_powers`, and `getPowers` keeps meaning OWNERSHIP. Effective tiers
+     * - what the mount actually flies with - are computed in `_applyPowers`.
+     *
+     * Orthogonal to ownership on purpose: the switch is a preference, and a
+     * fitting bought back later comes back in the state the player left it, not
+     * silently on.
+     * @type {Object<string, Object<string, true>>}
+     */
+    this._powerOff = {};
 
     /** Reused control block - the mount API takes it every fixed step. */
     this._ctrl = { throttle: 0, strafe: 0, yaw: 0, pitch: 0, up: 0, boost: false, speedMul: 1 };
@@ -736,10 +757,17 @@ export class MountManager {
     bag[power] = Math.max(bag[power] || 0, tier);
     const mount = this._mounts.get(mountId);
     if (mount) this._applyPowers(mountId, mount);
-    this.bus?.emit?.('mount:powers', { mountId, powers: { ...bag } });
+    this._emitPowers(mountId);
   }
 
-  /** Owned powers for a mount (copy), or all mounts if no id is given. */
+  /**
+   * Owned powers for a mount (copy), or all mounts if no id is given.
+   *
+   * OWNERSHIP, and only ownership: a fitting the player has switched off is
+   * still in here at the tier they paid for. Ask {@link isPowerEnabled} for the
+   * switch instead. See the note on `_powerOff` in the constructor for what a
+   * placed pickup does if this ever starts reporting the effective tier.
+   */
   getPowers(mountId) {
     if (mountId) return { ...(this._powers[mountId] || {}) };
     const out = {};
@@ -748,19 +776,118 @@ export class MountManager {
   }
 
   /**
+   * Switch one fitting off or back on.
+   *
+   * Never touches `_powers`: the tier the player paid for survives being
+   * switched off and comes back at exactly the same number. What changes is the
+   * EFFECTIVE tier `_applyPowers` hands the mount, which is 0 while a fitting
+   * is off - so the mount runs on its stock numbers, as if the upgrade had
+   * never been bought, rather than on a merely smaller multiplier.
+   *
+   * A call that changes nothing is a no-op: no re-apply and no `mount:powers`.
+   * That is the rule `setLivery` already writes down, and it is what stops a
+   * surface that re-asserts its state on every resync from looping on the bus.
+   *
+   * Tolerant of ids it does not know, like the rest of this class: an unknown
+   * mount, or a stat the mount does not sell, is dropped and answered `false`.
+   *
+   * @param {string} mountId
+   * @param {'strength'|'shield'|'power'|'fire'} power
+   * @param {boolean} on `false` switches the fitting off; anything else on.
+   * @returns {boolean} true when the switch actually moved.
+   */
+  setPowerEnabled(mountId, power, on = true) {
+    if (!mountId || !power) return false;
+    // The same filter grantPower applies. A stat the mount never sold must not
+    // reach this record either, or a save would round-trip it back in.
+    if (!this._knownStat(mountId, power)) return false;
+    const want = on !== false;
+    const cur = this._powerOff[mountId];
+    const isOff = !!cur?.[power];
+    if (isOff !== want) return false; // already in the state being asked for
+    if (want) {
+      // `cur` cannot be undefined here - isOff was true, so the record exists.
+      delete cur[power];
+      // Never leave an empty {} behind. Same discipline as the power bag, so a
+      // save cannot round-trip a record that means nothing and every reader
+      // has one shape to deal with.
+      if (!Object.keys(cur).length) delete this._powerOff[mountId];
+    } else {
+      (this._powerOff[mountId] || (this._powerOff[mountId] = {}))[power] = true;
+    }
+    const mount = this._mounts.get(mountId);
+    if (mount) this._applyPowers(mountId, mount);
+    this._emitPowers(mountId);
+    return true;
+  }
+
+  /**
+   * Is this fitting switched on? True for anything not explicitly switched off
+   * - including a stat the mount never sold and a mount id that does not exist.
+   * "Not switched off" is the honest answer to all three and saves every caller
+   * from special-casing the empty record.
+   * @param {string} mountId
+   * @param {string} power
+   * @returns {boolean}
+   */
+  isPowerEnabled(mountId, power) {
+    if (!mountId || !power) return true;
+    return !this._powerOff[mountId]?.[power];
+  }
+
+  /**
+   * Switched-off fittings for a mount (copy), or all mounts if no id is given.
+   * `{ [power]: true }` - an enabled fitting is absent rather than `false`.
+   */
+  getDisabledPowers(mountId) {
+    if (mountId) return { ...(this._powerOff[mountId] || {}) };
+    const out = {};
+    for (const k in this._powerOff) out[k] = { ...this._powerOff[k] };
+    return out;
+  }
+
+  /**
+   * The one `mount:powers` payload, shared by `grantPower` and
+   * `setPowerEnabled` so the two can never describe a mount differently.
+   * `powers` is still the ownership bag it has always been - nothing
+   * downstream had to change - and `disabled` is additive, for a listener that
+   * would rather read the event than call back into this class.
+   */
+  _emitPowers(mountId) {
+    this.bus?.emit?.('mount:powers', {
+      mountId,
+      powers: this.getPowers(mountId),
+      disabled: this.getDisabledPowers(mountId),
+    });
+  }
+
+  /**
    * Turn owned power tiers into stat multipliers on a mount instance. Mounts
    * expose an optional `applyPowers({strength,shield,power})` hook; the ones
    * that don't simply ignore the upgrade. Tiers are small integers, so each
    * tier is a modest bump rather than a doubling.
+   *
+   * The tier handed over is the EFFECTIVE one - `disabled ? 0 : owned` - and
+   * the zero is what makes "off" mean STOCK rather than merely slower. Every
+   * `applyPowers` in the tree is `1 + tier * k` over a field its constructor
+   * initialises to 1 (Car.js:796 says "1 == stock" in as many words; Eagle.js:129,
+   * Dragon.js:682 and the same three lines in Horse, Hoverboard and Bicycle),
+   * plus `shieldTier`/`fireTier`, which start at 0. Passing 0 therefore writes
+   * back exactly the numbers the mount was built with - the eagle's
+   * `_staminaMul` included, whose `Math.max(0.5, 1 - strength * 0.08)` also
+   * lands on 1. A separate "put it back to stock" path would have had to be
+   * kept in step with six classes; this one cannot drift from them.
    */
   _applyPowers(mountId, mount) {
     const bag = this._powers[mountId];
     if (!bag || !mount?.applyPowers) return;
+    const off = this._powerOff[mountId];
+    const eff = (p) => (off?.[p] ? 0 : bag[p] || 0);
     mount.applyPowers({
-      strength: bag.strength || 0,
-      shield: bag.shield || 0,
-      power: bag.power || 0,
-      fire: bag.fire || 0,
+      strength: eff('strength'),
+      shield: eff('shield'),
+      power: eff('power'),
+      fire: eff('fire'),
     });
   }
 
@@ -1727,6 +1854,10 @@ export class MountManager {
       active: this._active?.id ?? null,
       liveries: Object.fromEntries(Object.keys(this._liveries).map((id) => [id, cloneLivery(this._liveries[id])])),
       powers: this.getPowers(),
+      // Written alongside `powers` and never inside it: the bag is ownership,
+      // this is the switch. A reader that only knows about `powers` (an older
+      // build, the site-side catalog tooling) sees the tiers it always saw.
+      powersOff: this.getDisabledPowers(),
     };
   }
 
@@ -1779,6 +1910,41 @@ export class MountManager {
           const mount = this._mounts.get(mid);
           if (mount) this._applyPowers(mid, mount);
         }
+      }
+    }
+    /* Which fittings the player had switched off.
+     *
+     * A save written before the switch existed carries no `powersOff` at all,
+     * and must restore with every fitting ENABLED. That is why the record is
+     * "these are OFF" rather than "these are ON": absent has to mean on, or
+     * the first load of an old save would silently take away every upgrade
+     * every existing player has already bought.
+     *
+     * The same three rules the bag above keeps. `_knownStat` filters, so a save
+     * cannot smuggle in a stat the mount never sold. A mount id whose record
+     * filters down to nothing is DELETED, not left as a stale one from an
+     * earlier deserialize() call. And a mount id the save does not mention
+     * keeps what it has - replace per mount id, exactly as `powers` does, so
+     * the two records cannot come to disagree about what a load means.
+     *
+     * After the bag rather than before it, so this re-apply sees both halves.
+     * The ids here are re-applied a second time on purpose: a mount that
+     * appears only in this record - a fitting switched off, nothing bought
+     * since - is one the bag's loop never reached.
+     */
+    if (data.powersOff && typeof data.powersOff === 'object') {
+      for (const mid in data.powersOff) {
+        const rec = data.powersOff[mid];
+        if (!rec || typeof rec !== 'object') continue;
+        const off = {};
+        // `true` only. The record means "these are off", so an explicit
+        // `power: false` in a hand-edited save reads as ON and is dropped,
+        // rather than stored as a falsy entry no reader would think to test.
+        for (const p in rec) if (rec[p] && this._knownStat(mid, p)) off[p] = true;
+        if (Object.keys(off).length) this._powerOff[mid] = off;
+        else delete this._powerOff[mid];
+        const mount = this._mounts.get(mid);
+        if (mount) this._applyPowers(mid, mount);
       }
     }
     // Deferred: the world a save restores has to be live before a mount can be

@@ -185,8 +185,28 @@ export class ItemUseSystem {
     }
     const owned = Number(this.mounts.getPowers(grant.mount)?.[grant.power] ?? 0);
     if (owned >= grant.tier) {
+      /* Owning it and RUNNING it are two different things since the fitting
+       * became switchable, and the refusal has to say which one it means.
+       *
+       * The player who hits this is nearly always someone who switched the
+       * fitting off, watched their mount go back to stock, and reached for the
+       * spare kit in their bag to "put it back". Told only "already runs this
+       * fitting", they would conclude the kit was broken. So the message names
+       * the switch and where it is - and still keeps the item, because the
+       * grant would be the same no-op either way and there is nothing here
+       * worth spending the only copy of an upgrade on.
+       *
+       * Deliberately does NOT switch the fitting back on: consuming a use to
+       * flip a switch the player can flip for free is exactly the "unit
+       * destroyed for nothing" failure the rest of this file refuses.
+       *
+       * Optional call, like `sellsPower` above: a manager without the switch
+       * answers undefined, which is not `false`, so the old wording stands. */
+      const off = this.mounts.isPowerEnabled?.(grant.mount, grant.power) === false;
       this.bus?.emit('hud:notify', {
-        text: `Your ${grant.mount} already runs this fitting at tier ${owned} — kept, not spent`,
+        text: off
+          ? `Your ${grant.mount} owns this fitting at tier ${owned} but it is switched OFF — switch it on from Esc → Customise mount. Kept, not spent`
+          : `Your ${grant.mount} already runs this fitting at tier ${owned} — kept, not spent`,
         tone: 'warn',
       });
       return { ok: false, reason: 'owned' };

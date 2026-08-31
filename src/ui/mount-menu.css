@@ -670,6 +670,34 @@ body.mm-open .pause {
 .mm-pip { width: 18px; height: 8px; border: 1px solid rgba(255,255,255,0.28); background: rgba(255,255,255,0.06); }
 /* No --mm-cy-glow is defined at .mm-root (unlike --mm-cy above), so this stays a literal rather than var(--mm-cy-glow, rgba(82,233,255,0.5)) referencing a token that does not exist. */
 .mm-pip.on { background: var(--mm-cy, #52e9ff); border-color: var(--mm-cy, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
+
+/* Pips and the On/Off switch share the row's single `auto` column.
+
+   Not a third grid track: an unbought stat still draws a row (it is where the
+   menu says "buy at market"), and that row has no switch, so a third track
+   would have put a 12 px column gap on some rows and not others - a ragged
+   right edge down the section for the sake of one usually-absent element. */
+.mm-stat-r { display: inline-flex; align-items: center; gap: 10px; }
+
+/* The switch itself is a plain `.mm-chip` - the same two-state control the
+   Matt/Gloss finish pair uses, so it inherits the lit/outlined language and the
+   coarse-pointer 44 px floor further down this file. Only the width is pinned,
+   so "On" and "Off" do not resize the row as it is pressed. */
+.mm-fit { min-width: 3.25rem; text-align: center; }
+
+/* An unbought fitting has no switch, and the row hides it with `el.hidden`.
+   This line is what makes that stick: the coarse-pointer block below gives
+   `.mm-chip` `display: inline-flex`, and an AUTHOR display beats the user
+   agent's `[hidden] { display: none }`. Without it the switch would come back
+   on every unbought fitting the moment the panel was opened on a phone -
+   offering to turn on something nobody has bought. */
+.mm-fit[hidden] { display: none; }
+
+/* Switched OFF: the tier pips stay lit enough to read - the player paid for
+   them and losing sight of them is the complaint this whole switch answers -
+   but drop to a state that plainly is not running. */
+.mm-stat.is-off .mm-pip.on { opacity: 0.34; box-shadow: none; }
+.mm-stat.is-off .mm-stat-l { color: var(--mm-dim); }
 .mm-skincard.held .mm-skinlock { color: #b6ff5a; }
 .mm-finish { margin-top: 6px; }
 

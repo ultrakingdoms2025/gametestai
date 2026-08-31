@@ -4341,10 +4341,32 @@ body.inv-menu-open .toasts {
   display: none;
 }
 
+/* A badge is now a `<button>` - it switches its fitting off and on - so this
+   block also has to undo what the UA gives a button.
+
+   `line-height: 1.2` is not decoration. `.mount-names` sets 1.2 and the badge
+   used to be a `<span>` inheriting it, while a button's UA line-height is
+   `normal`. Without the line the panel would have grown a couple of pixels the
+   moment a player owned an upgrade - and it grows UPWARD, into the weapon strip
+   and the touch buttons, which are the two overlaps the layout gate pairs
+   `.mount` against by name. The geometry here is deliberately identical to the
+   span's, so owning a fitting changes the panel's size by nothing at all.
+
+   NOT given the coarse-pointer 44 px floor the rest of the interface gets, and
+   that is a decision rather than an oversight: the floor would turn a one-line
+   badge row into a 44 px band and push the panel into both of those neighbours
+   on exactly the small screens the floor is meant to help. The badge is a
+   readout first and a shortcut second; the switch meant to be pressed with a
+   thumb is the upgrade row in the mount menu (Esc → Customise mount), which
+   does carry the floor - see the coarse-pointer block in mount-menu.css. */
 .mount-pip {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
   font-family: var(--f-disp);
   font-size: 9px;
   font-weight: 700;
+  line-height: 1.2;
   letter-spacing: 0.12em;
   padding: 1px 5px;
   color: #eaf8ff;
@@ -4352,6 +4374,60 @@ body.inv-menu-open .toasts {
   border: 1px solid rgba(82, 233, 255, 0.42);
   text-shadow: 0 0 8px var(--cy-glow);
   white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.16s, filter 0.16s;
+}
+
+.mount-pip:hover {
+  filter: brightness(1.25);
+}
+
+.mount-pip:focus-visible {
+  outline: 1px solid #eaf8ff;
+  outline-offset: 1px;
+}
+
+/* Switched off: dimmed and STRUCK, never removed. The tier is still owned and
+   still paid for, and a badge that vanishes reads as a refund. The strike is
+   what carries the state - the difference between two opacities of cyan on a
+   moving background is not something a player is going to trust. */
+.mount-pip.off {
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-shadow: none;
+}
+
+/* A CURSOR-OWNING SHEET, A CONVERSATION OR THE PAUSE CARD IS OPEN: the badges
+   come off.
+
+   The fourth time this file writes this rule and the second element it has had
+   to write it for - the `.wstrip` block at the end of this file carries the
+   measurements and the reasoning. The moment the badge became a `<button>` it
+   became a control the player can SEE under a panel and cannot press, and one
+   that takes the click meant for the panel on top.
+
+   MEASURED, and it was not a near miss. With the row left in, the layout probe
+   reported the badges overlapping `.pm-item` (the pause hub), `.inv-panel`
+   (inventory and market), `.br-textarea` (bug report) and `.kb-cap` (keybinds):
+   222 collisions across the six viewports. `.chat.open` was a second, separate
+   round of 14 - the chat panel is bottom-left and the mount panel bottom-centre,
+   and on a 390 px phone they share the badges' whole 44 px height - which is the
+   `.chat.open` line in the `.wstrip` block arriving here for the same reason.
+
+   `visibility`, not `pointer-events`: `#ui-root button` opts every button back
+   in by selector. Same note as the rules it copies.
+
+   `.pause.show` is in this list and is deliberately NOT in the `.wstrip` one.
+   The strip is parented straight to `#ui-root` precisely so its slots stay
+   pressable over the pause card; these badges are inside `.hud`, under it.
+
+   Nothing is lost while a sheet is up. The mount menu shows the same fittings
+   as full rows with the same switches, at a size meant for a thumb. */
+#ui-root:has(> .hud.overlaid) .mount-pow,
+#ui-root:has(> .chat.open) .mount-pow,
+#ui-root:has(> .pause.show) .mount-pow,
+body.sm-open .mount-pow {
+  visibility: hidden;
 }
 
 .mount-pip.power {
@@ -5572,6 +5648,25 @@ body.sm-open .wstrip {
   .wslot:hover {
     min-height: var(--tap);
     transform: none;
+  }
+
+  /* The mount power badges. On touch there is no pointer lock to swallow the
+     press, so this is the one pointer for which the badge really is a shortcut
+     rather than a readout - and the floor applies to it like everything else.
+
+     MEASURED before writing it, because the fear was that it would push the
+     panel into its neighbours: three badges at 44 px take the row from 14.8 px
+     to 44 px and the panel grows about 29 px UPWARD from a bottom edge that
+     does not move, which is AWAY from `.wstrip` and the touch buttons - the two
+     things `hud-viewport-probe` pairs `.mount` against by name. Widthways,
+     three 44 px badges and their gaps are 140 px against the ~184 px
+     `--mount-w` leaves inside `.mount-names`, so the row still does not wrap. */
+  .mount-pip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap, 2.75rem);
+    min-height: var(--tap, 2.75rem);
   }
 
   .chat-close {

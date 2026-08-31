@@ -288,7 +288,22 @@ const mounts = {
   getLivery: () => ({}),
   setLivery: () => {},
   resetLivery: () => {},
-  getPowers: () => ({}),
+  /* EVERY stat owned, and one of them switched off.
+   *
+   * This used to be `() => ({})`, which is a stock mount - and a stock mount
+   * lays out neither of the two pieces of geometry that own mount upgrades.
+   * `.mount-pow` is `display: none` when empty, so the HUD's badge row was
+   * never measured at all, and every F10 upgrade row read "Not upgraded", so
+   * its On/Off switch was never measured either. The gate was grading a panel
+   * the game only shows to a player who has bought nothing.
+   *
+   * Three tiers is the widest the badge row gets on this mount (hoverboard
+   * sells three stats; only the dragon has a fourth), and one switched off is
+   * what puts a struck-through badge and an "Off" chip on screen at the same
+   * time as the lit ones. */
+  getPowers: () => ({ power: 3, strength: 2, shield: 1 }),
+  isPowerEnabled: (_mountId, power) => power !== 'shield',
+  setPowerEnabled: () => false,
   summon: () => {},
 };
 
@@ -493,6 +508,17 @@ function dressPlayScene() {
 
   /* Mount readout, help chip, prompt and the unstuck affordance are all
    * class-toggled panels. */
+  /* The mount ledger, before `_setMount` draws the panel from it.
+   *
+   * `attach()` only fills `_att`; `_mounts` is written by `_pollSystems`, which
+   * runs off `hud.update(dt)` and this harness never calls. Without the direct
+   * write `_setMountPowers` reads a null ledger and draws NO badges - which is
+   * precisely the production defect that was just fixed (`HUD.attach` was never
+   * called at all), so a gate that skipped this would have gone on grading the
+   * broken layout for as long as the bug lasted. Both lines, so the private and
+   * the public route agree. */
+  hud.attach({ mounts });
+  hud._mounts = mounts;
   hud._setMount('hoverboard');
   hud.mountPanel.classList.add('show');
   hud.prompt.classList.add('show');

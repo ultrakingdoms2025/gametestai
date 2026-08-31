@@ -3,7 +3,7 @@ import { skinsForMount } from '../systems/Cosmetics.js';
 import { skinItemId } from '../systems/ItemDefs.js';
 import { applyMountSkin } from '../systems/MountSkins.js';
 import { STAT_META } from '../mounts/Livery.js';
-import { PALETTES, statLine, skinState, SKIN_STATE_LABEL } from './MountMenuLogic.js';
+import { PALETTES, statLine, fittingSwitch, skinState, SKIN_STATE_LABEL } from './MountMenuLogic.js';
 
 /**
  * The mount panel. Opened from the Esc pause hub.
@@ -17,7 +17,11 @@ import { PALETTES, statLine, skinState, SKIN_STATE_LABEL } from './MountMenuLogi
  * person for the preview and restores the rider's choice on close, like F2.
  *
  * Skins: owned → apply; a copy in the bag/store → apply and consume (burned in
- * from then on); neither → point at the market. Upgrades are read-only pips.
+ * from then on); neither → point at the market. An upgrade row shows the tiers
+ * as pips and, once a fitting is actually owned, an On/Off switch: a bought
+ * fitting can be switched off and back on without ever losing the tier it was
+ * bought at. The pips still show the OWNED tier while a fitting is off - the
+ * player paid for it and must be able to see it - and the row says so instead.
  */
 
 function el(tag, cls, text) {
@@ -273,18 +277,61 @@ export class MountMenu {
     });
   }
 
+  /**
+   * One upgrade row: the stat, its owned tier as pips, and - once the fitting
+   * is owned - a switch.
+   *
+   * The pips and the switch share the row's single `auto` column through a
+   * wrapper rather than becoming a third grid track. A third track would have
+   * left a 12 px gap on every row that has no switch (an unbought stat still
+   * draws a row, saying where to buy it), which is a visible ragged edge down
+   * the section for the sake of one element that is usually absent.
+   */
   _statRow(stat) {
     const meta = STAT_META[stat] ?? { label: stat };
     const row = el('div', `mm-stat mm-stat-${stat}`);
     const label = el('span', 'mm-stat-l', meta.label);
+    const right = el('span', 'mm-stat-r');
     const pips = el('span', 'mm-pips');
     const pipEls = [1, 2, 3].map((t) => { const p = el('i', 'mm-pip'); p.title = `${meta.label} ${'I'.repeat(t)}`; pips.appendChild(p); return p; });
+    // A `mm-chip`, which is the menu's existing two-state control (the Matt /
+    // Gloss finish pair): lit when on, outlined when off, and already carrying
+    // the coarse-pointer 44 px floor the whole panel got.
+    const sw = el('button', 'mm-chip mm-fit');
+    sw.type = 'button';
     const fx = el('span', 'mm-stat-fx');
-    row.append(label, pips, fx);
+    right.append(pips, sw);
+    row.append(label, right, fx);
+
+    const read = () => fittingSwitch({
+      tier: this.mounts.getPowers?.(this._mountId)?.[stat],
+      enabled: this.mounts.isPowerEnabled?.(this._mountId, stat),
+    });
+
+    sw.addEventListener('click', () => {
+      // Re-read at click time rather than closing over the last sync: the bus
+      // can have moved the fitting underneath this button since it was drawn.
+      const next = read().next;
+      if (next === null) return; // nothing owned here - the button is hidden anyway
+      this.mounts.setPowerEnabled?.(this._mountId, stat, next);
+      // With a bus, mount:powers drives the resync; without one, do it here.
+      if (!this.bus) this._sync();
+    });
+
     this._syncers.push(() => {
-      const tier = Math.floor(Number(this.mounts.getPowers?.(this._mountId)?.[stat]) || 0);
-      pipEls.forEach((p, i) => p.classList.toggle('on', i < tier));
-      fx.textContent = statLine(stat, tier);
+      const s = read();
+      pipEls.forEach((p, i) => p.classList.toggle('on', i < s.tier));
+      fx.textContent = statLine(stat, s.tier, s.on);
+      // `hidden`, not a removal: the row keeps its identity across syncs, and a
+      // fitting bought while the drawer is open grows its switch in place.
+      sw.hidden = !s.owned;
+      sw.textContent = s.label;
+      sw.classList.toggle('on', s.on);
+      sw.setAttribute('aria-pressed', s.on ? 'true' : 'false');
+      sw.title = s.on
+        ? `Switch ${meta.label} off — the mount goes back to stock, the tier is kept`
+        : `Switch ${meta.label} back on at tier ${s.tier}`;
+      row.classList.toggle('is-off', s.owned && !s.on);
     });
     return row;
   }

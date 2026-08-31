@@ -76,19 +76,25 @@ function makeInventory() {
  * The mount ledger reads `ItemUse` needs, over the REAL `MOUNT_STATS` table,
  * plus a writable record of what `grantPower` was asked to do - so "consumed
  * exactly one unit AND fitted exactly one tier" is two assertions, not one.
+ *
+ * `off` is the switch record: `{ [mount]: { [power]: true } }`, answered
+ * through `isPowerEnabled` exactly as `MountManager` answers it - anything not
+ * explicitly switched off is on.
  */
-function makeMounts(owned = {}) {
+function makeMounts(owned = {}, off = {}) {
   const granted = [];
   return {
     granted,
     sellsPower: (mount, power) => (MOUNT_STATS[mount] ? MOUNT_STATS[mount].includes(power) : true),
     getPowers: (mount) => ({ ...(owned[mount] ?? {}) }),
+    isPowerEnabled: (mount, power) => !off[mount]?.[power],
     grantPower: (mount, power, tier) => {
       granted.push({ mount, power, tier });
       const bag = owned[mount] || (owned[mount] = {});
       bag[power] = Math.max(bag[power] || 0, tier);
     },
     owned,
+    off,
   };
 }
 
@@ -259,6 +265,33 @@ test('an upgrade the rider already runs is REFUSED and kept, not spent for nothi
   assert.ok(warn, 'a refusal that says nothing is indistinguishable from a broken button');
   assert.equal(warn.payload.tone, 'warn');
   assert.match(warn.payload.text, /already runs this fitting at tier 3/);
+});
+
+test('an upgrade the rider owns but has SWITCHED OFF is refused, kept, and says where the switch is', () => {
+  /* The refusal a player actually hits once fittings became switchable: they
+   * turned Speed off, watched the mount go back to stock, and reached for the
+   * spare kit in their bag to put it back. Told only "already runs this
+   * fitting", they would conclude the kit was broken. And the kit must NOT be
+   * spent on flipping a switch they can flip for free.
+   */
+  const bus = makeBus();
+  const inventory = makeInventory();
+  const mounts = makeMounts({ bicycle: { power: 3 } }, { bicycle: { power: true } });
+  const id = mountPowerItemId('bicycle', 'power', 2);
+  inventory.addToBag(id, 1);
+
+  const res = new ItemUseSystem({ bus, inventory, mounts }).use(id);
+
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'owned');
+  assert.equal(inventory.totalCount(id), 1, 'still refused, still kept');
+  assert.equal(mounts.granted.length, 0);
+  assert.deepEqual(mounts.off.bicycle, { power: true }, 'and it did NOT quietly switch itself back on');
+  const warn = bus.emitted.find((e) => e.name === 'hud:notify');
+  assert.equal(warn.payload.tone, 'warn');
+  assert.match(warn.payload.text, /switched OFF/);
+  assert.match(warn.payload.text, /Customise mount/, 'the message has to say where the switch lives');
+  assert.match(warn.payload.text, /tier 3/, 'and still name the tier they own');
 });
 
 test('an unwired mount ledger refuses the use and leaves the kit in the bag', () => {

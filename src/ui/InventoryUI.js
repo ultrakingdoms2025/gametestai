@@ -474,6 +474,10 @@ export class InventoryUI {
       return;
     }
     const stack = stackSize(def.id);
+    /* `noSell` rows print "not for sale" rather than a price. A mount upgrade
+     * carries a `value` because `sellValue` is arithmetic over every item, but
+     * `Marketplace.sellables` skips it and `sell()` refuses it - so quoting the
+     * number sent a player to a merchant to look for a row that is not there. */
     const actions = [];
     if (usable) actions.push(`Hold the mouse button on it for <b>${HOLD_TO_USE_MS / 1000}s</b> to use it, or click <b>Use</b>.`);
     // Usable, but not from the store: say so rather than showing nothing.
@@ -486,7 +490,7 @@ export class InventoryUI {
       `<div class="inv-detail-body">
         <div class="inv-detail-name">${def.name}</div>
         <div class="inv-detail-sub">${def.desc} &nbsp;·&nbsp; stacks of <b>${stack}</b> &nbsp;·&nbsp;
-          worth <b>${def.value} CR</b> each &nbsp;·&nbsp; ${row.qty} in ${zone === 'bag' ? 'bag' : 'store'}
+          ${def.noSell ? '<b>not for sale</b>' : `worth <b>${def.value} CR</b> each`} &nbsp;·&nbsp; ${row.qty} in ${zone === 'bag' ? 'bag' : 'store'}
           (<b>${row.slots}</b> slot${row.slots === 1 ? '' : 's'})</div>
          ${actions.length ? `<div class="inv-detail-sub">${actions.join(' ')}</div>` : ''}
       </div>`;

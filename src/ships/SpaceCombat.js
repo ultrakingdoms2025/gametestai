@@ -1318,19 +1318,34 @@ export class SpaceCombat {
         _fanAim.copy(_v3).addScaledVector(_right, FAN_PITCH * k * s);
         _v2.copy(_fanAim).sub(_v).normalize();
         this._spawnBolt(_v, _v2, GUN.speed, dmg, GUN.range, 0);
-        /* The muzzle bloom, and both numbers in it were wrong first time.
-         *
-         * It was 1.9 m across for 0.09 s in (2.4, 0.32, 3.4) - and (2.4, 0.32,
-         * 3.4) is MAGENTA, which matched nothing on either side of the fight
-         * and looked like a bug; at 1.9 m, sitting on the wingtips of a hull
-         * that fills the middle of the chase view, two of them covered a third
-         * of the plate every fifth of a second. Screenshotted, and
-         * unmistakable.
-         *
-         * It is now the bolt's own cyan at a fifth the size and a shorter
-         * life: a spark where the gun is, not a firework. */
-        this._flare(_v, _v2, 0.62, 0.055, 0.7, 3.2, 4.2, 26);
       }
+      /* ONE bloom per muzzle, outside the ring loop. A ring is a different
+       * aim, not a different gun port - all of a side's bolts leave the same
+       * `_v`. Spawning the flare per BOLT put four coincident additive sprites
+       * on one point while the fan was up: the material is AdditiveBlending
+       * with toneMapped false, so the authored (0.7, 3.2, 4.2) summed to
+       * (2.8, 12.8, 16.8) before bloom and reinstated, in intensity, exactly
+       * the firework this note records cutting down.
+       *
+       * The muzzle bloom, and both numbers in it were wrong first time.
+       *
+       * It was 1.9 m across for 0.09 s in (2.4, 0.32, 3.4) - and (2.4, 0.32,
+       * 3.4) is MAGENTA, which matched nothing on either side of the fight
+       * and looked like a bug; at 1.9 m, sitting on the wingtips of a hull
+       * that fills the middle of the chase view, two of them covered a third
+       * of the plate every fifth of a second. Screenshotted, and
+       * unmistakable.
+       *
+       * It is now the bolt's own cyan at a fifth the size and a shorter
+       * life: a spark where the gun is, not a firework. */
+      /* Along the CORE bolt (k = 0), not whichever ring the loop happened to
+       * leave in `_v2`. The outermost ring is about 5 degrees off the nose,
+       * and a bloom that leans is a bloom that reads as the gun being
+       * mis-aimed. This is the direction the flare had before there were
+       * rings at all. */
+      _fanAim.copy(_v3);
+      _v2.copy(_fanAim).sub(_v).normalize();
+      this._flare(_v, _v2, 0.62, 0.055, 0.7, 3.2, 4.2, 26);
     }
     this.stats.shotsFired++;
     this.bus?.emit?.('combat:fire', {

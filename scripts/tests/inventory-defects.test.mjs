@@ -126,40 +126,63 @@ test('WEAPON_STATS states a resupply target for every weapon that eats ammunitio
   assert.ok(WEAPON_STATS.fireball.resupplyTarget <= 40, 'and is no longer sized as if it had one');
 });
 
-test('Loadout draws ammunition from the store when the bag runs low', async () => {
+test('Loadout draws ammunition from the store only at the moment of need', async () => {
   const { Loadout } = await import('../../src/player/Loadout.js');
   const proto = Loadout.prototype;
-  assert.equal(typeof proto._topUpFromStore, 'function', 'the restock exists');
-  assert.equal(typeof proto._lowWaterFor, 'function');
+  assert.equal(typeof proto._restockFor, 'function', 'the restock exists');
+  assert.equal(typeof proto._restockOnDemand, 'function');
+  assert.equal(
+    typeof proto._lowWaterFor, 'undefined',
+    'the low-water sweep is gone: it could not tell ammo that was SPENT from ammo the player deliberately put away, so it silently undid every deposit on the frame after the panel closed',
+  );
 
-  // Drive `_topUpFromStore` against a fake inventory: an empty bag, a stocked
-  // store, and a bag with room for only part of it.
   const moved = [];
-  const inv = {
-    bagCount: () => 0,
-    count: () => 120,
-    bagRoomFor: () => 60,
-    moveToBag: (id, qty) => { moved.push([id, qty]); return qty; },
-  };
   const emitted = [];
-  const ctx = {
-    inventory: inv,
+  const makeCtx = (bag, store) => ({
     bus: { emit: (name, payload) => emitted.push([name, payload]) },
-    _brokers: [{ id: 'machinegun', item: 'bullet' }],
-    _inv: () => inv,
-    _bagCount: () => 0,
-    _lowWaterFor: proto._lowWaterFor,
-  };
-  proto._topUpFromStore.call(ctx);
-  assert.deepEqual(moved, [['bullet', 60]], 'capped by bag room, not by store stock');
+    _brokers: [{ id: 'machinegun', item: 'bullet', spendOnFire: false }],
+    _inv: () => ({
+      count: () => store,
+      bagRoomFor: () => 60,
+      moveToBag: (id, qty) => { moved.push([id, qty]); return qty; },
+    }),
+    _bagCount: () => bag,
+  });
+
+  // Empty bag, stocked store: fill toward the working load, capped by bag room.
+  proto._restockFor.call(makeCtx(0, 300), { id: 'machinegun', item: 'bullet' });
+  assert.deepEqual(moved, [['bullet', 60]], 'capped by bag room');
   assert.equal(emitted[0][0], 'loadout:restocked');
 
-  // And it must do nothing at all when the bag is already stocked, or the
-  // panel would redraw on every frame of a firefight.
+  // Already at the working load: nothing to do, so nothing moves.
   moved.length = 0;
-  emitted.length = 0;
-  proto._topUpFromStore.call({ ...ctx, _bagCount: () => 999 });
-  assert.deepEqual(moved, [], 'a stocked bag is left alone');
+  proto._restockFor.call(makeCtx(240, 300), { id: 'machinegun', item: 'bullet' });
+  assert.deepEqual(moved, [], 'a bag already at resupplyTarget is left alone');
+
+  // An empty store cannot be drawn from.
+  moved.length = 0;
+  proto._restockFor.call(makeCtx(0, 0), { id: 'machinegun', item: 'bullet' });
+  assert.deepEqual(moved, [], 'nothing in the depot, nothing moved');
+});
+
+test('the restock is asked for only from a fire attempt or a reload', async () => {
+  // THE REGRESSION THIS GUARDS. The first version swept every broker once a
+  // frame on a low-water mark. `loadout.update` is inside `if (!uiPaused)`, so
+  // it could not run while the panel was open - which was taken as proof it
+  // could never fight the player, and was wrong: it ran on the first frame
+  // after the panel CLOSED. Depositing 180 rounds and 30 arrows to free bag
+  // slots gave them straight back, in MORE slots than they left from.
+  const js = await readFile(path.join(root, 'src/player/Loadout.js'), 'utf8');
+  const sync = js.match(/_syncAmmo\(\)\s*\{[\s\S]*?\n {2}\}/)?.[0] ?? '';
+  assert.ok(sync, 'found _syncAmmo');
+  assert.doesNotMatch(sync, /_restockFor|_topUpFromStore|_restockOnDemand/,
+    'the per-frame mirror must not restock: that is what undid deliberate deposits');
+
+  const canFire = js.match(/_canFire\(weapon\)\s*\{[\s\S]*?\n {2}\}/)?.[0] ?? '';
+  assert.match(canFire, /_restockFor\(b\)/, 'a trigger pull on an empty weapon asks for rounds');
+
+  const update = js.slice(js.indexOf('const wantsFire'), js.indexOf('const wantsFire') + 1400);
+  assert.match(update, /_restockOnDemand\(active\)/, 'so does a reload');
 });
 
 test('a spend-on-fire weapon may not fire without the whole cost in the bag', async () => {

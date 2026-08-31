@@ -682,8 +682,22 @@ body.inv-menu-open .pause {
   flex: 0 0 auto;
 }
 
+/* ── The footer must not change height when a stack is hovered ─────────────
+   `_setDetail` rewrites this block on `mouseenter`. The empty state is a name
+   and one line; a hovered usable stack is a name, a description line AND an
+   actions line ("Hold the mouse button on it for 3s..."). That third line grew
+   the footer by about fourteen pixels, which shrank the body by the same and
+   slid the whole grid up under the cursor - so on a usable item the cell was
+   already moving at the instant the three-second hold began on it. Measured at
+   -10.97 px vertically on a medkit.
+
+   Reserving the tallest state here is what actually fixes it. The number is
+   arithmetic, not a guess: `.inv-detail-sub` is `white-space: nowrap`, so a
+   line is always exactly one line - 13px name + two 12px lines at normal
+   line-height is 44.4px, and 45 covers it with nothing left to grow into. */
 .inv-detail-body {
   min-width: 0;
+  min-height: 45px;
 }
 
 .inv-detail-name {
@@ -732,14 +746,11 @@ body.inv-menu-open .pause {
 }
 
 /* Action button row (Use + Drop) in the footer. */
-/* The height is reserved whether or not the buttons are showing.
-   `_setDetail` un-hides Use and Drop on hover, and the `hidden` attribute
-   takes an element out of layout - so hovering a usable stack used to grow
-   the footer by a button's height, shrink the body by the same, and slide
-   the whole grid up about eleven pixels. The cell the player was reaching
-   for moved out from under the cursor at the exact moment they pressed on
-   it, which on a usable item meant the three-second hold began on a cell
-   that was already leaving. Reserve the row and nothing moves. */
+/* Reserved so the button row cannot collapse. This is NOT what was making the
+   footer resize on hover - see `.inv-detail-body` below, which is; the first
+   attempt at this fix reserved only the buttons and left the real driver
+   alone, and the grid still slid. Kept because a row that changes height when
+   its two buttons appear is a second way to reintroduce the same defect. */
 .inv-act-row {
   flex: 0 0 auto;
   display: flex;

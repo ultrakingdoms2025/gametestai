@@ -1,4 +1,5 @@
 import { CONFIG } from '../core/Config.js';
+import { ammoItemFor } from '../systems/WeaponStats.js';
 import { venueArticle } from './PromptSlots.js';
 import { Minimap } from './Minimap.js';
 import { ChatBox } from './ChatBox.js';
@@ -105,7 +106,12 @@ const NOAMMO_LIFE = 1.15;
 const ITEM_LABELS = {
   bullet: 'bullets',
   arrow: 'arrows',
-  fireball_charge: 'fireball charges',
+  /* The catalogue calls these Ember Cores (ItemDefs.js:84) and so does the
+   * player - the report that found the BAG row reading 0 called them that.
+   * 'bullets' for Rifle Rounds is a fair generic; 'fireball charges' for Ember
+   * Cores was a second name for the same object, printed on the BAG row and in
+   * "OUT OF ...". */
+  fireball_charge: 'ember cores',
   credits: 'credits',
   medkit: 'medkit',
   speed_boost_25: 'speed boost',
@@ -3570,7 +3576,11 @@ export class HUD {
    * been converted yet, and `null` means "this weapon needs no ammunition".
    */
   _updateBagRow(w) {
-    const ammoItem = w?.ammoItem ?? w?.ammoItemId ?? null;
+    /* `ammoItemFor` FIRST, because the weapon is not a reliable witness: the
+     * fireball exposes no `ammoItem` at all, so asking it returned null and
+     * the row could never find the Ember Cores to count. `WeaponStats` is the
+     * single source of truth `Loadout` already brokers ammunition through. */
+    const ammoItem = ammoItemFor(w?.id) ?? w?.ammoItem ?? w?.ammoItemId ?? null;
     const melee = w && ammoItem === null && (w.magazine == null || w.magazine === 0);
 
     if (melee) {
@@ -3583,14 +3593,26 @@ export class HUD {
       return;
     }
 
-    let n = typeof w?.reserve === 'number' ? w.reserve : null;
-    if (n == null && ammoItem && this._inventory?.bagCount) {
+    /* The BAG is the authority on reserve ammunition - `Loadout`'s header says
+     * so, and `_syncAmmo` mirrors the bag INTO `weapon._reserve` every frame
+     * for the two weapons that have one. So asking the inventory first is not
+     * a fallback, it is the same number one step closer to the truth, and it
+     * is the only number that is right for a weapon with no reserve at all.
+     *
+     * `FireballWeapon.get reserve()` returns a literal 0 (Fireball.js:1120)
+     * because a fireball HAS no reserve - it runs off mana. Reading `reserve`
+     * first therefore printed 0 with ten Ember Cores in the bag, and never
+     * reached the inventory at all, because 0 is a number and the old guard
+     * only fell through on null. */
+    let n = null;
+    if (ammoItem && this._inventory?.bagCount) {
       try {
         n = this._inventory.bagCount(ammoItem);
       } catch {
         n = null;
       }
     }
+    if (n == null && typeof w?.reserve === 'number') n = w.reserve;
     const label = ammoItem ? (ITEM_LABELS[ammoItem] ?? ammoItem).toUpperCase() : 'BAG';
     const text = n == null ? '—' : String(Math.max(0, Math.round(n)));
     const key = `${label}|${text}`;

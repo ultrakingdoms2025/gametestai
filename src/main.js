@@ -918,6 +918,21 @@ const hud = new HUD({
  * `PAUSE_MENU_IDS` and checked against this list by a source test - a silently
  * missing row is invisible at runtime, because a menu with one fewer item still
  * works perfectly. */
+/* Hand the HUD the six systems it reads but does not own.
+ *
+ * `HUD.attach` has existed since the HUD did and was NEVER CALLED. Its
+ * `_updateSystems` falls back to `window.GAME`, which is built only under
+ * `?dev=1` - so every one of these resolved to null for real players while
+ * being perfectly populated in dev and in the harness. The visible symptom
+ * that found it: the ammo panel's BAG row read 0 Ember Cores with ten in the
+ * bag, because the inventory it wanted to count was not there. Anything built
+ * on polling from the HUD has the same shape, and would pass every test.
+ *
+ * All six are constructed above (economy 274, loadout 286, mounts 289,
+ * unstuck 294, stamina 307, inventory 309), so this is simply where they can
+ * first all be handed over. */
+hud.attach({ loadout, mounts, unstuck, economy, stamina, inventory });
+
 hud.setPauseMenuItems([
   {
     title: 'Play',

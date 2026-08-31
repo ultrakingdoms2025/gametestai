@@ -196,3 +196,47 @@ test('a spend-on-fire weapon may not fire without the whole cost in the bag', as
     'a bare > 0 lets a multi-unit shot fire free, because consumeFromBag is atomic',
   );
 });
+
+/* -- Defect: the HUD ammo panel read 0 Ember Cores with ten in the bag -----
+ * Three independent breakages stacked. `FireballWeapon.get reserve()` returns
+ * a literal 0 because a fireball has no reserve, and the row preferred
+ * `reserve` and only fell through on null - so 0 won. The fireball exposes no
+ * `ammoItem`, so the inventory fallback had nothing to look up. And
+ * `this._inventory` came from `HUD.attach()`, which was never called, or from
+ * `window.GAME`, which exists only under `?dev=1` - so for a real player it
+ * was null and NO weapon could have counted its bag. */
+
+test('the HUD ammo row asks the bag, not the weapon, for the reserve', async () => {
+  const js = await readFile(path.join(root, 'src/ui/HUD.js'), 'utf8');
+  const row = js.match(/_updateBagRow\(w\)\s*\{[\s\S]*?\n {2}\}/)?.[0] ?? '';
+  assert.ok(row, 'found _updateBagRow');
+  assert.match(row, /ammoItemFor\(w\?\.id\)/, 'the ammo item comes from WeaponStats, not the weapon');
+  assert.match(js, /import \{ ammoItemFor \} from '\.\.\/systems\/WeaponStats\.js'/);
+  // The bag must be consulted BEFORE reserve, or a weapon reporting a literal
+  // 0 (the fireball) shadows a bag that has rounds in it.
+  const bagAt = row.indexOf('bagCount');
+  const reserveAt = row.indexOf('w?.reserve');
+  assert.ok(bagAt > -1 && reserveAt > -1, 'both paths present');
+  assert.ok(bagAt < reserveAt, 'the bag is the authority and must be asked first');
+});
+
+test('HUD.attach is actually called, so the HUD works without ?dev=1', async () => {
+  const main = await readFile(path.join(root, 'src/main.js'), 'utf8');
+  assert.match(
+    main,
+    /hud\.attach\(\{[^}]*inventory[^}]*\}\)/,
+    'the HUD is handed its systems explicitly; window.GAME only exists under ?dev=1, so a HUD that polls it is dead for every real player',
+  );
+  const call = main.match(/hud\.attach\(\{[^}]*\}\)/)?.[0] ?? '';
+  assert.ok(call, 'found the attach call');
+  for (const sys of ['loadout', 'mounts', 'unstuck', 'economy', 'stamina', 'inventory']) {
+    assert.ok(call.includes(sys), `${sys} is attached, not left to window.GAME`);
+  }
+});
+
+test('the HUD names Ember Cores the way the catalogue and the player do', async () => {
+  const js = await readFile(path.join(root, 'src/ui/HUD.js'), 'utf8');
+  const { itemDef } = await import('../../src/systems/ItemDefs.js');
+  assert.equal(itemDef('fireball_charge').name, 'Ember Cores', 'premise: the catalogue name');
+  assert.match(js, /fireball_charge: 'ember cores'/, 'and the ammo panel agrees');
+});

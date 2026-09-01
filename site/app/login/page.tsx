@@ -152,6 +152,25 @@ function LoginForm() {
           Create one
         </Link>
       </p>
+
+      {/* Free-to-play, by code.
+        *
+        * Below the divider rather than beside the Google button, because it is
+        * not a third way to sign in - it is a different errand. Somebody who was
+        * handed a code has no account yet nine times in ten, and `/redeem` takes
+        * the code first and the account second so that being asked to register
+        * arrives after they can see the code was accepted rather than before.
+        *
+        * A link and not a form: the code must not be typed into a page that is
+        * about to POST credentials to `/api/auth/callback`, and a query string
+        * is the wrong place to carry a bearer credential across a redirect. */}
+      <div className="auth-divider"><span>or</span></div>
+      <p className="auth-footer" style={{ marginTop: 0 }}>
+        Been given an access code?{' '}
+        <Link href="/redeem" className="auth-link">
+          Play free with a code
+        </Link>
+      </p>
     </div>
   );
 }

@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Client, PoolClient } from 'pg';
 import { ensureLeaderboardSchema } from './leaderboard';
-import { ensureServerSlotSchema, entitlementPermitsHosting, readEntitlement } from './premium';
+import {
+  ensureServerSlotSchema,
+  entitlementPermitsHosting,
+  expireLapsedSlots,
+  readEntitlement,
+} from './premium';
 
 /**
  * Custom servers: per-owner content variants over the infrastructure that
@@ -595,6 +600,14 @@ export async function createServer(
   if (name.length < 3) return { ok: false, reason: 'invalid_name' };
   const base = slugify(name);
   if (!base) return { ok: false, reason: 'invalid_name' };
+
+  /* Retire any comped slot whose days have run out BEFORE reading the
+   * allowance, because `max_servers` is materialised and cannot notice a date
+   * passing on its own. This is the gate, so this is where a lapsed comp has to
+   * stop counting; doing it anywhere else leaves a window in which a free
+   * server outlives the comp that paid for it. Costs one indexed UPDATE that
+   * matches nothing in the ordinary case. */
+  await expireLapsedSlots(db, ownerPlayerId);
 
   /* Read through `premium.ts` rather than querying the column here, so the
    * "does this permit hosting?" rule has ONE definition. Two copies of it drift,

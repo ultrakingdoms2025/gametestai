@@ -37,6 +37,7 @@ import { randomUUID } from 'node:crypto';
 import { encrypt, decrypt, encryptMaybe, decryptMaybe } from './encrypt';
 import { sha256, sign, auditHash } from './hmac';
 import { computePlayerAccessSnapshot, grantedAtForRemainingDays } from './playerAccess';
+import { ensureAccessCodeSchema } from './accessCodes';
 import { ALL_QUESTS } from './quests/index.mjs';
 
 const DEFAULT_LORE_ROWS = [
@@ -328,6 +329,14 @@ export async function initSchema() {
     ON CONFLICT (scope) DO NOTHING
   `;
   }
+
+  /* Access codes. Declared in `lib/accessCodes.ts` and merely CALLED here, not
+   * copied — this file already carries one duplicated declaration
+   * (`credit_events`) and a second would be a second thing to keep in step.
+   * That module ensures its own schema on every read and write in any case,
+   * because `initSchema` runs only from the setup scripts and a deployment that
+   * has not been re-set-up must still be able to mint a code. */
+  await ensureAccessCodeSchema();
 }
 
 // ── Admin users ────────────────────────────────────────────────────────────

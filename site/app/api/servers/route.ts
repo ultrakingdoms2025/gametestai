@@ -10,6 +10,7 @@ import {
 import {
   SERVER_HOSTING_SKU,
   entitlementPermitsHosting,
+  expireLapsedSlots,
   quoteServerHosting,
   readEntitlement,
 } from '@/lib/premium';
@@ -30,6 +31,13 @@ export async function GET() {
 
   const db = await openServerDb();
   try {
+    /* Retire lapsed comped slots before reporting the allowance. `max_servers`
+     * is materialised, so without this the dashboard would go on offering "you
+     * may create another server" from a comp that ran out — and `createServer`,
+     * which sweeps too, would then refuse the click. A screen and a gate
+     * disagreeing about the same number is worse than either being wrong. */
+    await expireLapsedSlots(db, actor.playerId);
+
     const entitlement = await readEntitlement(db, actor.playerId);
     const owned = await listServersOwnedBy(db, actor.playerId);
     return NextResponse.json({

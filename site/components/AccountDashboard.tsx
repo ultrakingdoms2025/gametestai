@@ -69,6 +69,13 @@ export default async function AccountDashboard() {
                   Purchase Access
                 </Link>
                 <span className="acct-access-note">30 days of full access</span>
+                {/* Beside the purchase button, and only when there is no access
+                    to show. Somebody holding a code has been handed it by a
+                    person, not sold it, and the moment they discover this page
+                    is the moment they are looking for where to type it. */}
+                <Link href="/redeem" className="btn btn-ghost btn-sm">
+                  Redeem a code
+                </Link>
               </>
             )}
             {credits > 0 && (

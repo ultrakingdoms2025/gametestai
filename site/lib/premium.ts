@@ -1,6 +1,7 @@
 import type { Client, PoolClient } from 'pg';
 import { FEE_BPS, FEE_FIXED_CENTS, formatCents, grossUp } from './pricing';
 import { stripeConfigured } from './stripe';
+import { COMP_PREFIX, compSubscriptionId } from './accessCodeFormat';
 
 /**
  * The premium server-hosting SKU (7b), and the webhook that writes entitlement.
@@ -270,6 +271,25 @@ export function ensureServerSlotSchema(db: Db): Promise<void> {
            PRIMARY KEY (player_id, subscription_id)
          )`
       )
+      /* `expires_at`: when a slot stops funding an allowance BY ITSELF, with
+       * nobody sending an event to say so.
+       *
+       * Additive, nullable, and NULL for every row written before it existed —
+       * which is every subscription and every simulated grant. Those are right
+       * to be NULL: a Stripe subscription ends when Stripe says it ends, and
+       * enforcing a stored `current_period_end` on one would tear down a
+       * running server the moment a renewal webhook ran late.
+       *
+       * A comped slot is the opposite case. Nothing renews it and nothing will
+       * ever send an event about it, so a comp with no expiry is a comp that
+       * lasts forever. `liveSlots` therefore stops counting a lapsed slot, and
+       * `expireLapsedSlots` marks it at the points where hosting is actually
+       * decided. */
+      .then(() =>
+        db.query(
+          `ALTER TABLE server_slot_grants ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`
+        )
+      )
       .then(() => undefined)
       .catch((err) => {
         slotSchemaPromise = null;
@@ -284,15 +304,72 @@ export function resetServerSlotSchemaMemo(): void {
   slotSchemaPromise = null;
 }
 
-/** The slots currently funded: SUM of this player's unrevoked grants. */
+/**
+ * The slots currently funded: SUM of this player's unrevoked, unlapsed grants.
+ *
+ * `expires_at IS NULL` is the ordinary case and means "this slot ends when
+ * something tells it to" — every subscription and every simulated grant. A
+ * dated slot is a comp, and it stops counting on its own date without anybody
+ * having to run anything.
+ */
 async function liveSlots(db: Db, playerId: string): Promise<number> {
   const r = await db.query(
     `SELECT COALESCE(SUM(slots), 0)::int AS n
        FROM server_slot_grants
-      WHERE player_id = $1 AND revoked_at IS NULL`,
+      WHERE player_id = $1
+        AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > NOW())`,
     [playerId]
   );
   return Number(r.rows[0]?.n ?? 0);
+}
+
+/**
+ * Mark lapsed comp slots revoked and re-materialise the allowances they funded.
+ *
+ * ── Why a sweep at all, when `liveSlots` already ignores them ─────────────
+ *
+ * `server_entitlements.max_servers` is MATERIALISED — computed by `liveSlots`
+ * at write time and then stored — and `entitlementPermitsHosting` reads the
+ * stored number. That is deliberate and worth keeping: the quota check in
+ * `createServer` is one indexed read rather than an aggregate over a grants
+ * table. But a materialised number cannot notice a date passing, so the row
+ * would go on advertising a slot whose comp ran out a fortnight ago.
+ *
+ * ── Why here and not on a schedule ────────────────────────────────────────
+ *
+ * There is no scheduler in this project. A sweep that only runs when an
+ * operator remembers is a sweep that has not run, so this is called at the two
+ * points where the answer actually matters — `createServer`, which is the gate,
+ * and the servers listing, which is where an owner is told whether they may
+ * make another. Both already hold a connection, both are already writing or
+ * about to, and a player who never comes back never needs the update.
+ *
+ * Scoped to one player when given one. The unscoped form exists for the admin
+ * claw-back sweep, which has just revoked codes across many players at once.
+ */
+export async function expireLapsedSlots(db: Db, playerId?: string): Promise<number> {
+  await ensureServerSlotSchema(db);
+  const lapsed = await db.query(
+    `UPDATE server_slot_grants SET revoked_at = NOW()
+      WHERE revoked_at IS NULL
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()
+        AND ($1::text IS NULL OR player_id = $1)
+      RETURNING player_id`,
+    [playerId ?? null]
+  );
+  const touched = new Set(
+    (lapsed.rows as { player_id: unknown }[]).map((row) => String(row.player_id))
+  );
+  for (const id of touched) {
+    await db.query(
+      `UPDATE server_entitlements SET max_servers = $2, updated_at = NOW()
+        WHERE player_id = $1`,
+      [id, await liveSlots(db, id)]
+    );
+  }
+  return touched.size;
 }
 
 export interface SubscriptionFact {
@@ -308,6 +385,14 @@ export interface SubscriptionFact {
    * player who had a pretend one.
    */
   simulated?: boolean;
+  /**
+   * When THIS subscription's slot stops funding an allowance on its own.
+   *
+   * Only a comp sets it — see `grantCompedHosting`. Stripe's own writes leave
+   * it undefined, which stores NULL, which means "this slot ends when an event
+   * says so" and is the behaviour every existing row already has.
+   */
+  slotExpiresAt?: string | null;
 }
 
 export type EntitlementWrite =
@@ -419,10 +504,16 @@ export async function writeEntitlement(
        * simulated confirm link and a subscription Stripe resumes are all the
        * same idempotent upsert and none of them mints a second slot. */
       await db.query(
-        `INSERT INTO server_slot_grants (player_id, subscription_id, slots)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (player_id, subscription_id) DO UPDATE SET revoked_at = NULL`,
-        [playerId, subscriptionId, SERVERS_PER_SUBSCRIPTION]
+        `INSERT INTO server_slot_grants (player_id, subscription_id, slots, expires_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (player_id, subscription_id) DO UPDATE SET
+           revoked_at = NULL,
+           /* Assigned, not COALESCEd. Re-comping the same code to the same
+            * player is how an operator EXTENDS one, so the new date has to
+            * win; and a real subscription can only reach this row if it shares
+            * the comp's id, which it cannot, because the prefixes differ. */
+           expires_at = EXCLUDED.expires_at`,
+        [playerId, subscriptionId, SERVERS_PER_SUBSCRIPTION, fact.slotExpiresAt ?? null]
       );
 
       await db.query(
@@ -730,4 +821,137 @@ export async function revokeSimulatedEntitlements(db: Db): Promise<string[]> {
     );
   }
   return deleted;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Comped hosting: a slot an operator decided to give away                 */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Hosting handed out on purpose, through an access code.
+ *
+ * ── Why this is NOT `grantSimulatedHosting` with a nicer name ─────────────
+ *
+ * They look alike — both write an entitlement nobody paid for — and they are
+ * opposites in the two ways that matter.
+ *
+ *   1. **A simulated grant is a rehearsal; a comp is a decision.** The
+ *      simulated path exists only because there is no way to pay yet, and it
+ *      refuses outright the moment `STRIPE_SECRET_KEY` appears — the bypass
+ *      dies in the same action that opens the real door. A comp is an operator
+ *      choosing to give somebody a server, and it has to keep working after
+ *      payments go live, because that is the day comping is most useful.
+ *
+ *   2. **The pretend rows get swept; comps must survive the sweep.**
+ *      `revokeSimulatedEntitlements` deletes every row marked `sim_` or
+ *      `simulated = TRUE` — it is the "clean up the rehearsal before going
+ *      live" button. If a comp were marked simulated, that button would
+ *      silently cancel servers an operator had deliberately given away, and
+ *      the audit trail would say the sweep did it.
+ *
+ * So a comp is marked `comp_` on both ids and is NOT `simulated`. The sweep's
+ * predicate cannot match it, `toEntitlement` does not flag it, and any attempt
+ * to reconcile the id against Stripe still fails loudly with "no such
+ * subscription" — which is the property the `sim_` prefix was chosen for and is
+ * worth keeping for exactly the same reason.
+ *
+ * ── It does not distort revenue, for the same reason a sim grant does not ──
+ *
+ * No `recordSitePurchase` row is written. Revenue is `SUM(amount_cents)` over
+ * `purchases`, so a comp contributes nothing to it, which is the truth.
+ *
+ * ── It expires, and the slot is what expires ──────────────────────────────
+ *
+ * The days a code grants land on `server_slot_grants.expires_at`, not on
+ * `server_entitlements.current_period_end`. That choice matters for one case:
+ * a PAYING customer who also redeems a comp code. Their comp slot lapses and
+ * stops counting; their paid slot is untouched and their allowance simply
+ * drops back to what they pay for. Had the expiry been enforced on the
+ * entitlement row — whose `stripe_subscription_id` holds whichever write
+ * landed last — the lapsing comp would have taken their paid hosting down with
+ * it.
+ */
+
+/* `COMP_PREFIX` and `compSubscriptionId` are defined in `accessCodeFormat.ts`
+ * and re-exported here, so this module stays the one place to look up the
+ * entitlement vocabulary while the admin app — which cannot import this file —
+ * still derives the identical slot id when it claws a code back. See that
+ * file's note for why the definition sits there rather than here. */
+export { COMP_PREFIX, compSubscriptionId };
+
+export function isCompId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith(COMP_PREFIX);
+}
+
+/** The customer id for a comped player — stable, and obvious in any listing. */
+export function compCustomerId(playerId: string): string {
+  return `${COMP_PREFIX}cus_${playerId}`;
+}
+
+export type CompGrant =
+  | { granted: true; entitlement: Entitlement }
+  | { granted: false; reason: 'invalid' };
+
+/**
+ * Give this player one hosting slot for `days`, funded by this code.
+ *
+ * Goes through `writeEntitlement` like everything else, so accumulation, the
+ * ordering guard and the slot ledger all behave identically to a purchase —
+ * there is no second way to raise `max_servers` and this does not become one.
+ */
+export async function grantCompedHosting(
+  db: Db,
+  input: { playerId: string; codeHash: string; days: number }
+): Promise<CompGrant> {
+  const playerId = String(input?.playerId ?? '').trim();
+  const codeHash = String(input?.codeHash ?? '').trim();
+  const days = Math.max(1, Math.floor(Number(input?.days ?? 0)));
+  if (!playerId || !codeHash || !Number.isFinite(days)) return { granted: false, reason: 'invalid' };
+
+  const endsAt = new Date(Date.now() + days * 86_400_000).toISOString();
+  const written = await writeEntitlement(db, {
+    playerId,
+    subscriptionId: compSubscriptionId(codeHash),
+    customerId: compCustomerId(playerId),
+    status: 'active',
+    /* Shown to the owner as "your free hosting runs until…". The slot's own
+     * `expires_at` below is what actually enforces it; this is the copy of the
+     * date that the entitlement row carries for display, exactly as a real
+     * subscription carries Stripe's. */
+    currentPeriodEnd: endsAt,
+    simulated: false,
+    slotExpiresAt: endsAt,
+  });
+  if (!written.applied) return { granted: false, reason: 'invalid' };
+  return { granted: true, entitlement: written.entitlement };
+}
+
+/**
+ * Take back the slot one code funded for one player, leaving everything else.
+ *
+ * The claw-back half of the admin's revoke button. It releases exactly the
+ * comp's own grant row and re-materialises the allowance from what survives, so
+ * a player who also pays keeps what they pay for and a player who also redeemed
+ * a different code keeps that. Returns the allowance they are left with.
+ *
+ * Idempotent: a second call finds `revoked_at` already set and changes nothing.
+ */
+export async function revokeCompedHosting(
+  db: Db,
+  playerId: string,
+  codeHash: string
+): Promise<number> {
+  await ensureServerSlotSchema(db);
+  await db.query(
+    `UPDATE server_slot_grants SET revoked_at = NOW()
+      WHERE player_id = $1 AND subscription_id = $2 AND revoked_at IS NULL`,
+    [playerId, compSubscriptionId(codeHash)]
+  );
+  const remaining = await liveSlots(db, playerId);
+  await db.query(
+    `UPDATE server_entitlements SET max_servers = $2, updated_at = NOW()
+      WHERE player_id = $1`,
+    [playerId, remaining]
+  );
+  return remaining;
 }

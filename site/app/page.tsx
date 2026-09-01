@@ -4,16 +4,24 @@ import GatewayDescent from '@/components/GatewayDescent';
 import AccountDashboard from '@/components/AccountDashboard';
 import SignOutButton from '@/components/SignOutButton';
 import ThresholdReveal from '@/components/ThresholdReveal';
+import PurchaseErrorBanner from '@/components/PurchaseErrorBanner';
+import {
+  TOTAL_DESTINATIONS, LANDABLE_PLANETS, numberWord, NumberWord,
+} from '@/components/gameScale';
 import { getAccessStateForSession } from '@/lib/access';
 import { auth } from '@/lib/auth';
 import { ENTRY_CENTS, CREDIT_PRICE_CENTS, MIN_CREDITS, formatCents, grossUp } from '@/lib/pricing';
 import { stripeConfigured } from '@/lib/stripe';
-import { WORLDS, heroTicker, statBar } from '@/lib/worlds';
+import { WORLDS, MOUNTS, WEAPONS, heroTicker, statBar } from '@/lib/worlds';
 import { getLore } from '@/lib/lore';
 
 /* Reads a cookie, so it cannot be prerendered — and should not be, since the
  * page's primary call to action changes depending on whether you have paid. */
 export const dynamic = 'force-dynamic';
+
+/* Only `alternates`: every other field merges down from the root layout. A
+ * canonical declared per page rather than inherited — see the note there. */
+export const metadata = { alternates: { canonical: '/' } };
 
 const FEATURES = [
   {
@@ -21,16 +29,22 @@ const FEATURES = [
     c: 'Grip any near-vertical surface and go up it. Stamina is a budget for movement, not a countdown — hang still and you recover.',
   },
   {
-    t: 'Six mounts',
+    t: `${NumberWord(MOUNTS)} mounts`,
     c: 'Hoverboard, dragon, ground car, horse, eagle and bicycle. None is a reskin: the horse has a real gait model, the eagle is a glider trading height for speed.',
     amber: true,
+  },
+  {
+    /* Space, the ships and the planets had no marketing surface anywhere on
+     * this site, and they are ELEVEN of the eighteen registered worlds. */
+    t: 'Space and the planets',
+    c: `Take a ship off the yard, fly the transit drive, and land on any of ${numberWord(LANDABLE_PLANETS)} planets — each walkable ground with its own weather, liquid and light, rings overhead included.`,
   },
   {
     t: 'Contact racing',
     c: 'Ten cars, AI at varying performance levels, difficulty that rebuilds the track, and rivals you can shunt off line.',
   },
   {
-    t: 'Four weapons',
+    t: `${NumberWord(WEAPONS)} weapons`,
     c: 'A machine gun, a charge-and-release ember caster, a recurve bow with arrow drop, and a sabre. Ammunition comes out of your bag.',
   },
   {
@@ -52,13 +66,25 @@ const FEATURES = [
   },
 ];
 
-export default async function Home() {
-  const session = await auth();
+/**
+ * `searchParams` is read here for ONE reason: `/api/confirm` sends every one of
+ * its five refusals back to this page as `/?error=<code>`, and until now this
+ * component took no parameters at all, so a customer who had just failed to buy
+ * the game was shown the marketing page and nothing else. See
+ * `PurchaseErrorBanner`. `?ref=` carries the Stripe session id when the
+ * redirect has one, so support has something to look the payment up by.
+ */
+export default async function Home(props: {
+  searchParams: Promise<{ [k: string]: string | string[] | undefined }>;
+}) {
+  const [session, sp] = await Promise.all([auth(), props.searchParams]);
   const [{ hasAccess }, lore] = await Promise.all([
     getAccessStateForSession(session),
     getLore(),
   ]);
   const entryTotal = grossUp(ENTRY_CENTS);
+  const errorCode = typeof sp.error === 'string' ? sp.error : null;
+  const errorRef = typeof sp.ref === 'string' ? sp.ref : null;
 
   return (
     <>
@@ -96,6 +122,18 @@ export default async function Home() {
 
       {/* ── Account dashboard (logged-in users) ── */}
       {session && <AccountDashboard />}
+
+      <main id="main" tabIndex={-1}>
+
+      {/* ── A failed purchase, said out loud ──
+          Above the hero on purpose: this is the only screen a customer who has
+          just been refused at checkout is shown, and a notice below the fold is
+          a notice nobody reads. */}
+      {errorCode ? (
+        <div className="wrap" style={{ paddingTop: 28 }}>
+          <PurchaseErrorBanner code={errorCode} reference={errorRef} />
+        </div>
+      ) : null}
 
       {/* ── Hero ── */}
       <header className="hero hero-ignite">
@@ -172,13 +210,17 @@ export default async function Home() {
             <p className="feat-sub">
               Terrain, buildings, crowds, faces, fabric, fur, feathers and stone —
               all generated at load time. The whole game is a few hundred kilobytes
-              of logic rather than gigabytes of art.
+              of logic rather than gigabytes of art. {NumberWord(TOTAL_DESTINATIONS)}{' '}
+              places to stand in all: the {numberWord(WORLDS.length)} gateway worlds
+              below, open space between them, and {numberWord(LANDABLE_PLANETS)}{' '}
+              landable planets you fly a ship to.
             </p>
           </div>
 
           <div className="feat-stats-bar" aria-label="game at a glance">
             {statBar().map((v, i) => {
-              const labels = ['Worlds','Mounts','Weapons','Install'];
+              // 'Gateways': see the note in app/features/page.tsx.
+              const labels = ['Gateways','Mounts','Weapons','Install'];
               return (
                 <div className="fstat" key={labels[i]}>
                   <span className="fstat-val">{v}</span>
@@ -205,9 +247,13 @@ export default async function Home() {
           <div className="cta-band-ring" aria-hidden="true" />
           <div className="wrap">
             <div className="cta-band-kicker">Get in</div>
-            <h2 className="cta-band-h2" id="cta-band-h2">One charge.<br />Six worlds.</h2>
+            <h2 className="cta-band-h2" id="cta-band-h2">
+              One charge.<br />{NumberWord(TOTAL_DESTINATIONS)} worlds.
+            </h2>
             <p className="cta-band-sub">
-              Access is {formatCents(ENTRY_CENTS)} for a 30-day play window on your
+              {NumberWord(WORLDS.length)} through the gateways, open space, and{' '}
+              {numberWord(LANDABLE_PLANETS)} planets you land a ship on. Access is{' '}
+              {formatCents(ENTRY_CENTS)} for a 30-day play window on your
               account. Credits are separate and optional —{' '}
               {formatCents(CREDIT_PRICE_CENTS)} each, from {MIN_CREDITS} to 10,000.
               Prices shown before card processing, which appears as its own line at checkout.
@@ -225,6 +271,8 @@ export default async function Home() {
           </div>
         </section>
       </ThresholdReveal>
+
+      </main>
 
       <footer>
         <div className="wrap">

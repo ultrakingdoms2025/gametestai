@@ -77,7 +77,7 @@ function LoginForm() {
       <Link href="/" className="auth-logo">AETHER NEXUS</Link>
       <h1 className="auth-heading">Sign in</h1>
 
-      {error ? <div className="auth-error">{error}</div> : null}
+      {error ? <div className="auth-error" role="alert">{error}</div> : null}
 
       <button
         type="button"
@@ -122,20 +122,41 @@ function LoginForm() {
           * only when the account turns out to have 2FA - which tells anyone
           * trying passwords the moment they get one right. An always-present
           * optional field costs a signed-out visitor one ignorable input and
-          * gives an attacker nothing. */}
+          * gives an attacker nothing.
+          *
+          * ── It takes a recovery code too, and used to destroy one ────────
+          *
+          * `lib/auth.ts` accepts either: `looksLikeRecoveryCode(code)` routes a
+          * ten-character code to `consumeRecoveryCode`, anything else to the
+          * TOTP check. This field was labelled and filtered as TOTP-only —
+          * `replace(/\D/g, '').slice(0, 6)` — so typing `ABCDE-FGHJK` left an
+          * EMPTY box. The one credential that exists for the person who has
+          * lost their phone could not be entered on the only page that would
+          * have taken it. The filter now keeps letters and the dash, and the
+          * label says both are accepted. */}
         <label className="auth-label" htmlFor="code">
-          Authenticator code <span className="auth-hint">(only if you have 2FA enabled)</span>
+          Authenticator or recovery code{' '}
+          <span className="auth-hint">(only if you have 2FA enabled)</span>
         </label>
         <input
           id="code"
           type="text"
           className="auth-input"
           value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-          inputMode="numeric"
+          /* Uppercased on the way in because recovery codes are shown in upper
+             case and the server normalises to it anyway; digits are unaffected,
+             so a six-digit TOTP types exactly as it did. */
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 12))}
           autoComplete="one-time-code"
-          placeholder="123456"
+          placeholder="123456 or ABCDE-FGHJK"
         />
+        {/* Pulled up against the field it belongs to — the form's 12px gap
+            would otherwise read as a separate paragraph rather than as this
+            input's help text. */}
+        <p className="auth-desc" style={{ marginTop: -4, fontSize: '0.82rem' }}>
+          Lost the phone with your authenticator on it? Use one of the recovery codes you
+          saved when you turned 2FA on. Each one works once.
+        </p>
 
         <div className="auth-row">
           <Link href="/forgot-password" className="auth-link">Forgot password?</Link>
@@ -177,7 +198,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <main className="auth-shell">
+    <main id="main" tabIndex={-1} className="auth-shell">
       <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading...</div></div>}>
         <LoginForm />
       </Suspense>

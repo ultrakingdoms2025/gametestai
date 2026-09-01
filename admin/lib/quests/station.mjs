@@ -320,7 +320,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Nexus Cartographer',
     title: 'Verify all five live gateways out of the hub',
-    credits: 1100,
+    credits: 1030,
     dur: 720,
     pre: ['Trade Route Scouting', 'Contraband Sweep'],
     notes:
@@ -341,7 +341,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Station Saboteur',
     title: 'Break the crew turning station security against the decks',
-    credits: 1700,
+    credits: 1210,
     dur: 1440,
     pre: ['Nexus Cartographer'],
     notes:
@@ -363,7 +363,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'The Aether Compact',
     title: 'Broker a trade compact between the hub and two worlds',
-    credits: 2700,
+    credits: 1510,
     dur: 2880,
     pre: ['Station Saboteur'],
     notes:
@@ -386,7 +386,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Nexus Council Envoy',
     title: 'Carry the hub seat at the founding of the Nexus Council',
-    credits: 5400,
+    credits: 2320,
     dur: 5760,
     pre: ['The Aether Compact'],
     notes:
@@ -435,16 +435,16 @@ export const STATION_QUESTS = [
     n: 102,
     world: 'station',
     line: 'The Panel Drill',
-    title: 'Learn the panels: J, I, F2, F6, T and E',
+    title: 'Learn the panels: J, I, the Esc hub, T and E',
     credits: 130,
     dur: 90,
     pre: ['Boot Camp: Moving Around'],
     notes:
-      'EDUCATION 2/10 — function keys and panels. Panels emit nothing when they OPEN, so steps 2 and 3 are tracked on `character:changed`, which only fires from inside the F2 menu. Targets are real config VALUES (PlayerAvatar.js OUTFITS / HAIR_STYLE_IDS) — the payload carries no field name, so a field name would never match. `jumpsuit` is safe to ask for because `flightsuit` is the default, so it takes a real change to produce it.',
+      'EDUCATION 2/10 — the Esc hub and its panels. Panels emit nothing when they OPEN, so steps 2 and 3 are tracked on `character:changed`, which only fires from inside the Character panel. Targets are real config VALUES (PlayerAvatar.js OUTFITS / HAIR_STYLE_IDS) — the payload carries no field name, so a field name would never match. `jumpsuit` is safe to ask for because `flightsuit` is the default, so it takes a real change to produce it.',
     steps: [
       { order: 1, label: 'J opens the quest board from anywhere, and Esc closes it. You can also walk up to Zara Vex and press E — do that now', type: 'interact', target: 'Zara Vex', count: 1, world: 'station' },
-      { order: 2, label: 'F2 opens the character menu. Change your outfit to the Jumpsuit', type: 'customize', target: 'jumpsuit', count: 1, world: 'station' },
-      { order: 3, label: 'Still in F2: change your hair style to Ponytail. F6 opens the keybind panel if you would rather these keys were somewhere else', type: 'customize', target: 'ponytail', count: 1, world: 'station' },
+      { order: 2, label: 'Open the Esc menu and take Character. Change your outfit to the Jumpsuit', type: 'customize', target: 'jumpsuit', count: 1, world: 'station' },
+      { order: 3, label: 'Still in Character: change your hair style to Ponytail. The Rebind keys row in the same menu is there if you would rather these keys were somewhere else', type: 'customize', target: 'ponytail', count: 1, world: 'station' },
       { order: 4, label: 'I opens your inventory and the 30-slot carry bag. Pick up a medkit and watch where it lands', type: 'collect', target: 'medkit', count: 1, world: 'station' },
       { order: 5, label: 'E starts a conversation with anyone friendly; T opens the comms box once you are talking. Press E on 2 station locals', type: 'talk', target: 'wanderer', count: 2, world: 'station' },
     ],
@@ -606,7 +606,7 @@ export const STATION_QUESTS = [
       'EDUCATION 10/10 — assessment. Requires all nine other education lines. One step per taught system, in the order they were taught. Step 2 asks for the flight suit specifically because The Panel Drill put the player in a jumpsuit, so this is a real change back rather than a no-op.',
     steps: [
       { order: 1, label: 'Press E on Zara Vex to sit the assessment', type: 'interact', target: 'Zara Vex', count: 1, world: 'station' },
-      { order: 2, label: 'Panels: press F2 and put the station flight suit back on for the record', type: 'customize', target: 'flightsuit', count: 1, world: 'station' },
+      { order: 2, label: 'Panels: open the Esc menu, take Character, and put the station flight suit back on for the record', type: 'customize', target: 'flightsuit', count: 1, world: 'station' },
       { order: 3, label: 'Trade: press B at Oyo Tannen on the plaza and buy a medkit pack', type: 'purchase', target: 'medkit', count: 1, world: 'station' },
       { order: 4, label: 'Movement and loot: gather 3 alloy scrap across the decks — mounted (M) if you want it done faster', type: 'collect', target: 'alloy_scrap', count: 3, world: 'station' },
       { order: 5, label: 'Combat: destroy 3 Rogue Security Units with any weapon slot you like', type: 'kill', target: 'Rogue Security Unit', count: 3, world: 'station' },
@@ -629,7 +629,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Nexus Passport',
     title: 'Set foot in every world the Nexus connects',
-    credits: 1900,
+    credits: 1270,
     dur: 2880,
     pre: ['Gateway Handbook', 'Nexus Cartographer'],
     notes:
@@ -653,7 +653,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Circuit Crown',
     title: 'Race every circuit at Vellum Ridge and win one outright',
-    credits: 3400,
+    credits: 1720,
     dur: 4320,
     pre: ['Nexus Passport', 'Nexus Council Envoy'],
     notes:
@@ -673,7 +673,7 @@ export const STATION_QUESTS = [
     world: 'station',
     line: 'Shard Bearer',
     title: 'Gather the Nexus tribute from every world that will pay it',
-    credits: 6800,
+    credits: 2740,
     dur: 10080,
     pre: ['Nexus Passport', 'Circuit Crown', 'The Aether Compact'],
     notes:

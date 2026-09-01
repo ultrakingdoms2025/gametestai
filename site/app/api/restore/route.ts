@@ -1,39 +1,77 @@
 import { NextResponse } from 'next/server';
-import { grant } from '@/lib/entitlement';
+import { auth } from '@/lib/auth';
+import { getUserById } from '@/lib/db';
 import { clampCredits } from '@/lib/pricing';
+import { findOrCreatePlayer, recordSitePurchase } from '@/lib/playerDb';
 import { getStripe, stripeConfigured } from '@/lib/stripe';
+import { RATE_LIMITS, consumeRateLimit, tooManyRequests } from '@/lib/rateLimit';
 
 /**
- * Recover a purchase that never reached this browser.
+ * Recover a purchase that never reached this account.
  *
  * ## The problem this actually solves
  *
- * Entitlement is granted on the return redirect from Stripe. A customer who
- * pays and then closes the tab — or loses signal, or has the redirect eaten by
- * a corporate proxy — has been charged and has nothing. A webhook is the usual
- * answer, and it cannot be the answer here: a webhook has no browser attached,
- * so there is nowhere for it to put the cookie.
+ * Provisioning happens on the return redirect from Stripe. A customer who pays
+ * and then closes the tab — or loses signal, or has the redirect eaten by a
+ * corporate proxy — has been charged and has nothing. The webhook is the
+ * automatic retry for that (see `app/api/webhook/route.ts`); this is the manual
+ * one, for the orders that predate it or that the webhook could not attribute.
  *
- * What it can be instead is a lookup. Stripe already holds the durable record
- * of every payment, so with no database of our own, Stripe *is* the database.
- * The customer proves which purchase is theirs by giving the email they paid
- * with, and everything paid under that email that has not already been settled
- * on this browser is granted.
+ * ## What this route used to be, and why it was three bugs at once
  *
- * ## What this deliberately is not
+ * It took an email address out of the POST body and granted on the strength of
+ * it. That was:
  *
- * It is not authentication. An email address is a claim, not a credential, so
- * anyone who knows the email a purchase was made with can pull that purchase
- * onto their own browser. For a one-dollar unlock and a credit balance that is
- * an acceptable exposure; for anything that matters it is not, and the fix is
- * the account system rather than a better version of this. That is the point at
- * which this route should be deleted, not hardened.
+ *   1. **Unauthenticated.** An email address is a claim, not a credential, so
+ *      anyone who knew the address a purchase was made with could pull that
+ *      purchase onto themselves. The file said so, called it "an acceptable
+ *      exposure", and said the fix was the account system rather than a better
+ *      version of this. The account system has since been built — `auth()`,
+ *      `site_users`, `players` — so the stated condition for deleting the
+ *      unauthenticated form has been met.
+ *   2. **A customer-enumeration oracle.** `404 No purchases found for that
+ *      email address` versus a 200 told anybody who asked whether a given
+ *      person had bought the game. It answers the same way for everyone now,
+ *      because it only ever looks up the caller's own address.
+ *   3. **Restoring nothing.** It wrote an `an_pass` cookie via
+ *      `lib/entitlement.ts`, and NO ACCESS CHECK ANYWHERE READ THAT COOKIE:
+ *      access is decided by `lib/access.ts` from the `players` table alone. So
+ *      it reported "Restored game access" and the customer still could not
+ *      play. It now calls `recordSitePurchase`, which is what actually grants
+ *      access and credits, and is idempotent per order id — so a customer who
+ *      presses it twice, or whose webhook lands in between, is granted once.
+ *
+ * ## The email is the session's, never the body's
+ *
+ * There is deliberately no body parameter left. A signed-in caller can only
+ * restore what was bought under their own verified address, which is the whole
+ * difference between this and what it replaces. An operator restoring on
+ * someone else's behalf is an admin action and belongs in the admin app, with
+ * an audit row, not on a public endpoint.
  */
 
 const MAX_CUSTOMERS = 5;
 const MAX_SESSIONS = 50;
 
-export async function POST(req: Request) {
+export async function POST() {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Sign in first.' }, { status: 401 });
+  }
+
+  /* One customer lookup plus a sessions listing per call, against Stripe's own
+   * rate limits. Authenticated now, so the account is the key that matters;
+   * this bounds a signed-in caller holding the button down and spending our
+   * Stripe quota for everybody else. */
+  const verdict = await consumeRateLimit(
+    'restore',
+    [{ namespace: 'user', value: session.user.id }],
+    RATE_LIMITS.restore
+  );
+  if (!verdict.allowed) {
+    return tooManyRequests(verdict, 'Too many restore attempts. Try again shortly.');
+  }
+
   if (!stripeConfigured()) {
     return NextResponse.json(
       { error: 'There are no live purchases to restore — checkout is running in test mode.' },
@@ -46,28 +84,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Payments are not configured.' }, { status: 500 });
   }
 
-  let email = '';
-  try {
-    const body = (await req.json()) as { email?: unknown };
-    email = String(body.email ?? '').trim().toLowerCase();
-  } catch {
-    return NextResponse.json({ error: 'Malformed request.' }, { status: 400 });
+  /* Read from the database rather than from the session token: the token is
+   * whatever was minted at sign-in, and an address changed since then would
+   * send us looking up the wrong customer. */
+  const user = await getUserById(session.user.id);
+  if (!user?.email) {
+    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
   }
-
-  // Deliberately loose. This is not validation of a person, only a guard
-  // against sending obvious rubbish to Stripe.
-  if (!email || email.length > 320 || !email.includes('@')) {
-    return NextResponse.json({ error: 'Enter the email address you paid with.' }, { status: 400 });
-  }
+  const email = user.email.toLowerCase().trim();
 
   try {
+    const playerId = await findOrCreatePlayer(user.id, user.email);
     const customers = await stripe.customers.list({ email, limit: MAX_CUSTOMERS });
-    if (customers.data.length === 0) {
-      return NextResponse.json({ error: 'No purchases found for that email address.' }, { status: 404 });
-    }
 
-    let grantedAccess = false;
-    let grantedCredits = 0;
+    let restoredAccess = false;
+    let restoredCredits = 0;
     let alreadyHad = 0;
 
     for (const customer of customers.data) {
@@ -75,45 +106,67 @@ export async function POST(req: Request) {
         customer: customer.id,
         limit: MAX_SESSIONS,
       });
-      for (const session of sessions.data) {
-        if (session.payment_status !== 'paid') continue;
-        const meta = session.metadata ?? {};
-        const intent = meta.intent ?? 'entry';
+      for (const paid of sessions.data) {
+        if (paid.payment_status !== 'paid') continue;
+        /* Subscriptions are not this route's business. Hosting entitlement is
+         * written by the webhook from `customer.subscription.*` events and has
+         * its own ordering guard; replaying one through the purchase ledger
+         * would put a row in `purchases` for a recurring charge and grant
+         * thirty days of GAME ACCESS for a server subscription. */
+        if (paid.mode === 'subscription') continue;
+
+        const meta = paid.metadata ?? {};
+        const intent = typeof meta.intent === 'string' && meta.intent ? meta.intent : 'entry';
         const credits = intent === 'entry' ? 0 : clampCredits(meta.credits);
-        const { applied } = await grant({
-          paid: meta.grantsAccess === 'true' ? true : undefined,
-          orderId: session.id,
+        const type: 'access' | 'credits' | 'access+credits' =
+          intent === 'credits' ? 'credits'
+          : intent === 'entry+credits' ? 'access+credits'
+          : 'access';
+
+        /* The same call, the same order id and the same idempotency the
+         * redirect and the webhook use. Whichever of the three arrives first
+         * grants; the other two find the row and report `false`. */
+        const applied = await recordSitePurchase({
+          playerId,
+          type,
+          amountCents: paid.amount_total ?? 0,
+          creditsAmount: credits,
+          orderId: paid.id,
+          actorEmail: user.email,
         });
         if (applied) {
-          if (meta.grantsAccess === 'true') grantedAccess = true;
-          grantedCredits += credits;
+          if (type !== 'credits') restoredAccess = true;
+          restoredCredits += credits;
         } else {
           alreadyHad++;
         }
       }
     }
 
-    if (!grantedAccess && grantedCredits === 0) {
+    if (!restoredAccess && restoredCredits === 0) {
+      /* One answer for "no such customer" and for "nothing outstanding". The
+       * 404 that used to distinguish them told anyone who asked whether a
+       * given address had ever bought the game. */
       return NextResponse.json({
         ok: true,
         restored: false,
         message: alreadyHad > 0
-          ? 'Everything bought with that address is already on this browser.'
-          : 'No completed purchases found for that email address.',
+          ? 'Everything bought with your address is already on your account.'
+          : 'No completed purchases are outstanding for your account.',
       });
     }
 
     return NextResponse.json({
       ok: true,
       restored: true,
-      access: grantedAccess,
-      credits: grantedCredits,
-      message: `Restored${grantedAccess ? ' game access' : ''}`
-        + `${grantedAccess && grantedCredits ? ' and' : ''}`
-        + `${grantedCredits ? ` ${grantedCredits.toLocaleString('en-US')} credits` : ''}.`,
+      access: restoredAccess,
+      credits: restoredCredits,
+      message: `Restored${restoredAccess ? ' game access' : ''}`
+        + `${restoredAccess && restoredCredits ? ' and' : ''}`
+        + `${restoredCredits ? ` ${restoredCredits.toLocaleString('en-US')} credits` : ''}.`,
     });
   } catch (e) {
-    console.error('[restore] Stripe lookup failed:', e);
+    console.error('[restore] lookup or provisioning failed:', e);
     return NextResponse.json(
       { error: 'Could not reach the payment provider. Nothing has changed.' },
       { status: 502 }

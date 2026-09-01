@@ -118,11 +118,58 @@ function resolve(v, physics) {
   return [v.pos[0], g + v.pos[1], v.pos[2]];
 }
 
+/**
+ * Worlds the flight rig does not register for itself.
+ *
+ * `_flightrig.mjs` registers what its flying suites need plus `sports` and
+ * `race`, both of which were added for exactly this file and for exactly this
+ * reason: "a world nobody can activate is a world whose framings nobody
+ * checks". `medieval` and `maze` are the same case, registered here rather
+ * than in the rig so nothing else pays for them.
+ */
+const EXTRA_WORLDS = {
+  medieval: () => import('../../src/worlds/MedievalWorld.js').then((m) => m.MedievalWorld),
+  maze: () => import('../../src/worlds/MazeWorld.js').then((m) => m.MazeWorld),
+};
+
+/**
+ * Seeds a VOLATILE world is probed on.
+ *
+ * `MazeWorld` re-seeds from `Math.random()` on every activation and
+ * `WorldManager.build` re-generates a volatile world that is not the live one,
+ * so an unpinned probe measures a different maze every run - which is how a
+ * gate becomes flaky and then becomes ignored. `MazeWorld.seedOverride` exists
+ * for precisely this and is null in every normal boot.
+ *
+ * Eight rather than one, because a single pinned seed would make the gate
+ * deterministic while checking a maze no player will ever see. The declared
+ * subjects in `VIEWS.maze` are measured to hold across all eight AND across 30
+ * unpinned activations; see the comment on that table.
+ */
+const VOLATILE_SEEDS = [11, 101, 1009, 7919, 60013, 99991, 424243, 1000003];
+
 /** Citadel has its own build kit; everything else comes off the flight rig. */
 let _citadel = null;
-async function worldRig(worldId) {
+const _registered = new Set();
+async function worldRig(worldId, seed = null) {
   if (worldId !== 'citadel') {
     const r = await rig();
+    const extra = EXTRA_WORLDS[worldId];
+    let Cls = null;
+    if (extra) {
+      Cls = await extra();
+      if (!_registered.has(worldId)) { r.wm.register(Cls); _registered.add(worldId); }
+    }
+    /* A volatile world has to be OFF the live slot before `build` will
+     * regenerate it - `WorldManager.build` guards the rebuild with
+     * `this._active !== world`, deliberately, so that a re-activation of the
+     * live world cannot clear the group the live physics world is serving.
+     * Without the hop through `dock` every seed after the first would silently
+     * measure the maze the first one built. */
+    if (seed !== null) {
+      if (Cls) Cls.seedOverride = seed;
+      if (r.wm.active?.id === worldId) await goto(r, 'dock');
+    }
     // `rig()` builds only the three worlds its flying suites need; anything
     // else has to be built before it can be activated.
     if (!r.wm.isBuilt?.(worldId)) await r.wm.build(worldId);
@@ -140,8 +187,8 @@ async function worldRig(worldId) {
   return _citadel;
 }
 
-async function probe(worldId) {
-  const r = await worldRig(worldId);
+async function probe(worldId, seed = null) {
+  const r = await worldRig(worldId, seed);
   const rows = [];
   for (const v of VIEWS[worldId] ?? []) {
     if (v.computed) continue;
@@ -274,13 +321,69 @@ function table(rows) {
  * instrument this question actually wanted, and it is derived rather than
  * chosen.
  */
-for (const worldId of ['dock', 'cinder', 'sports', 'citadel', 'race']) {
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  THE LIST IS DERIVED, AND IT USED TO BE TYPED - THIRD OCCURRENCE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * This loop read `['dock', 'cinder', 'sports', 'citadel', 'race']`, and the
+ * declaration test at the foot of this file read a second hand-typed list.
+ * Neither contained `station`, `medieval` or `maze`. Between them those three
+ * declare THIRTY-ONE framings, and every one of them was exempt from both
+ * assertions in this file for as long as the tables have existed - which is
+ * verbatim the defect this file's own comment records for `sports`, and then
+ * again for `citadel`.
+ *
+ * A hand-typed list is not a list, it is a snapshot of one. `Object.keys(VIEWS)`
+ * cannot go stale: a world added to the table is a world probed here on the
+ * commit that adds it.
+ *
+ * What the first run of the derived list found, and none of it was theoretical:
+ *
+ *   station/portal-medieval   stands inside TWO gateway apertures
+ *   station/portal-sports     stands inside TWO gateway apertures
+ *   maze/forecourt            stands inside the station gateway's aperture
+ *   + 28 framings declaring neither a subject nor a clear distance
+ *
+ * All three portal framings are fixed in `src/dev/Harness.js`, and all 31 now
+ * declare a distance measured against the built world.
+ *
+ * ── AND `space` IS EXEMPT, BY NAME AND WITH A REASON ────────────────────────
+ * `space` registers NO colliders at all - there is nothing to walk on out
+ * there, and everything visible is a `Backdrop` proxy re-placed against the
+ * camera every frame, so a ray fired in the true frame would find it in the
+ * wrong place even if it were solid. Every `VIEWS.space` row declares
+ * `subject: Infinity` to say exactly that, and the bearings they DO have to
+ * get right are asserted in their own test below. An exemption named here with
+ * its reason is a different thing from a world that fell off a typed list. */
+const NO_COLLIDERS = new Set(['space']);
+
+/** Which worlds re-generate per activation, so a single probe proves nothing. */
+const VOLATILE_SEEDS_FOR = { maze: VOLATILE_SEEDS };
+
+for (const worldId of Object.keys(VIEWS).filter((id) => !NO_COLLIDERS.has(id))) {
   test(`every ${worldId} framing looks at something inside its own subject distance`, async () => {
-    const rows = await probe(worldId);
-    const t = table(rows);
-    /* The guard first: a probe that stopped finding the world would report
-     * every framing as empty and could be made green by deleting the world. */
-    assert.ok(rows.length >= 5, `only ${rows.length} framings in "${worldId}"\n  ${t}`);
+    /* A volatile world is probed on every pinned seed; everything else once. */
+    for (const seed of VOLATILE_SEEDS_FOR[worldId] ?? [null]) await probeOnce(worldId, seed);
+  });
+}
+
+async function probeOnce(worldId, seed) {
+  {
+    const rows = await probe(worldId, seed);
+    const t = table(rows) + (seed === null ? '' : `\n  (seed ${seed})`);
+    /* THE GUARD FIRST, AND IT IS DERIVED RATHER THAN A CONSTANT.
+     *
+     * A probe that stopped finding the world would report every framing as
+     * empty, and could be made green by deleting the world - so the count is
+     * checked against what the table declares. It used to be a flat `>= 5`,
+     * which is a number chosen for the five worlds that were on the typed
+     * list; `maze` authors three rows and three `computed` ones, so a flat 5
+     * would have failed a correct world. The floor of three stops the derived
+     * form being satisfiable by emptying the table. */
+    const declared = (VIEWS[worldId] ?? []).filter((v) => !v.computed).length;
+    assert.equal(rows.length, declared,
+      `probed ${rows.length} of ${declared} declaring framings in "${worldId}"\n  ${t}`);
+    assert.ok(declared >= 3, `only ${declared} authored framings in "${worldId}"\n  ${t}`);
     const bad = [];
     for (const x of rows) {
       /* ── THE CAMERA IS NOT ALLOWED TO BE INSIDE SOMETHING ──────────────
@@ -361,11 +464,13 @@ for (const worldId of ['dock', 'cinder', 'sports', 'citadel', 'race']) {
       `${bad.length} of ${rows.length} framings in "${worldId}" do not frame what they claim to:\n  `
       + `${bad.join('\n  ')}\n\n  ${t}`);
     /* And the probe has to be finding real geometry, or a world that failed to
-     * build would report every `clear` framing green. */
+     * build would report every `clear` framing green. Capped at the row count
+     * for the same reason the count guard above is derived. */
     const solid = rows.filter((x) => x.hit !== null).length;
-    assert.ok(solid >= 4,
+    const floor = Math.min(4, rows.length);
+    assert.ok(solid >= floor,
       `only ${solid} of ${rows.length} framings in "${worldId}" met any geometry at all - the probe is blind\n  ${t}`);
-  });
+  }
 }
 
 /** The least of the frame a hull framing may put its subject across, per axis. */
@@ -583,8 +688,19 @@ test('every framing declares what it is looking at, and aims somewhere else', ()
    * `subject` and `clear` off, or put `look` on top of `pos` so the view axis
    * is a zero vector and the ray goes nowhere. Both are caught here rather than
    * silently excused there. */
+  /* DERIVED, for the reason at the head of the ray-probe loop above: this list
+   * was typed too, and it omitted `station`, `medieval` and `maze` - the three
+   * worlds that between them held all 28 undeclared framings this assertion
+   * exists to catch. A test that names its own subjects can only ever be as
+   * complete as the day somebody last remembered to extend it.
+   *
+   * Nothing is exempt here. Unlike the ray probe, this needs no world built -
+   * it reads the table - so `space` is in, and its `subject: Infinity` rows
+   * declare, which is the point. */
   const bad = [];
-  for (const worldId of ['dock', 'space', 'cinder', 'sports', 'citadel', 'race']) {
+  const worlds = Object.keys(VIEWS);
+  assert.ok(worlds.length >= 9, `VIEWS declares only ${worlds.length} worlds`);
+  for (const worldId of worlds) {
     for (const v of VIEWS[worldId] ?? []) {
       if (v.computed) continue;
       const declared = v.clear !== undefined || v.subject !== undefined;

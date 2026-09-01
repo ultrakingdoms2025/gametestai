@@ -63,6 +63,18 @@ function stubHud() {
 const PANELS = [
   { id: 'character',   open: ['character:open', {}],   close: ['character:close', {}] },
   { id: 'mount-menu',  open: ['mount:menu:open', { mountId: 'horse' }], close: ['mount:menu:close', {}] },
+  /* THE PANEL THAT EMITTED INTO AN EMPTY ROOM.
+   *
+   * `ShipMenu` has emitted this pair since it shipped and `_wireOverlayEvents`
+   * listened for neither, while listening for the mount menu's identical pair
+   * on the line above. Everything membership buys was therefore missing for the
+   * ship drawer: the pause card stayed UNDER it, `.hud.overlaid` was never set
+   * so HUD furniture drew over a panel that owns the cursor, and `_schedRelock`
+   * never ran on close so the pointer went back to nobody. Two CSS `!important`
+   * workarounds existed to paper over the first two, each carrying a comment
+   * saying `HUD.js` belonged to another agent; both are deleted, and the test
+   * below pins them staying deleted. */
+  { id: 'ship-menu',   open: ['ship:menu:open', { shipId: 'skiff' }], close: ['ship:menu:close', {}] },
   { id: 'inventory',   open: ['inventory:open', {}],   close: ['inventory:close', {}] },
   { id: 'quest-board', open: ['hud:block', { id: 'quest-board', block: true }], close: ['hud:block', { id: 'quest-board', block: false }] },
   { id: 'maze-map',    open: ['ui:modal', { id: 'maze-map', open: true }],      close: ['ui:modal', { id: 'maze-map', open: false }] },
@@ -477,6 +489,26 @@ async function srcFiles() {
   await walk(path.join(root, 'src'));
   return out;
 }
+
+test('the ship drawer is tracked by the HUD, not by a stylesheet reaching around it', async () => {
+  /* The behavioural half is the PANELS row above. This is the half that stops
+   * the workaround coming back: `body.sm-open` existed in three places purely
+   * because `_wireOverlayEvents` did not listen for `ship:menu:open`, and each
+   * of the three said so in a comment. With the pair wired they are not merely
+   * redundant - they are a second, disagreeing authority on when a panel owns
+   * the screen, which is how the two come apart later. */
+  const hud = await readFile(path.join(root, 'src/ui/HUD.js'), 'utf8');
+  assert.ok(strip(hud).includes("'ship:menu:open'") && strip(hud).includes("'ship:menu:close'"),
+    'HUD no longer tracks the ship drawer - the CSS workarounds would be needed again');
+
+  for (const css of ['src/ui/hud.css', 'src/ui/ship-menu.css']) {
+    const text = (await readFile(path.join(root, css), 'utf8'))
+      .replace(/\/\*[\s\S]*?\*\//g, ' ');
+    assert.ok(!/body\.sm-open/.test(text),
+      `${css} still reaches around HUD.js with a body.sm-open rule; the ship drawer is `
+      + 'in `_overlays` now and `.hud.overlaid` is the one authority');
+  }
+});
 
 test('main.js wires every id PAUSE_MENU_IDS promises', async () => {
   const src = strip(await readFile(path.join(root, 'src/main.js'), 'utf8'));

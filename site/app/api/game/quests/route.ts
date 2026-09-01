@@ -144,9 +144,23 @@ export async function POST(request: NextRequest) {
     const { engagementId } = body as { engagementId: string };
     const result = await completeQuestEngagement(engagementId, playerId);
     if (!result.ok) {
+      /* `reason` distinguishes the three refusals that used to share one 404:
+       * no such engagement, wrong status, and "the steps are not finished" —
+       * which is now a real answer rather than an impossible one. A capped
+       * completion is a 429: nothing was taken, and trying later works. */
+      const status = result.reason === 'capped' ? 429 : 404;
       return NextResponse.json(
-        { ok: false, error: 'Engagement not found or not completable.', status: result.status },
-        { status: 404 }
+        {
+          ok: false,
+          error: result.reason === 'steps_incomplete'
+            ? 'That quest still has unfinished steps.'
+            : result.reason === 'capped'
+              ? 'Too many quest rewards in the last hour. Nothing was taken; try again shortly.'
+              : 'Engagement not found or not completable.',
+          reason: result.reason ?? null,
+          status: result.status,
+        },
+        { status }
       );
     }
     return NextResponse.json({

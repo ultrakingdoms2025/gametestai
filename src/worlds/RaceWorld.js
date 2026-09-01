@@ -2613,12 +2613,29 @@ export class RaceWorld extends World {
       // Terraces step away from the circuit, which is +lat on this side.
       const ox = -base.dz;
       const oz = base.dx;
+      /* Same shape as the full paddock's rake, same repair.
+       *
+       * Six terraces drawn, no `physics.add*` in the loop, and one block below
+       * whose top at `base.y + 6.40` floated 0.40 m over the back row at 6.00
+       * and 5.40 m over the front one - the identical defect, in a smaller
+       * stand the audit did not name.
+       *
+       * The riser is 1.05 and not the 1.00 it was authored at, and the 5 cm
+       * is the whole point: `Climb.MIN_RISE_GROUND` is exactly 1.0 and the
+       * comparison is `rise < minRise`, so a rake at 1.000 asks a float to
+       * land on a boundary - `base.y` is a course sample, not a round number,
+       * and 0.9999999998 is a mantle REFUSED. 1.05 is the rise the other
+       * grandstand already uses and it is inside the 1.0-2.4 band with margin.
+       * The tread thickness follows the rise so the stack stays contiguous. */
+      const RISE = 1.05;
       for (let r = 0; r < 6; r++) {
         const off = 3.4 + r * 1.5;
-        const y = base.y + 1.0 + r * 1.0;
+        const y = base.y + RISE * (r + 1);
         const px = base.x + ox * off;
         const pz = base.z + oz * off;
-        B.box('concrete.skatepark', 12.6, 1.0, 1.6, px, y - 0.5, pz, yaw, 0xd2d2ce);
+        B.box('concrete.skatepark', 12.6, RISE, 1.6, px, y - RISE / 2, pz, yaw, 0xd2d2ce);
+        this.track(this.physics.addRotatedBox(
+          _v1.set(px, y - RISE / 2, pz), _v2.set(6.3, RISE / 2, 0.8), yaw));
         B.box('paint.enamel', 12.2, 0.4, 0.5, px, y + 0.2, pz, yaw, r % 2 ? accent : 0xc8ccd0);
         for (let c = 0; c < 7; c++) {
           // Thinner than Vellum's: a club meeting, not a grand prix.
@@ -2634,10 +2651,8 @@ export class RaceWorld extends World {
           });
         }
       }
-      // Scaffold under the deck, and a rail along the front.
-      this.track(this.physics.addRotatedBox(
-        _v1.set(base.x + ox * 7.6, base.y + 3.2, base.z + oz * 7.6),
-        _v2.set(6.4, 3.2, 5.2), yaw));
+      // A rail along the front. The scaffold block that used to stand in for
+      // the whole rake is gone - every terrace above carries its own collider.
       B.box('metal.rail', 12.4, 0.16, 0.16, base.x + ox * 2.6, base.y + 1.1, base.z + oz * 2.6,
         yaw, 0x99a1a6);
     }
@@ -2792,6 +2807,30 @@ export class RaceWorld extends World {
         const px = base.x + ox * off;
         const pz = base.z + oz * off;
         B.box('concrete.skatepark', 12.6, 1.05, 1.6, px, y - 0.52, pz, yaw, 0xd8d8d4);
+        /* A COLLIDER PER TERRACE, matching the box that was just drawn.
+         *
+         * This loop drew nine terraces and called no `physics.add*` at all.
+         * The only solid anywhere in the bay was the single rotated block
+         * below, centred at `base.y + 5.0` with a half-height of 5.0 - so the
+         * walking surface was a flat invisible plane at `base.y + 10.00`
+         * while the top drawn terrace tops out at `base.y + 1.205 + 8 * 1.05`
+         * = 9.605 and the FRONT row at 1.205. A player stood 0.40 m above the
+         * back row and 8.80 m above the front one, on nothing.
+         *
+         * Half-extents are the drawn box's, and the top face lands on the
+         * drawn top face exactly: `y - 0.52 + 0.525` = `y + 0.005`. The rows
+         * are 1.6 m deep at a 1.5 m going, so they overlap 0.1 m and the stack
+         * is continuous from grade to the back wall with no gap to fall in.
+         *
+         * The 1.05 m riser is a MANTLE, not a step - `Climb` offers one from
+         * 1.0 to 2.4 - which is what raked terracing should be and is why the
+         * rake is not being flattened to a 0.45 m walk: nine rows at 0.45
+         * would put the back row 4.05 m up under a roof authored at 11.6 and
+         * turn a grandstand into a kerb. `SportsWorld._buildStructures` takes
+         * the other option for its own stands, where `RISE` is 0.45 exactly.
+         * @see scripts/tests/riser-legality.test.mjs */
+        this.track(this.physics.addRotatedBox(
+          _v1.set(px, y - 0.52, pz), _v2.set(6.3, 0.525, 0.8), yaw));
         B.box('paint.enamel', 12.2, 0.42, 0.5, px, y + 0.2, pz, yaw,
           r % 2 ? 0x2f5f9a : 0xc8ccd0);
         for (let c = 0; c < 7; c++) {
@@ -2816,22 +2855,36 @@ export class RaceWorld extends World {
           });
         }
       }
-      // Roof on posts.
+      /* Roof on posts, RAISED 0.9 m.
+       *
+       * With the deck a phantom plane at `base.y + 10.00` the roof's soffit at
+       * `11.6 - 0.2` = 11.40 left 1.40 m of headroom for a 1.75 m player: the
+       * back of every one of the fifteen bays was unenterable. Now that the
+       * terraces are solid the standing surface is the back row at 9.605, and
+       * 11.40 - 9.605 = 1.795 m clears 1.75 by 45 mm - which is a pass on
+       * paper and not a place anybody would walk. At 12.5 the soffit is 12.30
+       * and the clearance is 2.695 m, i.e. head-and-shoulders over the back
+       * row and still under the 13 m the posts frame.
+       *
+       * The posts grow with it or they stop reaching the slab: 11.5 m centred
+       * at 5.8 spanned 0.05 to 11.55, and 12.4 centred at 6.25 spans 0.05 to
+       * 12.45, which lands inside the 12.30-12.70 slab exactly as before. */
+      const ROOF_Y = 12.5, ROOF_HH = 0.2, POST_H = 12.4;
       const rx = base.x + ox * 12;
       const rz = base.z + oz * 12;
-      B.box('metal.panel', 13, 0.4, 14, rx - ox * 3, base.y + 11.6, rz - oz * 3, yaw, 0xb0b6ba);
+      B.box('metal.panel', 13, ROOF_HH * 2, 14, rx - ox * 3, base.y + ROOF_Y, rz - oz * 3, yaw, 0xb0b6ba);
       for (const sgn of [-1, 1]) {
-        B.box('metal.rail', 0.4, 11.5, 0.4,
-          rx + Math.cos(yaw) * sgn * 6, base.y + 5.8, rz - Math.sin(yaw) * sgn * 6, yaw, 0x99a1a6);
+        B.box('metal.rail', 0.4, POST_H, 0.4,
+          rx + Math.cos(yaw) * sgn * 6, base.y + 0.05 + POST_H / 2, rz - Math.sin(yaw) * sgn * 6, yaw, 0x99a1a6);
       }
-      // The raked deck, and the roof over it - the roof gets its own collider
-      // because it is 13 m across and the deck box does not reach it.
+      // The roof gets its own collider because it is 13 m across and no
+      // terrace reaches it. The raked deck no longer needs one: every terrace
+      // above now carries its own, so the flat block that used to stand in for
+      // all nine - 0.40 m over the back row and 8.80 m over the front - is
+      // gone rather than merely lowered.
       this.track(this.physics.addRotatedBox(
-        _v1.set(base.x + ox * 10, base.y + 5.0, base.z + oz * 10),
-        _v2.set(6.4, 5.0, 7.0), yaw));
-      this.track(this.physics.addRotatedBox(
-        _v1.set(rx - ox * 3, base.y + 11.6, rz - oz * 3),
-        _v2.set(6.5, 0.2, 7), yaw));
+        _v1.set(rx - ox * 3, base.y + ROOF_Y, rz - oz * 3),
+        _v2.set(6.5, ROOF_HH, 7), yaw));
     }
     this._spawnCrowd(crowd);
   }

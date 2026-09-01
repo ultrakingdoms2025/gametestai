@@ -176,11 +176,16 @@ const clean = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, m
 /**
  * WHERE THE PLAYER IS STANDING, AS ONE LINE OF SETTING.
  *
- * TWO COPIES OF THIS TABLE EXIST - this one and the one in `api/chat.js`.
- * The Vercel function and the local dev server share no module, so neither
- * reads the other and nothing compares them: a row added to one and not the
- * other is invisible until somebody talks to an NPC on the half that is
- * missing it, and then only on that half. Add to BOTH.
+ * THIS IS NOW THE ONLY COPY, and it is dev-only. It used to say "TWO COPIES
+ * OF THIS TABLE EXIST - this one and the one in `api/chat.js`", and warned
+ * that a row added to one and not the other was invisible until somebody
+ * talked to an NPC on the half that was missing it. `api/chat.js` was a stale
+ * duplicate of the deployed route and has been deleted (Sep 2026).
+ *
+ * The deployed equivalent is `site/app/api/chat/route.ts`, which no longer
+ * hand-types its world roster at all — it derives it from `site/lib/worlds.ts`.
+ * So this table is the one that can still drift, and it drifts only in local
+ * development, where the drift is visible to whoever caused it.
  *
  * `buildSystem` falls back to "<world id> - a region of the Aether Nexus",
  * which is why a missing row is silent rather than broken: an NPC standing in

@@ -1,6 +1,7 @@
 ﻿import { getIronSession, type IronSession, type SessionOptions } from 'iron-session';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { ensureSecrets } from './env';
 
 export interface SessionData {
   adminId:  string;
@@ -9,6 +10,15 @@ export interface SessionData {
 }
 
 function sessionOptions(): SessionOptions {
+  /* Every secret, not just this one.
+   *
+   * This used to check `SESSION_SECRET` alone, so a deployment missing
+   * `ENCRYPTION_KEY` or `HMAC_SECRET` served a working login page and then
+   * failed later, deeper, and less legibly — at the first TOTP decrypt or the
+   * first audit write. All three are needed before any admin page is worth
+   * rendering, so all three are checked at the first session read. See
+   * `lib/env.ts` for why this is not a module-load assertion. */
+  ensureSecrets();
   const pw = process.env.SESSION_SECRET ?? '';
   if (pw.length < 32) throw new Error('SESSION_SECRET must be at least 32 characters');
   return {

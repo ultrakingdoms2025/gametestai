@@ -346,9 +346,14 @@ export const REASON_KIND: Record<string, CreditEventKind | 'refused'> = {
  *
  * Pricing a sale would need all three: the `sellValue` table ported or served,
  * the event carrying `{itemId, qty}` instead of a total, and a server-side
- * inventory to debit the goods from. Only the first two are cheap. Until then
- * `PER_EVENT_MAX.sell` is 500,000 against a largest legitimate stack of ~1,736
- * at a rate cap of 400/hour, and that ceiling is what stands there.
+ * inventory to debit the goods from. Only the first two are cheap.
+ *
+ * THAT REMAINS THE REAL FIX, AND IT IS STILL NOT DONE. What follows is an
+ * interim bound and should be read as one: the server is not pricing these
+ * claims, it is refusing the obviously impossible ones. The moment the item
+ * manifest is served to this module, `sell` and `ore` should leave
+ * `DECLARED_KINDS` entirely and be priced from `{itemId, qty}` the way a
+ * marketplace debit already is -- see `CATALOGUE_PURCHASE_REASONS`.
  */
 export const DECLARED_KINDS = new Set<CreditEventKind>([
   'loot',
@@ -376,18 +381,89 @@ export const DECLARED_KINDS = new Set<CreditEventKind>([
  * Truncating would pay a wrong number and leave no trace that it was wrong.
  */
 export const PER_EVENT_MAX: Partial<Record<CreditEventKind, number>> = {
-  // Measured maxima from the shipped tables, then given room. The comment on
-  // each is what the game can actually produce, so the headroom is visible.
-  loot: 5_000, // Loot.js drops 4..14
-  ore: 500_000, // a full best-case hold is ~15,000, and hold tiers can stack
-  contract: 20_000, // Contracts.js REWARD tops out at 336
-  bounty: 10_000, // AlienShip lance = 180
-  sell: 500_000, // ~1,736 a stack; draining store+bag in one call is the ceiling
-  race: 10_000, // 10 first place + up to 128 in pickups
-  minigame: 10_000, // 120 at the yard butts, 10 elsewhere
-  objective: 100_000, // richest tier is 3,000
+  /* Measured maxima from the shipped tables, then roughly DOUBLED.
+   *
+   * ── Why these moved, and by how much ──────────────────────────────────
+   *
+   * They were between 30x and 300x the figures written beside them: `sell` was
+   * 500,000 against a largest legitimate stack of ~1,736, and `ore` 500,000
+   * against a best-case hold of ~15,000. Multiplied by the event caps in `CAPS`
+   * below, the declared kinds together admitted on the order of 200 MILLION
+   * credits an hour through the legitimate endpoint, by an account doing
+   * nothing but POSTing well-formed events. A ceiling that high is not a
+   * ceiling; it is a comment.
+   *
+   * The headroom argument in the docblock above is still right -- a ceiling
+   * that clips an honest payout is silent theft and arrives as "my credits feel
+   * wrong" -- so these are not tight. They are about twice the largest thing
+   * the shipped code can emit, which no real event can reach, rather than two
+   * orders of magnitude above it.
+   *
+   * The other half of the change is `VALUE_CAPS` below. A per-event ceiling
+   * alone bounds one claim; what actually bounds the faucet is a ceiling on the
+   * TOTAL per hour, because 400 events at a plausible-looking value each was
+   * always the cheap way through. */
+  loot: 200, // Loot.js drops 4..14; the extra room is for an authored credit cache
+  ore: 30_000, // a full best-case hold is ~15,000
+  contract: 700, // Contracts.js REWARD tops out at 336
+  bounty: 400, // AlienShip lance = 180
+  sell: 4_000, // ~1,736 a stack
+  race: 300, // 10 first place + up to 128 in pickups = 138
+  minigame: 250, // 120 at the yard butts, 10 elsewhere
+  objective: 6_000, // richest tier is 3,000
+  /* Unchanged, and deliberately. `spend` is a DEBIT: a large one takes credits
+   * away, so nobody forges it upward, and a ceiling that refused a big honest
+   * purchase would leave the player holding goods they did not pay for. The
+   * direction that IS forged -- understating a purchase price -- is not bounded
+   * here at all, it is priced from the catalogue row. See
+   * `CATALOGUE_PURCHASE_REASONS`. */
   spend: 1_000_000, // catalogue-driven, no code constant to measure
 };
+
+export interface CreditValueCap {
+  /** Total credits of this kind allowed to land inside one window. */
+  maxValue: number;
+  windowSeconds: number;
+}
+
+/**
+ * Ceilings on the VALUE a kind may yield per window, not the count.
+ *
+ * ── Why the event count was never the bound that mattered ─────────────────
+ *
+ * `CAPS` limits how many events of a kind are honoured per hour. For a kind
+ * the server PRICES that is a complete bound, because the count times a known
+ * price is a known total. For a kind the CLIENT prices it bounds nothing worth
+ * having: `sell` at 400 events an hour against a 500,000 ceiling was 200
+ * million credits an hour, and every one of those events was individually under
+ * the ceiling and therefore individually fine.
+ *
+ * So the declared kinds get a second ceiling, on the sum. The numbers below are
+ * roughly an order of magnitude above what an hour of hard, honest play at that
+ * activity yields -- generous, for the reason every ceiling in this file is
+ * generous -- and around two hundred times tighter than what stood before.
+ *
+ * Only `DECLARED_KINDS` need one. A server-priced kind cannot exceed
+ * `count x price`, which `CAPS` already fixes.
+ */
+const VALUE_CAPS: Partial<Record<CreditEventKind, CreditValueCap>> = {
+  loot: { maxValue: 25_000, windowSeconds: HOUR }, // 600 drops x ~14 = ~8,400
+  ore: { maxValue: 200_000, windowSeconds: HOUR }, // ~13 best-case holds an hour
+  contract: { maxValue: 60_000, windowSeconds: HOUR }, // 60 x 336 = ~20,000
+  bounty: { maxValue: 200_000, windowSeconds: HOUR }, // 400 x 180 = 72,000
+  sell: { maxValue: 250_000, windowSeconds: HOUR }, // 400 x ~1,736 = ~694,000
+  race: { maxValue: 25_000, windowSeconds: HOUR }, // 60 x 138 = ~8,300
+  minigame: { maxValue: 25_000, windowSeconds: HOUR }, // 60 x 120 = 7,200
+  objective: { maxValue: 200_000, windowSeconds: HOUR }, // 60 x 3,000 = 180,000
+  /* No entry for `spend`: it is a debit, and a cap on how much a player may
+   * spend per hour would refuse purchases they have the credits for. */
+};
+
+/** The value ceiling for a kind, or `null` when the kind does not have one. */
+export function valueCapFor(kind: string): CreditValueCap | null {
+  if (!KNOWN.has(kind)) return null;
+  return VALUE_CAPS[kind as CreditEventKind] ?? null;
+}
 
 /**
  * Reasons whose DEBIT is a catalogue purchase, and must be priced from the row.

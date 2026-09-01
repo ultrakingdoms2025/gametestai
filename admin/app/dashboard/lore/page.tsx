@@ -66,7 +66,7 @@ export default async function LorePage({
 
   return (
     <div className="page-body">
-      <div className="page-title">Lore management</div>
+      <h1 className="page-title">Lore management</h1>
       <p style={{ color: 'var(--txt-dim)', fontSize: 12, marginTop: -10, maxWidth: 900 }}>
         These entries feed the portal lorekeepers in-game and the public lore endpoint.
       </p>
@@ -78,7 +78,7 @@ export default async function LorePage({
           const entry = (byScope.get(scope) as Record<string, unknown> | undefined) ?? {};
           return (
             <section key={scope} className="card">
-              <div className="section-title">{LORE_LABELS[scope]}</div>
+              <h2 className="section-title">{LORE_LABELS[scope]}</h2>
               <form action={saveLore}>
                 <input type="hidden" name="scope" value={scope} />
                 <div className="form-grid">

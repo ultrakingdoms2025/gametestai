@@ -4,6 +4,21 @@ import * as THREE from 'three';
 import { pointLight } from '../../../gfx/WorldLight.js';
 import { boxGeo, cylGeo, uvScale, instanced, seamLift, CoplanarLevels } from '../StationKit.js';
 import { buildZoneTower } from '../Tower.js';
+import { CONFIG } from '../../../core/Config.js';
+
+/**
+ * Cone radius at which a spoil heap stops being a slope and becomes a summit.
+ *
+ * A cone's apex is a point and a crew figure is not. 2.3 m of radius is a
+ * 3.25 m square plateau after the inscribed-square step, which is what a
+ * published deck needs to be for `crew` to inset a body onto it.
+ */
+const SPOIL_CROWN = 2.3;
+
+/** Height of that plateau on a cone `h` tall and `r` across. */
+function spoilCrownY(h, r) {
+  return r <= SPOIL_CROWN ? h : h * (1 - SPOIL_CROWN / r);
+}
 
 /**
  * RING 8 EXPANSION - the half-built zone on avenue 240.
@@ -313,6 +328,26 @@ export function buildConstruction(ctx) {
   const deck = (lx, top, lz, hx, hz, yaw = 0, thick = 0.22) => {
     ctx.solid(lx, top - thick / 2, lz, hx, thick / 2, hz, yaw);
     return { lx, lz, top, hx, hz, yaw };
+  };
+
+  /**
+   * A spoil heap collided as the cone it is drawn as - see the note at the
+   * heap loop for the 3.5 m of invisible wall this replaces.
+   *
+   * Nested boxes, each rising from the same -0.4 sink to its own tier top and
+   * each an inscribed square of the cone's radius there. `n` comes from the
+   * player's step, so the flank is a staircase a body walks rather than a
+   * cliff, and the treads are `r * crown / (h * n)` wide - 1.01 m on the
+   * tallest heap in the yard.
+   */
+  const spoilCone = (lx, lz, h, r) => {
+    const crown = spoilCrownY(h, r);
+    const n = Math.max(1, Math.ceil(crown / CONFIG.player.stepHeight));
+    for (let k = 1; k <= n; k++) {
+      const top = (crown * k) / n;
+      const rho = Math.max(SPOIL_CROWN, r * (1 - top / h));
+      ctx.solid(lx, (top - 0.4) / 2, lz, rho * 0.707, (top + 0.4) / 2, rho * 0.707);
+    }
   };
 
   /** Put a figure on a deck rectangle, inset far enough to keep it on the boards. */
@@ -1459,33 +1494,71 @@ export function buildConstruction(ctx) {
     const [lx, lz] = spot;
     const h = rnd(3.2, 6.2), r = h * rnd(1.9, 2.6);
     sc('spoil', lx, h / 2, lz, rng() * 3, r, h, r);
-    /* A cone collided as a box at 70% of its radius: the capsule then walks up
-     * the flank instead of stopping dead against a vertical wall of dirt, which
-     * is the difference between a heap and a bollard. */
-    ctx.solid(lx, h / 2 - 0.4, lz, r * 0.7, h / 2, r * 0.7);
+    /* ── A CONE, COLLIDED AS A CONE ────────────────────────────────────────
+     *
+     * This was one box, `solid(lx, h/2 - 0.4, lz, r*0.7, h/2, r*0.7)`, and the
+     * comment on it said "the capsule then walks up the flank instead of
+     * stopping dead against a vertical wall of dirt". Measured on the built
+     * station, it did the opposite of that. The box's top is `h - 0.4` and its
+     * sides stand at `0.7 r` from the centre - so on the tallest heap the wall
+     * a body meets 9.4 m out from the summit is 5.29 m tall while the DIRT
+     * DRAWN THERE is 1.71 m. Three and a half metres of invisible wall, on
+     * seven heaps, and the heap that carries the haul ramp had the ramp
+     * running inside it for its last 9.4 m.
+     *
+     * So the collider is a stepped cone: nested boxes, each one rising from
+     * the same `-0.4` sink to its own tier top, each one an INSCRIBED square
+     * (`0.707 rho`, which is what the 0.7 above always was) of the cone's
+     * radius at that height. Inscribed and not circumscribed for the reason
+     * the original chose 0.7: a square that covers the circle stands proud of
+     * the drawn dirt at its corners, and a body clipping 29% into a heap is a
+     * far cheaper error than a body stopped by nothing.
+     *
+     * Every riser is `CONFIG.player.stepHeight` or less, so the claim the old
+     * comment made is now true: a body walks up the flank. That is also what
+     * retires the haul ramp below.
+     *
+     * The tiers stop where the cone narrows to `SPOIL_CROWN` of radius, so the
+     * summit is a plateau a crew figure and a loot spot can stand on rather
+     * than a point. The drawn tip stands `h * SPOIL_CROWN / r` over it - 0.97 m
+     * on the tallest heap - which is the same direction as the 0.4 m sink: the
+     * body is a little inside the dirt, never a little outside it. */
+    spoilCone(lx, lz, h, r);
     ctx.contact(lx, lz, r * 2.6);
     ctx.mmCircle(lx, lz, r, 'rgba(120,90,70,0.5)', null);
     claim(lx, lz, r * 1.25);
     SPOIL.push({ lx, lz, h, r });
   }
-  /* One heap gets a haul ramp, which is the cheapest extra vertical route on
-   * the map: a spoil heap is already a slope, it just needs a collider that
-   * agrees with it. `_ramp` tilts its local +Z end UP, so the yaw has to point
-   * local +Z at the summit - backwards builds a ramp that descends into the
-   * thing it is meant to climb. */
+  /* The tallest heap's summit is a place, and the heap itself is the way up.
+   *
+   * ── THE HAUL RAMP THAT WAS HERE, AND WHY IT IS NOT ──────────────────────
+   * It was "the cheapest extra vertical route on the map: a spoil heap is
+   * already a slope, it just needs a collider that agrees with it" - and the
+   * ramp was the half of that sentence that could not work while the other
+   * half was false. Measured: `rise = h * 0.8` = 4.55 m against a heap whose
+   * collider top was `h - 0.4` = 5.29, so the flight arrived 0.74 m under the
+   * thing it climbed - over a 0.45 m step and under `Climb.MIN_RISE_GROUND`
+   * = 1.0, which is neither a walk nor a mantle - and its last 9.4 m ran
+   * INSIDE the heap's own box, where the ramp surface was 2.45 m and the wall
+   * 2.84 m higher still. It did not work at any point along its length.
+   *
+   * The repair is the tiered cone above, not a nudge to the ramp. Once the
+   * heap is collided where it is drawn, the flank IS the route - which is
+   * what the ramp was standing in for - and a ramp aimed at a stack of
+   * axis-aligned square tiers on an arbitrary bearing can only arrive either
+   * over-collided (the corners) or across a gap of `0.293 rho` (the flats),
+   * neither of which is a flight. One drawn haul road is a cheaper thing to
+   * lose than seven heaps of invisible wall is to keep.
+   *
+   * `spoilTop` still resolves - a crew figure stands on it, `onRect` puts a
+   * common loot spot there and `ctx.roof` publishes it - so the summit is
+   * unchanged as a destination. Only the broken second way to it is gone. */
   let spoilTop = null;
   if (SPOIL.length) {
     const s0 = SPOIL.reduce((a, b) => (b.h > a.h ? b : a));
-    const d = Math.hypot(s0.lx, s0.lz) || 1;
-    const run = s0.r + 7;
-    const fx = s0.lx * (1 + run / d), fz = s0.lz * (1 + run / d);
-    const rise = s0.h * 0.8;
-    const pitch = Math.atan2(rise, run);
-    const yaw = Math.atan2(s0.lx - fx, s0.lz - fz);
-    ctx.ramp((fx + s0.lx) / 2, rise / 2 - 0.25 / Math.cos(pitch), (fz + s0.lz) / 2, 6, run, rise, yaw);
-    ctx.put('road', boxGeo(6, 0.3, run + 0.4, 2), (fx + s0.lx) / 2, rise / 2, (fz + s0.lz) / 2, yaw, -pitch);
-    deck(s0.lx, rise, s0.lz, 2.4, 2.4);
-    spoilTop = { lx: s0.lx, lz: s0.lz, top: rise, hx: 2.4, hz: 2.4, yaw: 0 };
+    const top = spoilCrownY(s0.h, s0.r);
+    const half = SPOIL_CROWN * 0.707;
+    spoilTop = { lx: s0.lx, lz: s0.lz, top, hx: half, hz: half, yaw: 0 };
   }
 
   genset(bx(1.75, 138), bz(1.75, 138), 1.75);

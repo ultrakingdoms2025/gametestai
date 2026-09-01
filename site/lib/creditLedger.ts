@@ -2,6 +2,7 @@ import type { Client, PoolClient } from 'pg';
 import {
   priceEvent,
   capFor,
+  valueCapFor,
   resolveReportedEvent,
   type CreditEvent,
   type CreditEventKind,
@@ -193,6 +194,32 @@ async function insertEvent(
   return r.rows[0]?.id ?? null;
 }
 
+/**
+ * How much this kind has PAID inside the window.
+ *
+ * The sibling of `countInWindow`, and the one that actually bounds a faucet.
+ * Counting events bounds nothing for a kind whose amount the client declares:
+ * four hundred individually-plausible `sell` events an hour was two hundred
+ * million credits, and every one of them passed the per-event ceiling.
+ *
+ * `delta > 0` so refunds and debits recorded under the same kind cannot be used
+ * to make room -- otherwise a spend/earn pair would reset the budget.
+ */
+async function sumInWindow(
+  db: Db,
+  playerId: string,
+  kind: string,
+  windowSeconds: number
+): Promise<number> {
+  const r = await db.query(
+    `SELECT COALESCE(SUM(delta), 0)::bigint AS total FROM credit_events
+      WHERE player_id = $1 AND kind = $2 AND delta > 0
+        AND created_at > NOW() - ($3 || ' seconds')::interval`,
+    [playerId, kind, String(windowSeconds)]
+  );
+  return Number(r.rows[0]?.total ?? 0);
+}
+
 /** How many events of this kind the player has had inside the cap window. */
 async function countInWindow(
   db: Db,
@@ -294,6 +321,19 @@ export async function creditInTransaction(
     if (used >= cap.maxEvents) {
       // Record the attempt at zero rather than hiding it: a capped player is
       // exactly the one worth being able to see afterwards.
+      await insertEvent(db, playerId, eventKey, kind, detail, 0, balance);
+      return { applied: false, delta: 0, balance, reason: 'capped', recorded: true };
+    }
+  }
+
+  /* And the ceiling on the TOTAL, which is the one that binds for a kind the
+   * client prices. Checked with THIS event included, so a caller cannot step
+   * over the line with one large final claim; recorded at zero on refusal, the
+   * same as the count cap, so the attempt is visible afterwards. */
+  const valueCap = ignoreCap ? null : valueCapFor(kind);
+  if (valueCap && delta > 0) {
+    const earned = await sumInWindow(db, playerId, kind, valueCap.windowSeconds);
+    if (earned + delta > valueCap.maxValue) {
       await insertEvent(db, playerId, eventKey, kind, detail, 0, balance);
       return { applied: false, delta: 0, balance, reason: 'capped', recorded: true };
     }

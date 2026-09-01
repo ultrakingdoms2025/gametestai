@@ -33,6 +33,7 @@ import {
   STRIP_ACROSS, STRIP_HALF_W, DECAL_SIZE, DECAL_GAP,
   GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
   gatewayCentre, gatewayFrameYaw, avenueClearance,
+  PROMENADE, promenadeFlight, promenadeRailRuns, boxOnPromenade,
 } from './station/StationKit.js';
 import { StationPlan, ROLE } from './station/StationPlan.js';
 import { StationActors } from './station/StationActors.js';
@@ -7557,39 +7558,119 @@ export class StationWorld extends World {
     }
     g.add(alleyPoolMesh);
 
-    /* --- Observation promenade against the window ------------------- */
-    const promR0 = 158, promR1 = 190;
+    /* --- Observation promenade against the window -------------------
+     *
+     * ── THE AVENUE COMES THROUGH IT, and that is a decision ─────────────────
+     * `station-plan-conflicts.test.mjs` has carried four conflicts under this
+     * builder's name since the plan existed, and its own note said the fix was
+     * "a design decision about the hero window sector - stop the avenue at the
+     * promenade, or open a gap on the axis - not a nudge". The gap is the
+     * answer. Avenue 0 is drawn as carriageway all the way out to `ROAD_R1`
+     * = 188, this deck runs 158 to 190 across +-48 degrees, and bearing 0 is
+     * in the middle of it: a player walking out the hub's own axis met a 2 m
+     * deck and a balustrade on top of it. Two segments straddle the
+     * carriageway and both are now simply not built, so the avenue runs to the
+     * glass and the promenade wraps it in two arms - which is a stronger read
+     * of the hero window than an unbroken rail across its axis was.
+     *
+     * The skip asks `StationPlan.roleUnder` at the segment's OWN rotated
+     * footprint rather than at a hand-derived bearing window, so it is the
+     * same question the conflict gate asks, of the same shapes, and a change
+     * to `ROAD_EDGE_HALF`, `ROAD_R1` or the arc's extent cannot separate them.
+     */
+    const promR0 = PROMENADE.R0, promR1 = PROMENADE.R1;
     const arcSegs = 26;
-    const halfArc = 48 * DEG;
+    const halfArc = PROMENADE.HALF_ARC_DEG * DEG;
+    /** Built segments, as [centre, radial half, tangential half, bearing]. */
+    const deckSegs = [];
     for (let i = 0; i < arcSegs; i++) {
       const th = -halfArc + (halfArc * 2 * i) / (arcSegs - 1);
       const chord = (2 * Math.PI * ((promR0 + promR1) / 2) * (halfArc * 2)) / (Math.PI * 2) / arcSegs + 0.6;
       const mr = (promR0 + promR1) / 2;
       const x = Math.cos(th) * mr, z = Math.sin(th) * mr;
-      // Raised viewing deck.
+      if (this.plan?.roleUnder(x, z, (promR1 - promR0) / 2, chord / 2, -th, 'carriageway')) continue;
+      deckSegs.push([x, z, (promR1 - promR0) / 2, chord / 2, th]);
+      /* Raised viewing deck.
+       *
+       * The collider's top face is the DRAWN top face. It used to stand 0.05 m
+       * proud of it (centre 1.75, half 0.3 against a 0.5 m slab), which is the
+       * same class of defect as the ramp seat below and half its size: every
+       * telescope foot, bench leg and NPC on this deck is authored to 2.00. */
       B.at('grate', boxGeo(promR1 - promR0, 0.5, chord, 2), x, 1.75, z, -th);
-      this._solidRot(x, 1.75, z, (promR1 - promR0) / 2, 0.3, chord / 2, -th);
-      // Balustrade on the inner edge.
+      this._solidRot(x, PROMENADE.DECK_TOP - 0.3, z, (promR1 - promR0) / 2, 0.3, chord / 2, -th);
+      /* Balustrade on the inner edge, CUT at the two flight heads.
+       *
+       * @see StationKit `promenadeRailRuns` for the arithmetic that showed the
+       * old unbroken run walled both flights off, and for why the opening is
+       * cut out of the piece rather than the piece skipped.
+       *
+       * The collider now stops where the DRAWING stops. The glass spans
+       * y 2.025-3.175 and the cap tops out at 3.325, and the box ran to 3.80 -
+       * 0.48 m of invisible wall over a rail a player can see the sky above. */
       const bx = Math.cos(th) * promR0, bz = Math.sin(th) * promR0;
-      B.at('glassWindow', new THREE.PlaneGeometry(chord, 1.15), bx, 2.6, bz, -th + Math.PI / 2);
-      B.at('trim', boxGeo(0.14, 0.14, chord, 1), bx, 3.2, bz, -th);
-      B.at('emCyan', boxGeo(0.09, 0.09, chord, 1), bx, 3.28, bz, -th);
-      this._solidRot(bx, 2.6, bz, 0.2, 1.2, chord / 2, -th);
+      const tanX = -Math.sin(th), tanZ = Math.cos(th);
+      const railY = (PROMENADE.DECK_TOP + PROMENADE.RAIL_TOP) / 2;
+      const railHH = (PROMENADE.RAIL_TOP - PROMENADE.DECK_TOP) / 2;
+      for (const [s0, s1] of promenadeRailRuns(th, promR0, chord)) {
+        const mid = (s0 + s1) / 2, len = s1 - s0;
+        const px = bx + tanX * mid, pz = bz + tanZ * mid;
+        B.at('glassWindow', new THREE.PlaneGeometry(len, 1.15), px, 2.6, pz, -th + Math.PI / 2);
+        B.at('trim', boxGeo(0.14, 0.14, len, 1), px, 3.2, pz, -th);
+        B.at('emCyan', boxGeo(0.09, 0.09, len, 1), px, 3.28, pz, -th);
+        this._solidRot(px, railY, pz, 0.2, railHH, len / 2, -th);
+      }
     }
-    // Two flights up onto the promenade.
-    for (const th of [-18 * DEG, 18 * DEG]) {
+    /** Is this point standing on a promenade segment that got built? */
+    const onPromenade = (px, pz) => deckSegs.some(([sx, sz, hr, ht, sth]) => {
+      const dx = px - sx, dz = pz - sz;
+      const a = dx * Math.cos(sth) + dz * Math.sin(sth);
+      const b = -dx * Math.sin(sth) + dz * Math.cos(sth);
+      return Math.abs(a) <= hr && Math.abs(b) <= ht;
+    });
+    /* Two flights up onto the promenade.
+     *
+     * `promenadeFlight()` seats the proxy and the drawn pad off ONE walking
+     * line: foot flush with the deck at y = 0, head flush with the promenade
+     * at `DECK_TOP`. Authored flat at 0.85 the collision surface sat 0.092 m
+     * BELOW the grate drawn on it - the `rampSeat` defect again, at nearly
+     * twice the 0.051 m that one was worth fixing for. */
+    const flight = promenadeFlight();
+    for (const deg of PROMENADE.RAMP_DEG) {
+      const th = deg * DEG;
       const cx = Math.cos(th) * (promR0 - 3), cz = Math.sin(th) * (promR0 - 3);
-      this._ramp(cx, 0.85, cz, 6, 6, 2.0, -th - Math.PI / 2 + Math.PI);
-      B.at('grate', boxGeo(6.4, 0.2, 6.4, 2), cx, 1.1, cz, -th, -0.32);
+      /* ONE yaw for the proxy and the pad, because they are one flight.
+       *
+       * The pad used to be authored at `-th` while the proxy was authored at
+       * `-th + PI/2`, and `GeoBatch.at` applies its pitch about the piece's
+       * LOCAL X - so a yaw a quarter turn out does not tilt the pad along the
+       * climb, it BANKS it across the climb. Measured on the built world
+       * before this line changed: the drawn pad read a constant 1.000 m at
+       * every radius from 152 to 158 on both flights, and 0.200 to 1.800 m
+       * across the 4.8 m of its width. That surface is collided, it sits over
+       * the proxy for the middle third of the run, and a body climbing the
+       * flight met a 0.62 m rise at r = 153 - above `stepHeight` 0.45 and
+       * below `MIN_RISE_GROUND` 1.0, so neither a step nor a mantle. Both
+       * promenade flights stopped there, which is the same dead end the
+       * balustrade cut was made to open.
+       *
+       * `_ramp` sets `rotation.set(0, yaw, 0, 'YXZ')` then `rotateX(-pitch)`,
+       * and `GeoBatch.at` sets `_euler.set(rx, ry, rz, 'YXZ')`; passing the
+       * same yaw and the same `-pitch` to both is the same orientation twice,
+       * not two numbers that happen to agree. */
+      const yaw = -th - Math.PI / 2 + Math.PI;
+      this._ramp(cx, flight.rampSeat, cz, PROMENADE.RAMP_W, PROMENADE.RAMP_RUN, PROMENADE.RAMP_RISE, yaw);
+      B.at('grate', boxGeo(6.4, 0.2, 6.4, 2), cx, flight.grateSeat, cz, yaw, -flight.pitch);
     }
-    // Viewing telescopes and benches facing the planet.
+    // Viewing telescopes and benches facing the planet - only where there is
+    // deck under them, now that the avenue runs through the middle of the arc.
     for (let i = 0; i < 9; i++) {
       const th = -40 * DEG + (80 * DEG * i) / 8;
       const x = Math.cos(th) * 178, z = Math.sin(th) * 178;
+      const bx = Math.cos(th) * 170, bz = Math.sin(th) * 170;
+      if (!onPromenade(x, z) || !onPromenade(bx, bz)) continue;
       B.at('trim', new THREE.CylinderGeometry(0.18, 0.3, 1.5, 8), x, 2.75, z);
       B.at('panelDark', new THREE.CylinderGeometry(0.22, 0.34, 1.6, 10), x, 3.7, z, -th, 0, 0.9);
       B.at('emCyan', new THREE.SphereGeometry(0.12, 8, 6), x, 4.2, z);
-      const bx = Math.cos(th) * 170, bz = Math.sin(th) * 170;
       B.at('trim', boxGeo(1.0, 0.2, 3.4, 2), bx, 2.55, bz, -th);
       B.at('panelDark', boxGeo(0.9, 0.5, 0.5, 1), bx, 2.25, bz + 1.2, -th);
       B.at('panelDark', boxGeo(0.9, 0.5, 0.5, 1), bx, 2.25, bz - 1.2, -th);
@@ -9890,21 +9971,34 @@ export class StationWorld extends World {
      * metre to spare, which is what the corridor was really doing for the two
      * gateways that had one.
      */
+    /* ── The literal that put ninety-six props on the carriageway ──────────
+     *
+     * The road half of this test used to be `across < 3.4 + clearance` with
+     * `clearance` = 1.6, so a prop was refused only inside 5.0 m of an avenue
+     * centreline. The carriageway is `ROAD_W` = 18 m across - 9.0 m of
+     * half-width, 9.9 m to the outer kerb - and the avenue surface is drawn
+     * from r = 37 outwards, which this pass reaches from r = 37 to its own
+     * limit of 44. So the band |across| in [5.0, 9.9] over r in [37, 44] was
+     * legal by the predicate and paved in fact: 4.9 m x 7 m x 2 sides x 6
+     * avenues, about 410 m2 of live carriageway open to spools, crates and
+     * hazard barriers, and `_markOccupancy` cannot see a road because the
+     * surface is a plane at y = 0.10 and it only marks triangles 0.5 m and up.
+     *
+     * `avenueClearance` is the canonical form of the same question - the one
+     * `StationPlan` seeds its corridors from, the one that chose the gateway
+     * bearings, and the one the queue furniture twenty lines above already
+     * used - and it is point-to-RECTANGLE, so a prop inboard of an avenue's
+     * mouth is still clear of it however close to the bearing it stands.
+     * `StationPlan:seedCirculation` records collapsing the nine inline
+     * re-derivations onto it as the intended next phase; this is one of them.
+     */
     const legal = (x, z, clearance = 1.6) => {
       const r = Math.hypot(x, z);
       if (r < 12 || r > 44) return false;
       for (const [gx, gz] of GATEWAY_CENTRES) {
         if (Math.hypot(x - gx, z - gz) < 20 + clearance) return false;
       }
-      for (const deg of this.roadAngles) {
-        const t = deg * DEG;
-        // Perpendicular distance from the route centreline, outbound half only.
-        const along = x * Math.cos(t) + z * Math.sin(t);
-        if (along < 0) continue;
-        const across = Math.abs(-x * Math.sin(t) + z * Math.cos(t));
-        if (across < 3.4 + clearance) return false;
-      }
-      return true;
+      return avenueClearance(x, z, this.roadAngles) >= clearance;
     };
 
     /* --- The prop kit -------------------------------------------------
@@ -10197,8 +10291,17 @@ export class StationWorld extends World {
        * radii, tried in a fixed order, consuming no random numbers - the
        * stream is bit-identical whether a nudge happens or not, so every
        * prop after this one lands exactly where it did before. Only when
-       * nothing within 3 m is clear does it give up. */
-      if (!this._footprintClear(x, z, 1.2, 1.2, 1.6)) {
+       * nothing within 3 m is clear does it give up.
+       *
+       * PAINT COUNTS AS OCCUPIED HERE TOO. The nudge ring below has always
+       * refused a candidate standing on a legend - "a prop nudged onto a
+       * legend covers type the player is meant to read" - but the ORIGINAL
+       * position was never asked the same question, so a prop that landed on
+       * clear ground and on a `walk` mark stayed there. `station-decals`
+       * measures exactly that (a legend partly drawn over is what a player
+       * reads as broken) and caught one at (-5, -27). One condition, asked of
+       * the same point, before the same ring. */
+      if (!this._footprintClear(x, z, 1.2, 1.2, 1.6) || this._onLegend(x, z, 1.2, 1.2)) {
         const ox = x, oz = z;
         let moved = false;
         for (const rad of [1.6, 3.0]) {
@@ -10441,7 +10544,27 @@ export class StationWorld extends World {
       const th = rng() * Math.PI * 2;
       const rr = PLAZA_R + 14 + rng() * (DECK_R - PLAZA_R - 34);
       const x = Math.cos(th) * rr, z = Math.sin(th) * rr;
-      // Keep the carriageways clear.
+      /* Keep the carriageways clear.
+       *
+       * ── DELIBERATELY NOT COLLAPSED ONTO `avenueClearance`, and why ────────
+       * `StationPlan:seedCirculation` lists this as one of the nine inline
+       * re-derivations to fold into the canonical predicate, and `legal` in
+       * `_buildNearField` was folded because it was WRONG - it refused props
+       * only inside 5.0 m of a centreline against a 9.9 m kerb. This one is
+       * not wrong. `|dtheta| * rr` is arc length, which is never less than the
+       * perpendicular distance it stands in for, so a 12 m arc test is
+       * strictly more conservative than the 9.9 m kerb; at this loop's
+       * innermost radius of 54 the two differ by 0.10 m.
+       *
+       * And converting it is not free. `rng` is ONE stream shared by this
+       * loop, the container stacks below it and the fourteen steam vents after
+       * them, so changing which samples are refused re-rolls every prop
+       * downstream - measured, it moves crates, stacks and vents across the
+       * whole deck and re-takes three pinned station fixtures. That is a fair
+       * price for a defect and a poor one for a tidy-up, so the collapse that
+       * `StationPlan` asks for was made where it was WRONG and left where it
+       * is merely duplicated. Do it in a pass that is re-taking those
+       * fixtures anyway. */
       let onRoad = false;
       for (const deg of this.roadAngles) {
         const d = Math.atan2(Math.sin(th - deg * DEG), Math.cos(th - deg * DEG));
@@ -10480,6 +10603,9 @@ export class StationWorld extends World {
       const th = rng() * Math.PI * 2;
       const rr = PLAZA_R + 12 + rng() * 110;
       const x = Math.cos(th) * rr, z = Math.sin(th) * rr;
+      // Left inline for the reason the loop above is: a 16 m arc test against
+      // a 9.9 m kerb is conservative, not wrong, and this stream feeds the
+      // steam vents below it. @see the note on `onRoad` above.
       let clear = true;
       for (const deg of this.roadAngles) {
         const d = Math.atan2(Math.sin(th - deg * DEG), Math.cos(th - deg * DEG));
@@ -10586,6 +10712,46 @@ export class StationWorld extends World {
        * Half-extents: the panel is 7.6 wide and 1.2 deep, the pylon 2.0
        * square, so 4.8 m and 1.6 m are the touching distances. */
       if (PYLONS.some(([ax, az]) => Math.abs(bx - ax) < 4.8 && Math.abs(bz - az) < 1.6)) continue;
+      /* ...and a second gap, where the band runs into the promenade.
+       *
+       * ── What was measured ────────────────────────────────────────────────
+       * This band is a SOFFIT, not a wall: the panel spans y 2.10 to 9.10 and
+       * a 1.75 m player walks under it with 0.35 m to spare - over the flat
+       * approach deck it lines, which is all its author had in view. The
+       * observation promenade is at the far end of that approach and it is
+       * RAISED, and four of the fourteen panels reach it:
+       *
+       *   i = 10  x 142.2-149.8, z 47.47-48.67, r 149.9-157.5
+       *           - across the +18 degree flight from r 153.6 to its head.
+       *             The flight's walking line there runs 0.54 to 1.83 m, so
+       *             the soffit at 2.10 leaves 1.56 m falling to 0.27 m: a
+       *             1.75 m body meets it 2.5 m short of the deck and stops.
+       *   i = 11  r 158.0-166.5   |
+       *   i = 12  r 165.6-174.3   |  standing ON the deck, whose top face is
+       *   i = 13  r 173.8-182.6   |  `DECK_TOP` = 2.00. Clearance 0.10 m.
+       *
+       * The promenade opened its balustrade for those two flights and re-seated
+       * them; a soffit 0.27 m over the climb makes that opening decorative.
+       *
+       * ── Why skipping, and why skipping is safe ───────────────────────────
+       * The band cannot move: at these radii the promenade deck runs 158 to
+       * 190 across +-48 degrees and the panels are inside it on every bearing
+       * the band uses. It cannot rise either without breaking its own soffit
+       * line for the ten panels that are correct. So the run stops where the
+       * approach it lines stops, which is what a shopfront row does.
+       *
+       * Stream-safe on the same grounds the pylon skip states: nothing in this
+       * loop draws from `rng` - `bx`, `bz`, the atlas cell and the emissive
+       * choice all come from `i` - so dropping an iteration cannot re-roll a
+       * later one. Verified by rebuilding: every surviving panel is at the
+       * coordinate it had before.
+       *
+       * Asked of `boxOnPromenade` rather than of a hand-picked `i` range, so
+       * moving the band, the deck or the flights keeps the two apart. The
+       * half-extents are the TRIM's (7.9 x 1.5), not the panel's (7.6 x 1.2):
+       * the trim is the widest thing an iteration draws, and a cornice over a
+       * flight is a cornice over a flight. */
+      if (boxOnPromenade(bx, bz, 3.95, 0.75)) continue;
       B.at('panel', boxGeo(7.6, 7.0, 1.2, 2.4), bx, 5.6, bz, 0);
       const room = new THREE.PlaneGeometry(6.6, 4.2);
       atlasUV(room, i % 4, (i >> 2) % 4, 4, 4);
@@ -10693,7 +10859,22 @@ export class StationWorld extends World {
        * a fallback and it changed nothing: the vent that sits on a habitat
        * tower's plinth passed the clearance test at the moment this loop runs
        * and never reached the nudge at all. */
-      const blocked = !this._footprintClear(x, z, 1.1, 1.1, 1.0) || this._inRoom(x, z, 1.1, 1.1);
+      /* AND NOT IN AN AVENUE - the third question, added last.
+       *
+       * This was the only dressing loop in the world with no road test at all.
+       * It places at `r = PLAZA_R + 20 + rng() * 120`, i.e. r 60-180, which is
+       * inside the paved span of every avenue (surfaced from r 37 to
+       * `ROAD_R1` = 188), and the three tests it did ask cannot answer for a
+       * road: `_footprintClear` reads `_markOccupancy`, which skips every
+       * triangle under 0.5 m tall and the road plane is at y = 0.10;
+       * `_onLegend` knows about painted legends; `_inRoom` about interiors.
+       * A vent is a hole in the DECK, so it belongs off the carriageway for
+       * the same reason a grating does. Costs no random numbers - both yaws
+       * are already drawn above - so neither the test nor the nudge can move
+       * the stream. @see `avenueClearance` */
+      const offRoad = (px, pz) => avenueClearance(px, pz, this.roadAngles) >= 1.6;
+      const blocked = !this._footprintClear(x, z, 1.1, 1.1, 1.0) || this._inRoom(x, z, 1.1, 1.1)
+        || !offRoad(x, z);
       let put = false;
       if (blocked) {
         const ox = x, oz = z;
@@ -10704,6 +10885,7 @@ export class StationWorld extends World {
             if (!this._footprintClear(nx, nz, 1.1, 1.1, 1.0)) continue;
             if (this._onLegend(nx, nz, 1.1, 1.1)) continue;
             if (this._inRoom(nx, nz, 1.1, 1.1)) continue;
+            if (!offRoad(nx, nz)) continue;
             x = nx; z = nz; put = true;
           }
           if (put) break;
@@ -10729,6 +10911,7 @@ export class StationWorld extends World {
             if (!this._footprintClear(nx, nz, 1.1, 1.1, 1.0)) continue;
             if (this._onLegend(nx, nz, 1.1, 1.1)) continue;
             if (this._inRoom(nx, nz, 1.1, 1.1)) continue;
+            if (!offRoad(nx, nz)) continue;
             x = nx; z = nz; put = true;
             break;
           }

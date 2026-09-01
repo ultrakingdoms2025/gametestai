@@ -22,6 +22,20 @@ const _box = new THREE.Box3();
 // Private to the raycast path so it can never alias a caller-supplied ray.
 const _rc1 = new THREE.Vector3();
 const _rc2 = new THREE.Vector3();
+/* The broadphase march point, private to `raycast` and never handed out. It
+ * was allocated per call, and `raycast` is the hottest method in this file -
+ * 12,256 calls in one world crossing. Written and read only inside the gather
+ * loop, so it is never live across a call into anything else. */
+const _rayProbe = new THREE.Vector3();
+/* Private to `resolveCapsule`'s own loop - the closest point, the point on the
+ * capsule axis, and the push. Three `Vector3`s per call, and that method runs
+ * per NPC per simulation step and up to six times per player step. They are
+ * never handed out and never live across a call that could re-enter, which is
+ * exactly why these three could be hoisted and the result object could not;
+ * see the note at the top of `resolveCapsule`. */
+const _rcp1 = new THREE.Vector3();
+const _rcp2 = new THREE.Vector3();
+const _rcp3 = new THREE.Vector3();
 const _gh1 = new THREE.Vector3();
 const _gh2 = new THREE.Vector3();
 // Private to closestPointOnTriangle - see the note in that function.
@@ -452,6 +466,24 @@ export class Physics {
     this._containCache = [];
 
     /**
+     * Monotonic tag used instead of a `Set` to dedup broadphase results.
+     *
+     * `query()` allocated `new Set()` on EVERY call and `raycast()` allocated a
+     * second one plus a candidates array plus a `Vector3`, and both run
+     * thousands of times per world build and dozens of times per simulation
+     * step. A stamp costs one integer compare and one integer write per
+     * collider and allocates nothing at all: a collider whose `_queryStamp`
+     * equals the current stamp has already been collected by THIS call.
+     *
+     * The counter is a plain number and this is a browser, so it will not wrap
+     * before the heat death of the session - `Number.MAX_SAFE_INTEGER` at ten
+     * thousand queries a second is 29,000 years.
+     */
+    this._queryStamp = 0;
+    /** Scratch for `raycast`'s candidate gather. @see raycast */
+    this._rayCandidates = [];
+
+    /**
      * Heightfields are held outside the broadphase grid.
      *
      * One heightfield spans an entire world, so inserting it into the grid the
@@ -790,22 +822,46 @@ export class Physics {
     collider.inverse.copy(collider.matrix).invert();
   }
 
-  /** Colliders whose bounding sphere may overlap a world-space sphere. */
+  /**
+   * Colliders whose bounding sphere may overlap a world-space sphere.
+   *
+   * ── The dedup, and the case where there is nothing to dedup ─────────────
+   *
+   * `_insertToGrid` puts a collider in every cell its footprint touches, so a
+   * query spanning several cells can meet the same collider several times and
+   * has to filter. That filter used to be `new Set()`, allocated on EVERY
+   * call - and this runs thousands of times per world build and dozens of
+   * times per simulation step.
+   *
+   * Two changes, neither of which alters what comes back:
+   *
+   *  1. A monotonic STAMP replaces the Set. @see `_queryStamp`
+   *  2. A query that touches exactly ONE cell skips the filter entirely,
+   *     because a single cell's list cannot contain a duplicate. That is not a
+   *     rare case: a vertical ray has `gatherRadius = 0` and every ground
+   *     probe, foot-IK probe and `surfaceStack` walk is vertical.
+   */
   query(center, radius, out = this._queryCache) {
     out.length = 0;
     const minX = Math.floor((center.x - radius) / this.cellSize);
     const maxX = Math.floor((center.x + radius) / this.cellSize);
     const minZ = Math.floor((center.z - radius) / this.cellSize);
     const maxZ = Math.floor((center.z + radius) / this.cellSize);
-    const seen = new Set();
-    for (let x = minX; x <= maxX; x++) {
-      for (let z = minZ; z <= maxZ; z++) {
-        const list = this._grid.get(this._cellKey(x, z));
-        if (!list) continue;
-        for (const c of list) {
-          if (seen.has(c)) continue;
-          seen.add(c);
-          out.push(c);
+    if (minX === maxX && minZ === maxZ) {
+      const list = this._grid.get(this._cellKey(minX, minZ));
+      if (list) for (let i = 0; i < list.length; i++) out.push(list[i]);
+    } else {
+      const stamp = ++this._queryStamp;
+      for (let x = minX; x <= maxX; x++) {
+        for (let z = minZ; z <= maxZ; z++) {
+          const list = this._grid.get(this._cellKey(x, z));
+          if (!list) continue;
+          for (let i = 0; i < list.length; i++) {
+            const c = list[i];
+            if (c._queryStamp === stamp) continue;
+            c._queryStamp = stamp;
+            out.push(c);
+          }
         }
       }
     }
@@ -1167,6 +1223,26 @@ export class Physics {
    *   something other than floor. @see ../player/Player.js `_move`
    */
   resolveCapsule(position, radius, height) {
+    /* ── THE RESULT OBJECT IS ALLOCATED PER CALL, AND MUST BE ──────────────
+     *
+     * The other three vectors this method used to allocate are now module
+     * scratch (`_rcp1..3`); they never leave the method, so nothing can alias
+     * them. The result and its `groundNormal` cannot join them, and the reason
+     * is a live caller rather than caution:
+     *
+     * `Player._move` holds `res` from its FIRST resolve across the step-up
+     * probe, which calls `resolveCapsule` two or three more times, and then
+     * reads `res.groundNormal` at the end of the method. With one shared
+     * result that read would return the STEP PROBE's normal - a probe taken
+     * from a position the player is not standing at, and one that in the
+     * common case did not even lead anywhere. `Climb.js` and `NPC.js` copy out
+     * immediately and would not care; `Player.js` would silently get a
+     * different ground normal on every obstructed step, which is the input to
+     * slope handling, footing and the camera.
+     *
+     * Two objects a call against five, then. Fixing the rest properly means an
+     * out-parameter and a change in `src/player/Player.js`, which is not this
+     * file's to make. */
     const result = {
       grounded: false,
       groundNormal: new THREE.Vector3(0, 1, 0),
@@ -1179,9 +1255,9 @@ export class Physics {
     const queryRadius = radius + height * 0.5 + 0.5;
 
     let nearby = this.query(capsuleCenter, queryRadius);
-    const closest = new THREE.Vector3();
-    const onSeg = new THREE.Vector3();
-    const push = new THREE.Vector3();
+    const closest = _rcp1;
+    const onSeg = _rcp2;
+    const push = _rcp3;
     /* No single correction may exceed the capsule's own height. */
     const maxPush = height;
     /* Where the broadphase set was gathered from. If depenetration carries the
@@ -1426,10 +1502,21 @@ export class Physics {
     let best = null;
     let bestDist = maxDistance;
 
-    // March the broadphase grid along the ray rather than querying one huge sphere.
-    const probe = new THREE.Vector3();
-    const seen = new Set();
-    const candidates = [];
+    /* March the broadphase grid along the ray rather than querying one huge
+     * sphere. The probe point, the candidate list and the dedup were a
+     * `Vector3`, an array and a `Set` allocated PER CALL - and `raycast` is the
+     * hottest method in this file: 12,256 calls in a single world crossing,
+     * plus every ground probe, foot-IK probe and NPC sense. All three are now
+     * reused; the dedup is the same monotonic stamp `query` uses, so the two
+     * cannot disagree about what a duplicate is.
+     *
+     * Not re-entrant, and it never was: `_rayCandidates` is one buffer, so a
+     * `raycast` called from inside a `raycast` would clobber the outer one's
+     * list. Nothing in this file or its callers does that - the inner tests
+     * (`_raycastCollider`, `_raycastHeightfield`) are leaf functions. */
+    const probe = _rayProbe;
+    const candidates = this._rayCandidates;
+    candidates.length = 0;
 
     /* A ray with no horizontal component stays in one column of grid cells for
      * its whole length, so marching it re-queries the identical cells once per
@@ -1452,13 +1539,25 @@ export class Physics {
      * thousands of triangle chunks. */
     const gatherRadius = vertical ? 0 : this.cellSize;
 
-    for (let i = 0; i <= steps; i++) {
-      probe.copy(origin).addScaledVector(direction, i * stepLen);
+    if (steps === 0) {
+      /* One step, one cell: `query` has already given a list with no
+       * duplicates in it (see its note on the single-cell case), so there is
+       * nothing to dedup and nothing to copy through a second filter. This is
+       * every vertical ray in the game. */
+      probe.copy(origin);
       const list = this.query(probe, gatherRadius);
-      for (const c of list) {
-        if (seen.has(c)) continue;
-        seen.add(c);
-        candidates.push(c);
+      for (let i = 0; i < list.length; i++) candidates.push(list[i]);
+    } else {
+      const stamp = ++this._queryStamp;
+      for (let i = 0; i <= steps; i++) {
+        probe.copy(origin).addScaledVector(direction, i * stepLen);
+        const list = this.query(probe, gatherRadius);
+        for (let j = 0; j < list.length; j++) {
+          const c = list[j];
+          if (c._rayStamp === stamp) continue;
+          c._rayStamp = stamp;
+          candidates.push(c);
+        }
       }
     }
 

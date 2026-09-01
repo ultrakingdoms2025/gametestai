@@ -272,13 +272,85 @@ test('the collision the world derives from its own geometry is unchanged', async
    * DEEPER into the blocks. See the note on `parkP` in `_buildHabitat`, which
    * also records the four planters that are still inside a block footprint and
    * were left there.
+   *
+   * -- Re-taken 2026-09-01: the spatial-audit pass ---------------------
+   * 372160 -> 372908 found, 170718 -> 170471 boxed, 201442 -> 202437 kept,
+   * 8765 -> 8763 chunks, 26711 -> 26705 colliders. Four changes, all in
+   * `_buildCommercial` and `_buildNearField`, and every one of them is a
+   * player-reachability repair rather than a re-plan:
+   *
+   *   The promenade's two avenue-0 segments are NOT BUILT. Both the raised
+   *   deck and its balustrade are skipped where the segment's own rotated
+   *   footprint answers `StationPlan.roleUnder(..., 'carriageway')`, so the
+   *   hub's own axis runs out to the glass instead of ending at a 2 m deck
+   *   with a rail on top. Two deck slabs, two rail runs and the centre
+   *   telescope and bench stop existing; `station-plan-conflicts` went 4 -> 0
+   *   in the same commit.
+   *
+   *   The balustrade is CUT at both flight heads (`promenadeRailRuns`), which
+   *   turns 26 rail pieces into 30 shorter ones, and its collider now stops at
+   *   the drawn cap (3.325) instead of 3.80.
+   *
+   *   The deck collider's top moved 2.05 -> 2.00, onto the slab drawn under
+   *   it, and the flights are seated off `promenadeFlight()` so their
+   *   collision surface lies ON the grate drawn on them rather than 0.092 m
+   *   under it. A ramp that stops sinking the player into itself is a ramp
+   *   whose triangles stop being counted as already-inside-a-box, which is
+   *   the direction this list keeps recording.
+   *
+   *   `_buildNearField`'s `legal` swapped a bare `across < 5.0` for
+   *   `avenueClearance`, so the 96 scattered props can no longer stand on a
+   *   9.9 m carriageway, and the same loop now asks `_onLegend` at the
+   *   ORIGINAL position as well as at every nudge candidate. Both change
+   *   which samples are refused, and that pass shares one `rng` stream, so
+   *   the whole scatter downstream of the first refusal lands somewhere
+   *   else. `kept` rising 995 is that scatter standing clear of structure it
+   *   used to be half inside.
+   *
+   * -- RE-TAKEN 2026-09-01: the three closed spatial findings -------------
+   * 372908 -> 372792 found, 170471 -> 170485 boxed, 202437 -> 202307 kept;
+   * chunks unchanged at 8763, colliders 26705 -> 26757 (+52), planting 1361.
+   * Four deliberate changes, every one of them a player-reachability repair,
+   * and each one's arithmetic is at its own call site:
+   *
+   *   THE PROMENADE FLIGHTS' DRAWN PAD WAS BANKED, NOT PITCHED. The 6.4 m
+   *   grate on each flight was authored at yaw `-th` while its `_ramp` proxy
+   *   was at `-th + PI/2`, and `GeoBatch.at` pitches about the piece's LOCAL
+   *   X - so the pad tilted ACROSS the climb instead of along it. Measured
+   *   before the fix: a constant 1.000 m at every radius from 152 to 158 and
+   *   0.200 to 1.800 m across its 4.8 m width, on both flights. That surface
+   *   is collided, and a body climbing met a 0.62 m rise at r = 153 - over
+   *   `stepHeight` 0.45 and under `MIN_RISE_GROUND` 1.0, so neither a step
+   *   nor a mantle. The balustrade cut that shipped last week opened a gap
+   *   onto a flight nobody could climb. Same triangle count, different
+   *   orientation, so this moves `boxed` and `kept` and not `found`.
+   *
+   *   FOUR SHOPFRONT PANELS ARE NOT BUILT. `_buildNearField`'s lit band ran
+   *   into the promenade: one panel across the +18 degree flight with its
+   *   soffit 0.27 m over the climb at the head end, and three standing on the
+   *   deck with 0.10 m of clearance over it. They are skipped by
+   *   `boxOnPromenade`, the same shape of guard the pylon skip already used.
+   *   -116 found is those four panels, their trim, their room plane and their
+   *   emissive strip.
+   *
+   *   THE SIX GATEWAY SERVICE RAMPS MOVED OUT 2.6 m. `GATEWAY.RAMP_Z` 12 ->
+   *   14.6, so a ramp's head lands ON the dais rim instead of 2.6 m inside
+   *   it. Same geometry, further out.
+   *
+   *   THE SEVEN SPOIL HEAPS ARE COLLIDED AS CONES. One box per heap became a
+   *   stepped stack of inscribed squares following the drawn cone, every
+   *   riser inside the player's step, and the haul ramp that used to climb
+   *   into the side of one is retired. +52 colliders is 7 boxes becoming 59
+   *   tiers, less the ramp's own; `found` is unaffected because a collider is
+   *   not geometry, and `boxed` rises because a heap that is collided where
+   *   it is drawn swallows more of the dirt drawn on it.
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 372160, boxed: 170718, kept: 201442, planting: 1361 },
+    { found: 372792, boxed: 170485, kept: 202307, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8765, 'the chunking changed');
+  assert.equal(chunks, 8763, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -347,7 +419,7 @@ test('the collision the world derives from its own geometry is unchanged', async
    * Total found is UNCHANGED, which is the check that this removed colliders
    * and not geometry.
    */
-  assert.equal(physics.colliders.length, 26711, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26757, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

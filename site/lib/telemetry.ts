@@ -74,6 +74,7 @@
 
 import type { Client, PoolClient } from 'pg';
 import { createHmac } from 'node:crypto';
+import { appSecret, appSecretConfigured } from './appSecret';
 
 type Db = Client | PoolClient;
 
@@ -321,9 +322,24 @@ export function sanitizeTelemetryEvent(raw: unknown, now: Date = new Date()): Sa
 export function hashIp(ip: string | null | undefined): string | null {
   const v = (ip ?? '').trim();
   if (!v) return null;
-  const secret =
-    process.env.NEXTAUTH_SECRET ?? process.env.APP_SECRET ?? 'dev-secret-change-me';
-  return createHmac('sha256', secret).update(v).digest('hex').slice(0, 32);
+  /* No fallback constant. The salt used to default to `'dev-secret-change-me'`,
+   * which is published in this repository -- and a keyed hash whose key is
+   * public is not a keyed hash: anyone could hash the address they were
+   * interested in and look for it in the column, which is precisely the
+   * rainbow-table attack the keying exists to prevent.
+   *
+   * `appSecretConfigured()` rather than a bare `appSecret()` because this one
+   * caller must not fail closed. Refusing a whole telemetry batch over a
+   * missing salt would take out a diagnostic channel to protect a column that
+   * only exists to rate-limit anonymous callers; nulling the column loses the
+   * anonymous rate-limit key for that request and nothing else, which is the
+   * cheaper failure. Anything that SIGNS calls `appSecret()` and lets it
+   * throw. */
+  if (!appSecretConfigured()) {
+    console.error('[telemetry] no app secret configured; anonymous rate-limit key omitted.');
+    return null;
+  }
+  return createHmac('sha256', appSecret()).update(v).digest('hex').slice(0, 32);
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */

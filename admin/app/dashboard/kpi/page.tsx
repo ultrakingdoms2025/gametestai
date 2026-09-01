@@ -29,7 +29,7 @@ export default async function KpiPage() {
   const note: React.CSSProperties = { fontSize: 11, opacity: 0.65, margin: '6px 0 0' };
   const section: React.CSSProperties = { marginTop: 22 };
   const h = (text: string) => (
-    <div className="page-title" style={{ fontSize: 13, marginBottom: 10 }}>{text}</div>
+    <h2 className="page-title" style={{ fontSize: 13, marginBottom: 10 }}>{text}</h2>
   );
   const empty = (text: string) => (
     <div style={{ fontSize: 12, opacity: 0.7, padding: '8px 0' }}>{text}</div>
@@ -38,7 +38,7 @@ export default async function KpiPage() {
   if (span.total_events === 0) {
     return (
       <div className="page-body">
-        <div className="page-title">Product KPIs</div>
+        <h1 className="page-title">Product KPIs</h1>
         {empty(
           'No telemetry yet. The game client posts batches to /api/telemetry once ' +
           'src/systems/Telemetry.js is wired into main.js; every metric on this page ' +
@@ -53,7 +53,7 @@ export default async function KpiPage() {
 
   return (
     <div className="page-body">
-      <div className="page-title">Product KPIs</div>
+      <h1 className="page-title">Product KPIs</h1>
       <p style={note}>
         {span.total_events.toLocaleString()} events · {span.span_days} day{span.span_days === 1 ? '' : 's'} of
         history · windowed metrics cover the last {days} days · all times UTC ·

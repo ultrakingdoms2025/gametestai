@@ -172,10 +172,18 @@ const QUEST = 'quest-ledger-test-quest';
 const QUEST_NUMBER = 987_654;
 const REWARD = 150;
 
+/* Every test in the suite below makes several round trips to a REMOTE Postgres
+ * (Neon), and they measure 1.5-3.8 s each. Vitest's default is 5 s, which is not
+ * a measured bound -- it is the default -- so ordinary network jitter fails a
+ * test whose assertions all passed. Nothing here is weakened: the timeout is how
+ * long the runner waits, not what it checks. */
+const INTEGRATION_TIMEOUT_MS = 30_000;
+
 suite('a quest reward leaves a derivable ledger row (integration)', () => {
   let db: Client;
   let completeQuestEngagement: typeof import('./playerDb')['completeQuestEngagement'];
   let acceptQuestEngagement: typeof import('./playerDb')['acceptQuestEngagement'];
+  let updateQuestStepStates: typeof import('./playerDb')['updateQuestStepStates'];
   let applyReportedEvent: typeof import('./creditLedger')['applyReportedEvent'];
   let ensureOpeningBalance: typeof import('./creditLedger')['ensureOpeningBalance'];
 
@@ -194,7 +202,8 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
 
   beforeAll(async () => {
     process.env.POSTGRES_URL = URL_!;
-    ({ completeQuestEngagement, acceptQuestEngagement } = await import('./playerDb'));
+    ({ completeQuestEngagement, acceptQuestEngagement, updateQuestStepStates } =
+      await import('./playerDb'));
     ({ applyReportedEvent, ensureOpeningBalance } = await import('./creditLedger'));
 
     db = new Client({ connectionString: URL_!, ssl: { rejectUnauthorized: false } });
@@ -291,7 +300,7 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
     const quest = rows.filter((r) => r.kind === 'quest');
     expect(quest.length, 'no credit_events row for the quest reward').toBe(1);
     expect(quest[0].delta).toBe(REWARD);
-  });
+  }, INTEGRATION_TIMEOUT_MS);
 
   it("reproduces the survey's exact sequence, and the chain adds up", async () => {
     /* migration(+90) -> kill(+5) -> QUEST -> kill(+5). The survey read
@@ -307,7 +316,7 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
     expect(rows.map((r) => r.delta)).toEqual([90, 5, REWARD, 5]);
     expect(rows.map((r) => r.balance_after)).toEqual([90, 95, 95 + REWARD, 100 + REWARD]);
     await assertChainAddsUp();
-  });
+  }, INTEGRATION_TIMEOUT_MS);
 
   it('holds on an account with NO opening row yet — the case that was masked', async () => {
     /* `ensureOpeningBalance` fires on a player's FIRST /api/game/credits call and
@@ -320,7 +329,7 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
     expect(rows.map((r) => r.kind)).toEqual(['migration', 'quest']);
     expect(rows[0].delta).toBe(90);
     await assertChainAddsUp();
-  });
+  }, INTEGRATION_TIMEOUT_MS);
 
   it('a replayed completion pays once and writes one row', async () => {
     await ensureOpeningBalance(db, PLAYER);
@@ -331,7 +340,7 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
     expect(await balance()).toBe(90 + REWARD);
     expect((await ledger()).filter((r) => r.kind === 'quest').length).toBe(1);
     await assertChainAddsUp();
-  });
+  }, INTEGRATION_TIMEOUT_MS);
 
   it('a repeatable quest pays every time, so idempotency did not eat the feature', async () => {
     /* The two guards must AGREE. `status = 'in_progress'` stops a replay;
@@ -347,21 +356,116 @@ suite('a quest reward leaves a derivable ledger row (integration)', () => {
     expect(await balance()).toBe(90 + REWARD * 2);
     expect((await ledger()).filter((r) => r.kind === 'quest').length).toBe(2);
     await assertChainAddsUp();
-  });
+  }, INTEGRATION_TIMEOUT_MS);
 
-  it('does not stop paying at the dead 120/hour quest cap', async () => {
-    /* `CAPS.quest` is unreachable today (`REASON_KIND.quest` is 'refused'), so
-     * routing quests through the ledger would have ACTIVATED a rate limit nobody
-     * asked for — on the one payout the client cannot inflate, whose only
-     * possible effect is to mark a quest completed and pay zero for it. */
+  it('refuses at the quest cap instead of completing the quest for nothing', async () => {
+    /* ── THIS TEST CHANGED WITH THE CONTRACT IT PINS ──────────────────────
+     *
+     * It used to be `does not stop paying at the dead 120/hour quest cap`, and
+     * it asserted that a capped player is still paid in full — pinning the
+     * `ignoreCap: true` that `completeQuestEngagement` passed.
+     *
+     * The reasoning behind that was: `CAPS.quest` is unreachable anyway
+     * (`REASON_KIND.quest` is 'refused', so no client-reported event ever
+     * reaches it), honouring it would activate a rate limit nobody asked for,
+     * and its only possible effect would be to mark a quest completed and pay
+     * zero — which is the silent theft `creditPricing.ts` says a ceiling must
+     * never cause.
+     *
+     * The premise was wrong in one place and the conclusion did not follow. The
+     * cap was NOT harmless to omit: a REPEATABLE quest with `ignoreCap` is an
+     * uncapped faucet — accept, complete, accept, complete, at `reward_credits`
+     * a turn, forever. (The suite above proves a repeatable quest pays every
+     * time, which is the feature and also the loop.)
+     *
+     * And the objection about silent theft is answered without dropping the
+     * ceiling: a capped completion is now ROLLED BACK. Nothing is paid AND the
+     * quest is not marked completed, so the player has lost nothing and can
+     * finish it when the window rolls over. That is what this now asserts —
+     * the same concern the old test had, with the outcome that actually
+     * satisfies it. */
     await ensureOpeningBalance(db, PLAYER);
     await db.query(
       `INSERT INTO credit_events (player_id, event_key, kind, detail, delta, balance_after)
        SELECT $1, 'ql-cap-' || g, 'quest', 'filler', 0, 90 FROM generate_series(1, 200) g`,
       [PLAYER]
     );
-    const { done } = await completeOnce();
-    expect(done.creditsAwarded, 'the quest cap fired and silently paid nothing').toBe(REWARD);
-    expect(await balance()).toBe(90 + REWARD);
+
+    const accepted = await acceptQuestEngagement(PLAYER, QUEST, null);
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) throw new Error('accept refused');
+    const done = await completeQuestEngagement(accepted.engagementId, PLAYER);
+
+    expect(done.ok, 'a capped completion must be refused, not silently unpaid').toBe(false);
+    expect(done.reason).toBe('capped');
+    expect(done.creditsAwarded).toBe(0);
+    // Nothing was taken and nothing was given.
+    expect(await balance()).toBe(90);
+    // And critically: the quest is still THERE to be completed.
+    const still = await db.query<{ status: string }>(
+      'SELECT status FROM player_quest_engagements WHERE id = $1',
+      [accepted.engagementId]
+    );
+    expect(
+      still.rows[0].status,
+      'the engagement was consumed by a completion that paid nothing'
+    ).toBe('in_progress');
+  }, INTEGRATION_TIMEOUT_MS);
+
+  it('refuses a completion whose authored steps are not finished', async () => {
+    /* The other half of the same change. `completeQuestEngagement` used to pay
+     * on `status = 'in_progress'` alone and never read `step_states`, so a
+     * completion could be claimed for a quest whose steps had never been
+     * touched by anything.
+     *
+     * This is a consistency check and not a proof of play — the client writes
+     * the step states too, so a determined forger sends two requests instead of
+     * one. See `questStepsSatisfied` for exactly what it does and does not buy.
+     * What it stops is a completion that does not even CLAIM the work. */
+    await ensureOpeningBalance(db, PLAYER);
+    await db.query(
+      `UPDATE quests SET steps = $2 WHERE id = $1`,
+      [QUEST, JSON.stringify([
+        { order: 0, type: 'visit', label: 'Get there', count: 1 },
+        { order: 1, type: 'collect', label: 'Pick up three', count: 3 },
+      ])]
+    );
+    try {
+      const accepted = await acceptQuestEngagement(PLAYER, QUEST, null);
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) throw new Error('accept refused');
+
+      // Nothing reported at all.
+      let done = await completeQuestEngagement(accepted.engagementId, PLAYER);
+      expect(done.ok).toBe(false);
+      expect(done.reason).toBe('steps_incomplete');
+      expect(await balance()).toBe(90);
+
+      // One step done, the other short of its count — still not finished.
+      await updateQuestStepStates(
+        accepted.engagementId,
+        PLAYER,
+        { 0: { done: true, have: 1 }, 1: { done: false, have: 2 } },
+        50
+      );
+      done = await completeQuestEngagement(accepted.engagementId, PLAYER);
+      expect(done.reason).toBe('steps_incomplete');
+      expect(await balance()).toBe(90);
+
+      // Both finished: it pays.
+      await updateQuestStepStates(
+        accepted.engagementId,
+        PLAYER,
+        { 0: { done: true, have: 1 }, 1: { done: true, have: 3 } },
+        100
+      );
+      done = await completeQuestEngagement(accepted.engagementId, PLAYER);
+      expect(done.ok).toBe(true);
+      expect(done.creditsAwarded).toBe(REWARD);
+      expect(await balance()).toBe(90 + REWARD);
+    } finally {
+      // The other tests in this file rely on the quest having no steps.
+      await db.query('UPDATE quests SET steps = NULL WHERE id = $1', [QUEST]);
+    }
   });
 });

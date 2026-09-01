@@ -108,7 +108,11 @@ export const TOUCH_ACTIONS = [
   { id: 'camera', label: 'First / third person', kind: 'tap', where: 'tray', action: 'camera' },
   { id: 'transit', label: 'Transit drive', kind: 'tap', where: 'tray', action: 'transit', hint: 'Ship only' },
   { id: 'airbrake', label: 'Airbrake', kind: 'hold', where: 'tray', code: 'KeyX', hint: 'Ship only' },
-  { id: 'unstuck', label: 'Unstuck', kind: 'tap', where: 'tray', code: 'KeyK' },
+  /* `action` now, not `code: 'KeyK'`. The rescue is a real `BINDABLE` row -
+   * `UnstuckSystem` used to hard-code the literal, which is why it never
+   * appeared in the rebind panel - so this button follows a rebind like every
+   * other verb here instead of sending a key the player may have moved. */
+  { id: 'unstuck', label: 'Unstuck', kind: 'tap', where: 'tray', action: 'unstuck' },
   { id: 'map-out', label: 'Minimap out', kind: 'tap', where: 'tray', action: 'mapOut' },
   { id: 'map-in', label: 'Minimap in', kind: 'tap', where: 'tray', action: 'mapIn' },
   /* A HOLD, and the table's only reason to support one in the tray: the spec

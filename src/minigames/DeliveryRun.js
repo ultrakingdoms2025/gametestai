@@ -339,11 +339,18 @@ export class DeliveryRun {
     return null;
   }
 
+  /**
+   * A FIELD OF ONE - `total: 1`, and `place: 1` in both branches.
+   *
+   * The round is a route against a schedule; nobody else is running it. The
+   * card suppresses PLACE on a field of one rather than reporting a position
+   * in a contest with a single entrant. See the same note on `DroneHack._win`.
+   */
   _win() {
     return {
       won: true,
       place: 1,
-      total: 2,
+      total: 1,
       score: this.delivered,
       scoreLabel: `${this.delivered}/${this.round.drops.length} parcels in ${clockText(this.clock)}`,
       detail: `${this.legs.length} legs, all on schedule`,
@@ -354,8 +361,8 @@ export class DeliveryRun {
   _lose(why) {
     return {
       won: false,
-      place: 2,
-      total: 2,
+      place: 1,
+      total: 1,
       score: this.delivered,
       scoreLabel: `${this.delivered}/${this.round.drops.length} parcels`,
       detail: why,

@@ -46,7 +46,7 @@ function ResetPasswordForm() {
     return (
       <div className="auth-card">
         <Link href="/" className="auth-logo">AETHER NEXUS</Link>
-        <div className="auth-error">Invalid reset link. Please request a new one.</div>
+        <div className="auth-error" role="alert">Invalid reset link. Please request a new one.</div>
         <p className="auth-footer">
           <Link href="/forgot-password" className="auth-link">Request reset link</Link>
         </p>
@@ -60,12 +60,12 @@ function ResetPasswordForm() {
       <h1 className="auth-heading">New password</h1>
 
       {done ? (
-        <div className="auth-success">
+        <div className="auth-success" role="status">
           Password updated! Redirecting to sign in...
         </div>
       ) : (
         <>
-          {error ? <div className="auth-error">{error}</div> : null}
+          {error ? <div className="auth-error" role="alert">{error}</div> : null}
           <form onSubmit={handleSubmit} className="auth-form">
             <label className="auth-label" htmlFor="password">New password</label>
             <input
@@ -106,7 +106,7 @@ function ResetPasswordForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <main className="auth-shell">
+    <main id="main" tabIndex={-1} className="auth-shell">
       <Suspense fallback={<div className="auth-card"><div className="auth-desc">Loading...</div></div>}>
         <ResetPasswordForm />
       </Suspense>

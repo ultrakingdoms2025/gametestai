@@ -71,11 +71,28 @@ export function ServerChatPanel() {
   const [draft, setDraft] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const cursor = useRef(0);
+  /* `/api/game/chat` answers 401 for a session that has gone. Swallowed like
+   * any other non-2xx, that had two compounding effects: `page` was never set,
+   * so `!page?.serverId` below unmounted the entire chat UI — the button
+   * vanished from the corner with nothing said anywhere — and the poll went on
+   * asking a route that would refuse it every three seconds for as long as the
+   * tab stayed open. A refusal is not a blip: it will not clear on its own, so
+   * it stops the loop and says so. The ref is what the running loop reads;
+   * the state is what the render reads. */
+  const [signedOut, setSignedOut] = useState(false);
+  const signedOutRef = useRef(false);
 
   const poll = useCallback(async () => {
     try {
       const res = await fetch(`/api/game/chat?since=${cursor.current}`);
+      if (res.status === 401 || res.status === 403) {
+        signedOutRef.current = true;
+        setSignedOut(true);
+        return;
+      }
       if (!res.ok) return;
+      signedOutRef.current = false;
+      setSignedOut(false);
       const data = (await res.json()) as Page;
       setPage(data);
       if (data.messages.length) {
@@ -95,6 +112,9 @@ export function ServerChatPanel() {
       if (stopped) return;
       await poll();
       if (stopped) return;
+      /* Nothing reschedules after a refusal. Signing back in is a navigation,
+       * which remounts this component and starts a fresh loop. */
+      if (signedOutRef.current) return;
       timer = setTimeout(tick, document.hidden ? HIDDEN_MS : ACTIVE_MS);
     };
     void tick();
@@ -115,8 +135,33 @@ export function ServerChatPanel() {
   }, [poll]);
 
   /* No server, no chat. There is no global channel in this design, and rendering
-   * an empty box in default mode would suggest otherwise. */
+   * an empty box in default mode would suggest otherwise. A player who was
+   * never in a server sees nothing when the session goes either — they had no
+   * chat to lose, and a sign-in prompt in the corner of a game they are playing
+   * signed out is a question they cannot act on. */
   if (!page?.serverId) return null;
+
+  /* Had a channel, lost the session. Deliberately still in the corner where the
+   * chat button was, so it reads as "this thing you were using" rather than as
+   * a new alert about the game. */
+  if (signedOut) {
+    return (
+      <div
+        role="status"
+        style={{
+          position: 'fixed', right: 12, bottom: 12, zIndex: 40, maxWidth: 260,
+          padding: '10px 12px', borderRadius: 8, border: '1px solid #7a2b2b',
+          background: '#1a0d10', color: '#ffc9cf', fontSize: 13, lineHeight: 1.5,
+        }}
+      >
+        Chat has stopped — you are signed out. Your progress is safe.{' '}
+        <a href="/login?callbackUrl=%2Fplay" style={{ color: '#9fe4ff' }}>
+          Sign in again
+        </a>{' '}
+        to bring it back.
+      </div>
+    );
+  }
 
   if (!open) {
     return (
@@ -142,7 +187,14 @@ export function ServerChatPanel() {
         body: JSON.stringify({ body, to: to || null }),
       });
       const out = await res.json().catch(() => ({}));
-      if (!res.ok) setNote(String(out?.error ?? 'Could not send that.'));
+      if (res.status === 401 || res.status === 403) {
+        /* Same refusal as the poll's, reached from the other verb. Hand the
+         * render to the signed-out notice rather than leaving "Not
+         * authenticated." under an input that will refuse every line typed
+         * into it. */
+        signedOutRef.current = true;
+        setSignedOut(true);
+      } else if (!res.ok) setNote(String(out?.error ?? 'Could not send that.'));
       else await poll();
     } catch {
       setNote('Could not reach the server.');

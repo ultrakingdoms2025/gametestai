@@ -1,6 +1,6 @@
 import type { Client, PoolClient } from 'pg';
 import { FEE_BPS, FEE_FIXED_CENTS, formatCents, grossUp } from './pricing';
-import { stripeConfigured } from './stripe';
+import { simulatedPurchasesAllowed, stripeConfigured } from './stripe';
 import { COMP_PREFIX, compSubscriptionId } from './accessCodeFormat';
 
 /**
@@ -742,7 +742,7 @@ const SIMULATED_PREDICATE = `
 
 export type SimulatedGrant =
   | { granted: true; entitlement: Entitlement }
-  | { granted: false; reason: 'stripe_configured' | 'invalid' };
+  | { granted: false; reason: 'stripe_configured' | 'not_permitted' | 'invalid' };
 
 /**
  * Grant hosting to someone who did not pay, while there is no way to pay.
@@ -757,6 +757,15 @@ export async function grantSimulatedHosting(
   input: { playerId: string; orderId: string; periodDays?: number }
 ): Promise<SimulatedGrant> {
   if (stripeConfigured()) return { granted: false, reason: 'stripe_configured' };
+  /* And the opt-in, which `stripeConfigured()` alone never was. An empty
+   * `STRIPE_SECRET_KEY` describes every deployment that has not been given keys
+   * yet - production included - so "Stripe is off" was being read as permission
+   * to hand a subscription to anyone who reached the endpoint. The permission is
+   * now explicit, absent by default and unavailable in production; see
+   * `simulatedPurchasesAllowed`. Checked HERE as well as in the route for the
+   * reason the guard above is: this function writes the row, so a caller added
+   * later inherits the fence instead of having to remember it. */
+  if (!simulatedPurchasesAllowed()) return { granted: false, reason: 'not_permitted' };
 
   const playerId = String(input?.playerId ?? '').trim();
   const orderId = String(input?.orderId ?? '').trim();

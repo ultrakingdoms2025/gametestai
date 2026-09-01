@@ -252,7 +252,30 @@ export function drawnTrianglesOf(objects, camera) {
     if (!obj?.isMesh) continue;
     obj.updateWorldMatrix(true, false);
     if (camera.layers && !obj.layers.test(camera.layers)) continue;
-    const tris = geometryTriangles(obj.geometry) * instanceCount(obj);
+    /* BATCHED MESHES GO THROUGH `batchedCount`, EXACTLY AS THE WALK DOES.
+     *
+     * This line used to read `geometryTriangles(obj.geometry) * instanceCount(obj)`
+     * with no `batchedCount` call at all - the same defect the walk above had
+     * already been fixed for, left standing in the ablation path. On a
+     * `BatchedMesh` `obj.geometry` is the RESERVED buffer, so the maze's stone
+     * batch reported `GEOMETRY_BUDGET.stone` (1536 indices x 26 prefabs) =
+     * 13,312 triangles from EVERY camera, constantly, regardless of how many
+     * instances were actually in shot or visible.
+     *
+     * That number is never zero, and `scripts/world-shot.mjs` only fails an
+     * ablation run when `best === 0` - so the maze's ablation verdict was
+     * structurally unfailable. It always "proved" the ablated material was in
+     * shot, whichever way the camera pointed.
+     *
+     * Per-instance `visible` flags are the right thing to honour here even
+     * though this function is deliberately blind to `obj.visible`: `ablate()`
+     * hides by setting the MESH's `visible = false` and never touches
+     * `setVisibleAt`, so the instance flags still describe what the batch would
+     * submit if the mesh were shown - which is the question. */
+    const batched = batchedCount(obj);
+    const tris = batched
+      ? batched.tris
+      : geometryTriangles(obj.geometry) * instanceCount(obj);
     if (obj.frustumCulled === false || _frustum.intersectsObject(obj)) {
       out.triangles += tris;
       out.objects += 1;

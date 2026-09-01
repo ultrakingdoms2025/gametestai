@@ -111,6 +111,203 @@ test('every step waits on an event the game actually emits', () => {
   }
 });
 
+/* ====================================================================== */
+/* 1b. THE KEYS IT NAMES ARE KEYS THE GAME ANSWERS                         */
+/* ====================================================================== */
+
+/**
+ * THE TWO DEAD KEYS, AND WHY NOTHING CAUGHT THEM.
+ *
+ * ── What shipped ──────────────────────────────────────────────────────────
+ *
+ *   step 7  "G summons your mount. Get on it."
+ *   grant   "Two medkits — yours. Press Tab for your bag."
+ *
+ * G is `{action:'fittings', code:'KeyG'}` in `Input.BINDABLE`: a HOLD that
+ * reinterprets the digit row **while already riding**. Pressed on foot it does
+ * precisely nothing. The only player-facing summon is the mount wheel, which is
+ * the `map` action, which ships on M. So step 7 of 8 could not be completed by
+ * following its own instruction.
+ *
+ * Tab is worse, because it is not merely the wrong key - it is a key the build
+ * is INCAPABLE of answering. It sits in `Input.RESERVED_CODES`, which
+ * `setBinding` refuses to write and `_loadBinds` strips out of storage, and
+ * nothing anywhere listens for it. The bag is `KeyI` (`main.js`, its own window
+ * handler). That sentence is the first reward this game ever hands anybody.
+ *
+ * ── Why the existing gates could not see either ───────────────────────────
+ *
+ * The file above asserts that every step names an `event` something emits, and
+ * that the `teaches` tags cover the brief's seven verbs. Both are true of a
+ * step whose prose tells the player to press a key that does not exist: the
+ * event still fires when they eventually stumble on the real control, and the
+ * tag is just a word. NOTHING HAD EVER READ THE SENTENCE. That is the gap, and
+ * a proofread does not close it - it closes today's instance and leaves the
+ * next one to a future reader who has no reason to look.
+ *
+ * ── What this checks, in both directions ──────────────────────────────────
+ *
+ *  1. Every key NAME in every player-facing string in `Onboarding.js` resolves
+ *     to a code the game actually handles - a `BINDABLE` row, or a literal
+ *     `event.code` some file in `src/` tests against. Tab fails here outright,
+ *     as would any invented key.
+ *  2. The names in a step's prose and its declared `keys` are the SAME SET.
+ *     "G summons your mount" beside `keys: ['map']` fails; so does dropping M
+ *     from the prose, or adding a key to `keys` and forgetting the sentence.
+ *
+ * ── What it cannot see, stated rather than implied ────────────────────────
+ *
+ * `keys` is written by the same hand as the sentence. `keys: ['fittings']`
+ * beside "G summons your mount" would pass both directions and still be a lie -
+ * the key exists and the two lists agree about it. What the gate removes is the
+ * SILENT version: a key can no longer end up in this file's prose without
+ * somebody typing its identity down beside it and being wrong on purpose. A
+ * static check of English cannot do better than that, and pretending otherwise
+ * would be the "gate that measures something the game does not do" this repo
+ * has already paid for nine times.
+ */
+
+/** Tokens that name a key, and the `event.code` each one means. */
+function codesForToken(token) {
+  if (/^[A-Z]$/.test(token)) return [`Key${token}`];
+  if (/^F(?:[1-9]|1[0-2])$/.test(token)) return [token];
+  const named = {
+    Space: ['Space'],
+    Shift: ['ShiftLeft'],
+    Ctrl: ['ControlLeft'],
+    Alt: ['AltLeft'],
+    Tab: ['Tab'],
+    Esc: ['Escape'],
+    Escape: ['Escape'],
+    Enter: ['Enter'],
+  };
+  return named[token] ?? null;
+}
+
+/**
+ * Every key a sentence names, as `event.code`s.
+ *
+ * Standalone capitals (W, E, R, B, M, G, I), the named keys above, F-keys, and
+ * the `1-4` range the weapon-slot line uses. Deliberately greedy about single
+ * capitals: a false positive is a test failure somebody has to look at, and a
+ * false negative is the defect this file exists to stop.
+ */
+function keysNamedIn(text) {
+  const found = new Set();
+  // `1-4` / `1–4`: the digit row, written as a range.
+  for (const m of text.matchAll(/\b([1-9])\s*[-–]\s*([1-9])\b/g)) {
+    for (let d = Number(m[1]); d <= Number(m[2]); d++) found.add(`Digit${d}`);
+  }
+  for (const m of text.matchAll(/\b(F(?:[1-9]|1[0-2])|Space|Shift|Ctrl|Alt|Tab|Esc(?:ape)?|Enter|[A-Z])\b/g)) {
+    const codes = codesForToken(m[1]);
+    if (codes) for (const c of codes) found.add(c);
+  }
+  return found;
+}
+
+/** A `keys` entry - a BINDABLE action or a literal code - as `event.code`s. */
+function codeForDeclared(entry, bindable) {
+  const row = bindable.find((b) => b.action === entry);
+  if (row) return row.code;
+  return entry;
+}
+
+test('every key the opening sequence names is a key the game answers', async () => {
+  const { BINDABLE, RESERVED_CODES } = await import('../../src/core/Input.js');
+
+  /* Every string literal `src/` tests a key code against, comments stripped -
+   * this is how `KeyB` (a raw `pressed('KeyB')` poll in `Marketplace`) and
+   * `KeyI` (a private window handler in `main.js`) are recognised as real
+   * without being `BINDABLE` rows. Same technique `touch-controls.test.mjs`
+   * uses to prove no touch button sends a dead key. */
+  const handled = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(p); continue; }
+      if (!entry.name.endsWith('.js')) continue;
+      // The onboarding cannot vouch for its own keys.
+      if (p.endsWith(join('systems', 'Onboarding.js'))) continue;
+      const code = readFileSync(p, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+      for (const m of code.matchAll(/'((?:Key|Digit|Numpad)[A-Z0-9]|Space|Escape|Tab|Enter|ShiftLeft|ControlLeft|AltLeft|Bracket(?:Left|Right)|F(?:[1-9]|1[0-2]))'/g)) {
+        handled.add(m[1]);
+      }
+    }
+  };
+  walk(join(root, 'src'));
+  assert.ok(handled.has('KeyB') && handled.has('KeyI'),
+    'the key-code scrape found neither KeyB nor KeyI - it has broken, and a broken '
+    + 'scrape would pass this test for every possible input');
+
+  const bindableCodes = new Set(BINDABLE.map((b) => b.code));
+  const reserved = new Set(RESERVED_CODES);
+
+  /* The player-facing strings, taken out of the SOURCE rather than out of
+   * `ONBOARDING_STEPS`, because the Tab defect was in the grant's `hud:notify`
+   * and not in a step at all. Comments are stripped first: this very file's
+   * docblocks say "Tab" and "G" a great many times on purpose. */
+  const src = readFileSync(join(root, 'src', 'systems', 'Onboarding.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  const strings = [...src.matchAll(/text:\s*(?:'([^']*)'|`([^`]*)`)/g)]
+    .map((m) => (m[1] ?? m[2]).replace(/\$\{[^}]*\}/g, ' '));
+  assert.ok(strings.length >= ONBOARDING_STEPS.length + 1,
+    `the player-facing string scrape found ${strings.length} - it must reach every step `
+    + 'plus the grant notification, or it is measuring nothing');
+
+  for (const text of strings) {
+    for (const code of keysNamedIn(text)) {
+      assert.ok(!reserved.has(code),
+        `"${text}" names ${code}, which is in RESERVED_CODES - it can never be bound `
+        + 'and nothing in the game listens for it');
+      assert.ok(bindableCodes.has(code) || handled.has(code),
+        `"${text}" names ${code}, which is neither a BINDABLE row nor a key any file `
+        + 'in src/ handles - a player following that instruction gets nothing');
+    }
+  }
+});
+
+test('a step\'s prose and its declared keys are the same set', async () => {
+  const { BINDABLE } = await import('../../src/core/Input.js');
+
+  for (const step of ONBOARDING_STEPS) {
+    assert.ok(Array.isArray(step.keys),
+      `step "${step.id}" declares no \`keys\` - the prose would be the only record again`);
+
+    const declared = new Set(step.keys.map((k) => codeForDeclared(k, BINDABLE)));
+    for (const k of step.keys) {
+      const row = BINDABLE.find((b) => b.action === k);
+      assert.ok(row || /^(?:Key|Digit|Numpad)/.test(k),
+        `step "${step.id}" declares "${k}", which is neither a BINDABLE action nor a key code`);
+    }
+
+    const named = keysNamedIn(step.text);
+    assert.deepEqual([...named].sort(), [...declared].sort(),
+      `step "${step.id}" says "${step.text}" but declares [${[...declared].sort().join(', ')}]. `
+      + 'This is the shape of the G-summons-your-mount defect: the sentence and the '
+      + 'binding drifted apart and nothing was reading the sentence.');
+  }
+});
+
+test('the mount step points at the mount wheel, not at the fittings hold', async () => {
+  /* The instance, pinned as well as the rule. `fittings` is a HOLD that
+   * reinterprets the digit row while already riding; naming it in a step whose
+   * event is `mount:mounted` is an instruction a player on foot cannot follow,
+   * and it was step 7 of 8. */
+  const { BINDABLE } = await import('../../src/core/Input.js');
+  const step = ONBOARDING_STEPS.find((s) => s.id === 'mount');
+  assert.ok(step, 'the mount step is gone');
+  assert.ok(!step.keys.includes('fittings'),
+    'the mount step teaches the fittings hold, which does nothing on foot');
+  assert.ok(step.keys.includes('map'),
+    'the mount step does not teach the mount wheel, which is the only way to summon one');
+  const wheel = BINDABLE.find((b) => b.action === 'map');
+  assert.ok(step.text.includes(wheel.code.replace('Key', '')),
+    `the mount step's text does not name ${wheel.code}, the key the wheel is on`);
+});
+
 test('the sequence teaches every verb the brief names', () => {
   /* Movement, interaction, combat, reward, mount, marketplace, and the main
    * objective. Asserted against the `teaches` tag rather than the id, so

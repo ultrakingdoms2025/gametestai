@@ -854,6 +854,78 @@ const KICKER = { x: -38, z: -132, w: 7, len: 11, h: 2.4 };
 /** Fall-line centres of the three groomed corridors. */
 const PISTE_LANES = [-96, -62, -32];
 
+/* ------------------------------------------------------------------ */
+/* The path network                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A readable route from the gate to every zone, as `[polyline, halfWidth]`.
+ *
+ * The spine is a 3.6 m wide tarmac avenue and the spurs are 2.5 m; both carry
+ * a scuffed verge ribbon `PATH_VERGE` metres wider so grass never meets a hard
+ * geometric edge, and both follow the terrain.
+ *
+ * ── Why this is module scope and not a local in `_buildGround` ────────────
+ * `_isPlantable`'s own docstring said it kept planting off "the playing
+ * surfaces, the car park AND THE PATHS", and the word `routes` did not appear
+ * anywhere in its body: it tested ten hand-written axis-aligned rectangles and
+ * an inset from the site border, and the paths are eleven polylines. The leg
+ * `(0,92) -> (0,125)` - the spine, straight down the world's own axis from the
+ * arrival gate - and the whole western route to the skate pad fall inside NO
+ * rectangle, so 150 broadleaf trees with COLLIDABLE TRUNKS, twenty cluster
+ * centres, the shrub tufts and ~27,750 grass blades were all free to stand in
+ * the middle of the avenue a player walks in on. Sports has no spatial gate of
+ * any kind, so nothing would ever have reported it.
+ *
+ * One table, read by the builder that lays the tarmac and by the predicate
+ * that keeps planting off it, so the two cannot drift.
+ */
+const PATH_ROUTES = [
+  [[[0, 176], [0, 150], [0, 120], [0, 92]], 1.8],
+  [[[0, 92], [-24, 88], [-52, 82], [-78, 79], [-100, 79]], 1.8],
+  // Pool spur. This used to run [22,100] -> [40,106] -> [52,110], which is
+  // straight through the swimming basin: the lawn sheet is holed over the
+  // pool, so with the ribbon winding fixed the tarmac appeared as a gravel
+  // causeway floating across four lanes of water. It now arrives on the
+  // west deck, where the deck slab at y=0.1 hides the last few metres.
+  [[[0, 92], [14, 97], [24, 101], [28, 108]], 1.25],
+  [[[0, 92], [34, 78], [62, 56], [84, 38], [95, 30]], 1.8],
+  [[[0, 92], [-8, 62], [-14, 26], [-26, -12], [-44, -44], [-56, -64]], 1.8],
+  [[[0, 92], [26, 52], [44, 10], [56, -26], [62, -52]], 1.25],
+  [[[0, 160], [40, 162], [82, 164], [112, 162]], 1.25],
+  [[[-100, 79], [-108, 40], [-112, 4], [-104, -34], [-84, -58]], 1.25],
+  [[[95, 30], [104, 8], [108, -22], [106, -50]], 1.25],
+  // Pool to car park, routed round the south side of the deck rather than
+  // over the basin.
+  [[[28, 108], [24, 124], [36, 133], [62, 136], [84, 140]], 1.25],
+];
+
+/** How much wider than the tarmac the scuffed verge ribbon runs. */
+const PATH_VERGE = 0.8;
+
+/**
+ * Distance from (x, z) to the nearest path centreline, in metres, minus that
+ * path's own half-width. Negative means standing on the tarmac.
+ *
+ * Point-to-SEGMENT, not point-to-vertex: the spine's legs are up to 33 m long
+ * and a vertex test would leave most of the avenue unprotected.
+ */
+function pathClearance(x, z) {
+  let best = Infinity;
+  for (const [route, halfW] of PATH_ROUTES) {
+    for (let i = 0; i < route.length - 1; i++) {
+      const ax = route[i][0], az = route[i][1];
+      const bx = route[i + 1][0], bz = route[i + 1][1];
+      const dx = bx - ax, dz = bz - az;
+      const len2 = dx * dx + dz * dz;
+      const t = len2 > 0 ? clamp01(((x - ax) * dx + (z - az) * dz) / len2) : 0;
+      const d = Math.hypot(x - (ax + dx * t), z - (az + dz * t)) - halfW;
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
 /**
  * Snow height. A longitudinal cosine profile (~23 deg average pitch) modulated
  * by a lateral falloff whose width grows with altitude, so the flanks stay
@@ -4836,25 +4908,7 @@ export class SportsWorld extends World {
     // grass never meets a hard geometric edge, and both follow the terrain.
     const spineMat = this._materials.get('path.tarmac');
     const vergeMat = this._materials.get('path.verge');
-    const routes = [
-      [[[0, 176], [0, 150], [0, 120], [0, 92]], 1.8],
-      [[[0, 92], [-24, 88], [-52, 82], [-78, 79], [-100, 79]], 1.8],
-      // Pool spur. This used to run [22,100] -> [40,106] -> [52,110], which is
-      // straight through the swimming basin: the lawn sheet is holed over the
-      // pool, so with the ribbon winding fixed the tarmac appeared as a gravel
-      // causeway floating across four lanes of water. It now arrives on the
-      // west deck, where the deck slab at y=0.1 hides the last few metres.
-      [[[0, 92], [14, 97], [24, 101], [28, 108]], 1.25],
-      [[[0, 92], [34, 78], [62, 56], [84, 38], [95, 30]], 1.8],
-      [[[0, 92], [-8, 62], [-14, 26], [-26, -12], [-44, -44], [-56, -64]], 1.8],
-      [[[0, 92], [26, 52], [44, 10], [56, -26], [62, -52]], 1.25],
-      [[[0, 160], [40, 162], [82, 164], [112, 162]], 1.25],
-      [[[-100, 79], [-108, 40], [-112, 4], [-104, -34], [-84, -58]], 1.25],
-      [[[95, 30], [104, 8], [108, -22], [106, -50]], 1.25],
-      // Pool to car park, routed round the south side of the deck rather than
-      // over the basin.
-      [[[28, 108], [24, 124], [36, 133], [62, 136], [84, 140]], 1.25],
-    ];
+    const routes = PATH_ROUTES;
     const bollards = [];
     const lamps = [];
     // Ribbons are merged per material so the whole network is two draw calls.
@@ -4871,7 +4925,7 @@ export class SportsWorld extends World {
         }
       }
       dense.push(route[route.length - 1]);
-      vergeGeos.push(ribbon(dense, halfW + 0.8, (x, z) => parkHeight(x, z) + 0.03, false, 0.2));
+      vergeGeos.push(ribbon(dense, halfW + PATH_VERGE, (x, z) => parkHeight(x, z) + 0.03, false, 0.2));
       spineGeos.push(ribbon(dense, halfW, (x, z) => parkHeight(x, z) + 0.062, false, 0.22));
 
       // Lamp posts and bollards give the route a rhythm and a night read.
@@ -6921,11 +6975,34 @@ export class SportsWorld extends World {
     this._instanced(blockGeo, blockMat, blocks);
 
     /* ---- diving boards ---- */
-    const platform = [];
-    platform.push(xform(new THREE.BoxGeometry(1.2, 3.2, 1.2), 65.5, 1.6, 111));
-    platform.push(xform(new THREE.BoxGeometry(2.2, 0.16, 2.2), 65.5, 3.28, 111));
-    const plat = new THREE.Mesh(mergeGeometries(platform), galv);
-    this._solid(plat);
+    /* TWO SOLIDS, not one merged mesh, and a ladder to get up there.
+     *
+     * `_solid` registers ONE box from the mesh's whole bounding box, so a
+     * merged column-plus-deck answered a 2.2 x 3.36 x 2.2 block: an invisible
+     * pier a metre wider than the 1.2 m column anybody can see, all the way to
+     * the water. Registered separately each collider is the thing it was drawn
+     * as. And the deck at 3.36 m had no way onto it at all - `Climb.MAX_RISE`
+     * is 2.4 - so the whole tower was scenery. */
+    const platCol = this._box(1.2, 3.2, 1.2, galv, 65.5, 1.6, 111);
+    this._solid(platCol);
+    const platDeck = this._box(2.2, 0.16, 2.2, galv, 65.5, 3.28, 111);
+    this._solid(platDeck);
+    /* Access ladder on the tower's east face - the west face carries the 6.2 m
+     * board. Stiles clear the 2.2 m deck's overhang at x = 66.6, and the rungs
+     * step 0.42 m, inside `CONFIG.player.stepHeight` = 0.45. The rung at 3.36
+     * is level with the deck, so the last move is a 0.15 m sidestep and not a
+     * pull-up; two more above it give the ladder a head to hold. */
+    const ladderX = 66.78;
+    const rungs = [];
+    for (const oz of [-0.32, 0.32]) {
+      rungs.push(xform(new THREE.BoxGeometry(0.07, 4.3, 0.07), ladderX, 2.15, 111 + oz));
+    }
+    for (let i = 1; i <= 9; i++) {
+      const ry = i * 0.42;
+      rungs.push(xform(new THREE.BoxGeometry(0.06, 0.06, 0.76), ladderX, ry, 111));
+      this.track(this.physics.addBox(ladderX, ry - 0.03, 111, 0.06, 0.03, 0.38, {}));
+    }
+    this._add(new THREE.Mesh(mergeGeometries(rungs), galv));
     const boardMat = this._mat(
       'board.dive',
       new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.55 })
@@ -6936,22 +7013,38 @@ export class SportsWorld extends World {
     this._solid(springStand);
     const spring = this._box(4.6, 0.1, 0.5, boardMat, 60.2, 1.25, 114.5);
     this._solid(spring);
-    // Handrails on the tower.
+    /* Handrails on the tower - AND THEY STOP YOU.
+     *
+     * Both runs were `_add`, so the only guard on a 3.36 m platform was drawn
+     * and not built: a player walked through the rail and off the side. One
+     * thin box per side, spanning the drawn post-and-rail envelope exactly
+     * (x 64.6-66.4, y 3.36-4.30, 0.12 m thick about the rail line), so the
+     * barrier is where the barrier looks like it is. `_solid` is no use here -
+     * it would take the merged mesh's bounding box and roof the platform. */
     const hr = [];
     for (const oz of [-0.85, 0.85]) {
       hr.push(strut(65.5, 3.36, 111 + oz, 65.5, 4.3, 111 + oz, 0.06));
       hr.push(strut(64.6, 4.3, 111 + oz, 66.4, 4.3, 111 + oz, 0.06));
+      this.track(this.physics.addBox(65.5, 3.83, 111 + oz, 0.9, 0.47, 0.06, {}));
     }
     const hrm = new THREE.Mesh(mergeGeometries(hr), galv);
     this._add(hrm);
 
-    /* ---- ladders + lifeguard chair ---- */
+    /* ---- ladders + lifeguard chair ----
+     *
+     * The pool ladders were drawn and nothing more, so the two things a
+     * swimmer can see for getting out of the basin were the one thing that
+     * could not carry them. A collider per rung, at the rung: the treads step
+     * 0.40 m, inside `CONFIG.player.stepHeight` = 0.45, and the top one at
+     * y = 0.2 is a 0.10 m rise short of the 0.1 m deck slab. */
     const lad = [];
     for (const z of [106, 116]) {
       lad.push(strut(bx1 + 0.1, 0.5, z - 0.25, bx1 + 0.1, -1.4, z - 0.25, 0.05));
       lad.push(strut(bx1 + 0.1, 0.5, z + 0.25, bx1 + 0.1, -1.4, z + 0.25, 0.05));
       for (let i = 0; i < 4; i++) {
-        lad.push(strut(bx1 + 0.1, 0.2 - i * 0.4, z - 0.25, bx1 + 0.1, 0.2 - i * 0.4, z + 0.25, 0.045));
+        const ry = 0.2 - i * 0.4;
+        lad.push(strut(bx1 + 0.1, ry, z - 0.25, bx1 + 0.1, ry, z + 0.25, 0.045));
+        this.track(this.physics.addBox(bx1 + 0.1, ry - 0.0225, z, 0.045, 0.0225, 0.3, {}));
       }
     }
     const ladders = new THREE.Mesh(mergeGeometries(lad), galv);
@@ -7928,7 +8021,6 @@ export class SportsWorld extends World {
   /* Landscaping and site furniture                                    */
   /* ---------------------------------------------------------------- */
 
-  /** Keep planting out of the playing surfaces, the car park and the paths. */
   /**
    * One lobe of a canopy: a noise-displaced icosahedron with *sphere* normals.
    *
@@ -7993,7 +8085,27 @@ export class SportsWorld extends World {
     );
   }
 
+  /**
+   * Keep planting out of the playing surfaces, the car park AND THE PATHS.
+   *
+   * The last clause was a claim, not a test. `routes` did not appear anywhere
+   * in this function: it was ten hardcoded axis-aligned rectangles plus an
+   * inset from the site border, and the path network is eleven polylines. The
+   * spine leg `(0,92) -> (0,125)` - the arrival avenue, straight down the
+   * world's own axis - and the entire western route to the skate pad fall
+   * inside no rectangle at all, so the four callers below were free to plant
+   * 150 broadleaf trees WITH COLLIDABLE TRUNKS, 20 cluster centres, shrub
+   * tufts and ~27,750 grass blades in the middle of a tarmac path. Sports has
+   * no spatial gate of any kind, so nothing would ever have said so.
+   *
+   * `halfW + PATH_VERGE` is the authored edge of the scuffed verge ribbon
+   * (`_buildGround` lays the verge at exactly that half-width), so this rejects
+   * where the path's own drawn surface ends rather than at a chosen margin.
+   *
+   * @see PATH_ROUTES, pathClearance
+   */
   _isPlantable(x, z) {
+    if (pathClearance(x, z) < PATH_VERGE) return false;
     const rects = [
       [PAD.x0 - 4, PAD.z0 - 4, PAD.x1 + 4, PAD.z1 + 6],
       [POOL.x0 - 4, POOL.z0 - 4, POOL.x1 + 4, POOL.z1 + 4],

@@ -278,7 +278,7 @@ export const MEDIEVAL_QUESTS = [
     world: 'medieval',
     line: 'The Broken Company',
     title: 'Break the marauder company that has preyed on the vale since the levy',
-    credits: 1500,
+    credits: 1150,
     dur: 720,
     pre: ['The Keep Watch', 'Weapons Free'],
     notes:
@@ -299,7 +299,7 @@ export const MEDIEVAL_QUESTS = [
     world: 'medieval',
     line: 'Relics of the Stone Circle',
     title: 'Learn what the sarsen ring was raised to watch',
-    credits: 2100,
+    credits: 1330,
     dur: 1440,
     pre: ['The Reeve\'s Ledger', 'Nexus Cartographer'],
     notes:
@@ -321,11 +321,11 @@ export const MEDIEVAL_QUESTS = [
     world: 'medieval',
     line: 'The Coin of Aldermoor',
     title: 'Strike a vale coin the hub will accept at face value',
-    credits: 3100,
+    credits: 1630,
     dur: 2880,
     pre: ['Relics of the Stone Circle', 'Merchant Trade'],
     notes:
-      'CROSS-WORLD PREREQUISITE — requires the station education line "Merchant Trade", because half of this quest is the shop. 9 steps. Step 6 targets the trade KIND (`sell`), which `market:trade` carries (Marketplace.js:526) and QuestSystem pushes as a candidate — it is the ONLY way to prove a sale rather than a purchase; do not replace it with an item id. Step 8 asks for the tunic because the player arrives in the station flight suit by default (PlayerAvatar.js DEFAULT), so it takes a real change in the F2 menu to produce it. Opens on Edmund Marsh and closes on Goodman Alder: two different people, so one E press cannot clear both ends.',
+      'CROSS-WORLD PREREQUISITE — requires the station education line "Merchant Trade", because half of this quest is the shop. 9 steps. Step 6 targets the trade KIND (`sell`), which `market:trade` carries (Marketplace.js:526) and QuestSystem pushes as a candidate — it is the ONLY way to prove a sale rather than a purchase; do not replace it with an item id. Step 8 asks for the tunic because the player arrives in the station flight suit by default (PlayerAvatar.js DEFAULT), so it takes a real change in the Esc menu Character panel to produce it. Opens on Edmund Marsh and closes on Goodman Alder: two different people, so one E press cannot clear both ends.',
     steps: [
       { order: 1, label: 'Press E on Edmund Marsh and take the reeve\'s warrant to strike coin', type: 'interact', target: 'Edmund Marsh', count: 1, world: 'medieval' },
       { order: 2, label: 'Press E on Bram Tallow at the smithy — he cuts the dies, and he will charge double because it is decorative', type: 'talk', target: 'Bram Tallow', count: 1, world: 'medieval' },
@@ -334,7 +334,7 @@ export const MEDIEVAL_QUESTS = [
       { order: 5, label: 'Hard money to seed the mint: pick up 2 credit drops (every drop in the world carries some)', type: 'collect', target: 'credits', count: 2, world: 'medieval' },
       { order: 6, label: 'Raise the rest at market. Press B at any trader, switch to the sell side, and sell 2 stacks back — you get less than you paid, that is the spread', type: 'purchase', target: 'sell', count: 2, world: 'medieval' },
       { order: 7, label: 'Buy the mint a medkit pack out of the proceeds (B at Wilda Sorrel\'s herb stall) — a striker with a burned hand strikes nothing', type: 'purchase', target: 'medkit', count: 1, world: 'medieval' },
-      { order: 8, label: 'The vale will not take coin from someone dressed like a gate-runner. Press F2 and put on the Tunic', type: 'customize', target: 'tunic', count: 1, world: 'medieval' },
+      { order: 8, label: 'The vale will not take coin from someone dressed like a gate-runner. Open the Esc menu, take Character, and put on the Tunic', type: 'customize', target: 'tunic', count: 1, world: 'medieval' },
       { order: 9, label: 'Press E on Goodman Alder at the market cross and have him cry the new rate across the square', type: 'talk', target: 'Goodman Alder', count: 1, world: 'medieval' },
     ],
   },
@@ -344,7 +344,7 @@ export const MEDIEVAL_QUESTS = [
     world: 'medieval',
     line: 'Lord of the Vale',
     title: 'Answer for Aldermoor at the hub, and be answered',
-    credits: 5200,
+    credits: 2260,
     dur: 5760,
     pre: ['The Broken Company', 'The Coin of Aldermoor'],
     notes:

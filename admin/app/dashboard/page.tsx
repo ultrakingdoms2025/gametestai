@@ -19,7 +19,7 @@ export default async function DashboardHome() {
 
   return (
     <div className="page-body">
-      <div className="page-title">Overview</div>
+      <h1 className="page-title">Overview</h1>
 
       <div className="stat-grid">
         <div className="stat">
@@ -47,7 +47,7 @@ export default async function DashboardHome() {
       </div>
 
       <div style={{ marginTop: 8 }}>
-        <div className="page-title" style={{ fontSize: 13, marginBottom: 14 }}>Recent activity</div>
+        <h2 className="page-title" style={{ fontSize: 13, marginBottom: 14 }}>Recent activity</h2>
         <div className="tbl-wrap">
           <table>
             <thead><tr>

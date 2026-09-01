@@ -17,7 +17,7 @@ export default async function PlayersPage({
   return (
     <div className="page-body">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 24 }}>
-        <div className="page-title" style={{ marginBottom: 0 }}>Players</div>
+        <h1 className="page-title" style={{ marginBottom: 0 }}>Players</h1>
         <a href="/dashboard/players/new" className="btn btn-primary">New player</a>
       </div>
 

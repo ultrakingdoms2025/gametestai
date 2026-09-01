@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { walkWorldTriangles } from '../../src/dev/WorldTriangles.js';
+import { walkWorldTriangles, drawnTrianglesOf } from '../../src/dev/WorldTriangles.js';
 
 /**
  * DOES THE TRIANGLE COUNTER COUNT A BatchedMesh?
@@ -99,6 +99,66 @@ test('instance ids are sparse after a delete, and the walk survives it', () => {
   const r = walkWorldTriangles(root, camSeeingEverything(), { breakdown: false });
   assert.equal(r.triangles, BOX_TRIS * 8, 'eight instances survive the two deletes');
   assert.equal(r.instances, 8);
+});
+
+test('the ABLATION path counts a BatchedMesh the same way the walk does', () => {
+  /* ═══════════════════════════════════════════════════════════════════════
+   *  THE SAME DEFECT, LEFT STANDING IN THE OTHER FUNCTION
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `walkWorldTriangles` was fixed to use `batchedCount`. `drawnTrianglesOf`
+   * - which is the whole of `--ablate`'s evidence, via
+   * `Harness.ablationCheck().removedTriangles` - was not: it read
+   * `geometryTriangles(obj.geometry) * instanceCount(obj)`, and on a
+   * `BatchedMesh` `obj.geometry` is the RESERVED buffer.
+   *
+   * So the maze's stone batch reported its whole reservation - measured,
+   * `GEOMETRY_BUDGET.stone` of 1,536 indices across 26 prefabs, 13,312
+   * triangles - from EVERY camera, constantly, however few instances were in
+   * shot. And `scripts/world-shot.mjs` only fails an ablation run when
+   * `best === 0`, a number that answer can never reach. THE MAZE'S ABLATION
+   * VERDICT WAS STRUCTURALLY UNFAILABLE: it always said the ablated material
+   * was in shot, whichever way the camera pointed.
+   *
+   * The assertion is that the two functions AGREE, rather than that either
+   * hits a constant. A reservation-sized answer cannot agree with a
+   * per-instance one, and pinning agreement means neither can drift alone.
+   */
+  const root = new THREE.Group();
+  const { batch, ids } = batchOf(10);
+  root.add(batch);
+  root.updateMatrixWorld(true);
+  const cam = camSeeingEverything();
+
+  const walked = walkWorldTriangles(root, cam, { breakdown: false });
+  const drawn = drawnTrianglesOf([batch], cam);
+  assert.equal(drawn.triangles, walked.triangles,
+    'the ablation path and the walk disagree about one BatchedMesh');
+  assert.equal(drawn.triangles, BOX_TRIS * 10);
+
+  /* And it has to MOVE with the instances, or the ablation verdict is a
+   * constant wearing a number's clothes. */
+  batch.setVisibleAt(ids[0], false);
+  batch.setVisibleAt(ids[1], false);
+  assert.equal(drawnTrianglesOf([batch], cam).triangles, BOX_TRIS * 8);
+});
+
+test('the ablation path still reads a hidden BatchedMesh, which is what it is for', () => {
+  /* `drawnTrianglesOf` is deliberately blind to `obj.visible`: `ablate()` hides
+   * by setting the MESH's flag, and the question afterwards is "what WOULD this
+   * be drawing". The batched branch must not have changed that - it honours the
+   * per-INSTANCE flags, which `ablate` never touches. */
+  const root = new THREE.Group();
+  const { batch } = batchOf(6);
+  root.add(batch);
+  root.updateMatrixWorld(true);
+  const cam = camSeeingEverything();
+
+  batch.visible = false;
+  assert.equal(walkWorldTriangles(root, cam, { breakdown: false }).triangles, 0,
+    'the walk stops at an invisible object, by design');
+  assert.equal(drawnTrianglesOf([batch], cam).triangles, BOX_TRIS * 6,
+    'the ablation path must still say what the hidden batch would draw - that is the measurement');
 });
 
 test('an ordinary Mesh and an InstancedMesh are unaffected by the batched path', () => {

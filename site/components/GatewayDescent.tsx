@@ -13,6 +13,7 @@ import { createRaceScene } from '@/components/diorama/scenes/race';
 import { createVerdantCoilScene } from '@/components/diorama/scenes/verdantCoil';
 import WorldPanel from '@/components/WorldPanel';
 import WorldCanvas from '@/components/WorldCanvas';
+import { NumberWord as numberWord } from '@/components/gameScale';
 import { useGatewayScroll } from '@/hooks/useGatewayScroll';
 
 export interface GatewayDescentProps {
@@ -59,6 +60,8 @@ function makeNoopScene(id: string): DioramaScene {
  * only when motion is allowed and a WebGL context is actually creatable.
  */
 export default function GatewayDescent({ worlds, lore }: GatewayDescentProps) {
+  /* One source for the number: the array actually being rendered. */
+  const worldCount = numberWord(worlds.length);
   const [enhanced, setEnhanced] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<DioramaHandle | null>(null);
@@ -122,10 +125,18 @@ export default function GatewayDescent({ worlds, lore }: GatewayDescentProps) {
           watchRef={containerRef}
         />
       )}
+      {/* Derived, not typed. This line said "Six worlds" over seven rendered
+          panels — a screen-reader user was given a count that disagreed with
+          the content immediately below it, which is exactly the kind of thing
+          only a screen-reader user ever finds. */}
       <p className="sr-only">
-        Six worlds, presented as an animated descent. All world descriptions are readable below.
+        {worldCount} worlds, presented as an animated descent. All world descriptions are
+        readable below.
       </p>
-      <div ref={containerRef} className="gateway">
+      {/* `#worlds-belt` is the home page nav's "Worlds" target. It used to
+          live on `HomeWorldShowcase`, which nothing imports, so the link went
+          nowhere at all. */}
+      <div ref={containerRef} id="worlds-belt" className="gateway">
         {worlds.map((w, i) => (
           // Wrapper stays in both paths so the panel remains a descendant of the
           // container (useGatewayScroll queries [data-gw-panel] inside it).

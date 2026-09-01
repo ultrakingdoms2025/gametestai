@@ -12,11 +12,11 @@
     "preview": "vite preview --port 4173",
     "test": "node --test scripts/tests/*.test.mjs",
     "test:watch": "node --test --watch scripts/tests/*.test.mjs",
-    "test:layout": "node scripts/hud-viewport-probe.mjs"
+    "test:layout": "node scripts/hud-viewport-probe.mjs",
+    "quests:offline": "node scripts/gen-offline-quests.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.115.0",
-    "@dimforge/rapier3d-compat": "^0.20.0",
     "three": "0.185.1"
   },
   "devDependencies": {

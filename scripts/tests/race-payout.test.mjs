@@ -300,8 +300,13 @@ test('a racer who covers the circuit is paid, on either mount and in every band'
  * when the number is the only one in the room: replacing `credits: paid` in the
  * emit with `credits: bonus` passed the DNF test above with nothing to say.
  *
- * With a finisher the four quantities separate - 10 for P1 against 40 drops on
- * Vellum - and the same mutation fails. The player is marked home the way
+ * With a finisher the four quantities separate - RACE_PRIZES[0] for P1, which
+ * the Sep-2026 economy audit moved from 10 to 600, against roughly 40 drops of
+ * one credit each on Vellum - and the same mutation fails. The separation is
+ * what the test needs, and it is wider now than it was: the prize used to be a
+ * quarter of the confetti, which is the imbalance the audit was about.
+ *
+ * The player is marked home the way
  * `_advance` marks them at the flag rather than driven there, because what is
  * under test here is `_classify`'s arithmetic, not the lap counter.
  */

@@ -200,6 +200,27 @@ body.mz-map-open .pause {
   letter-spacing: 0.1em;
 }
 
+/* CLOSE. The header used to end its hint line with the word ESC, and on a
+   phone that is not a control - `open()` releases the pointer lock, and
+   `TouchControls` hides the entire tray (the `≡` pause button with it) while
+   the lock is off, so this panel took away every other way off the screen and
+   offered a word in its place. See the note in `MazeMap._build`.
+
+   Last in the header's DOM so it sits hard right on a desktop, after the hint
+   that already carries `margin-left: auto`. The narrow-viewport block below
+   reorders it, because there the hint claims a whole line of its own. */
+.mz-map-close {
+  min-width: 30px;
+  padding: 3px 8px;
+  line-height: 1;
+}
+
+.mz-map-close:hover {
+  background: rgba(214, 122, 122, 0.85);
+  border-color: #d67a7a;
+  color: #130e0e;
+}
+
 /* Nothing in the header may wrap or be squeezed: the row carries a title, a
    level readout, four tabs, a button and a hint, and the first thing a flex
    row does when it runs out of width is break a two-word button across two
@@ -238,6 +259,17 @@ body.mz-map-open .pause {
     margin-left: 0;
     white-space: normal;
     line-height: 1.35;
+    order: 2;
+  }
+
+  /* CLOSE stays on the first row with the tabs, not stranded under a hint
+     that has just claimed a full line to itself. `order` rather than a DOM
+     move, because on a desktop the DOM order is the one that puts it hard
+     right - and the close control is the last thing that should need
+     hunting for on the viewport where it matters most. */
+  .mz-map-close {
+    order: 1;
+    margin-left: auto;
   }
 
   .mz-map-foot {

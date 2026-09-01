@@ -34,6 +34,7 @@ import {
   MAX_FLIGHT_STEPS,
   ORDER,
   STEP_UP,
+  UnionFind,
   WALK_GRADIENT,
   boxAt,
   budgetFor,
@@ -57,6 +58,7 @@ import {
   reachFor,
   stats,
 } from './citadel-reach-kit.mjs';
+import { CONFIG } from '../../src/core/Config.js';
 
 /**
  * FLOOR. Nothing below this line means anything if this test is red.
@@ -193,8 +195,14 @@ test('FLOOR: deckAt honours headroom, the ceiling, and merged columns', async ()
   console.log(`  pomerium at r = 111.5: ${planksInBand} rope-bridge planks in the 20-27 band, on bearings ${[...bridgedBearings].join(', ')}`);
   assert.deepEqual([...bridgedBearings].sort(), ['247', '67'],
     'only the two landfall spans may cross the pomerium in the wall-walk band');
-  assert.equal(planksInBand, 4,
-    'two planks per landfall span cross the band; a different count is a bridge that moved');
+  /* RE-TAKEN 2026-09-01: 4 -> 6. The two landfall spans went 21 planks to 32
+   * when the rope bridges were re-authored against the player's 0.45 m step
+   * instead of `NPC.GROUND_PROBE_UP` = 0.95 (see `CitadelWorld`'s note on
+   * `hang` and `sagAmp`), so three planks per span now fall inside the 20-27 m
+   * band rather than two. The BEARINGS are unchanged, which is the half of
+   * this pair that says no bridge moved. */
+  assert.equal(planksInBand, 6,
+    'three planks per landfall span cross the band; a different count is a bridge that moved');
 });
 
 /**
@@ -486,7 +494,13 @@ test('FLOOR: the rooftop network reaches the perimeter and the citadel (design �
   assert.equal(roof.comps.size, 9, 'rooftop-only components (was 32)');
   assert.deepEqual(roof.out.minaret, [4, 4], 'every minaret is linked to the souk rooftop component (was 0 of 4)');
   assert.deepEqual(roof.out.viewpoint, [10, 10], 'every viewpoint is linked to it (was 0 of 5)');
-  assert.deepEqual(roof.out.plank, [276, 276], 'every bridge plank is linked to it (was 0 of 88)');
+  /* RE-TAKEN 2026-09-01: 276 -> 328. Every rope bridge in the world had a
+   * worst plank-to-plank step of 0.600 to 0.685 m against a 0.45 m player -
+   * the drop ON is free, the step back UP onto the deck at the far end is not.
+   * The plank count is now solved from the step and the catenary rather than
+   * from the span alone: the two landfalls 21 -> 32 and the great tower's
+   * perimeter 74 -> 104, and all eight spans measure 0.450. */
+  assert.deepEqual(roof.out.plank, [328, 328], 'every bridge plank is linked to it (was 0 of 88)');
   assert.deepEqual(roof.out.souk, [182, 182], 'the souk is one rooftop component, corridor and all');
   /* 8 of 14, and the six that are not are the wall towers no bridge lands on.
    * Their parapets stand 9.2 m over the wall walk, which is a free climb and
@@ -502,17 +516,36 @@ test('FLOOR: the rooftop network reaches the perimeter and the citadel (design �
    * dropping in and left by a flight of steps - a `climb` edge in this graph's
    * vocabulary, and therefore out of the walk+jump column by construction. */
   assert.deepEqual(roof.out.tower, [14, 8], 'the great tower, two bridged wall towers and five region towers');
-  assert.deepEqual(roof.out.roof, [163, 156], 'the ring joins the rooftop network');
+  /* RE-TAKEN 2026-09-01: 156 -> 155 of 163. One region deck left the walk+jump
+   * column when the ring's flights were re-authored against the player's
+   * 0.45 m step: a flight at half the riser is half as tall at every tread, so
+   * the tread a deck used to be a plain stride from is now one riser lower and
+   * the crossing is a jump rather than a walk. The DIRECTED statement is
+   * unchanged - `reach.count` is still 99.5%+ and every ring deck is on the
+   * spawn's network at the player's step, asserted in the riser test at the
+   * end of this file - and 155 walk-linked decks a body can actually climb to
+   * is worth more than 156 it could only jump up. */
+  assert.deepEqual(roof.out.roof, [163, 155], 'the ring joins the rooftop network');
   /* 334, not 324: `buildPlinth` publishes the ten treads and thresholds its two
    * cave aprons build (the Quarry Adit's three plus a threshold, the Sunken
    * Hall's five plus a threshold), for the same reason the region staircases
    * are published - a 1.2 m tread is invisible to a 6 m lattice, and an
-   * unpublished apron leaves its mouth resolving to no node at all. */
-  assert.deepEqual(roof.out.step, [334, 334], 'every stair tread is on the rooftop network');
+   * unpublished apron leaves its mouth resolving to no node at all.
+   *
+   * ── RE-TAKEN 2026-09-01: 334 -> 574, and the cause is a riser ──────────
+   * `Regions.stair` and `Regions.helix` were authoring against `STEP_UP`
+   * = 0.95, which is `NPC.GROUND_PROBE_UP` and not a player's leg. They now
+   * author against `CONFIG.player.stepHeight` = 0.45 with the pitch held, so
+   * every flight in the ring has about twice the treads over the same run:
+   * 324 region treads become 564 and the ten cave-apron treads are unchanged.
+   * See 'FLOOR: every riser in the citadel is inside the PLAYER's step' below
+   * for the measurement that forced it. All 574 are still on the network,
+   * which is the property this line is actually about. */
+  assert.deepEqual(roof.out.step, [574, 574], 'every stair tread is on the rooftop network');
 
   /* ---- §1.3, made real ---------------------------------------------- */
   assert.equal(br.length, 8, 'four minaret loops, two perimeter spans, two landfall spans');
-  assert.equal(graph.planks.length, 276, 'planks in the world (was 88)');
+  assert.equal(graph.planks.length, 328, 'planks in the world (was 88, then 276)');
   const long = br.filter((b) => b.span > 90);
   assert.equal(long.length, 2, 'two spans past the old 90 m rejection, which is why it was raised to 132');
   for (const b of long) {
@@ -531,8 +564,12 @@ test('FLOOR: the rooftop network reaches the perimeter and the citadel (design �
     const joined = ai !== undefined && bi !== undefined && wj.find(ai) === wj.find(bi);
     const onNet = ai !== undefined && wj.find(ai) === wjRoot && bi !== undefined && wj.find(bi) === wjRoot;
     console.log(`      ${b.id.padEnd(30)} ${String(b.planks).padStart(4)}   ${b.worstStep.toFixed(3).padStart(8)}   ${String(joined).padStart(11)}   ${onNet}`);
-    assert.ok(b.worstStep <= STEP_UP,
-      `${b.id}: a ${b.worstStep.toFixed(3)} m step between planks is a climb, not a walk (cap ${STEP_UP})`);
+    /* The cap is the PLAYER's step, not `STEP_UP`. `STEP_UP` is 0.95 from
+     * `NPC.GROUND_PROBE_UP` and every one of these eight spans passed it while
+     * carrying a 0.600-0.685 m step nobody could walk. */
+    assert.ok(b.worstStep <= CONFIG.player.stepHeight + 1e-9,
+      `${b.id}: a ${b.worstStep.toFixed(3)} m step between planks is a climb, not a walk `
+      + `(cap ${CONFIG.player.stepHeight})`);
     assert.ok(joined, `${b.id}: the two anchors are not walk-connected, so the span is decoration`);
     assert.ok(onNet, `${b.id}: the span does not join the network the spawn is on`);
   }
@@ -656,16 +693,21 @@ test('FLOOR: no roof edge in the world is an unsurvivable fall (design §4.1)', 
    * whose dart landed inside a building - one of the 34 was standing over the
    * Spice Merchants House's own collectible spot - and two crates fewer is
    * twenty-two perimeter samples fewer. The dart itself and every random it
-   * draws are unchanged, so nothing else in the world moved. */
-  assert.equal(falls.length, 12795, 'roof-edge samples (was 6150 with the mesa alone)');
+   * draws are unchanged, so nothing else in the world moved.
+   *
+   * ── RE-TAKEN 2026-09-01: 12,795 -> 13,307, +512, all of them treads ─────
+   * The ring's flights were re-authored against the player's 0.45 m step
+   * instead of the NPC's 0.95 (see the `roof.out.step` re-take above), so 240
+   * more treads exist and every tread has a perimeter. Safe 8,643 -> 9,138
+   * and damage 4,117 -> 4,132; hay and LETHAL are unmoved, and the tallest
+   * fall in the world is unchanged at 27.15 m. 497 of the 512 new samples
+   * land in the SAFE band, which is what a shallower flight means: the drop
+   * off the side of a 0.45 m tread is half the drop off a 0.82 m one. */
+  assert.equal(falls.length, 13307, 'roof-edge samples (was 6150 with the mesa alone)');
   assert.equal(v('lethal'), 0, 'no roof edge is a silent death (was 25, all of them the great tower crown)');
-  /* Same two crates: 26 fewer safe samples (22 of them the crates' own
-   * perimeters) and 4 more in the damage band, which are the samples that used
-   * to land on a 1 m crate lid and now land on the floor a metre below it. No
-   * sample changed to lethal and none became unresolved. */
-  assert.equal(v('safe'), 8643);
+  assert.equal(v('safe'), 9140);
   assert.equal(v('hay'), 35);
-  assert.equal(v('damage'), 4117);
+  assert.equal(v('damage'), 4132);
   assert.ok(s.max < FALL_LETHAL_M,
     `the tallest fall off any deck must be survivable: ${s.max.toFixed(2)} m against a lethal ${FALL_LETHAL_M} m`);
   // Nothing lands anywhere it cannot get back from - that half of R4 held
@@ -984,3 +1026,205 @@ test('FLOOR: every leap-of-faith offer lands in its own haystack (design §1.1)'
     'the great tower and four regions offer the leap; the minarets and the mast do not');
 });
 
+
+
+/* ================================================================== */
+/* The player's own step                                               */
+/* ================================================================== */
+
+/**
+ * FLOOR. THE RULER WAS THE WRONG BODY, AND EVERY FLIGHT IN THE RING FAILED IT.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  WHAT WAS WRONG
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `STEP_UP` = 0.95 is quoted, in this file and in `citadel/Regions.js`, from
+ * `NPC.GROUND_PROBE_UP` - how far a wandering NPC's ground-follower absorbs
+ * before it re-plants its feet. It is not what a player's legs do.
+ * `Player._move` takes a tread only when
+ *
+ *     treadY <= prev.y + CONFIG.player.stepHeight + 0.01
+ *
+ * and `CONFIG.player.stepHeight` is 0.45. Everything this suite flooded, and
+ * everything `Regions.stair` authored, used 0.95 - so the ring could and did
+ * build flights whose risers were nearly twice what a player can climb, and
+ * the graph linked them with plain walk edges and reported the world
+ * connected.
+ *
+ * Measured on the built ring before the repair: 36 flights, every one of them,
+ * risers 0.679 to 0.810 m. All of them also under `Climb.MIN_RISE_GROUND`
+ * = 1.0, so no mantle was offered either: the only way up any staircase in the
+ * outer ring was to jump every tread. That is the ward stair's defect
+ * (0.600 m, fixed in `CitadelWorld`) six regions wide, and this file was green
+ * throughout because its own flood quoted the same 0.95.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  WHAT IS ASSERTED
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 1. EVERY AUTHORED FLIGHT. `region.stairs[].rise` is the riser the builder
+ *    actually laid, not the one it was asked for, so the helix - whose riser
+ *    is discovered from the rock rather than solved - is measured on the same
+ *    footing as the straight flights.
+ *
+ * 2. THE FLOOD, RE-RUN AT THE PLAYER'S STEP. Every `walk` edge in the graph is
+ *    re-tested with `PLAYER_STEP` where `walkClear` uses `STEP_UP`, and the
+ *    surviving edges plus climb and jump are unioned and flooded from the
+ *    spawn. The SLOPE half of the rule is untouched: ground-to-ground is held
+ *    to `WALK_GRADIENT` at both limits, because a slope is not a step and
+ *    conflating them is a mistake this file has already made once and written
+ *    up. Only the STEP branch tightens.
+ *
+ * 3. AND THE TWO THINGS A FLIGHT EXISTS FOR: every published tread and every
+ *    deck the ring publishes is on the spawn's network AT THE PLAYER'S STEP.
+ *    That is the assertion the 0.95 flood could not make.
+ *
+ * The kit's `STEP_UP` is left alone deliberately. It is the right number for
+ * what it names - an NPC ground probe - and three other suites read it; the
+ * player's step is a second ruler, not a correction to that one.
+ */
+const PLAYER_STEP = CONFIG.player.stepHeight;
+
+/** `walkClear` with a limit passed in rather than quoted from a constant. */
+function walkClearAt(idx, a, b, limit) {
+  const dx = b.x - a.x; const dz = b.z - a.z;
+  const len = Math.hypot(dx, dz);
+  const n = Math.max(1, Math.ceil(len / 1.0));
+  const step = len / n;
+  let y = a.y;
+  let wasGround = !a.box && !a.owner;
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    const d = idx.deckAt(a.x + dx * t, a.z + dz * t, { below: y + limit + 1e-6 });
+    if (!d) return false;
+    const onGround = !d.owner;
+    const lim = (wasGround && onGround) ? WALK_GRADIENT * step : limit;
+    if (Math.abs(d.y - y) > lim) return false;
+    y = d.y;
+    wasGround = onGround;
+  }
+  return Math.abs(y - b.y) <= limit;
+}
+
+/** `walkRise` with the same limit substituted. */
+function walkRiseAt(a, b, limit) {
+  if (a.box || b.box || a.owner || b.owner) return limit;
+  return Math.max(limit, WALK_GRADIENT * Math.hypot(b.x - a.x, b.z - a.z));
+}
+
+/** Union walk edges that survive `limit`, plus every climb and jump. */
+function unionAt(graph, idx, limit) {
+  const uf = new UnionFind(graph.nodes.length);
+  let kept = 0; let cut = 0;
+  for (const e of graph.edges) {
+    if (e.kind === 'drop') continue;
+    if (e.kind === 'walk') {
+      const a = graph.nodes[e.a].pad; const b = graph.nodes[e.b].pad;
+      if (Math.abs(a.y - b.y) > walkRiseAt(a, b, limit) || !walkClearAt(idx, a, b, limit)) { cut++; continue; }
+      kept++;
+    }
+    uf.union(e.a, e.b);
+  }
+  return { uf, kept, cut };
+}
+
+/** Flood from the spawn at `limit`, and say what is left off by kind. */
+function floodAt(graph, idx, spawn, limit) {
+  const { uf, kept, cut } = unionAt(graph, idx, limit);
+  const root = uf.find(spawn);
+  const off = new Map();
+  let inMain = 0;
+  for (const n of graph.nodes) {
+    if (uf.find(n.id) === root) { inMain++; continue; }
+    for (const k of n.kind) off.set(k, (off.get(k) ?? 0) + 1);
+  }
+  return { uf, root, kept, cut, inMain, off };
+}
+
+test("FLOOR: every riser in the ring is inside the PLAYER's step, and the network survives it", async () => {
+  const { world, idx, graph, spawn } = await measure();
+
+  /* ---- 1. what the ring AUTHORS ---------------------------------------- */
+  const flights = [];
+  for (const r of world.regions ?? []) {
+    for (const st of r.stairs ?? []) flights.push({ region: r.id, ...st });
+  }
+  /* A floor, not a count: the ring builds 35 straight flights and one helix,
+   * and a change that stopped building stairs would otherwise pass this test
+   * by having nothing left to measure. */
+  assert.ok(flights.length >= 36,
+    `only ${flights.length} flights published - this gate is measuring nothing`);
+  const st = stats(flights.map((fl) => Math.abs(fl.rise)));
+  console.log(`\n    ${flights.length} flights, ${flights.reduce((a, b) => a + b.steps, 0)} treads; `
+    + `riser min ${st.min.toFixed(3)} mean ${st.mean.toFixed(3)} max ${st.max.toFixed(3)} `
+    + `against a player step of ${PLAYER_STEP}`);
+  const over = flights.filter((fl) => Math.abs(fl.rise) > PLAYER_STEP + 1e-9)
+    .map((fl) => `${fl.region} ${fl.helix ? 'helix' : 'stair'} ${Math.abs(fl.rise).toFixed(3)} m`);
+  assert.deepEqual(over, [],
+    'a flight in the outer ring has a riser a player cannot step, and cannot mantle either - '
+    + 'anything under Climb.MIN_RISE_GROUND = 1.0 m is refused. It is a flight of jumps.');
+
+  /* ---- 2. the flood, at both rulers ------------------------------------ */
+  const npc = floodAt(graph, idx, spawn, STEP_UP);
+  const you = floodAt(graph, idx, spawn, PLAYER_STEP);
+  const line = (name, r) => console.log(`    ${name.padEnd(22)} walk edges kept ${String(r.kept).padStart(6)} `
+    + `cut ${String(r.cut).padStart(5)}   spawn component ${r.inMain}/${graph.nodes.length} `
+    + `(${((100 * r.inMain) / graph.nodes.length).toFixed(2)}%)   off: `
+    + `${[...r.off].map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`);
+  line(`NPC probe ${STEP_UP}`, npc);
+  line(`player step ${PLAYER_STEP}`, you);
+
+  /* A floor, and the same 99.5% `reach.count` is held to above. The point of
+   * quoting it here is that it SURVIVES the tighter ruler. */
+  assert.ok(you.inMain / graph.nodes.length >= 0.995,
+    `only ${you.inMain}/${graph.nodes.length} nodes are on the spawn's network at the player's `
+    + `step of ${PLAYER_STEP}; floor 99.5%`);
+
+  /* ---- 3. and the two things a flight exists for ------------------------ */
+  const count = (r) => {
+    let treads = 0; let treadsOff = 0; let decks = 0; let decksOff = 0;
+    const root = r.uf.find(spawn);
+    for (const t of world._steps ?? []) {
+      const id = graph.nodeFor(t.x, t.z, t.y + 0.5);
+      if (id === undefined) continue;
+      treads++;
+      if (r.uf.find(id) !== root) treadsOff++;
+    }
+    for (const d of world._roofs ?? []) {
+      if (!d.region) continue;
+      const id = graph.nodeFor(d.x, d.z, d.y + 0.5);
+      if (id === undefined) continue;
+      decks++;
+      if (r.uf.find(id) !== root) decksOff++;
+    }
+    return { treads, treadsOff, decks, decksOff };
+  };
+  const cNpc = count(npc);
+  const cYou = count(you);
+  console.log(`    treads resolved ${cYou.treads}, off the spawn network: ${cNpc.treadsOff} at ${STEP_UP} `
+    + `and ${cYou.treadsOff} at ${PLAYER_STEP};  ring decks ${cYou.decks}, off: ${cNpc.decksOff} / ${cYou.decksOff}`);
+  assert.ok(cYou.treads >= 500, `only ${cYou.treads} treads resolved to a node - the ring stopped publishing them`);
+  assert.ok(cYou.decks >= 150, `only ${cYou.decks} ring decks resolved`);
+
+  /* THE CLAIM, and it is a comparison rather than a zero.
+   *
+   * Tightening the step from the NPC's 0.95 to the player's 0.45 must not cost
+   * a single tread or a single ring deck. It does not: both rulers leave the
+   * same seven treads off the undirected walk+climb+jump component and no deck
+   * at all, so the whole 0.40 m of difference is absorbed by the re-authored
+   * flights rather than paid for by the player.
+   *
+   * The seven are pinned rather than fixed and they are NOT this pass's
+   * subject: six are the aqueduct's high flight at y 29.4-32.1 and one is an
+   * undercliff tread at y 30.76, and they read the same at both limits, so
+   * they were never about the riser. They are entered by a `drop` edge, which
+   * `components` does not union in either direction. */
+  assert.equal(cYou.treadsOff, cNpc.treadsOff,
+    `${cYou.treadsOff} treads are off the network at the player's step against ${cNpc.treadsOff} at `
+    + `the NPC probe - a flight the ring builds is walkable only by something that is not the player`);
+  assert.equal(cYou.decksOff, cNpc.decksOff,
+    "a ring deck falls off the network when the ruler becomes the player's step");
+  assert.equal(cYou.treadsOff, 7, 'the seven drop-entered treads, pinned; the number may fall, never rise');
+  assert.equal(cYou.decksOff, 0, 'every ring deck is on the network the player is on');
+});

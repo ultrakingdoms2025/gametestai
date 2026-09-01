@@ -200,8 +200,24 @@ test('the per-world step claims the gateways before the sliced warm and releases
     + 'first one draws an un-warmed preview');
   assert.match(fn, /\.finally\(\(\) => portals\.releasePreviews\?\.\(id\)\)/,
     'the claim is not released in a finally; a build that throws leaves the gateway STABILISING');
-  assert.match(fn, /\.then\(\(\) => warmWorld\(id\)\)\s*\.then\(\(\) => warmPortalPreviews\(id\)\)/,
+  /* ORDER, not ADJACENCY. This was a regex requiring `warmWorld(id)` to be
+   * followed immediately by `warmPortalPreviews(id)` in the source text, which
+   * is a stricter claim than the one the comment makes and than the one that
+   * matters: `settleLinks(p0, ...)` was inserted between them — it waits for
+   * the links the program warm STARTED before the preview warm plans against
+   * them — and the adjacency regex failed while the property it exists to
+   * protect was not merely intact but strengthened.
+   *
+   * An index comparison is the honest spelling, and it is the one this test
+   * already uses two assertions above for `hold < warm`. */
+  const settle = fn.indexOf('settleLinks(');
+  const previews = fn.indexOf('warmPortalPreviews(id)');
+  assert.ok(warm > 0 && previews > warm,
     'the preview warm no longer follows the program warm');
+  assert.ok(settle > warm && settle < previews,
+    'prepareWorld no longer settles the program warm\'s links before planning the preview warm; '
+    + 'a player who sprints in from PREFETCH_RANGE can arrive on an unlinked program, and this '
+    + 'repo\'s measured cost for one of those is 5,433 ms');
   /* Both callers go through the one door. */
   const chain = src.slice(src.indexOf('function scheduleBackgroundBuilds'), src.indexOf('\n}', src.indexOf('function scheduleBackgroundBuilds')));
   assert.match(chain, /worldPrefetch\.request\(id\)/, 'the eager chain bypasses WorldPrefetch.request and can prepare a world twice');

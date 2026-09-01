@@ -2474,6 +2474,37 @@ export class PortalSystem {
     cam.rotation.x = -0.045;
     cam.updateMatrixWorld(true);
 
+    /* ── THE DESTINATION'S LOD, RESOLVED AGAINST THE PREVIEW CAMERA ────────
+     *
+     * `DistanceLod.update(camera)` is only ever called from a world's own
+     * `update()`, and only the ACTIVE world updates. So a destination that has
+     * been built but never entered has every LOD entry in the state its
+     * constructor left it in: hi geometry everywhere, nothing hidden. That is
+     * the state this preview was drawing it in - into a 512x512 target, where
+     * a 25 cm leaf is a fraction of a texel and a hidden grass zone would have
+     * contributed literally nothing.
+     *
+     * `grep -n "_lod" src/systems/Portals.js` returned ZERO before this line.
+     * The measured saving those LOD tables buy in the worlds behind these
+     * gateways is 31-46% of triangles, and the preview was paying all of it.
+     *
+     * The cost lands badly, too. The draw is gated to `(frame + previewPhase)
+     * % 6 === 0` with `previewPhase = index % 6`, so at most one preview lands
+     * per frame - but the whole of that one preview's cost lands on THAT
+     * frame, giving a 10 Hz spike pattern that starts at `PREVIEW_RANGE` (40 m)
+     * and therefore occurs exactly while the player is walking up to a gateway.
+     *
+     * Here rather than in `_renderPreview` for two reasons. The time-sliced
+     * warm calls `_configurePreview` and then plans off `world.group`, so
+     * putting it here makes the warm plan the same set the live preview draws -
+     * warm what you draw, in the state you draw it, which is this file's
+     * standing rule. And every value this method sets is part of the program
+     * cache key; the LOD's geometry swap is not (hi and lo share a material),
+     * so this cannot introduce a key the warm does not cover.
+     *
+     * Never for the active world: the guard above has already returned. */
+    world._lod?.update?.(cam);
+
     const env = world.environment;
     this._previewAmbient.color.copy(env.ambientColor);
     this._previewAmbient.intensity = env.ambientIntensity;

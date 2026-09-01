@@ -19,6 +19,17 @@ import { CONFIG } from './Config.js';
 const DEV_CAPTURE =
   typeof location !== 'undefined' && new URLSearchParams(location.search).get('dev') === '1';
 
+/**
+ * Above this median frame time, a sample is presumed to be a stall.
+ *
+ * Same number as `PostFX._trackBudget`'s build-stall guard, and it is the same
+ * judgement: nothing in a healthy frame produces a 60 ms MEDIAN, so a sample
+ * this large is a world build, a tab restore or a driver link, and reacting to
+ * it costs the player quality for a transient cause.
+ * @see Engine#_adaptResolution for the one way this differs from PostFX's use.
+ */
+const STALL_MEDIAN_MS = 60;
+
 export class Engine {
   constructor(canvas, bus) {
     this.canvas = canvas;
@@ -133,6 +144,9 @@ export class Engine {
      * low-end device runs with MSAA off, so the argument does not reach it.
      * @see gfx/QualityTier.js */
     this._resolutionFloor = 0.8;
+    /* Consecutive 2 Hz samples over/under budget. @see `_adaptResolution` */
+    this._resSlowStrikes = 0;
+    this._resFastStrikes = 0;
 
     // `frameMs` is the mean (what the debug panel wants to show); `frameMsMedian`
     // is what quality decisions are made on. A world streaming in on a background
@@ -442,8 +456,45 @@ export class Engine {
   }
 
   /**
-   * Nudge internal resolution to hold ~60fps. Steps are small and hysteretic so
-   * the image never visibly pumps.
+   * Nudge internal resolution to hold ~60fps.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  THE ANTI-HITCH MECHANISM WAS MANUFACTURING HITCHES
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This is called at 2 Hz from `_trackPerformance`. It used to react to a
+   * SINGLE sample and step by 0.05, so a bad stretch walked the scale down in
+   * four separate steps - and every one of those steps calls `postfx.setSize`,
+   * which resizes the whole chain: RenderPass, GTAO plus its own depth/normal
+   * prepass targets, the shafts, a five-level bloom mip chain, grade, output,
+   * SMAA and film, eight to twelve render targets. three.js DISPOSES and
+   * recreates the GL texture on any dimension change, so each step is eight to
+   * twelve texture allocations.
+   *
+   * That is FOUR full post-chain reallocations inside two seconds, taken on
+   * exactly the frames the player is already losing. The mechanism that exists
+   * to remove hitches was adding four of its own to every rough patch, and
+   * then four more on the way back up.
+   *
+   * ── The fix is the discipline `PostFX._trackBudget` already had ─────────
+   *
+   * That guard sits ten metres away in the same renderer and is properly
+   * hysteretic: 150-frame sampling, four strikes down, six up, and an explicit
+   * `ms > 60` guard that refuses to read a build stall as a budget problem.
+   * This had none of the three. It now has all three, plus one thing that
+   * guard does not need:
+   *
+   *   STEP STRAIGHT TO THE FLOOR, not in increments. The floor is 0.8 by
+   *   default (0.25-1 by tier), so the whole available range is one 20% step.
+   *   Walking there in four increments cannot reach a useful resolution any
+   *   sooner than one step does - it is the same destination - and it costs
+   *   four reallocations instead of one. Coming back up is a single step for
+   *   the same reason.
+   *
+   * The `ms > 60` guard matters more here than it does in PostFX: this is the
+   * mechanism most likely to fire during a world build or a tab restore, and
+   * dropping the player's resolution because a background world was generating
+   * is a permanent-looking cost for a transient cause.
    */
   _adaptResolution() {
     const target = 16.7;
@@ -452,12 +503,58 @@ export class Engine {
     const avg = this.stats.frameMsMedian;
     const prev = this._resolutionScale;
     const floor = this._resolutionFloor;
-    if (avg > target * 1.35 && this._resolutionScale > floor) {
-      this._resolutionScale = Math.max(floor, this._resolutionScale - 0.05);
-    } else if (avg < target * 0.7 && this._resolutionScale < 1) {
-      this._resolutionScale = Math.min(1, this._resolutionScale + 0.05);
+
+    if (!(avg > 0)) return;
+
+    /* ── THE BUILD-STALL GUARD, AND THE ONE WAY IT MUST NOT BE COPIED ──────
+     *
+     * A 60 ms median is a stall, a tab restore or a world build, not a
+     * steady-state budget problem - the same threshold and the same reasoning
+     * as `PostFX._trackBudget`.
+     *
+     * But that guard can afford to be unconditional and this one cannot. AO is
+     * a luxury; resolution is the lever that might actually make a weak GPU
+     * playable, and a machine genuinely running at 15 fps shows a 66 ms median
+     * sample after sample. Refusing to help exactly the hardware this method
+     * exists for would be the wrong way round. So a large median is ignored
+     * while it looks like a STALL, and believed once it has persisted for
+     * three seconds, which no build step in this game does behind a running
+     * frame loop. */
+    if (avg > STALL_MEDIAN_MS) {
+      this._resStallSamples = (this._resStallSamples || 0) + 1;
+      if (this._resStallSamples < 6) return;
+    } else {
+      this._resStallSamples = 0;
     }
+
+    if (avg > target * 1.35) {
+      this._resFastStrikes = 0;
+      /* Three consecutive slow samples - a second and a half - before anything
+       * is touched. One sample is a frame the player has already lost, and
+       * reacting to it costs them a reallocation on top. */
+      this._resSlowStrikes = (this._resSlowStrikes || 0) + 1;
+      if (this._resSlowStrikes >= 3 && this._resolutionScale > floor) {
+        this._resSlowStrikes = 0;
+        this._resolutionScale = floor;
+      }
+    } else if (avg < target * 0.7) {
+      this._resSlowStrikes = 0;
+      /* Six up against three down, the same asymmetry PostFX uses: coming back
+       * up on a brief lull and going straight back down is the pumping this
+       * whole method is supposed to prevent. */
+      this._resFastStrikes = (this._resFastStrikes || 0) + 1;
+      if (this._resFastStrikes >= 6 && this._resolutionScale < 1) {
+        this._resFastStrikes = 0;
+        this._resolutionScale = 1;
+      }
+    } else {
+      this._resSlowStrikes = 0;
+      this._resFastStrikes = 0;
+    }
+
     if (Math.abs(prev - this._resolutionScale) > 0.001) {
+      console.info(`[Engine] resolution scale ${prev.toFixed(2)} -> ${this._resolutionScale.toFixed(2)} `
+        + `(${avg.toFixed(1)} ms median)`);
       this.renderer.setPixelRatio(
         Math.min(window.devicePixelRatio, CONFIG.render.maxPixelRatio) * this._resolutionScale
       );

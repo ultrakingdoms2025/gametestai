@@ -103,6 +103,54 @@ import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
 
 const overrides = applyUrlOverrides();
 
+/**
+ * A DEADLINE ON EVERY FETCH, BECAUSE A HUNG ONE NEVER REJECTS.
+ *
+ * `fetch` has no timeout. A promise waiting on a socket that will never answer
+ * does not resolve, does not reject, and cannot be caught - which turns every
+ * `try/catch` around an awaited fetch in this file into decoration. Three of
+ * them had exactly that shape, and each failed differently:
+ *
+ *   - `/api/game/session` is awaited from `boot()` right after
+ *     `loader.setStatus('Calibrating optics', 0.95)`. On a captive portal - a
+ *     hotel, an airport, a corporate guest network, which answer DNS and then
+ *     hold the connection open - or a serverless cold start that hangs, boot's
+ *     catch never fires and the loading bar sits at 95% for ever. The player is
+ *     looking at a progress bar that will never move again.
+ *   - `/api/game/state` sets `remoteInFlight = true` before the await and
+ *     clears it in `finally`. A hung request means that flag is stuck true for
+ *     the life of the session: every subsequent push is dropped as "dirty" and
+ *     the retry it schedules can never run, so cross-device sync dies silently
+ *     and permanently after one bad request.
+ *   - `/api/lore` holds `loreRefreshInFlight`, and every later refresh returns
+ *     that same dead promise. Bundled lore keeps working, so this one is only
+ *     stale content - but it is the same defect and costs one line.
+ *
+ * Eight seconds: long enough for a genuinely slow cold start on a bad
+ * connection, short enough that a player does not conclude the game has hung.
+ * Every one of the three call sites already degrades safely on rejection - null
+ * account, queued trades put back, bundled lore - so a timeout costs nothing
+ * beyond arriving at that path sooner.
+ *
+ * Guarded because `AbortSignal.timeout` is a 2022 API and this returns
+ * `undefined` where it is missing, which `fetch` treats as no signal at all -
+ * exactly the behaviour we have today, rather than a TypeError at boot on an
+ * old browser.
+ *
+ * @param {number} ms
+ * @returns {AbortSignal|undefined}
+ */
+function abortAfter(ms) {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Seconds before a boot-critical request is given up on. @see abortAfter */
+const FETCH_TIMEOUT_MS = 8000;
+
 /* The renderer quality tier, resolved FIRST and written into `CONFIG` before
  * anything reads it.
  *
@@ -118,7 +166,41 @@ applyBootTier(qualityTier, CONFIG);
 const canvas = document.getElementById('viewport');
 const uiRoot = document.getElementById('ui-root');
 
-const engine = new Engine(canvas, bus);
+/**
+ * A THROW HERE USED TO BE A BLACK RECTANGLE WITH NO TEXT.
+ *
+ * `Engine`'s constructor builds a `THREE.WebGLRenderer` immediately, and this
+ * line runs at MODULE TOP LEVEL. Where the renderer cannot be created - no
+ * WebGL, a blocklisted driver, hardware acceleration switched off, a VM with no
+ * GPU - Three throws while the module is still evaluating, so every line below
+ * this one is skipped. `createLoadingScreen` is one of them, roughly a thousand
+ * lines down, which is why there was no logo, no message and no error: the
+ * thing that draws the boot card had not run and never would.
+ *
+ * `index.html` now probes for WebGL in a classic script BEFORE this module is
+ * fetched, so the common case is caught and painted before we get here at all.
+ * This is the second net, for a context that answers the probe and then fails
+ * to initialise for some other reason - and `__AETHER_FATAL__` is the SAME
+ * renderer the probe uses, so the player sees one page either way.
+ *
+ * The re-throw is deliberate: there is nothing to run without a renderer, and
+ * carrying on would produce a cascade of secondary errors on top of a screen
+ * that is already telling the player the truth.
+ */
+let engine;
+try {
+  engine = new Engine(canvas, bus);
+} catch (err) {
+  console.error('[boot] the renderer could not be created:', err);
+  globalThis.__AETHER_FATAL__?.(
+    'The graphics renderer could not start.',
+    `AETHER NEXUS could not create its WebGL renderer: ${err?.message ?? err}`,
+    'This is usually hardware acceleration being switched off in the browser, a '
+      + 'graphics driver the browser has blocklisted, or a machine with no GPU. '
+      + 'Your account and your save are untouched.'
+  );
+  throw err;
+}
 const input = new Input(canvas, bus);
 const physics = new Physics(bus);
 const materials = new MaterialLibrary(engine.renderer);
@@ -235,7 +317,7 @@ async function refreshLore() {
   if (loreRefreshInFlight) return loreRefreshInFlight;
   loreRefreshInFlight = (async () => {
     try {
-      const res = await fetch('/api/lore', { cache: 'no-store' });
+      const res = await fetch('/api/lore', { cache: 'no-store', signal: abortAfter(FETCH_TIMEOUT_MS) });
       if (!res.ok) throw new Error(`http ${res.status}`);
       const data = await res.json();
       if (data?.entries) npcManager.setLoreData(data.entries);
@@ -272,7 +354,16 @@ const avatar = new PlayerAvatar({ ...ctx, player });
 player.cameraRig = cameraRig;
 player.avatar = avatar;
 
-const economy = new Economy({ bus });
+/* 150, not 0. Onboarding step 6 is "Find a trader and press B. Buy or sell —
+ * either counts", and at 0 credits with nothing in the bag a new player could
+ * follow neither half for roughly ten kills. 150 is the smallest round number
+ * above the dearest "cheapest row" across all six worlds (citadel's medkit at
+ * 138 CR), so the step is followable wherever the player happens to start. It
+ * sits below one minigame win (96-216) so it never devalues authored content,
+ * and it buys no permanent upgrade — the cheapest of those is 280 for a mount
+ * tier. SaveGame and ProgressSync both overwrite this on load, so it reaches
+ * only a genuinely new player. */
+const economy = new Economy({ bus, credits: 150 });
 /* Reports every credit change to the account so the SERVER owns the balance.
  * Idle until `start()`, which only happens for a signed-in player -- a guest's
  * credits stay local exactly as before. It listens to `credits:changed`, the
@@ -816,6 +907,9 @@ async function pushRemoteState() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      /* Without this, a single hung POST leaves `remoteInFlight` true for the
+       * session and every later push is dropped. @see abortAfter */
+      signal: abortAfter(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (err) {
@@ -869,6 +963,28 @@ async function pushRemoteState() {
  */
 function adoptRemoteIfNewer() {
   if (!accountActive || !accountState) return;
+  /* THE ONE CASE WHERE "NEWER" IS THE WRONG QUESTION.
+   *
+   * "Start a new game instead" calls `save.clear()`, which is right - a new
+   * game that leaves the old save in place is the overwrite defect delayed by
+   * one autosave tick. But clearing it makes `savedAt()` return null, so
+   * `localAt` below is 0 and EVERY remote timestamp beats it. The player who
+   * had just asked for a fresh start was handed back the server's inventory,
+   * mounts, cosmetics, ship position and character - which is the whole of what
+   * this function moves, and the whole of what they asked to be rid of.
+   *
+   * The timestamp tie-break is for two copies of a game in progress. A
+   * deliberate reset is not one of those, and no clock can tell the difference,
+   * so the flag says it instead.
+   *
+   * `syncAccountProgress` still runs, deliberately and as documented above:
+   * relics, viewpoints and best times are a monotone union and never subtract,
+   * so a fresh install on a second device still recovers the account's
+   * discovery. A true account-level reset is a different feature. */
+  if (freshStart) {
+    console.info('[account] fresh start requested; not adopting the server copy');
+    return;
+  }
   const remote = accountState.game_state;
   const remoteAt = Number(remote?.at);
   if (!Number.isFinite(remoteAt)) return;
@@ -1011,6 +1127,28 @@ hud.setPauseMenuItems([
        * eager mount is ever removed, this item needs `keepOpen: true` and its
        * own hide, or `openFromHub` needs an async-aware check. */
       { id: 'inventory', label: 'Inventory', hint: 'I', run: () => inventory.open() },
+      /* THE PANEL THE HUB PROMISED AND DID NOT HAVE.
+       *
+       * The rebind panel says "Esc — Pause menu — every panel is in it" and the
+       * help card says the same; the marketplace was the exception. B near a
+       * vendor was the only way in, and B is a literal poll in
+       * `Marketplace.update` with no `BINDABLE` row - so it is not in the
+       * rebind panel either, and on a phone the only route was a tray button a
+       * player had to already know about.
+       *
+       * Gated on `market.vendor`, the field `Marketplace.update` already keeps
+       * from its proximity scan and publishes through `get vendor()`. Shown
+       * always and DISABLED with a reason when there is nobody to trade with,
+       * rather than hidden: a row that vanishes teaches nothing, and "Stand
+       * next to a trader" is the answer to the question the player is asking.
+       * Same shape as the mount and ship rows directly above. */
+      {
+        id: 'market',
+        label: 'Marketplace',
+        hint: 'B',
+        enabled: () => (market?.vendor ? true : 'Stand next to a trader'),
+        run: () => market.open(),
+      },
       { id: 'quests', label: 'Quest board', hint: 'J', run: () => questSystem.openBoard() },
       /* The browsable objective: all eighteen records, standings, mastery,
        * collection, streaks and the server's leaderboards in one sheet. The
@@ -1031,7 +1169,14 @@ hud.setPauseMenuItems([
         label: 'Map',
         // M is the mount wheel everywhere else; `mapActionOwner` is the same
         // test MazeMap and MountWheel use to decide which of them owns the key.
-        visible: () => mapActionOwner(worldManager.active) === 'map',
+        /* `mapActionOwner` answers 'map' whenever `rules.mounts === false` —
+         * the maze, space, and all ten planets. But `MazeMap._world` returns
+         * null without `w.cells`, which only MazeWorld has. Without the second
+         * clause the Esc hub offers a Map row that silently does nothing in
+         * eleven of eighteen worlds, with no disabled state and no reason
+         * given, and the rebindable M key is dead alongside it. */
+        visible: () => mapActionOwner(worldManager.active) === 'map'
+          && !!worldManager.active?.cells,
         run: () => mazeMap.open(),
       },
       {
@@ -1231,22 +1376,75 @@ const loader = createLoadingScreen(uiRoot, {
   },
   resume: () => save.load(),
   /* Explicit and immediate. A "new game" that leaves the old save in place is
-   * the overwrite defect again, delayed by one autosave tick. */
-  discard: () => save.clear(),
+   * the overwrite defect again, delayed by one autosave tick.
+   *
+   * And it latches `freshStart`, which is the half that was missing. See
+   * `adoptRemoteIfNewer`: clearing the save zeroes the local timestamp, so the
+   * adoption step compared `remoteAt > 0` and cheerfully applied the server's
+   * inventory, mounts, cosmetics, piloting and character over the new game the
+   * player had just asked for. "Start a new game instead" is a statement about
+   * THIS DEVICE's state, and it has to be honoured on this device. */
+  discard: () => { freshStart = true; save.clear(); },
 });
-const accountStatePromise = fetch('/api/game/session', { cache: 'no-store' })
+
+/**
+ * Why `/api/game/session` failed, when the failure is not "signed out".
+ *
+ * null while everything is fine AND while the player is simply signed out - a
+ * 401 is the endpoint working correctly and answering "nobody", which is the
+ * ordinary state for a first-run player and must render exactly as it always
+ * has: no chrome, no warning, no chip.
+ *
+ * A string for everything else: a 5xx, a network error, a DNS failure, the
+ * eight-second timeout. Those are indistinguishable from a 401 today - the
+ * `!res.ok` branch collapsed all of them to null - so `accountActive` stayed
+ * false, `creditReporter.start()` was never called, and an hour of earnings
+ * queued into a reporter that was never running. The player was told nothing,
+ * during, and nothing after.
+ * @type {string|null}
+ */
+let sessionFailure = null;
+/** True once the player has pressed "Start a new game instead". @see adoptRemoteIfNewer */
+let freshStart = false;
+
+const accountStatePromise = fetch('/api/game/session', {
+  cache: 'no-store',
+  // A captive portal answers DNS and then holds the socket. @see abortAfter
+  signal: abortAfter(FETCH_TIMEOUT_MS),
+})
   .then(async (res) => {
-    if (!res.ok) return null;
+    // Signed out. The correct answer, not a failure - see `sessionFailure`.
+    if (res.status === 401 || res.status === 403) return null;
+    if (!res.ok) {
+      sessionFailure = `server error ${res.status}`;
+      console.warn(`[account] /api/game/session answered ${res.status}`);
+      return null;
+    }
     return res.json();
   })
   .catch((err) => {
+    sessionFailure = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+      ? 'timed out'
+      : 'no connection';
     console.warn('[account] could not load game session:', err);
     return null;
   });
 
 async function hydrateAccountSession() {
   const account = await accountStatePromise;
-  if (!account) return;
+  if (!account) {
+    /* A degraded session, said out loud and left on screen.
+     *
+     * Only for a real failure - a 401 resolved `sessionFailure` to null above,
+     * because being signed out is not a fault and a signed-out player must see
+     * the HUD exactly as it shipped. For anything else, the consequence is
+     * specific and worth a standing notice: `creditReporter` never starts, so
+     * every credit earned from here on is local only and the account will never
+     * hear about it. The HUD keeps this on the alert bar rather than in a toast
+     * because it stays true for the whole session. */
+    if (sessionFailure) bus.emit('session:offline', { reason: sessionFailure });
+    return;
+  }
   accountActive = true;
   accountState = account;
 
@@ -2420,6 +2618,9 @@ function scheduleBackgroundBuilds(startWorld) {
  * @returns {Promise<void>}
  */
 function prepareWorld(id) {
+  /* Programs linked before this world's warm are not this warm's to wait on.
+   * Captured after `holdPreviews` so the gateway claim is not counted. */
+  let p0 = 0;
   return worldManager
     .build(id)
     /* Claim this destination's gateways the instant its build resolves, and
@@ -2440,7 +2641,17 @@ function prepareWorld(id) {
      * So the claim is made here, where it cannot depend on how long anything
      * downstream takes, and released in a `finally` no matter what happens. */
     .then(() => portals.holdPreviews?.(id))
+    .then(() => { p0 = engine.renderer.info.programs?.length ?? 0; })
     .then(() => warmWorld(id))
+    /* Settle the links this warm started before the preview warm plans against
+     * them. `warmWorld`'s note below is right that a background world is never
+     * drawn and so never waits on a link — but that makes the guarantee TIMING
+     * rather than construction: the prefetch fires roughly ten seconds ahead,
+     * so ANGLE has finished in the background and nobody has noticed. A player
+     * who sprints the 48 m from PREFETCH_RANGE arrives in about seven, and
+     * meets the wait. This repo's number for one unlinked program arriving on
+     * a gameplay frame is 5,433 ms. Polling costs idle time, never frames. */
+    .then(() => settleLinks(p0, `prepare:${id}`))
     .then(() => warmPortalPreviews(id))
     .then(() => {
       bus.emit('world:ready', { id });
@@ -3220,9 +3431,37 @@ function createLoadingScreen(root, hooks = {}) {
       el.addEventListener('click', tryEnter);
       if (overrides.autoStart) setTimeout(tryEnter, 120);
     },
+    /**
+     * The boot gave up. Say so, and offer the one thing that ever helps.
+     *
+     * This was a bare `textContent = 'Boot failed: ...'` and nothing else - a
+     * dead end with a stack-trace fragment in it. Almost everything that
+     * reaches here is transient (a chunk that failed to fetch, a world build
+     * that threw on a bad frame, a timed-out session on a flaky connection),
+     * so RELOADING IS THE FIX in the great majority of cases, and the player
+     * had no way to know that and nothing to press. A button costs one line and
+     * turns "the game is broken" into "the game did not start this time".
+     *
+     * Rebuilt rather than appended to, so a second failure cannot stack two
+     * buttons; `location.reload()` rather than a re-entry into `boot()`,
+     * because whatever failed has already left half the graph constructed and a
+     * clean page is the only state we can actually promise.
+     */
     showError(err) {
       errorEl.hidden = false;
-      errorEl.textContent = `Boot failed: ${err?.message ?? err}`;
+      errorEl.textContent = '';
+      const line = document.createElement('div');
+      line.textContent = `Boot failed: ${err?.message ?? err}`;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'boot-retry';
+      retry.textContent = 'Reload and try again';
+      retry.addEventListener('click', (e) => {
+        // The card's own click handler enters the world; this one must not.
+        e.stopPropagation();
+        location.reload();
+      });
+      errorEl.append(line, retry);
       status.textContent = 'Error';
     },
   };

@@ -30,12 +30,15 @@ describe('canonical world model', () => {
     expect(MOUNTS).toBe(6);
     expect(WEAPONS).toBe(4);
   });
-  it('derivation helpers reflect six and never say five', () => {
+  it('derivation helpers reflect the roster and never say five', () => {
     const ticker = heroTicker();
-    expect(ticker).toContain('Seven worlds');
+    /* "gateways", not "worlds" — see lib/corrections.test.ts for the full
+     * reasoning. In short: seven is the number of GATEWAYS, and calling it the
+     * number of worlds undersold an eighteen-world game by eleven. */
+    expect(ticker).toContain('Seven gateways');
     expect(ticker).toContain('Six mounts');
     expect(ticker).toContain('Four weapons');
-    expect(ticker.join(' ')).not.toMatch(/five|six worlds/i);
+    expect(ticker.join(' ')).not.toMatch(/five|(six|seven) worlds/i);
 
     expect(statBar()).toEqual(['7', '6', '4', '0 GB']);
     expect(worldSeq(1)).toBe('01 / 07');

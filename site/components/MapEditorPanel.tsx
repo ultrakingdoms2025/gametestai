@@ -5,6 +5,8 @@ import { OVERLAY_WORLDS, round, type GrantConfig, type OverlayEntry, type Overla
 import type { MarketplaceItemRecord } from '@/lib/marketplaceCatalog';
 import type { CatalogueObject, OverlayVersionRow, WorldReport } from '@/lib/mapOverlay';
 import type { WorldLayout } from '@/lib/mapLayout';
+// The one 403 both admin panels render. @see components/adminRefusal.ts
+import { ADMIN_REFUSED } from '@/components/adminRefusal';
 import { conflictContextFor, conflictsForDocument, hasErrors, type Conflict } from '@/lib/mapConflicts';
 import {
   actionEntryFor,
@@ -132,6 +134,7 @@ interface SaveRejection {
 }
 
 const NO_KEYS: ReadonlySet<string> = new Set();
+
 const NO_CONFLICTS: Conflict[] = [];
 
 export function MapEditorPanel() {
@@ -216,6 +219,8 @@ export function MapEditorPanel() {
    * number; a response that is no longer the latest touches nothing, not
    * even `busy`, which the latest one still owns. */
   const loadSeq = useRef(0);
+  /* Sticky until a request succeeds. @see ADMIN_REFUSED */
+  const [forbidden, setForbidden] = useState(false);
   const load = useCallback(
     async (which: OverlayWorld, opts: { keepMessage?: boolean } = {}) => {
       const seq = ++loadSeq.current;
@@ -225,7 +230,21 @@ export function MapEditorPanel() {
         const res = await fetch(`/api/admin/map/${which}`, { cache: 'no-store' });
         const data = (await res.json()) as WorldResponse;
         if (seq !== loadSeq.current) return;
-        if (!res.ok) throw new Error(data?.error || 'Could not load the overlay.');
+        if (!res.ok) {
+          /* 403 is the ONLY thing `/api/admin/**` says when it refuses, and it
+           * says it for two different reasons — no session, or a session whose
+           * address is not on the allowlist (`lib/adminAccess.ts` returns null
+           * for both). Rendered as the bare word "Forbidden" beside an editor
+           * this catch has just blanked, it read as "this world has no data".
+           * It is a banner and a sign-in link now. */
+          if (res.status === 403) setForbidden(true);
+          throw new Error(
+            res.status === 403
+              ? ADMIN_REFUSED
+              : (data?.error || 'Could not load the overlay.')
+          );
+        }
+        setForbidden(false);
         setEntries(withKeys(data.overlay.entries ?? []));
         setSavedVersion(data.overlay.version ?? 0);
         setVersions(data.versions ?? []);
@@ -267,6 +286,14 @@ export function MapEditorPanel() {
       // other world gets the whole list: an admin placing a crate on a planet
       // is not restricted to what a vendor there would sell.
       const res = await fetch(`/api/admin/marketplace/items?activeOnly=1&search=`, { cache: 'no-store' });
+      /* Was `if (!res.ok) return;`, which left the panel rendering "No
+       * catalogue items loaded." — an admin whose session had lapsed was told
+       * the catalogue was empty rather than that they were not being let in. */
+      if (res.status === 403) {
+        setForbidden(true);
+        setCatalogue([]);
+        return;
+      }
       if (!res.ok) return;
       const data = await res.json();
       const items: MarketplaceItemRecord[] = data.items ?? [];
@@ -552,7 +579,13 @@ export function MapEditorPanel() {
         );
         return;
       }
-      if (!res.ok) throw new Error(data?.error || 'Save failed.');
+      if (!res.ok) {
+        // The same 403 the loader gets, reached from the write verb.
+        if (res.status === 403) setForbidden(true);
+        throw new Error(
+          res.status === 403 ? `${ADMIN_REFUSED} Your edits are still on this page.` : (data?.error || 'Save failed.')
+        );
+      }
       const rejected = data.overlay?.rejected ?? [];
       setMessage(
         rejected.length
@@ -578,7 +611,11 @@ export function MapEditorPanel() {
         body: JSON.stringify({ revertTo: version }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Revert failed.');
+      if (!res.ok) {
+        // The same 403 again, from the third verb that can hit it.
+        if (res.status === 403) setForbidden(true);
+        throw new Error(res.status === 403 ? ADMIN_REFUSED : (data?.error || 'Revert failed.'));
+      }
       setMessage(`Reverted to version ${version}, saved as version ${data.overlay.version}.`);
       await load(world, { keepMessage: true });
     } catch (error) {
@@ -598,6 +635,29 @@ export function MapEditorPanel() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {/* Above everything, including the layout banner: nothing else on this
+          page is worth reading while the API is refusing it. */}
+      {forbidden ? (
+        <div
+          role="alert"
+          data-e2e="admin-forbidden"
+          style={{
+            display: 'grid', gap: 8, padding: '14px 16px', borderRadius: 6,
+            border: '1px solid #7a2b2b', background: '#1a0d10', color: '#ffc9cf',
+          }}
+        >
+          <b>The admin API is refusing this browser.</b>
+          <span style={{ fontSize: 13, lineHeight: 1.6 }}>
+            {ADMIN_REFUSED} Signing in again fixes the first. If you are still refused
+            afterwards it is the second, which is an operator change to ADMIN_EMAILS and
+            not something this page can do. Nothing you were editing has been saved or
+            lost — the refusal happened before any write.
+          </span>
+          <a href="/login?callbackUrl=%2Fadmin%2Fmap" style={{ color: '#9fe4ff' }}>
+            Sign in again →
+          </a>
+        </div>
+      ) : null}
       <div className="banner" role="status" data-e2e="layout-banner" style={{ marginBottom: 0, alignItems: 'center' }}>
         <b>Layout</b>
         <span data-e2e="layout-age">{now ? layoutAgeText(reportedAt, now) : '…'}</span>

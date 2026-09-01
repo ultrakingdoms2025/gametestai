@@ -38,6 +38,7 @@ import { encrypt, decrypt, encryptMaybe, decryptMaybe } from './encrypt';
 import { sha256, sign, auditHash } from './hmac';
 import { computePlayerAccessSnapshot, grantedAtForRemainingDays } from './playerAccess';
 import { ensureAccessCodeSchema } from './accessCodes';
+import { ensureLoginThrottleSchema } from './loginThrottle';
 import { ALL_QUESTS } from './quests/index.mjs';
 
 const DEFAULT_LORE_ROWS = [
@@ -337,6 +338,12 @@ export async function initSchema() {
    * because `initSchema` runs only from the setup scripts and a deployment that
    * has not been re-set-up must still be able to mint a code. */
   await ensureAccessCodeSchema();
+
+  /* Login throttling and account lockout, on the same terms: declared in
+   * `lib/loginThrottle.ts`, called here so `npm run setup` builds it, and
+   * ensured again on every login so a deployment that predates it does not
+   * 500 on the first attempt. */
+  await ensureLoginThrottleSchema();
 }
 
 // ── Admin users ────────────────────────────────────────────────────────────

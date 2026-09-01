@@ -56,3 +56,36 @@ export function siteOrigin(req: Request): string {
   if (vercel) return `https://${vercel}`;
   return new URL(req.url).origin;
 }
+
+/**
+ * May this deployment settle a purchase nobody paid for?
+ *
+ * ── Why `stripeConfigured()` was never the fence it read as ───────────────
+ *
+ * `/api/confirm` refused `simulated=1` "the moment real payments are possible",
+ * and that sentence hid the inverse: while payments are NOT possible — which is
+ * every deployment with an empty `STRIPE_SECRET_KEY`, INCLUDING PRODUCTION —
+ * the bypass was wide open. Anyone signed in could GET
+ * `/api/confirm?simulated=1&intent=credits&credits=10000&order=whatever` and
+ * hand themselves paid access and ten thousand credits, repeatably: the order
+ * id is theirs to choose, so the idempotency that makes a replay a no-op was
+ * defeated by typing a new one.
+ *
+ * So the switch is no longer "is Stripe off?". It is an explicit, per-deployment
+ * opt-in that must be TURNED ON, and that production cannot turn on at all:
+ *
+ *   - `ALLOW_SIMULATED_PURCHASE=1` must be set. Unset is refusal, so a
+ *     deployment that has never heard of this variable fails closed rather
+ *     than inheriting a bypass.
+ *   - `VERCEL_ENV=production` refuses regardless, because the one environment
+ *     where a free grant is real money is the one where no flag should be able
+ *     to authorise it.
+ *   - `stripeConfigured()` still refuses, unchanged: the original argument —
+ *     adding the key closes the door in the same action that opens the real
+ *     one — is right, it was just not sufficient on its own.
+ */
+export function simulatedPurchasesAllowed(): boolean {
+  if (stripeConfigured()) return false;
+  if (process.env.VERCEL_ENV === 'production') return false;
+  return process.env.ALLOW_SIMULATED_PURCHASE === '1';
+}

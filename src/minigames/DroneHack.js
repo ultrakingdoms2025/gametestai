@@ -279,12 +279,25 @@ export class DroneHack {
     if (this.node < this.chain.nodes.length) this._announce();
   }
 
+  /**
+   * A FIELD OF ONE. `total: 1` is the whole of it, and it is not cosmetic.
+   *
+   * The splice is a stand-still puzzle against a countdown. There is no rival,
+   * no grid and nobody to be second to - so the outcome carries `total: 1`, and
+   * `MinigameUI` suppresses the PLACE stat entirely on a field of one rather
+   * than printing "PLACE 2nd" over a contest nothing else entered. `place` is
+   * 1 in both branches for the same reason: the player is the only entrant, and
+   * whether they beat the trace is `won`, never a position.
+   *
+   * The two delivery rounds (`DeliveryRun`) and the archery butts (`TestFire`)
+   * are the same shape and say so the same way.
+   */
   _win() {
     this._live = false;
     return {
       won: true,
       place: 1,
-      total: 2,
+      total: 1,
       score: this.cracked,
       scoreLabel: `${this.cracked}/${this.chain.nodes.length} relays in ${clockText(this.clock)}`,
       detail: `${clockText(Math.max(0, this.trace))} ahead of the trace`,
@@ -295,8 +308,8 @@ export class DroneHack {
     this._live = false;
     return {
       won: false,
-      place: 2,
-      total: 2,
+      place: 1,
+      total: 1,
       score: this.cracked,
       scoreLabel: `${this.cracked}/${this.chain.nodes.length} relays`,
       detail: `traced at ${this.target?.label ?? 'the last relay'}`,

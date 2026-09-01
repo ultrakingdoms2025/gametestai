@@ -355,40 +355,85 @@ const VIEWS = {
    * Each zone has an open court inside r112 and a covered arcade out to its
    * rim, so the two useful framings per zone are one from the arrival plaza
    * looking in across the court, and one inside the arcade. */
+  /* ── EVERY ROW BELOW NOW DECLARES, AND TWO OF THEM MOVED ────────────────
+   *
+   * `harness-framings.test.mjs` fires a ray down every framing that declares
+   * `subject` or `clear` and SKIPS one that declares neither - and its two
+   * loops iterated hand-typed world lists that did not contain `station`. So
+   * all twenty-one rows here were exempt from the one test that can tell a
+   * framing from a photograph of empty floor, for as long as the table has
+   * existed. That is verbatim the hole `sports` had, and `citadel` after it,
+   * third occurrence.
+   *
+   * The numbers are the distance each centre ray ACTUALLY travels, measured
+   * against the built world (26,711 colliders) rather than chosen, and
+   * byte-identical across two builds:
+   *
+   *   plaza-wide             94.18   plaza-centre            32.12
+   *   street-level           32.23   district-east           17.48
+   *   hull-outward          131.00   window-apron           572.69
+   *   apron-wide            306.46   dome-inside            286.84
+   *   hab-stacks             22.48   hab-lobby               68.90
+   *   link-galley           275.28   zone-habitation        152.31
+   *   zone-habitation-court 453.28   zone-gym                71.94
+   *   zone-gym-court         76.79   zone-construction      130.04
+   *   zone-construction-crt 258.50   zone-canteen            77.99
+   *   zone-canteen-court     58.84
+   *
+   * ── AND THE TWO PORTAL FRAMINGS PHOTOGRAPHED SOMEWHERE ELSE ────────────
+   *
+   * `portal-medieval` and `portal-sports` both stood on x = 0. The six station
+   * gateways sit on a r54 circle at y 2.4, and the medieval and sports discs
+   * are both ON that axis - so a camera at x = 0 put the pinned player's chest
+   * 1.746 m off BOTH disc axes against an entry aperture of 2.226 m, on the far
+   * side of both. `Harness._vantage` pins the player at the camera, the pin is
+   * a plane-side crossing, and `Portals.fixedUpdate` fires `enter` on a side
+   * flip inside the aperture at ANY depth - `portalAperture` reported
+   * `wouldCross` for the near disc at 24 m and the far one at 84 m.
+   *
+   * Whether it actually fired depended on which framing ran before it, which
+   * is worse than a framing that always fails: it is one that photographs the
+   * station most runs and medieval some runs, with nothing in the numbers
+   * saying which. Exactly what `sports/entrance-portal` did (225 materials and
+   * 3.1 M triangles OF THE STATION filed as sports').
+   *
+   * Fixed the same way that one was: 4 m off the gate axis, keeping the
+   * gateway in frame. Measured after the move - `wouldCross` on none of the
+   * six discs, camera in open air, first surface at 67.96 m and 111.67 m. */
   station: [
-    { name: 'plaza-wide', pos: [0, 9, 96], look: [0, 5, 0], fov: 70 },
-    { name: 'plaza-centre', pos: [0, 3, 34], look: [0, 5, -30], fov: 74 },
-    { name: 'portal-medieval', pos: [0, 4, -30], look: [0, 5.5, -54], fov: 60 },
-    { name: 'portal-sports', pos: [0, 4, 30], look: [0, 5.5, 54], fov: 60 },
-    { name: 'street-level', pos: [-34, 1.7, 2], look: [0, 4, 0], fov: 75 },
-    { name: 'district-east', pos: [104, 4, 40], look: [60, 8, -10], fov: 72 },
+    { name: 'plaza-wide', pos: [0, 9, 96], look: [0, 5, 0], fov: 70, subject: 94 },
+    { name: 'plaza-centre', pos: [0, 3, 34], look: [0, 5, -30], fov: 74, subject: 32 },
+    { name: 'portal-medieval', pos: [-4, 4, -30], look: [0, 5.5, -54], fov: 60, subject: 68 },
+    { name: 'portal-sports', pos: [4, 4, 30], look: [0, 5.5, 54], fov: 60, subject: 112 },
+    { name: 'street-level', pos: [-34, 1.7, 2], look: [0, 4, 0], fov: 75, subject: 32 },
+    { name: 'district-east', pos: [104, 4, 40], look: [60, 8, -10], fov: 72, subject: 17 },
     /* 11.7, not 10. The promenade slab at this column spans y = 9.4 to 10.2
      * with its top at 10.005, so a camera at exactly 10 stood INSIDE the deck
      * it was meant to be standing on - and a framing that shoots from inside
      * geometry produces evidence nobody can read. 11.7 is eye height above
      * that top, which is where a player looking outward would actually be.
      * @see ../../scripts/tests/station-framings.test.mjs */
-    { name: 'hull-outward', pos: [70, 11.7, 0], look: [190, 30, 0], fov: 80 },
+    { name: 'hull-outward', pos: [70, 11.7, 0], look: [190, 30, 0], fov: 80, subject: 131 },
     // The apron, seen through the great window - the view the whole outer ring
     // was arranged around.
-    { name: 'window-apron', pos: [150, 6, 0], look: [520, 40, 40], fov: 82 },
-    { name: 'apron-wide', pos: [300, 60, 60], look: [0, 30, 0], fov: 80 },
+    { name: 'window-apron', pos: [150, 6, 0], look: [520, 40, 40], fov: 82, subject: 573 },
+    { name: 'apron-wide', pos: [300, 60, 60], look: [0, 30, 0], fov: 80, subject: 306 },
     // Looking back at the hub from outside it, under the dome.
-    { name: 'dome-inside', pos: [-360, 40, 0], look: [0, 60, 0], fov: 84 },
+    { name: 'dome-inside', pos: [-360, 40, 0], look: [0, 60, 0], fov: 84, subject: 287 },
     // The habitat stacks on avenue 120, which are now enterable.
-    { name: 'hab-stacks', pos: [-70, 6, 96], look: [-110, 20, 150], fov: 74 },
-    { name: 'hab-lobby', pos: [-61, 2.0, 118], look: [-75, 3, 132], fov: 78 },
+    { name: 'hab-stacks', pos: [-70, 6, 96], look: [-110, 20, 150], fov: 74, subject: 22 },
+    { name: 'hab-lobby', pos: [-61, 2.0, 118], look: [-75, 3, 132], fov: 78, subject: 69 },
     // One link, from the hull end looking out to the zone.
-    { name: 'link-galley', pos: [110, 3, -186], look: [160, 5, -272], fov: 76 },
+    { name: 'link-galley', pos: [110, 3, -186], look: [160, 5, -272], fov: 76, subject: 275 },
     // The four zones: arrival, then court.
-    { name: 'zone-habitation', pos: [-206, 8, 358], look: [-249, 14, 431], fov: 76 },
-    { name: 'zone-habitation-court', pos: [-249, 4, 505], look: [-249, 30, 431], fov: 80 },
-    { name: 'zone-gym', pos: [-414, 8, 0], look: [-498, 12, 0], fov: 76 },
-    { name: 'zone-gym-court', pos: [-425, 3, 40], look: [-498, 10, -10], fov: 80 },
-    { name: 'zone-construction', pos: [-206, 8, -358], look: [-249, 30, -431], fov: 76 },
-    { name: 'zone-construction-court', pos: [-190, 6, -470], look: [-260, 40, -430], fov: 80 },
-    { name: 'zone-canteen', pos: [206, 8, -358], look: [249, 12, -431], fov: 76 },
-    { name: 'zone-canteen-court', pos: [300, 4, -470], look: [240, 12, -420], fov: 80 },
+    { name: 'zone-habitation', pos: [-206, 8, 358], look: [-249, 14, 431], fov: 76, subject: 152 },
+    { name: 'zone-habitation-court', pos: [-249, 4, 505], look: [-249, 30, 431], fov: 80, subject: 453 },
+    { name: 'zone-gym', pos: [-414, 8, 0], look: [-498, 12, 0], fov: 76, subject: 72 },
+    { name: 'zone-gym-court', pos: [-425, 3, 40], look: [-498, 10, -10], fov: 80, subject: 77 },
+    { name: 'zone-construction', pos: [-206, 8, -358], look: [-249, 30, -431], fov: 76, subject: 130 },
+    { name: 'zone-construction-court', pos: [-190, 6, -470], look: [-260, 40, -430], fov: 80, subject: 259 },
+    { name: 'zone-canteen', pos: [206, 8, -358], look: [249, 12, -431], fov: 76, subject: 78 },
+    { name: 'zone-canteen-court', pos: [300, 4, -470], look: [240, 12, -420], fov: 80, subject: 59 },
   ],
   // Castle occupies x -130..-14, z -109..-7 (centre -72,-58); village clusters
   // around (34,18); portal back to the station at (2, 9.3, -22).
@@ -406,14 +451,40 @@ const VIEWS = {
    * this world's seven authored framings had been blind for however long the
    * terrain has been where it is. `medieval-framings.test.mjs` pins the
    * clearance so a terrain edit cannot bury one again silently. */
+  /* ── AND THE SAME HOLE HERE: SEVEN ROWS, NONE DECLARING ─────────────────
+   *
+   * Same reason as the station's twenty-one - `medieval` was in neither of
+   * `harness-framings.test.mjs`'s hand-typed world lists, so its ray assertion
+   * was vacuous on this world too. Measured against the built world (4,254
+   * colliders), each row's centre-ray travel:
+   *
+   *   castle-approach 81.82   castle-gate     38.10   village-square   7.97
+   *   village-street  23.72   ramparts-vista  10.32   portal         386.34
+   *   hills-vista    216.04
+   *
+   * Two are worth stating rather than quietly rounding, because both look
+   * wrong and neither is:
+   *
+   *   `ramparts-vista` meets stone at 10.3 m with its look point 134 m out. It
+   *   stands ON the rampart at y 32 and the merlon line is the near edge of
+   *   its own frame - the same "framed THROUGH something" shape as
+   *   `citadel/gate-approach`, which looks through the gate arch at 19 m to the
+   *   citadel at 155.7 m. Naming a near aim point and photographing what is
+   *   behind it is composition, not a defect.
+   *
+   *   `portal` declares 386 m against a look point 28 m away. The gateway disc
+   *   is not a collider, so the centre ray goes straight through the arch and
+   *   out over the terrain. Declaring the 28 m would fail this framing on every
+   *   run for meeting nothing; declaring what the ray does is the honest
+   *   number, and the framing still frames the gateway. */
   medieval: [
-    { name: 'castle-approach', pos: [-40, 12, 55], look: [-72, 20, -45], fov: 70 },
-    { name: 'castle-gate', pos: [-72, 8, 15], look: [-72, 16, -40], fov: 68 },
-    { name: 'village-square', pos: [58, 6.1, 48], look: [28, 6.0, 12], fov: 74 },
-    { name: 'village-street', pos: [20, 6.2, 40], look: [36, 6.1, 14], fov: 76 },
-    { name: 'ramparts-vista', pos: [-72, 32, -58], look: [34, 6, 20], fov: 78 },
-    { name: 'portal', pos: [2, 11, 6], look: [2, 10.5, -22], fov: 62 },
-    { name: 'hills-vista', pos: [120, 28, 118], look: [-40, 12, -20], fov: 80 },
+    { name: 'castle-approach', pos: [-40, 12, 55], look: [-72, 20, -45], fov: 70, subject: 82 },
+    { name: 'castle-gate', pos: [-72, 8, 15], look: [-72, 16, -40], fov: 68, subject: 38 },
+    { name: 'village-square', pos: [58, 6.1, 48], look: [28, 6.0, 12], fov: 74, subject: 8 },
+    { name: 'village-street', pos: [20, 6.2, 40], look: [36, 6.1, 14], fov: 76, subject: 24 },
+    { name: 'ramparts-vista', pos: [-72, 32, -58], look: [34, 6, 20], fov: 78, subject: 10 },
+    { name: 'portal', pos: [2, 11, 6], look: [2, 10.5, -22], fov: 62, subject: 386 },
+    { name: 'hills-vista', pos: [120, 28, 118], look: [-40, 12, -20], fov: 80, subject: 216 },
   ],
   /**
    * THE SPORTS PARK, AND TWO FRAMINGS THAT PHOTOGRAPHED SOMETHING ELSE.
@@ -679,15 +750,47 @@ const VIEWS = {
   // for shaft-up, bare sky for tower-top. Both views below are computed
   // dynamically per view() call, scanning ONLY the districts the maze world
   // has actually streamed in - see Harness._findResidentShaft.
+  /* ── THE THREE AUTHORED MAZE ROWS, DECLARED AGAINST A SEED SWEEP ────────
+   *
+   * `maze` was in neither hand-typed world list either, so its three authored
+   * framings (the other three are `computed`) had no ray probe. Declaring one
+   * number here is harder than anywhere else, because `MazeWorld` is
+   * `volatile` and re-seeds on every activation: the hedges move, so the
+   * centre-ray travel is a DISTRIBUTION and not a value. Measured over eight
+   * pinned seeds through the real generator, plus 30 unpinned activations:
+   *
+   *   forecourt        52.40  on every seed (the entrance structure is fixed)
+   *   corridor         22.40 - 34.40   (hedge run length varies by seed)
+   *   above-entrance  192.14 - 210.28  (which cell the long sight-line ends in)
+   *
+   * So the declarations are chosen to hold across the whole measured range
+   * rather than fitted to one seed: 30 covers 22.4-34.4 at 75%-115% of
+   * subject, and 205 covers 192-210 at 94%-103%, both comfortably inside the
+   * test's 12%-170% band. The probe pins the seeds so the gate is
+   * deterministic; the declarations are honest for an unpinned run too.
+   *
+   * ── AND `forecourt` STOOD BEHIND THE STATION GATEWAY ───────────────────
+   *
+   * The maze's one gateway is at (1260, 0, -10) facing +Z. `forecourt` stood
+   * at (1260, 4, -16): 6 m behind the disc, dead on its axis, with the pinned
+   * player's chest 0.654 m off against a 2.226 m aperture. Same defect as the
+   * station's two portal rows and `sports/entrance-portal` - the pin is a
+   * plane-side crossing and the framing photographs the STATION.
+   *
+   * Fixed by LIFTING rather than sliding, unlike those two: the aperture test
+   * is `u² + dy² < ENTRY_R²`, and this framing's whole composition is the axial
+   * shot down the forecourt, so raising the camera 2.5 m takes `dy` to 3.15 m
+   * and leaves the shot pointing where it did. Measured after the move:
+   * `wouldCross` false, and 52.40 m on all eight seeds. */
   maze: [
-    { name: 'forecourt', pos: [1260, 4, -16], look: [1260, 2, 20], fov: 75 },
-    { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75 },
+    { name: 'forecourt', pos: [1260, 6.5, -16], look: [1260, 2, 20], fov: 75, subject: 52 },
+    { name: 'corridor', pos: [1260, 1.7, 40], look: [1260, 1.7, 120], fov: 75, subject: 30 },
     /* keepPlayer: this one deliberately looks DOWN on level 0 from 60 m up.
      * Moving the player with the camera - which every other framing now does,
      * so the sun's shadow camera covers what is on screen - would put them at
      * level 6, and `MazeWorld` streams residency around the player: the maze
      * this view exists to show would unload out from under it. */
-    { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70, keepPlayer: true },
+    { name: 'above-entrance', pos: [1260, 60, -40], look: [1260, 0, 200], fov: 70, keepPlayer: true, subject: 205 },
     { name: 'shaft-up', computed: true },
     { name: 'lift-car', computed: true },
     { name: 'tower-top', computed: true },

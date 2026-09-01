@@ -3,6 +3,7 @@ import { Client } from 'pg';
 import { auth } from '@/lib/auth';
 import { getUserById } from '@/lib/db';
 import { findOrCreatePlayer } from '@/lib/playerDb';
+import { RATE_LIMITS, clientIp, consumeRateLimit, tooManyRequests } from '@/lib/rateLimit';
 import {
   ensureProgressSchema,
   mergeProgress,
@@ -69,12 +70,35 @@ export async function GET() {
  * An unrecognised kind is reported in `rejected` rather than failing the batch,
  * for the same reason the credits route answers per-event: one bad entry from a
  * stale bundle must not cost the player the twenty good ones beside it.
+ *
+ * ── Bounded now, in two ways ──────────────────────────────────────────────
+ *
+ * This is a grow-only ledger of client-declared claims, so what it stores is
+ * whatever the client says it found and nothing here witnessed any of it. It
+ * had no rate limit and no revoke path, which together meant one POST could
+ * award every relic, viewpoint, charter and deed in the game and the result was
+ * PERMANENT.
+ *
+ * The rate limit is here; the per-(kind, scope) delta cap and the operator's
+ * `revokeProgressItems` are in `lib/progressLedger.ts`. The limit is set well
+ * clear of the client's own sync cadence -- `ProgressSync` pushes on discovery,
+ * not on a tight timer -- so it bounds a script rather than a player.
  */
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
   }
+
+  const limit = await consumeRateLimit(
+    'progress',
+    [
+      { namespace: 'user', value: session.user.id },
+      { namespace: 'ip', value: clientIp(req) },
+    ],
+    RATE_LIMITS.progress
+  );
+  if (!limit.allowed) return tooManyRequests(limit, 'Too many progress syncs.');
 
   let body: ProgressPayload;
   try {

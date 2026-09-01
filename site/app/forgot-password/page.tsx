@@ -32,19 +32,19 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <main className="auth-shell">
+    <main id="main" tabIndex={-1} className="auth-shell">
       <div className="auth-card">
         <Link href="/" className="auth-logo">AETHER NEXUS</Link>
         <h1 className="auth-heading">Reset password</h1>
 
         {sent ? (
-          <div className="auth-success">
+          <div className="auth-success" role="status">
             If that email is registered, you&apos;ll receive a reset link shortly.
             Check your spam folder if it doesn&apos;t arrive within a few minutes.
           </div>
         ) : (
           <>
-            {error ? <div className="auth-error">{error}</div> : null}
+            {error ? <div className="auth-error" role="alert">{error}</div> : null}
             <p className="auth-desc">
               Enter your email and we&apos;ll send you a link to set a new password.
             </p>

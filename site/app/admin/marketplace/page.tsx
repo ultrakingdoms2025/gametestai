@@ -9,7 +9,7 @@ export default async function MarketplaceAdminPage() {
 
   if (!admin) {
     return (
-      <main className="wrap" style={{ padding: '48px 20px' }}>
+      <main id="main" tabIndex={-1} className="wrap" style={{ padding: '48px 20px' }}>
         <div className="banner" role="status">
           <b>Marketplace admin locked</b>
           <span>
@@ -24,7 +24,7 @@ export default async function MarketplaceAdminPage() {
   }
 
   return (
-    <main className="wrap" style={{ padding: '36px 20px 56px' }}>
+    <main id="main" tabIndex={-1} className="wrap" style={{ padding: '36px 20px 56px' }}>
       <div style={{ display: 'grid', gap: 12, marginBottom: 18 }}>
         <div style={{ color: '#7fe7ff', textTransform: 'uppercase', letterSpacing: '0.18em', fontSize: 12 }}>Admin</div>
         <h1 style={{ margin: 0 }}>Marketplace catalog</h1>

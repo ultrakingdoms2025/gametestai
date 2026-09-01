@@ -108,6 +108,24 @@ export const BINDABLE = [
   { action: 'fittings', code: 'KeyG', label: 'Hold: mount fittings on 1-4', group: 'Actions', touch: false },
   { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
   { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
+  /* THE ESCAPE HATCH, and it was the one control a player could not move.
+   *
+   * `UnstuckSystem` hard-coded `if (e.code !== 'KeyK') return`, so K appeared on
+   * the boot card and in F1 but NOT in "Rebind keys" - which produces two
+   * failures at once, and the second is the worse one:
+   *
+   *   - a player whose K is broken, claimed by an IME, or already spoken for by
+   *     an overlay could not move the rescue key anywhere, and the rescue key is
+   *     the thing you reach for when everything else has stopped working; and
+   *   - a player who only ever opens the rebind panel - a perfectly ordinary way
+   *     to learn a game's controls - was never told the escape hatch exists at
+   *     all, because the panel is a list of what can be bound.
+   *
+   * A row here fixes both: it is documentation and it is a redirection. The
+   * literal stays as the DEFAULT, which is what keeps `Unstuck`'s
+   * `pressed('KeyK')` poll and its own window listener pointing at the same key
+   * as each other whether or not the player has moved it. */
+  { action: 'unstuck', code: 'KeyK', label: 'Unstuck / get me out', group: 'Actions' },
 ];
 
 /**
@@ -122,6 +140,39 @@ export const BINDABLE = [
  * be identical and are written out twice will not stay identical.
  */
 export const DIGIT_ROW_CODES = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
+
+/**
+ * `event.code` → the letters printed on the key.
+ *
+ * Lives here, beside {@link BINDABLE} and {@link RESERVED_CODES}, because this
+ * module owns the key vocabulary and there is now more than one consumer: the
+ * rebind panel draws every cap with it, and `UnstuckSystem` names the rescue key
+ * in a sentence it shows the player. A second private copy in a `ui/` file is
+ * how the two come to disagree about what `BracketLeft` is called - and a
+ * SYSTEM importing a name formatter out of `ui/` would be the wrong direction
+ * besides.
+ *
+ * @param {string|null|undefined} code
+ * @returns {string}
+ */
+export function keyLabel(code) {
+  if (!code) return '—';
+  const map = {
+    Space: 'Space', ShiftLeft: 'L Shift', ShiftRight: 'R Shift',
+    ControlLeft: 'L Ctrl', ControlRight: 'R Ctrl',
+    AltLeft: 'L Alt', AltRight: 'R Alt',
+    BracketLeft: '[', BracketRight: ']', Backquote: '`',
+    Minus: '-', Equal: '=', Semicolon: ';', Quote: "'",
+    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+    Enter: 'Enter', Backspace: 'Backspace', CapsLock: 'Caps',
+  };
+  if (map[code]) return map[code];
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return `Num ${code.slice(6)}`;
+  return code;
+}
 
 const BIND_STORAGE = 'aether-nexus:binds:v1';
 const FS_STORAGE = 'aether:fullscreen';

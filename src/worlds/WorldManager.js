@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Physics } from '../physics/Physics.js';
 import { versionOf } from '../systems/overlayVersion.js';
+import { PREFETCH_RANGE } from '../systems/WorldPrefetch.js';
+import { genPool } from '../workers/GenPool.js';
 
 /**
  * Owns the world registry, lazy generation and the world-swap sequence.
@@ -31,6 +33,44 @@ function yieldFrame() {
 const RESOLVED = Promise.resolve();
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+/**
+ * How many VISITED worlds stay fully built.
+ *
+ * ── The leak, and why the fix has to be timid ─────────────────────────────
+ *
+ * `_activate` used to run `previous.onDeactivate(); scene.remove(previous.group)`
+ * and nothing at all disposed. `dispose()` was called for a volatile world
+ * before its rebuild and from `WorldManager.dispose()` at page teardown, and
+ * nowhere else - so every world the player entered, and every world the lazy
+ * prefetch built because they walked within 48 m of its gateway, stayed
+ * resident on the GPU for the whole session. The four big worlds' `dispose()`
+ * bodies are careful and correct; they were simply never invoked.
+ *
+ * The counter-pressure is severe and is why this is four rather than one. A
+ * built world re-enters INSTANTLY - its programs are linked, its geometry is
+ * uploaded - and an evicted one costs a full rebuild (5-12 s for the big
+ * worlds) plus a relink, and this project's own measurement is that ONE
+ * `linkProgram` can cost 5,433 ms on a frame the player is in. Trading a VRAM
+ * leak for that would be a bad trade.
+ *
+ * Four keeps the property for a player moving between two or three worlds -
+ * which is what a session actually looks like - while bounding the set. It is
+ * a public field: set `worldManager.residentCap = Infinity` to restore the old
+ * never-dispose behaviour without a rebuild.
+ */
+const RESIDENT_WORLDS = 4;
+
+/**
+ * How far the player must be from a gateway before its destination may go.
+ *
+ * Twice `PREFETCH_RANGE`, and the factor is the whole point: at exactly the
+ * prefetch range a world would be disposed the moment the player stepped back
+ * a metre and rebuilt the moment they stepped forward again. The same
+ * hysteresis discipline `DistanceLod` applies to a band edge, for the same
+ * reason and at a far higher price per flip.
+ */
+const EVICT_RANGE = PREFETCH_RANGE * 2;
 
 /**
  * How long a build waits for the overlay provider (spec §4.1, owner
@@ -126,6 +166,21 @@ export class WorldManager {
     this.npcManager = null;
     this.portals = null;
     this.player = null;
+    /** The lazy prefetch poller, so an eviction can be told. See `_evictStale`. */
+    this.prefetch = null;
+
+    /**
+     * How many VISITED worlds stay built. `Infinity` disables eviction.
+     * @see RESIDENT_WORLDS
+     */
+    this.residentCap = RESIDENT_WORLDS;
+    /**
+     * Resident world ids, most recent first: a world joins on BUILD and moves
+     * to the front on ACTIVATION. The LRU order `_evictStale` reads.
+     */
+    this._recent = [];
+    /** What eviction has done this session. Read by `HARNESS.stats()`. */
+    this.evictions = { worlds: 0, ids: [] };
   }
 
   /* ------------------------------------------------------------------ */
@@ -156,6 +211,7 @@ export class WorldManager {
     if (deps.npcManager) this.npcManager = deps.npcManager;
     if (deps.portals) this.portals = deps.portals;
     if (deps.player) this.player = deps.player;
+    if (deps.prefetch) this.prefetch = deps.prefetch;
     return this;
   }
 
@@ -169,6 +225,9 @@ export class WorldManager {
       npcManager: this.npcManager || g?.npcManager || null,
       portals: this.portals || g?.portals || null,
       player: this.player || g?.player || null,
+      /* `main.js` already publishes `worldPrefetch` on GAME, so eviction can
+       * find the poller it must keep in step without a wiring change there. */
+      prefetch: this.prefetch || g?.worldPrefetch || null,
     };
   }
 
@@ -269,10 +328,115 @@ export class WorldManager {
       onProgress(entry.progress, entry.label);
     }
     try {
-      return await entry.promise;
+      const built = await entry.promise;
+      /* A build makes a world RESIDENT, so it joins the recency list here -
+       * the lazy prefetch builds worlds the player never enters, and an LRU
+       * that only knew about crossings would rank all of them equal-oldest.
+       *
+       * It does NOT evict here, and that was learned rather than chosen: an
+       * eviction pass on the build's own resolution disposes the world that
+       * was just built before `prepareWorld` can claim its gateways, and the
+       * poller - having been told to forget it - immediately builds it again.
+       * A rebuild loop is a worse failure than the leak by any measure.
+       * Eviction runs at a crossing, in `activate`, where the keep set is
+       * unambiguous. @see `_evictStale` */
+      this._noteResident(id);
+      return built;
     } finally {
       if (onProgress) entry.listeners.delete(onProgress);
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Residency                                                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Free built worlds nothing is about to need.
+   *
+   * ── WHEN, and it is only at a crossing ─────────────────────────────────
+   *
+   * `activate()` calls this once the swap is complete and its flag is down,
+   * and nothing else does. Running it on a BUILD's resolution instead was
+   * tried and is a rebuild loop: the pass disposes the world that has just
+   * been built - it is not active, it is not near a gateway yet, nothing has
+   * claimed it - before `prepareWorld` can hold its gateways, and the poller,
+   * having been told to forget it, builds it again on the next frame. A
+   * crossing is the moment the resident set genuinely changes and the keep set
+   * is unambiguous, and it bounds the session just as well: a player who walks
+   * past all six station gateways holds six worlds until they step through one.
+   *
+   * ── What is kept, and every clause is load-bearing ─────────────────────
+   *
+   *   the ACTIVE world           obviously, and first, because the rest of
+   *                              this method must never be able to reach it
+   *   anything BUILDING          a build in flight is holding the instance
+   *   the `residentCap` most     the LRU proper, over BUILT-or-ENTERED rather
+   *   recent worlds              than entered alone - a prefetched world the
+   *                              player never entered is resident and has to
+   *                              rank. Instant re-entry is what the
+   *                              never-dispose design bought and this keeps
+   *                              most of it. @see RESIDENT_WORLDS
+   *   a destination within       the player is walking towards it; disposing
+   *   `EVICT_RANGE` of a         it now means the prefetch rebuilds it in a
+   *   gateway the player         few seconds. Twice the prefetch range, so
+   *   can see                    the two cannot oscillate.
+   *   a destination whose        the sliced preview warm is mid-flight over
+   *   gateway is `_warmPending`  its group; taking the group out from under
+   *                              it is a crash, not a saving
+   *
+   * ── And the prefetch map has to move in lockstep ───────────────────────
+   *
+   * `WorldPrefetch.started` is a Map that ONLY GROWS - `isPrepared` is
+   * `started.has(id)`, and nothing ever removes an entry. An evicted world
+   * left in it can never be prepared again: the poller would skip it for the
+   * rest of the session, the gateway hold would stay off, and the player would
+   * walk up to a disc whose destination is neither built nor warmed. That is
+   * the un-warmed preview draw the prefetch file calls its central invariant,
+   * measured at 8-14 s in one gameplay frame. So every eviction calls
+   * `forget`, and a manager with no poller attached simply never evicts less
+   * safely - it evicts the same set and the poller does not exist to disagree.
+   */
+  _evictStale() {
+    if (!Number.isFinite(this.residentCap)) return;
+    /* Never mid-swap. Halfway through `_activate` the previous world is still
+     * parented and the live physics world is still serving its colliders, so
+     * disposing it there clears geometry the player is standing on. */
+    if (this._activation) return;
+
+    const keep = new Set();
+    const active = this._active?.id ?? null;
+    if (active) keep.add(active);
+    for (const id of this._building.keys()) keep.add(id);
+    for (let i = 0; i < this.residentCap && i < this._recent.length; i++) keep.add(this._recent[i]);
+
+    const { portals, player, prefetch } = this._deps();
+    const at = player?.position ?? null;
+    for (const p of portals?.portals ?? []) {
+      const id = p?.target;
+      if (!id) continue;
+      if (p._warmPending) { keep.add(id); continue; }
+      const pos = p?.discPosition ?? p?.position ?? null;
+      if (!at || !pos) { keep.add(id); continue; }
+      if (Math.hypot(pos.x - at.x, pos.y - at.y, pos.z - at.z) < EVICT_RANGE) keep.add(id);
+    }
+
+    for (const [id, world] of this._instances) {
+      if (keep.has(id) || !world._built) continue;
+      if (world.group.parent) world.group.parent.remove(world.group);
+      world.dispose();
+      prefetch?.forget?.(id);
+      this.evictions.worlds++;
+      this.evictions.ids.push(id);
+      console.info(`[WorldManager] evicted "${id}" (resident cap ${this.residentCap})`);
+    }
+  }
+
+  /** Move `id` to the front of the residency LRU. */
+  _noteResident(id) {
+    const at = this._recent.indexOf(id);
+    if (at >= 0) this._recent.splice(at, 1);
+    this._recent.unshift(id);
   }
 
   /**
@@ -481,11 +645,20 @@ export class WorldManager {
       }
     }
     this._activation = this._activate(id, options);
+    let world;
     try {
-      return await this._activation;
+      world = await this._activation;
     } finally {
       this._activation = null;
     }
+    /* Outside the swap, and only once the flag is down: `_evictStale` refuses
+     * to run while an activation is in flight, because the previous world is
+     * still parented and still serving the live physics world halfway through
+     * `_activate`. A failed activation evicts nothing, which is the right way
+     * round - the tree is in an unknown state and disposing into it is worse
+     * than holding a world too long. */
+    this._evictStale();
+    return world;
   }
 
   async _activate(id, { fromPortal = null } = {}) {
@@ -590,6 +763,13 @@ export class WorldManager {
 
     cost.total = Math.round((T() - t0) * 10) / 10;
     this.activationCost = cost;
+    /* AFTER the cost is closed, so an eviction never lands inside the number
+     * the crossing budget is measured against, and after `_active` and the
+     * LRU have both been updated so the pass can see the true keep set. The
+     * `_activation` guard inside is why this cannot run from `build` above:
+     * this call is the one that actually does the work for a crossing, and it
+     * happens once `_activate`'s caller clears the flag. */
+    this._noteResident(id);
     return world;
   }
 
@@ -679,5 +859,11 @@ export class WorldManager {
     this._overlayWarned.clear();
     this._overlayBrokenAt = null;
     this._active = null;
+    this._recent.length = 0;
+    /* The generation workers, which had NO disposal call site anywhere in the
+     * tree: up to four module workers were held for the whole session after
+     * the last terrain build. `GenPool` also releases them on its own idle
+     * timer now; this is the teardown path. */
+    genPool.dispose();
   }
 }

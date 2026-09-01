@@ -44,8 +44,41 @@ import { allows } from '../worlds/WorldRules.js';
  * to spin, reverse or leave the road entirely.
  */
 
-/** Prize money, by finishing position. Only the player is paid. */
-export const RACE_PRIZES = [10, 5, 2];
+/**
+ * Prize money, by finishing position. Only the player is paid.
+ *
+ * ── The numbers these replace, and the arithmetic that moved them ────────────
+ *
+ * `[10, 5, 2]`, against a game where one raider pays 5 CR of bounty plus a
+ * guaranteed 2-8 CR credit drop off the body. So a full multi-lap race against
+ * a graded field - the longest single authored activity in the game - paid
+ * about what killing one hostile paid, and the rational play was to stand in
+ * the outer ring shooting. That is the whole audit finding in one line.
+ *
+ * The scale is the shop, because the shop is what a credit is for. The cheapest
+ * row on any shelf is a medkit at 67-138 CR; call one shelf item 100 CR. Then:
+ *
+ *   P3  150   1.5 shelf items. Deliberately above ten kills, so the bottom of
+ *             the podium is never worse than farming the ring.
+ *   P2  300   3 items.
+ *   P1  600   6 items. A 3-5 lap race runs 5-8 minutes, so P1 is 75-120 CR per
+ *             minute against roughly 20 for killing - the best rate in the
+ *             game, which is the point of the change.
+ *
+ * Two sanity checks on the faucet, both of which the old table failed:
+ *
+ *  - **The prize must dominate its own confetti.** A race already scatters one
+ *    credit per {@link DROP_SPACING_M} metres of centreline, which is 40-60 CR
+ *    on a lap of a real circuit - FOUR TIMES the old P1 prize. Winning was
+ *    worth less than sweeping the road on the way round.
+ *  - **Total completion stays bounded.** Buying one of all 63 shop rows costs
+ *    26,660 CR, i.e. 45 wins, i.e. about 4.5 hours of racing. The same shelf
+ *    used to cost roughly 2,500 kills. The change shortens the grind as well as
+ *    re-weighting it.
+ *
+ * Off the podium still pays only the drops. That rule has not moved.
+ */
+export const RACE_PRIZES = [600, 300, 150];
 /** The most racers any circuit can grid, player included. Hard packs 20. */
 export const MAX_RACERS = 20;
 /**
@@ -175,8 +208,41 @@ export class RaceManager {
     this.track = null;
     /** @type {TrackPath|null} */
     this.path = null;
-    this.difficulty = 'standard';
-    this.difficulties = ['standard'];
+    /**
+     * THE BAND A PLAYER GETS WITHOUT ASKING FOR ONE.
+     *
+     * It was `'standard'`, and `RacerAI`'s own measured table says what that
+     * means: fastest clean lap against the fastest CONTENDER, ratios below 1
+     * meaning the player wins - vellum car 1.099, cinder car 1.174, aurora car
+     * 1.157. The default was UNWINNABLE stock, over five laps, from tenth of
+     * fifteen, before the player owns a single mount power. Only ROOKIE is
+     * winnable stock (0.810-0.904 across both mounts and all three circuits).
+     *
+     * So the first race anybody drives was one they could not win, and the
+     * table that says so was sitting in the same repo, gated by a test.
+     *
+     * This is a DEFAULT-SELECTION change and nothing else. `REF_TOP` and the
+     * three bands are untouched: `RacerAI`'s header explains at length why
+     * retuning them collapses the band spread (a 30/34 REF_TOP takes the stock
+     * dragon's CONTENDER ratio to 0.996-1.000, a dead heat before the player
+     * has spent anything, which deletes the band's whole point). The middle and
+     * top bands still exist, still mean what they meant, and are still one
+     * click away in the race panel.
+     *
+     * `difficulties[0]` rather than the literal `'easy'`: a circuit publishes
+     * its own list (RaceWorld's is `['easy','standard','expert']`) and the
+     * easiest band it offers is whatever it put first. See `_install`.
+     */
+    this.difficulty = 'easy';
+    this.difficulties = ['easy'];
+    /**
+     * True once the player picked a band by hand, via {@link setDifficulty}.
+     *
+     * Without it, "default to the easiest" would re-apply on every re-arm and
+     * silently undo a player's choice the next time they walked back to the
+     * paddock. With it, the default is only a default.
+     */
+    this._difficultyChosen = false;
     this.raceType = RACE_TYPES.CAR;
     this.raceTypes = [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
     this.lapCount = 3;
@@ -304,6 +370,26 @@ export class RaceManager {
     this.raceType = type === RACE_TYPES.DRAGON ? RACE_TYPES.DRAGON : RACE_TYPES.CAR;
     if (this.track && this.state === RACE_STATE.IDLE) this._prepareRaceCheckpoints();
     return this.raceType;
+  }
+
+  /**
+   * The player picked a band off the race panel.
+   *
+   * The panel used to assign `race.difficulty` directly, which worked and told
+   * this file nothing - so `_install` could not tell a chosen band from the
+   * default it had left lying there, and "default to the easiest circuit band"
+   * would have wiped the choice on the next re-arm. Going through a method is
+   * the whole of the fix: it records that a human decided.
+   *
+   * @param {string} id one of {@link DIFFICULTIES}
+   * @returns {string} the band now selected
+   */
+  setDifficulty(id) {
+    if (DIFFICULTIES[id]) {
+      this.difficulty = id;
+      this._difficultyChosen = true;
+    }
+    return this.difficulty;
   }
 
   /**
@@ -797,7 +883,13 @@ export class RaceManager {
     this.track = t;
     this.lapCount = t.lapCount;
     this.difficulties = t.difficulties;
-    if (!this.difficulties.includes(this.difficulty)) this.difficulty = this.difficulties[0];
+    /* The easiest band the circuit offers, unless the player has chosen one -
+     * see the note on `this.difficulty` in the constructor for why the default
+     * had to move off CONTENDER. A hand-picked band that this circuit does not
+     * offer still falls back rather than persisting as a name nothing matches. */
+    if (!this._difficultyChosen || !this.difficulties.includes(this.difficulty)) {
+      this.difficulty = this.difficulties[0];
+    }
 
     const pts = new Array(this.path.n);
     for (let i = 0; i < this.path.n; i++) {

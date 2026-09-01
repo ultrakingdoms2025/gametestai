@@ -303,7 +303,7 @@ export const DOCK_QUESTS = [
     world: 'dock',
     line: 'First Launch',
     title: 'LAUNCHES: 001',
-    credits: 1400,
+    credits: 1120,
     dur: 420,
     pre: ['The Crane Cab'],
     notes:

@@ -24,7 +24,21 @@
  * item still works perfectly.
  */
 export const PAUSE_MENU_IDS = [
-  'resume', 'character', 'mount', 'ship', 'inventory', 'quests', 'records', 'map', 'race',
+  /* `market` is here because two other panels promise it is.
+   *
+   * `KeybindMenu.FIXED_KEYS` says "Esc - Pause menu — every panel is in it" and
+   * `HelpMenu` says the same thing in its own words, and the marketplace was
+   * the one cursor-owning sheet the hub had no row for. B near a vendor was the
+   * ONLY way in - a key that appears nowhere in the rebind panel (it has no
+   * binding; `Marketplace.update` polls the literal), on a device that may have
+   * no keyboard at all. `HUD._wireOverlayEvents` has tracked `market:open` in
+   * `_overlays` the whole time and the comment there says out loud that it "has
+   * no hub row", which is the shape of a promise the menu did not keep.
+   *
+   * Gated on proximity in `main.js` rather than always shown, because the panel
+   * genuinely cannot open away from a counter and a row that toasts an apology
+   * is worse than a row that says why it is greyed out. */
+  'resume', 'character', 'mount', 'ship', 'inventory', 'market', 'quests', 'records', 'map', 'race',
   'minigame-quit',
   'help', 'audio', 'keybinds', 'fullscreen', 'graphics', 'diagnostics', 'save', 'load',
   'bug-report', 'quit',

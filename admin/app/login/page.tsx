@@ -35,7 +35,10 @@ export default function LoginPage() {
   return (
     <div className="login-shell">
       <div className="login-box">
-        <div className="login-logo">AETHER<span>NEXUS</span> · Admin</div>
+        {/* The page's one heading. It reads as a logo, but it is also the only
+            thing on the page that names it, so it is the h1 — the console had
+            no heading elements anywhere before this pass. */}
+        <h1 className="login-logo">AETHER<span>NEXUS</span> · Admin</h1>
 
         <form onSubmit={submit} autoComplete="off">
           <div className="form-row">

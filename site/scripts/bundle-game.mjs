@@ -10,18 +10,45 @@
  * its assets by absolute path and those paths have to resolve once the bundle
  * is sitting under a subdirectory rather than at the root.
  *
- * ── `--if-available` ──────────────────────────────────────────────────────
- * The site's own build runs this with `--if-available`, which makes every way
- * it can fail non-fatal: no game project next door, no dependencies, a broken
- * build - each logs and exits 0, leaving whatever bundle is committed.
+ * ── FAILURE IS FATAL. `--if-available` USED TO MEAN IT WAS NOT ────────────
+ * The site's build ran this with `--if-available`, which made every way it
+ * could fail non-fatal: no game project next door, no dependencies, a broken
+ * build - each logged and exited 0, leaving whatever bundle happened to be
+ * committed. The argument for it was that a stale game is a bad day and a site
+ * that will not deploy is a worse one.
  *
- * That flag exists because of a real failure. `site` is a separate Vercel
- * project whose build was plain `next build`, so nothing ever regenerated this
- * bundle; four commits of gameplay fixes shipped to main without changing a
- * byte of what the site served, and the deployed game silently sat two weeks
- * behind the repository. Wiring the bundle into the build fixes that, but it
- * must never be able to take the storefront down with it - a stale game is a
- * bad day, a site that will not deploy is a worse one.
+ * The measurement below the `NEEDED` probe is what killed that argument. In
+ * the shape it shipped in, this script NEVER ONCE SUCCEEDED on Vercel - not on
+ * the deploy that introduced it, nor on any since. Every build logged "Cannot
+ * find package 'vite'", took the soft exit, and shipped a stale bundle. The
+ * mechanism meant to stop the deployed game going stale was itself the thing
+ * going stale, silently, for its whole life, and the flag is the only reason
+ * nobody found out. A gate that cannot fail does not report; it just agrees.
+ *
+ * So: every failure is now fatal by default, and the site's `build` script no
+ * longer passes a flag. `git log` and the note above record what the soft exit
+ * actually bought, which was nothing.
+ *
+ * ── THE ESCAPE HATCH, AND THE ONE CASE IT COVERS ──────────────────────────
+ * `--if-available` (or `BUNDLE_GAME_OPTIONAL=1`) still exists for local work,
+ * and it is REFUSED when `VERCEL` is set, so a deploy cannot opt out of its
+ * own gate however the build command is written.
+ *
+ * Even then it softens exactly ONE failure: there is no game project at `..`
+ * at all. That case is distinguishable - a missing sibling `package.json` is
+ * "somebody checked out `site/` on its own", which cannot happen on Vercel,
+ * where the whole repository is present. Every other failure is NOT
+ * distinguishable from a real break and so is fatal in every mode:
+ *
+ *   * a dependency install that fails is indistinguishable from a registry
+ *     outage, a corrupt lockfile, or a dependency that no longer resolves;
+ *   * `vite` still missing after the install is the exact fault that hid for
+ *     the flag's whole life;
+ *   * a build that throws, or one that produces no `dist/index.html`, is a
+ *     broken game and nothing else.
+ *
+ * Failing closed on all four is deliberate. If the storefront must ship while
+ * the game is broken, `npm run build:site-only` is right there and says so.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -35,8 +62,17 @@ const game = path.resolve(site, '..');
 const dist = path.join(game, 'dist');
 const dest = path.join(site, 'public', 'game');
 
-/** Best-effort mode: never fail the caller, just leave the committed bundle. */
-const optional = process.argv.includes('--if-available');
+/* `VERCEL` is set on every Vercel build, of every project, in every
+ * environment. It is the one signal that says "this output is going to be
+ * served to somebody", and it is what makes the escape hatch below unavailable
+ * to a deploy no matter how the build command is written. */
+const onVercel = Boolean(process.env.VERCEL);
+const askedOptional = process.argv.includes('--if-available') || process.env.BUNDLE_GAME_OPTIONAL === '1';
+const optional = askedOptional && !onVercel;
+
+if (askedOptional && onVercel) {
+  console.warn('[bundle-game] --if-available/BUNDLE_GAME_OPTIONAL ignored: this is a Vercel build.');
+}
 
 async function exists(p) {
   try {
@@ -47,14 +83,24 @@ async function exists(p) {
   }
 }
 
-/** Give up, loudly but with the exit code the caller asked for. */
-function bail(reason) {
-  if (optional) {
+/**
+ * Give up.
+ *
+ * `soft` is opt-in per call site and exactly one call site passes it - see the
+ * header. Defaulting it to false is the whole change: the previous version
+ * defaulted every reason to soft, so adding a new failure mode silently added
+ * a new way to ship a stale bundle.
+ */
+function bail(reason, { soft = false } = {}) {
+  if (soft && optional) {
     console.warn(`[bundle-game] ${reason}`);
     console.warn('[bundle-game] keeping the committed bundle in public/game.');
     process.exit(0);
   }
   console.error(`[bundle-game] ${reason}`);
+  if (soft) {
+    console.error('[bundle-game] pass --if-available to tolerate this outside a Vercel build.');
+  }
   process.exit(1);
 }
 
@@ -62,8 +108,12 @@ const run = (cmd, args, cwd) =>
   execFileSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
 
 async function main() {
+  /* THE ONE SOFT FAILURE. A missing sibling `package.json` means `site/` was
+   * checked out on its own, which is a shape only a person can produce - on
+   * Vercel the whole repository is present, and `onVercel` refuses the flag
+   * there anyway. */
   if (!(await exists(path.join(game, 'package.json')))) {
-    bail(`no game project found at ${game}.`);
+    bail(`no game project found at ${game}.`, { soft: true });
     return;
   }
 
@@ -185,11 +235,11 @@ async function writeBuildStamp(dir) {
   );
 }
 
+/* Fatal in every mode, `--if-available` included. An exception nobody
+ * anticipated is the least distinguishable failure there is - it could be a
+ * full disk, a permission, or a bug in this file - so it is the last thing
+ * that should be allowed to pass as "the game was not available". */
 main().catch((e) => {
-  if (optional) {
-    console.warn('[bundle-game] unexpected failure, keeping the committed bundle:', e?.message ?? e);
-    process.exit(0);
-  }
   console.error(e);
   process.exit(1);
 });

@@ -51,7 +51,7 @@ export default async function PurchasesPage({
 
   return (
     <div className="page-body">
-      <div className="page-title">Purchases</div>
+      <h1 className="page-title">Purchases</h1>
       {saved ? <div className="form-success">Saved.</div> : null}
       {error ? <div className="form-error" style={{ marginBottom: 16 }}>{error}</div> : null}
 
@@ -75,7 +75,7 @@ export default async function PurchasesPage({
       </div>
 
       <section className="card" style={{ marginBottom: 20 }}>
-        <div className="section-title">Create manual purchase</div>
+        <h2 className="section-title">Create manual purchase</h2>
         <form action={createPurchase}>
           <div className="form-grid">
             <div className="form-row">

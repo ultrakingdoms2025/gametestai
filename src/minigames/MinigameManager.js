@@ -49,11 +49,77 @@ export const MINIGAME_STATE = {
 /**
  * Credits a win pays.
  *
- * One number for every sport, because the user asked for one number: "if I win
- * I get 10 credits". A venue may override it with `reward`, which is how a
- * harder contest would be worth more later without this constant moving.
+ * ── The number this replaces, and the measurement that moved it ──────────────
+ *
+ * It was 10, from the user's own sentence: "if I win I get 10 credits". That
+ * was written before there was a shop to spend it in, and the shop is what
+ * makes it wrong. The cheapest row on the shelf is a medkit at 95 CR at the
+ * station (67 at the sports grounds, 138 in the citadel), so a whole contest
+ * paid a ninth of the cheapest thing in the game - while one raider paid 5 CR
+ * of bounty PLUS a guaranteed credit drop off the body. Standing in the outer
+ * ring shooting out-earned every authored contest in the game, per run and per
+ * minute, which is the exact opposite of what the content is for.
+ *
+ * 120 is not a guess. It is the number the ONE venue authored after the shop
+ * existed already pays: `BUTTS_REWARD` in `worlds/dock/YardPlan.js` is 120 for
+ * a 45-second clear of the archery butts, and it shipped. Every other venue
+ * still sits on the pre-shop 8-18 ladder, so the butts is not an outlier to be
+ * trimmed - it is the calibration the other fifteen never got. One contest,
+ * one shelf item.
+ *
+ * A venue may still override it with `reward`; see {@link venuePrize} for what
+ * happens to the fifteen venues that publish a number from the old ladder.
  */
-export const MINIGAME_PRIZE = 10;
+export const MINIGAME_PRIZE = 120;
+
+/**
+ * The prize this file used to pay, and the middle rung of the legacy ladder.
+ *
+ * Kept as a named constant rather than inlined because it is the divisor in
+ * {@link MINIGAME_REWARD_SCALE}, and the relationship - "the old ladder's
+ * middle rung becomes the new standing prize" - is the whole justification for
+ * the scale factor being 12 and not some other number.
+ */
+export const MINIGAME_LEGACY_PRIZE = 10;
+
+/**
+ * Top of the pre-shop reward band, exclusive of anything authored since.
+ *
+ * Every venue in the repo publishes either a number in 8-18 (the fourteen that
+ * predate the shop) or 120 (the yard butts). Nothing sits between 19 and 119,
+ * so a threshold here separates "a rung on the old ladder" from "credits,
+ * meant literally" without needing a flag on the descriptor.
+ */
+export const MINIGAME_LEGACY_BAND_MAX = 20;
+
+/** Multiplier that lifts a legacy rung onto the shelf. 120 / 10. */
+export const MINIGAME_REWARD_SCALE = MINIGAME_PRIZE / MINIGAME_LEGACY_PRIZE;
+
+/**
+ * Credits a venue's published `reward` is actually worth.
+ *
+ * ── Why the manager rescales instead of the worlds being edited ──────────────
+ *
+ * The fifteen legacy numbers are a DIFFICULTY LADDER and a good one: the Souk
+ * Rooftop Dash is an 8, the Long Ascent a 14, the Skyline an 18, and those
+ * rungs were chosen by whoever built the routes. A flat floor would flatten
+ * them all to one number and throw that judgement away; multiplying the ladder
+ * keeps it and moves it onto the shelf, 96-216 CR, straddling the butts' 120.
+ *
+ * The threshold is a MIGRATION RAMP and is meant to become inert: once the
+ * world files carry real credit figures (every one of them is a one-line
+ * change), every published reward is >= MINIGAME_LEGACY_BAND_MAX and this
+ * function is the identity. It is written so that day costs nothing.
+ *
+ * @param {number} raw the venue's published `reward`
+ * @returns {number} whole credits
+ */
+export function venuePrize(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return MINIGAME_PRIZE;
+  if (n >= MINIGAME_LEGACY_BAND_MAX) return Math.floor(n);
+  return Math.floor(n * MINIGAME_REWARD_SCALE);
+}
 
 /**
  * Share of the prize a COMPLETED loss pays.
@@ -81,8 +147,12 @@ export const MINIGAME_PRIZE = 10;
  *    contests and leaving them - you have to see one out, which at 45-180 s a
  *    run pays worse per minute than anything else in the game.
  *
- * A quarter puts the shipped 8-18 band at 2-4 CR: enough that finishing is not
- * nothing, far too little to be a strategy.
+ * A quarter put the shipped 8-18 band at 2-4 CR: enough that finishing is not
+ * nothing, far too little to be a strategy. The share has NOT moved with the
+ * prize rescale (see {@link venuePrize}), so the same quarter now puts the same
+ * fifteen venues at 24-54 CR - a quarter of a shelf item for seeing a contest
+ * out, against a whole one for winning it. The relationship the share encodes
+ * is the point, and it is scale-free.
  */
 export const MINIGAME_FLOOR_SHARE = 0.25;
 
@@ -616,7 +686,10 @@ export class MinigameManager {
        * 50 m above its lodge, so a planar radius alone would either miss the
        * swimmer or offer a race to somebody on a gantry overhead. */
       yTolerance: Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8,
-      reward: Number.isFinite(reward) && reward > 0 ? Math.floor(reward) : MINIGAME_PRIZE,
+      /* Resolved HERE and not at payout, so `consolationFor` - which derives
+       * the participation floor as a share of the prize - sees the credits the
+       * win actually pays rather than the legacy rung. See `venuePrize`. */
+      reward: venuePrize(reward),
       /* A venue's own participation floor, kept RAW and resolved by
        * `consolationFor` at payout. Normalising it here would have to know the
        * reward, and a venue is allowed to publish the two in either order. */
@@ -789,19 +862,31 @@ export class MinigameManager {
 
     /* Quest credit.
      *
-     * Shaped for `QuestSystem._eventTargetCandidates`' DEFAULT branch, which is
-     * what an unknown `type` falls through to: it reads `target`, `id`, `name`,
-     * `role`, `itemId`, `npc.*`, `portal.*`, `worldId` and `world` off the
-     * event and nothing else. So the three handles a quest author can name are
-     * `target`/`id` (the game id, e.g. `swim_challenge`) and `name` (the venue
-     * label, e.g. "Lido Swim Challenge"). `_matchesStepTarget` matches whole
-     * token runs, so a step written `{type:'minigame', target:'swim_challenge'}`
-     * matches both.
+     * Shaped for `QuestSystem._eventTargetCandidates`' DEDICATED `minigame`
+     * branch. This comment used to say the DEFAULT branch and that `won` and
+     * `place` rode along "for a future step type that wants them - today's
+     * matcher does not read either". Both statements stopped being true when
+     * that branch landed, and the second one is the dangerous half: `won` is
+     * now LOAD-BEARING. The branch composes `${gameId}_won` / `${gameId}_lost`
+     * out of it, and eight authored steps target one of those spellings, so
+     * dropping `won` from this payload would quietly make "win the match"
+     * complete on a loss - which is exactly the failure the composite exists
+     * to prevent.
+     *
+     * What the branch reads, and therefore what a quest author can name:
+     *   `name`     the venue label, e.g. "Lido Swim Challenge"
+     *   `venueId`  the venue id, e.g. `meridian_court`
+     *   `won` + `target`/`id`  composed into `<gameId>_won` / `<gameId>_lost`,
+     *             which is also what a bare `<gameId>` or the kind matches
+     *             THROUGH, by token run. See the branch for why the game id is
+     *             never offered bare.
+     * `place` and `score` are still carried and still unread by the matcher;
+     * they are on the payload for a listener that wants the shape of the
+     * result rather than its identity.
      *
      * Emitted on any FINISH, win or lose, and never on an abort: completing a
      * contest is the thing a step counts, and walking out of one is not
-     * completing it. `won` and `place` ride along for a future step type that
-     * wants them - today's matcher does not read either. */
+     * completing it. */
     this.bus?.emit('quest:activity', {
       type: 'minigame',
       target: result.gameId,

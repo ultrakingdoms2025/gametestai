@@ -370,7 +370,7 @@ export const SPORTS_QUESTS = [
       "5 steps, and the first REAL contest in the set. `ski_slalom_won` is the Meridian Downhill module (SkiRun.js, venue `meridian_slope`) and the composite only ever appears in the candidate list on a WON finish — so step 4 is a genuine beat-the-ghost, not a talk dressed as one, and losing or quitting advances nothing. Kjell is both the coach (step 3, `talk`) and the ghost time (the venue rival), which is why the two steps sit together — different step types, so one E press cannot clear both. `sportskit` is a real change: the default outfit is `flightsuit`.",
     steps: [
       { order: 1, label: 'Press E on Marisol "Ripgrind" Vance on the coping — nineteen years of this bowl, and she will not let you drop in without checking your helmet strap', type: 'talk', target: 'Marisol "Ripgrind" Vance', count: 1, world: 'sports' },
-      { order: 2, label: 'Press F2 and change into the Sports kit. You are not skating the deep end in a flight suit', type: 'customize', target: 'sportskit', count: 1, world: 'sports' },
+      { order: 2, label: 'Open the Esc menu, take Character, and change into the Sports kit. You are not skating the deep end in a flight suit', type: 'customize', target: 'sportskit', count: 1, world: 'sports' },
       { order: 3, label: 'Press E on Kjell Nordvik at the foot of the ski mound and let him talk you down the fall line', type: 'talk', target: 'Kjell Nordvik', count: 1, world: 'sports' },
       { order: 4, label: 'Now beat him. Walk up the Meridian Downhill mound and press E to start the slalom — gates down the middle piste against Kjell\'s ghost time, a missed gate costs 2 seconds, and the win pays 10 credits', type: 'minigame', target: 'ski_slalom_won', count: 1, world: 'sports' },
       { order: 5, label: 'Every session ends at the first-aid box. Pick up a medkit from a cache or a wreck', type: 'collect', target: 'medkit', count: 1, world: 'sports' },
@@ -392,7 +392,7 @@ export const SPORTS_QUESTS = [
       { order: 2, label: 'Restock the poolside first-aid box: collect 2 medkits. There is a supply cache on the bottom of the pool if you are willing to dive for it', type: 'collect', target: 'medkit', count: 2, world: 'sports' },
       { order: 3, label: 'Win the Lido Swim Challenge — press E on the pool deck to start, then swim two lengths and touch the walls faster than Tavius\'s pace. The win pays 10 credits', type: 'minigame', target: 'swim_challenge_won', count: 1, world: 'sports' },
       { order: 4, label: 'Two drones have drifted in off the perimeter. Destroy 2 Rogue Security Units before they reach the water', type: 'kill', target: 'Rogue Security Unit', count: 2, world: 'sports' },
-      { order: 5, label: 'Press F2 and put on the Peaked cap — nobody takes a bare-headed lifeguard seriously', type: 'customize', target: 'cap', count: 1, world: 'sports' },
+      { order: 5, label: 'Open the Esc menu, take Character, and put on the Peaked cap — nobody takes a bare-headed lifeguard seriously', type: 'customize', target: 'cap', count: 1, world: 'sports' },
       { order: 6, label: 'Press E on the keeper standing beside the Aether Station arch and log the shift with the hub', type: 'talk', target: 'lorekeeper', count: 1, world: 'sports' },
     ],
   },
@@ -402,7 +402,7 @@ export const SPORTS_QUESTS = [
     world: 'sports',
     line: 'Car Park Lockdown',
     title: 'Take the far car park back off the security drones',
-    credits: 1200,
+    credits: 1060,
     dur: 720,
     pre: ['Perimeter Sweep', 'Weapons Free'],
     notes:
@@ -423,13 +423,13 @@ export const SPORTS_QUESTS = [
     world: 'sports',
     line: 'The Meridian Trials',
     title: 'Enter every discipline the grounds run in one afternoon',
-    credits: 1700,
+    credits: 1210,
     dur: 1440,
     pre: ['Bowl and Piste', 'Kit Check'],
     notes:
       '8 steps. This is the quest the old data tried to write as nineteen dead race steps — and three of its five disciplines are now REAL contests. Steps 3-5 use ANY-RESULT targets (`ski_slalom`, `tennis_match`, `swim_challenge`): the bare game id matches its `_won`/`_lost` composite as a token run, exactly one of which rides on every finish, so entering and FINISHING counts whatever the scoreboard says — but an abort still counts for nothing, so the player cannot clear an entry by quitting. The bowl and the running track have no contest modules, so those two disciplines stay grounded on the coaches who run them. No `X`/`X_won` pair shares this quest (the wins live in n25, n26, n29 and n30), and each finish advances exactly one step because the three game ids share no token run.',
     steps: [
-      { order: 1, label: 'Press F2 and change into the Tracksuit — the trials have a dress code and the officials enforce it', type: 'customize', target: 'tracksuit', count: 1, world: 'sports' },
+      { order: 1, label: 'Open the Esc menu, take Character, and change into the Tracksuit — the trials have a dress code and the officials enforce it', type: 'customize', target: 'tracksuit', count: 1, world: 'sports' },
       { order: 2, label: 'Discipline 1 of 5 — press E on Marisol "Ripgrind" Vance at the skate bowl and enter the bowl session', type: 'talk', target: 'Marisol "Ripgrind" Vance', count: 1, world: 'sports' },
       { order: 3, label: 'Discipline 2 of 5 — ride the Meridian Downhill: press E on the ski mound to start the slalom and carry it through the finish gate. A finished run counts whatever the clock says; a win pays 10 credits on top', type: 'minigame', target: 'ski_slalom', count: 1, world: 'sports' },
       { order: 4, label: 'Discipline 3 of 5 — play a full tennis match against Deborah at the Meridian court: press E courtside to start, F to swing, best of three games. Win or lose, a completed match counts; a win pays 10 credits', type: 'minigame', target: 'tennis_match', count: 1, world: 'sports' },
@@ -445,7 +445,7 @@ export const SPORTS_QUESTS = [
     world: 'sports',
     line: 'Grounds Under Siege',
     title: 'Break the drone push before it reaches the plaza',
-    credits: 2800,
+    credits: 1540,
     dur: 2880,
     pre: ['Car Park Lockdown', 'Deep End Duty'],
     notes:
@@ -468,14 +468,14 @@ export const SPORTS_QUESTS = [
     world: 'sports',
     line: 'Meridian Hall of Fame',
     title: 'Be inducted into the Meridian Hall of Fame',
-    credits: 5200,
+    credits: 2260,
     dur: 5760,
     pre: ['The Meridian Trials', 'Grounds Under Siege', 'Nexus Passport'],
     notes:
       'Capstone, 10 steps — the longest list in the sports set, and the one the minigames were built for: steps 3-5 require ALL THREE contests WON. The three `_won` composites are mutually exclusive by token arithmetic (no game id is a token run inside another\'s composite), so a swim win advances the swim step and nothing else, and a loss advances none of them. The earlier `_won` steps (n25 ski, n26 swim, n29 tennis) are retired before this quest can be accepted, so no single win double-credits across engagements. CROSS-WORLD PREREQUISITE: `Nexus Passport` is the station global that requires setting foot in every world, because a Meridian record is only a Nexus record once the hub has seen you. Steps 1 and 10 are BOTH `interact` and are deliberately different targets — Petra Vance at the board, and the gateway home — because `_advanceSteps` walks every step on each event and two Petra steps would let the player clear the whole capstone with one E press (the exact defect found in the station set, QUEST-AUDIT.md).',
     steps: [
       { order: 1, label: 'Press E on Petra Vance at the grounds board to accept the nomination', type: 'interact', target: 'Petra Vance', count: 1, world: 'sports' },
-      { order: 2, label: 'Press F2 and put on the Headband. Every photograph in that corridor has one in it', type: 'customize', target: 'band', count: 1, world: 'sports' },
+      { order: 2, label: 'Open the Esc menu, take Character, and put on the Headband. Every photograph in that corridor has one in it', type: 'customize', target: 'band', count: 1, world: 'sports' },
       { order: 3, label: 'Record 1 of 3 — win the Lido Swim Challenge: press E on the pool deck, two lengths, and touch home ahead of Tavius\'s pace. The win pays 10 credits', type: 'minigame', target: 'swim_challenge_won', count: 1, world: 'sports' },
       { order: 4, label: 'Record 2 of 3 — win the Meridian Downhill: press E on the ski mound, make every gate on the middle piste, and beat Kjell\'s ghost to the line. The win pays 10 credits', type: 'minigame', target: 'ski_slalom_won', count: 1, world: 'sports' },
       { order: 5, label: 'Record 3 of 3 — win the tennis match: press E at the Meridian court, F to swing, and take the best of three off Deborah. The win pays 10 credits', type: 'minigame', target: 'tennis_match_won', count: 1, world: 'sports' },

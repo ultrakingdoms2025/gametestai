@@ -407,6 +407,174 @@ export function walkwayRailRuns(th, rr, chord, cut) {
   return runs;
 }
 
+/* ------------------------------------------------------------------ */
+/* The observation promenade against the hero window                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The promenade's two flights, and the openings they need in the balustrade.
+ *
+ * ── The defect these constants exist for ──────────────────────────────────
+ * Both flights onto the deck dead-ended against the promenade's own
+ * balustrade. Arithmetic, from the authored numbers alone: a segment is
+ * `174 * (96 deg in rad) / 26 + 0.6` = 11.813 m of chord laid at a spacing of
+ * `158 * (96 deg / 25 rad)` = 10.589 m, so every one of the twenty-six
+ * OVERLAPS its neighbour by 1.22 m across the whole +-48 degrees and the loop
+ * that draws them has no skip condition anywhere. The rail collider spans
+ * y 1.40 to 3.80 and a flight's head arrives at 2.00, so the last thing on the
+ * way up was a 1.8 m wall - and the deck behind it (the hero-window viewpoint,
+ * nine telescopes, the benches) was reachable only by mantling it.
+ *
+ * `walkwayRailRuns` had already solved exactly this for the walkway loop's
+ * four stair openings, so this is that solution applied a second time rather
+ * than a second solution: cut the opening OUT OF the piece along its own axis,
+ * never skip the piece. A promenade segment is 11.8 m of arc and an opening is
+ * 6.8 m, so "skip the segment" would leave a hole nearly twice the width of
+ * the flight standing in it.
+ *
+ * `RAIL_GAP_HALF` clears the 6 m flight at +-3.0 with 0.4 m either side, the
+ * same hand's breadth `WALKWAY.STAIR_GAP_HALF` leaves its 4.6 m flight.
+ */
+export const PROMENADE = Object.freeze({
+  /** Inner (balustrade) and outer radius of the raised deck. */
+  R0: 158,
+  R1: 190,
+  /** Bearings of the two flights, degrees. */
+  RAMP_DEG: Object.freeze([-18, 18]),
+  /** Clear width, horizontal run and rise of one flight. */
+  RAMP_W: 6,
+  RAMP_RUN: 6,
+  RAMP_RISE: 2.0,
+  /** Half the opening cut in the balustrade at each flight head. */
+  RAIL_GAP_HALF: 3.4,
+  /** Top face of the raised deck - what a flight has to arrive AT. */
+  DECK_TOP: 2.0,
+  /** Top of the drawn handrail cap: `3.28 + 0.09 / 2`. */
+  RAIL_TOP: 3.325,
+  /** Half the arc the deck spans, degrees. The builder's own extent. */
+  HALF_ARC_DEG: 48,
+});
+
+/**
+ * Is (x, z) standing on the promenade - its deck, or one of its two flights?
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ * The promenade is 32 m of raised deck across 96 degrees at the far end of the
+ * +Z commercial approach, and it was authored after the things standing where
+ * it now is. Nothing on the map knew it was there. Measured on the built world:
+ * the lit shopfront band that lines the approach ran four panels straight
+ * THROUGH it - one across the +18 degree flight with its soffit 0.10 m over
+ * the promenade's own deck height, and three standing on the deck itself.
+ *
+ * So this is the promenade's footprint, published once, for anything that has
+ * to keep out of it. Same shape of answer `StationPlan.roleUnder` gives for a
+ * carriageway; this one is geometric because the promenade is not a plan
+ * region.
+ *
+ * The flights are included because a flight is the only walkable thing inside
+ * `R0`, and a soffit over a flight is exactly as impassable as one over the
+ * deck - more so, because the flight climbs INTO it.
+ *
+ * @param {number} x
+ * @param {number} z
+ * @returns {boolean}
+ */
+export function onPromenadeFootprint(x, z) {
+  const r = Math.hypot(x, z);
+  const half = PROMENADE.HALF_ARC_DEG * DEG;
+  if (r >= PROMENADE.R0 && r <= PROMENADE.R1 && Math.abs(Math.atan2(z, x)) <= half) return true;
+  for (const deg of PROMENADE.RAMP_DEG) {
+    const th = deg * DEG;
+    // Radial and tangential offsets in the flight's own frame.
+    const u = x * Math.cos(th) + z * Math.sin(th);
+    const v = -x * Math.sin(th) + z * Math.cos(th);
+    if (u >= PROMENADE.R0 - PROMENADE.RAMP_RUN && u <= PROMENADE.R0
+      && Math.abs(v) <= PROMENADE.RAMP_W / 2) return true;
+  }
+  return false;
+}
+
+/**
+ * Does an axis-aligned footprint reach the promenade anywhere?
+ *
+ * The four corners are the whole test and that is exact enough to say out
+ * loud: the deck is an annulus sector, and the deepest a straight 8 m chord
+ * bows inside a 152 m arc is `8^2 / (8 * 152)` = 0.053 m. A rectangle whose
+ * corners all miss the promenade by more than a 5 cm sagitta misses it.
+ *
+ * @param {number} cx   footprint centre
+ * @param {number} cz
+ * @param {number} hx   half-extents, world axes (the callers are yaw 0)
+ * @param {number} hz
+ */
+export function boxOnPromenade(cx, cz, hx, hz) {
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      if (onPromenadeFootprint(cx + sx * hx, cz + sz * hz)) return true;
+    }
+  }
+  return onPromenadeFootprint(cx, cz);
+}
+
+/**
+ * Pitch of a promenade flight, and where its `_ramp` proxy centre belongs.
+ *
+ * Same relationship `walkwayStairFlight().rampSeat` pins: the proxy box is
+ * 0.5 m thick and pitched, so its centre has to sit `0.25 / cos(pitch)` below
+ * the walking line for its TOP FACE to lie on that line. Authored flat, the
+ * seat was 0.85 against a drawn grate whose top face is at 1.205, so feet sank
+ * 0.092 m into the visible ramp - the same defect, nearly twice the size, as
+ * the 0.051 m one `rampSeat` was written for.
+ *
+ * `grateSeat` is the matching centre for the 0.2 m drawn pad, so the drawing
+ * and the collider are two expressions of one walking line rather than two
+ * numbers that happen to be close.
+ */
+export function promenadeFlight() {
+  const pitch = Math.atan2(PROMENADE.RAMP_RISE, PROMENADE.RAMP_RUN);
+  const mid = PROMENADE.RAMP_RISE / 2;
+  return {
+    pitch,
+    pitchDeg: pitch / DEG,
+    /** Y of the `_ramp` proxy centre. */
+    rampSeat: mid - 0.25 / Math.cos(pitch),
+    /** Y of the drawn 0.2 m grate pad's centre. */
+    grateSeat: mid - 0.1 / Math.cos(pitch),
+  };
+}
+
+/**
+ * The stretches of one balustrade piece that survive the two flight openings.
+ *
+ * Identical in shape to `walkwayRailRuns`: a run is an interval along the
+ * piece's own long axis and cutting it returns fewer, shorter intervals. The
+ * balustrade is drawn with `ry = -th`, which puts local +Z on the +theta
+ * tangent, so a flight at bearing `sdeg` sits `rr * dtheta` along the piece
+ * from its centre.
+ *
+ * @param {number} th     bearing of this piece's centre, radians
+ * @param {number} rr     radius the piece is drawn at
+ * @param {number} chord  its full length
+ * @returns {Array<[number, number]>} surviving [from, to] offsets from centre
+ */
+export function promenadeRailRuns(th, rr, chord) {
+  let runs = [[-chord / 2, chord / 2]];
+  for (const sdeg of PROMENADE.RAMP_DEG) {
+    let d = sdeg * DEG - th;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const a = rr * d - PROMENADE.RAIL_GAP_HALF;
+    const b = rr * d + PROMENADE.RAIL_GAP_HALF;
+    const next = [];
+    for (const [s, e] of runs) {
+      if (b <= s || a >= e) { next.push([s, e]); continue; }
+      if (a - s > 0.05) next.push([s, a]);
+      if (e - b > 0.05) next.push([b, e]);
+    }
+    runs = next;
+  }
+  return runs;
+}
+
 /**
  * Walking surface of a gateway dais - where the approach steps arrive, where
  * the ceremonial arch stands, and where a portal's own plinth starts.
@@ -1556,8 +1724,28 @@ export const GATEWAY = {
   TREAD_Z0: 11,
   TREAD_W0: 14,
   TREAD_TAPER: 0.75,
-  /** Service ramp on the far side: centre at local z = +12, 8.4 m long. */
-  RAMP_Z: 12,
+  /**
+   * Service ramp on the far side: 8 m of run over the dais's 2.4 m.
+   *
+   * ── 14.6 and not 12, because at 12 the ramp climbed INSIDE the dais ─────
+   * `_ramp` is 8 m long about this centre, so at 12 its head was at local
+   * z = 8 and the dais collider reaches local z = `COLLIDER_HALF` = 10.6. The
+   * last 5.4 m of every one of the six ramps was therefore under the dais: a
+   * body climbing met the rim at 5.4 m up, where the ramp surface is
+   * `2.4 * 5.4 / 8` = 1.62 m and the deck is 2.40 - a 0.78 m rise, over
+   * `CONFIG.player.stepHeight` 0.45 and under `Climb.MIN_RISE_GROUND` 1.0, so
+   * neither a step nor a mantle. It is worse for the thing the ramp exists
+   * for: `Horse`'s own STEP_UP is 0.75 and a mount cannot mantle at all, and
+   * the note on the ramp says in as many words that this is how a mount
+   * reaches the dais.
+   *
+   * `COLLIDER_HALF + 8 / 2` puts the head exactly on the dais edge, so the
+   * ramp arrives at 2.40 where the deck is 2.40. The drawn pad is 8.4 long
+   * and so overlaps the dais by 0.2 m, which is the direction that leaves no
+   * seam. Found by `ramp-landing-clearance.test.mjs` once it started walking
+   * flights instead of only walking off their heads.
+   */
+  RAMP_Z: 14.6,
   RAMP_LEN: 8.4,
   RAMP_HALF_W: 4.2,
 };

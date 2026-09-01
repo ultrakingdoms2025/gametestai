@@ -84,10 +84,17 @@ suite('the owner walkthrough (integration)', () => {
   let db: Client;
   let previousUrl: string | undefined;
   let savedStripeKey: string | undefined;
+  let savedAllowSimulated: string | undefined;
 
   beforeAll(async () => {
     savedStripeKey = process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_SECRET_KEY;
+    /* `grantSimulatedHosting` now needs an explicit opt-in as well as the
+     * absence of a Stripe key — "no key" describes production too. See
+     * `lib/stripe.ts`'s `simulatedPurchasesAllowed`. This suite buys hosting in
+     * order to test what an owner can do afterwards, so it opts in. */
+    savedAllowSimulated = process.env.ALLOW_SIMULATED_PURCHASE;
+    process.env.ALLOW_SIMULATED_PURCHASE = '1';
 
     db = new Client({ connectionString: URL_!, ssl: { rejectUnauthorized: false } });
     await db.connect();
@@ -183,6 +190,8 @@ suite('the owner walkthrough (integration)', () => {
   afterAll(async () => {
     if (savedStripeKey === undefined) delete process.env.STRIPE_SECRET_KEY;
     else process.env.STRIPE_SECRET_KEY = savedStripeKey;
+    if (savedAllowSimulated === undefined) delete process.env.ALLOW_SIMULATED_PURCHASE;
+    else process.env.ALLOW_SIMULATED_PURCHASE = savedAllowSimulated;
     if (db) {
       await wipe().catch(() => {});
       await db.query('DELETE FROM quests WHERE id = $1', [PLAT_QUEST]).catch(() => {});

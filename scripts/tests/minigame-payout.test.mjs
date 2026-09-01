@@ -44,7 +44,7 @@ import assert from 'node:assert/strict';
 const DT = 1 / 60;
 
 const {
-  MinigameManager, MINIGAME_STATE, MINIGAME_PRIZE, consolationFor,
+  MinigameManager, MINIGAME_STATE, MINIGAME_PRIZE, consolationFor, venuePrize,
 } = await import('../../src/minigames/MinigameManager.js');
 
 /* ================================================================== */
@@ -141,7 +141,15 @@ test('a contest you finish and lose pays a participation floor, not zero', () =>
 test('the floor is strictly below the prize, and the prize is unchanged', () => {
   const won = play({ won: true, venue: VENUE({ reward: 12 }) });
   const lost = play({ won: false, venue: VENUE({ reward: 12 }) });
-  assert.equal(won.wallet[0].n, 12, 'the win no longer pays the venue reward');
+  /* `venuePrize(12)`, not a bare 12.
+   *
+   * The Sep-2026 economy audit moved the win prize onto shelf scale (see
+   * `MINIGAME_PRIZE`), and `_readVenue` resolves a published reward through
+   * `venuePrize` on the way in - so a venue publishing a rung of the pre-shop
+   * 8-18 ladder is worth that rung times `MINIGAME_REWARD_SCALE`. The property
+   * this test is about has not changed: the win pays what the VENUE is worth,
+   * whatever that resolves to, and the floor stays strictly under it. */
+  assert.equal(won.wallet[0].n, venuePrize(12), 'the win no longer pays the venue reward');
   assert.ok(lost.wallet[0].n < won.wallet[0].n,
     `a loss pays ${lost.wallet[0].n} against a win's ${won.wallet[0].n} — winning has stopped mattering`);
 });
@@ -233,7 +241,11 @@ test('the loss notice names the floor, because a silent credit is a credit nobod
   const notes = bus.find('hud:notify');
   assert.ok(notes.length >= 1, 'a finished contest said nothing at all');
   const text = notes[notes.length - 1].text;
-  const floor = consolationFor({ reward: 12 });
+  /* The floor of the RESOLVED prize. `consolationFor` is a pure function of
+   * whatever reward it is handed, and the manager hands it the venue as
+   * `_readVenue` normalised it - i.e. through `venuePrize`. Passing the raw 12
+   * here would compute the floor of a prize the contest never paid. */
+  const floor = consolationFor({ reward: venuePrize(12) });
   assert.match(text, new RegExp(`\\+${floor}\\b`),
     `the loss notice "${text}" does not name the ${floor} credits it just paid`);
 });

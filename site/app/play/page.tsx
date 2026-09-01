@@ -8,7 +8,12 @@ import { ENTRY_CENTS, formatCents, grossUp } from '@/lib/pricing';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'AETHER NEXUS' };
+export const metadata = {
+  title: 'AETHER NEXUS',
+  /* Behind the paywall and behind a signed launch cookie: there is nothing
+   * here for a crawler but a redirect to checkout. */
+  robots: { index: false, follow: false },
+};
 
 /**
  * The game, behind the gate.
@@ -36,7 +41,7 @@ export default async function Play() {
 
   if (!src) {
     return (
-      <main className="play-missing">
+      <main id="main" tabIndex={-1} className="play-missing">
         <div className="wrap" style={{ maxWidth: 560 }}>
           <div className="eyebrow" style={{ justifyContent: 'center' }}>Nothing to load</div>
           <h2 style={{ margin: '14px 0 12px', letterSpacing: '0.06em' }}>

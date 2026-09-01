@@ -44,7 +44,7 @@ const {
   REF_PACE, CLIMB_LEG_S, LEAP_APEX, MEDAL_FACTOR, TIMEOUT_FACTOR, START_RADIUS, CP_Y_GATE,
   ROOFTOP_GAME_ID,
 } = await import('../../src/minigames/RooftopTrial.js');
-const { MinigameManager, MINIGAME_STATE } = await import('../../src/minigames/MinigameManager.js');
+const { MinigameManager, MINIGAME_STATE, venuePrize } = await import('../../src/minigames/MinigameManager.js');
 const { RaceRings, DRAGON_RACE } = await import('../../src/race/RaceRings.js');
 
 const DT = 1 / 60;
@@ -498,7 +498,17 @@ test('the manager arms, counts down, runs and pays a rooftop venue', () => {
   assert.equal(mgr.result.won, true);
   assert.equal(mgr.result.score, 'gold');
   assert.equal(mgr.result.gameId, ROOFTOP_GAME_ID);
-  assert.deepEqual(wallet, [{ n: 12, why: 'minigame' }], 'the venue reward was not paid');
+  /* 144, not the 12 the citadel venue publishes.
+   *
+   * `venuePrize` reads a published reward below MINIGAME_LEGACY_BAND_MAX as a
+   * rung on the pre-shop 8-18 ladder and multiplies it onto the shelf, so the
+   * Long Ascent's authored 12 is 12 x MINIGAME_REWARD_SCALE. The ladder is
+   * preserved (an 8 venue and an 18 venue still differ); only its scale moved.
+   * Written as the arithmetic rather than as 144 so the assertion follows the
+   * constants if the scale is ever retuned, and imported rather than restated
+   * so it cannot quietly disagree with the manager. */
+  assert.deepEqual(wallet, [{ n: venuePrize(12), why: 'minigame' }], 'the venue reward was not paid');
+  assert.equal(venuePrize(12), 144, 'the legacy 8-18 ladder must land on shelf scale');
 
   /* The two events the rest of the game reads off a finish: the quest hook and
    * the row SaveGame._recordTrial keeps. */

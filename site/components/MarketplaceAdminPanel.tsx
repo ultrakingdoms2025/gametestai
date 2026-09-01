@@ -10,6 +10,7 @@ import {
   type MarketplaceItemRecord,
   type MarketplaceWorld,
 } from '@/lib/marketplaceCatalog';
+import { ADMIN_REFUSED } from '@/components/adminRefusal';
 import { buildMarketplaceAiImageUrl } from '@/lib/marketplaceImages';
 
 type FormState = {
@@ -156,10 +157,29 @@ function formFromItem(item?: MarketplaceItemRecord | null): FormState {
   };
 }
 
+/**
+ * What the panel is currently saying, and whether it is good news.
+ *
+ * One state rather than two so a success cannot be shown next to the stale
+ * error it replaced, but rendered into TWO always-mounted live regions below —
+ * a `role="status"` and a `role="alert"` — because swapping the `role` on one
+ * node does not reliably re-announce, and an alert that is only created at the
+ * moment it fills is announced late or not at all.
+ */
+type Notice = { kind: 'ok' | 'info' | 'error'; text: string };
+
+const NOTICE_STYLE: Record<Notice['kind'], { color: string; mark: string }> = {
+  ok:    { color: '#7ce3a3', mark: '✓' },
+  info:  { color: '#92adc1', mark: '·' },
+  error: { color: '#ff9b9b', mark: '⚠' },
+};
+
 export function MarketplaceAdminPanel() {
   const [items, setItems] = useState<MarketplaceItemRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState('');
+  /* Sticky until a request succeeds. @see ADMIN_REFUSED */
+  const [forbidden, setForbidden] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [world, setWorld] = useState('');
@@ -173,6 +193,11 @@ export function MarketplaceAdminPanel() {
     [form.game_action]
   );
 
+  const say = (text: string) => setNotice({ kind: 'ok', text });
+  const inform = (text: string) => setNotice({ kind: 'info', text });
+  const warn = (error: unknown, fallback: string) =>
+    setNotice({ kind: 'error', text: error instanceof Error ? error.message : fallback });
+
   async function loadItems() {
     setLoading(true);
     try {
@@ -183,10 +208,14 @@ export function MarketplaceAdminPanel() {
       if (activeOnly) params.set('activeOnly', '1');
       const res = await fetch(`/api/admin/marketplace/items?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to load marketplace items.');
+      if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
+        throw new Error(res.status === 403 ? ADMIN_REFUSED : (data?.error || 'Failed to load marketplace items.'));
+      }
+      setForbidden(false);
       setItems(data.items ?? []);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load marketplace items.');
+      warn(error, 'Failed to load marketplace items.');
     } finally {
       setLoading(false);
     }
@@ -207,32 +236,43 @@ export function MarketplaceAdminPanel() {
   function beginEdit(item: MarketplaceItemRecord) {
     setEditingId(item.id);
     setForm(formFromItem(item));
-    setMessage(`Editing ${item.name}`);
+    inform(`Editing ${item.name}`);
   }
 
-  function resetForm() {
+  /**
+   * `keepMessage`, the same shape `MapEditorPanel.load` already uses for this
+   * exact bug.
+   *
+   * A save did `setNotice('Item updated.')` and then called `resetForm()`,
+   * which cleared it — both in the same synchronous continuation, so React
+   * batched them and the batch's LAST write, the blank, is what rendered.
+   * Every successful save in this panel reported nothing at all, which is why
+   * the bug survived: it looks like an ordinary quiet UI rather than a broken
+   * one. The caller with something to say asks the reset not to clear it.
+   */
+  function resetForm(opts: { keepMessage?: boolean } = {}) {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
-    setMessage('');
+    if (!opts.keepMessage) setNotice(null);
   }
 
   async function uploadImageFile(file: File | null) {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
-      setMessage('Please choose an image file.');
+      setNotice({ kind: 'error', text: 'Please choose an image file.' });
       return;
     }
     if (file.size > 2 * 1024 * 1024) {
-      setMessage('Image file is too large. Please keep it under 2 MB.');
+      setNotice({ kind: 'error', text: 'Image file is too large. Please keep it under 2 MB.' });
       return;
     }
     setImageBusy(true);
     try {
       const dataUrl = await readFileAsDataUrl(file);
       updateField('image', dataUrl);
-      setMessage(`Uploaded image: ${file.name}`);
+      say(`Uploaded image: ${file.name}`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not upload image.');
+      warn(error, 'Could not upload image.');
     } finally {
       setImageBusy(false);
     }
@@ -247,7 +287,7 @@ export function MarketplaceAdminPanel() {
       sourceKey: form.source_key.trim() || undefined,
     });
     updateField('image', imageUrl);
-    setMessage('AI image applied.');
+    say('AI image applied.');
   }
 
   async function saveItem() {
@@ -255,7 +295,7 @@ export function MarketplaceAdminPanel() {
     try {
       actionConfig = parseJsonConfig(form.action_config);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Invalid action config.');
+      warn(error, 'Invalid action config.');
       return;
     }
 
@@ -292,12 +332,18 @@ export function MarketplaceAdminPanel() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Save failed.');
-      setMessage(editingId ? 'Item updated.' : 'Item created.');
-      resetForm();
+      if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
+        throw new Error(
+          res.status === 403 ? `${ADMIN_REFUSED} Nothing was written; the form still holds what you typed.` : (data?.error || 'Save failed.')
+        );
+      }
+      const wasEditing = editingId;
+      resetForm({ keepMessage: true });
+      say(wasEditing ? 'Item updated.' : 'Item created.');
       await loadItems();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Save failed.');
+      warn(error, 'Save failed.');
     } finally {
       setLoading(false);
     }
@@ -309,12 +355,18 @@ export function MarketplaceAdminPanel() {
     try {
       const res = await fetch(`/api/admin/marketplace/items/${item.id}`, { method: 'DELETE' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Delete failed.');
-      setMessage(`Removed ${item.name}.`);
-      if (editingId === item.id) resetForm();
+      if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
+        throw new Error(res.status === 403 ? `${ADMIN_REFUSED} Nothing was removed.` : (data?.error || 'Delete failed.'));
+      }
+      /* The conditional variant of the same bug: the reset only ran when the
+       * deleted item happened to be the one being edited, so a delete
+       * reported its success or not depending on which row was clicked. */
+      if (editingId === item.id) resetForm({ keepMessage: true });
+      say(`Removed ${item.name}.`);
       await loadItems();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Delete failed.');
+      warn(error, 'Delete failed.');
     } finally {
       setLoading(false);
     }
@@ -354,6 +406,30 @@ export function MarketplaceAdminPanel() {
 
   return (
     <div style={panelStyle}>
+      {/* `gridColumn: 1 / -1` rather than a new wrapper: the root here is the
+          two-column grid, and a banner dropped into it as a plain child would
+          sit in the left column. */}
+      {forbidden ? (
+        <div
+          role="alert"
+          data-testid="marketplace-forbidden"
+          style={{
+            gridColumn: '1 / -1', display: 'grid', gap: 8, padding: '14px 16px',
+            borderRadius: 12, border: '1px solid #7a2b2b', background: '#1a0d10',
+            color: '#ffc9cf',
+          }}
+        >
+          <b>The admin API is refusing this browser.</b>
+          <span style={{ fontSize: 13, lineHeight: 1.6 }}>
+            {ADMIN_REFUSED} Signing in again fixes the first. If you are still refused
+            afterwards it is the second, which is an operator change to ADMIN_EMAILS and
+            not something this page can do.
+          </span>
+          <a href="/login?callbackUrl=%2Fadmin%2Fmarketplace" style={{ color: '#9fe4ff' }}>
+            Sign in again →
+          </a>
+        </div>
+      ) : null}
       <section style={cardStyle}>
         <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -388,8 +464,29 @@ export function MarketplaceAdminPanel() {
             <button className="btn btn-primary" type="button" onClick={() => void loadItems()} disabled={loading}>
               {loading ? 'Working…' : 'Refresh'}
             </button>
-            <button className="btn btn-ghost" type="button" onClick={resetForm}>New item</button>
-            <span style={{ color: '#92adc1' }}>{message}</span>
+            <button className="btn btn-ghost" type="button" onClick={() => resetForm()}>New item</button>
+            {/* Both regions are always in the tree and only their text changes,
+                which is what makes an assistive technology announce them. They
+                were one muted-grey span before, so a save and a failure looked
+                identical at a glance and read identically to a screen reader. */}
+            <span
+              role="status"
+              data-testid="marketplace-status"
+              style={{
+                color: notice && notice.kind !== 'error'
+                  ? NOTICE_STYLE[notice.kind].color : 'transparent',
+              }}
+            >
+              {notice && notice.kind !== 'error'
+                ? `${NOTICE_STYLE[notice.kind].mark} ${notice.text}` : ''}
+            </span>
+            <span
+              role="alert"
+              data-testid="marketplace-alert"
+              style={{ color: NOTICE_STYLE.error.color, fontWeight: 600 }}
+            >
+              {notice?.kind === 'error' ? `${NOTICE_STYLE.error.mark} ${notice.text}` : ''}
+            </span>
           </div>
         </div>
 
@@ -556,7 +653,7 @@ export function MarketplaceAdminPanel() {
             <button className="btn btn-primary" type="button" onClick={() => void saveItem()} disabled={loading}>
               {editingId ? 'Save changes' : 'Create item'}
             </button>
-            <button className="btn btn-ghost" type="button" onClick={resetForm}>Clear</button>
+            <button className="btn btn-ghost" type="button" onClick={() => resetForm()}>Clear</button>
           </div>
         </div>
       </section>

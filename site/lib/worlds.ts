@@ -20,7 +20,11 @@ export interface WorldDef {
 export const WORLDS: readonly WorldDef[] = [
   { id: 'station',  index: 1, name: 'Aether Nexus Station', role: 'Hub world',       kicker: 'Orbital',
     copy: 'A working habitat hanging before a planet — plaza, market, hydroponics and hangar bays. The archive, the checkpoint.',
-    fact: 'The gateway to all six worlds', accent: '#52e9ff', loreScope: 'station', scene: 'station', painterKey: 'station' },
+    /* Was "The gateway to all six worlds" — wrong twice over in a seven-entry
+     * array: the station has SIX outbound gateways, and they are not all there
+     * is, because Lodestar Yard's second gate opens onto space and the ten
+     * landable planets beyond it. The station is the hub, not the boundary. */
+    fact: 'Six gateways out — and a yard that opens onto space', accent: '#52e9ff', loreScope: 'station', scene: 'station', painterKey: 'station' },
   { id: 'medieval', index: 2, name: 'Aldermoor Vale',       role: 'Exploration world', kicker: 'Open country',
     copy: 'An old-world valley of timber roofs, market squares and castle walls. The water is swimmable and has real depth.',
     fact: 'Walled town · castle · swimmable lakes', accent: '#ffb347', loreScope: 'medieval', scene: 'medieval', painterKey: 'valley' },
@@ -57,11 +61,35 @@ export const WORLDS: readonly WorldDef[] = [
 export const MOUNTS = 6;
 export const WEAPONS = 4;
 
+/* ── How big the game actually is ─────────────────────────────────────────
+ * WORLDS above holds the seven destinations reachable through the station's
+ * gateway ring. The game registers EIGHTEEN: those seven, plus `SpaceWorld`,
+ * plus the ten `PlanetWorld` subclasses stamped from src/worlds/planets/index.js.
+ * Space and the planets sit behind Lodestar Yard's second gate rather than
+ * behind a ring gateway, which is why they are absent from the array — and why
+ * every count derived from `WORLDS.length` alone undersold the game by eleven.
+ * These live here, beside MOUNTS and WEAPONS, so there is one place to correct
+ * when a world is added. */
+
+/** `PlanetWorld.of(...)` per entry of `PLANETS` in src/worlds/planets/index.js. */
+export const LANDABLE_PLANETS = 10;
+/** `SpaceWorld` — the transit layer the planets are reached through. */
+export const SPACE_WORLDS = 1;
+/** Every world main.js registers: 7 gateway + space + 10 planets = 18. */
+export const TOTAL_DESTINATIONS = WORLDS.length + SPACE_WORLDS + LANDABLE_PLANETS;
+
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /** Hero ticker chips — derived so counts can never be hardcoded out of sync. */
 export function heroTicker(): string[] {
-  return [`${cap(WORLDS.length)} worlds`, `${cap(MOUNTS)} mounts`, `${cap(WEAPONS)} weapons`,
+  /* "Gateways", not "worlds". WORLDS.length is seven — the destinations
+   * reachable through the station's ring — but the game registers eighteen,
+   * because space and the ten landable planets sit behind Lodestar Yard rather
+   * than behind a gateway of their own. Calling seven "worlds" here undersold
+   * the game by eleven and disagreed with the stat tiles, which now say
+   * Gateways too. The eighteen is stated in prose where there is room to
+   * explain it; a three-word chip is not that place. */
+  return [`${cap(WORLDS.length)} gateways`, `${cap(MOUNTS)} mounts`, `${cap(WEAPONS)} weapons`,
     'Zero downloads', '100% generated', 'Runs in a tab', 'No install'];
 }
 /** Stat bar values in [worlds, mounts, weapons, install] order. */

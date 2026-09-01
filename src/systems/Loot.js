@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ITEMS, itemDef, KIND_ACCENT, mountPowerItemId, mountPowerName } from './ItemDefs.js';
 import { allows } from '../worlds/WorldRules.js';
+import { targetMatches } from './QuestSystem.js';
 
 /**
  * NPC loot drops and the world pickups they spawn.
@@ -526,6 +527,14 @@ export class Loot {
     this._world = null;
     this._magnetUntil = 0;
     this._magnetRange = AUTO_RANGE;
+    /**
+     * Live `collect` steps, as `QuestSystem` publishes them.
+     *
+     * Only ever read by `_blockedStepFor`, and only when a pickup was refused.
+     * @type {Array<{target:string, label:string, have:number, count:number,
+     *   questTitle:string}>}
+     */
+    this._questCollect = [];
 
     this._buildPool();
 
@@ -533,6 +542,14 @@ export class Loot {
     this._offs = [];
     if (bus) {
       this._offs.push(bus.on('npc:killed', (e) => this._onNPCKilled(e)));
+      /* What the player is currently being asked to pick up. See
+       * `QuestSystem._publishCollectPending` for why this arrives over the bus
+       * as a flat list rather than being read out of the quest system directly
+       * (main.js hands this class no reference to it), and `_blockedStepFor`
+       * for the one place it is used. */
+      this._offs.push(bus.on('quests:collect:pending', (e) => {
+        this._questCollect = Array.isArray(e?.steps) ? e.steps : [];
+      }));
       this._offs.push(
         bus.on('world:changed', (e) => {
           this._worldId = e?.id ?? this._worldId;
@@ -714,7 +731,32 @@ export class Loot {
     this._dropFor(event.npc);
   }
 
-  /** Roll the table for this world and spawn the pickup at the body. */
+  /**
+   * Roll the table for this world and spawn the pickup at the body.
+   *
+   * ── The guaranteed credit drop, and why its band came down ────────────────
+   *
+   * It was `4 + rand(11)`, i.e. 4-14, mean 9 - on top of `CREDITS_PER_KILL` 5,
+   * so one hostile paid 9-19 CR, mean 14. Against a race that paid 10 for a
+   * full multi-lap win and a contest that paid 8-18, standing in the outer ring
+   * shooting was the best-paid activity in the game. The audit found the
+   * economy miscalibrated in both directions at once, and this is the half that
+   * had to come DOWN; the other half (`RACE_PRIZES`, `MINIGAME_PRIZE`) went up
+   * to meet it.
+   *
+   * `2 + rand(7)` is 2-8, mean 5, so a kill now pays 7-13 CR, mean 10 - a tenth
+   * of the cheapest shelf item (a medkit, 67-138 CR by world). Ten kills buy
+   * one; it used to be seven. The GUARANTEE is untouched, which is what keeps
+   * the promise below true: the floor is 2, never 0, so a body is always worth
+   * the walk even when every item roll comes up empty.
+   *
+   * ⚠ `scripts/quest-vocab.mjs` scrapes the FIRST 600 CHARACTERS of this method
+   * for `itemId: '…'` to learn what a corpse can drop, and `credits` is the
+   * first of them. Prose belongs up here, not in the body: a comment long
+   * enough to push that push past the window silently deletes `credits` from
+   * the collect vocabulary, and six authored steps across five quests stop
+   * resolving.
+   */
   _dropFor(npc) {
     // The maze wants no pickups.
     if (!allows(this._world, 'loot')) return;
@@ -722,8 +764,9 @@ export class Loot {
     const contents = [];
 
     // Credits are guaranteed; they are the reason a pickup is always worth
-    // walking to even when the ammo roll comes up empty.
-    contents.push({ itemId: 'credits', qty: 4 + Math.floor(Math.random() * 11) });
+    // walking to even when the ammo roll comes up empty. 2-8, mean 5 — see the
+    // method note above for the arithmetic, and for the 600-character window.
+    contents.push({ itemId: 'credits', qty: 2 + Math.floor(Math.random() * 7) });
 
     let rolls = 0;
     for (const entry of table) {
@@ -1051,8 +1094,54 @@ export class Loot {
     this._applyAccent(p);
     if (took === 0 && this._fullNotifyT <= 0) {
       this._fullNotifyT = 3;
-      this.bus?.emit('hud:notify', { text: 'Inventory full — pickup left on the ground', tone: 'warn' });
+      /* NAME THE STEP THE FULL BAG IS BLOCKING.
+       *
+       * `collectEntry` emits `loot:collected` only when something was actually
+       * taken, so a refused pickup advances no `collect` step - correctly, but
+       * SILENTLY. The player saw a counter frozen at 0/3 and, separately, a
+       * throttled warning about inventory space, and nothing joined the two.
+       * The step is the reason they walked over there; saying so turns a
+       * housekeeping notice into an instruction. */
+      const step = this._blockedStepFor(left);
+      this.bus?.emit('hud:notify', {
+        text: step
+          ? `Inventory full — left on the ground, and "${step.label}" (${step.have}/${step.count}) `
+            + 'cannot advance until you free a slot'
+          : 'Inventory full — pickup left on the ground',
+        tone: 'warn',
+      });
     }
+  }
+
+  /**
+   * The live `collect` step, if any, that this refused pile would have advanced.
+   *
+   * Matched with the quest system's own anchored token-run rule rather than a
+   * string compare, because that is what decides whether the step would have
+   * ticked: a step targeting `alloy_scrap` and a pickup of `alloy_scrap` agree,
+   * and a step targeting `relic` matches `relic_coin` exactly as
+   * `_matchesStepTarget` would. Sharing the function is the point - a second
+   * implementation here would eventually disagree with the first, and the
+   * notice would name a step the pickup could not have advanced.
+   *
+   * `credits` never blocks anything: `collectEntry` banks it without asking the
+   * inventory, so it is never in `left`.
+   *
+   * @param {Array<{itemId?:string, grant?:object, qty:number}>} left
+   * @returns {{label:string, have:number, count:number, questTitle:string}|null}
+   */
+  _blockedStepFor(left) {
+    if (!this._questCollect.length || !Array.isArray(left)) return null;
+    for (const entry of left) {
+      const itemId = entry?.itemId;
+      if (typeof itemId !== 'string' || !itemId) continue;
+      for (const step of this._questCollect) {
+        // A step with no target counts ANY pickup, which is how `collect: 3`
+        // with no id is authored - and a full bag blocks that too.
+        if (!step.target || targetMatches(step.target, itemId)) return step;
+      }
+    }
+    return null;
   }
 
   /**

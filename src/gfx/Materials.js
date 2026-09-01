@@ -1719,6 +1719,50 @@ export class MaterialLibrary {
   /**
    * Generate every material and environment map, yielding between bakes so the
    * loading bar keeps animating instead of the tab locking up.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  WORLD-SCOPING THIS WAS SPECIFIED, INVESTIGATED AND REFUSED (1 Sep 2026)
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The cost is real and is stated so nobody has to re-derive it: 44 recipes,
+   * 18 at HERO (512²) and the rest at SMALL (256²), three maps each, is about
+   * 96 MB of texture memory resident from the first frame - and it is paid in
+   * full whichever world the player enters. The obvious move is to give
+   * `warmup` a world scope and leave the rest to `get`, which is already lazy
+   * and would bake on demand.
+   *
+   * Three things kill it, and the third on its own is enough:
+   *
+   * 1. THE CONSUMERS ARE NOT WORLD-SCOPED. Counted across the tree, the
+   *    library's callers are six mount classes, `RacerAI`, `Combat`,
+   *    `BeastBody`, and three worlds (`PlanetWorld` 3, `CitadelWorld` 2,
+   *    `RaceWorld` 1). The mounts and combat are session state - a player
+   *    summons a dragon in whatever world they are standing in - so "what does
+   *    this world need" is the wrong question for most of the set.
+   *
+   * 2. THE SCOPE WOULD HAVE TO BE A HAND-WRITTEN MANIFEST. There is no
+   *    declaration anywhere of which keys a world uses; `get(key)` is called
+   *    from inside builders, often through the `'key:repeat'` shorthand. A
+   *    per-world key list is exactly the hand-typed list that goes stale, and
+   *    this repository has now paid for that shape at least three times in
+   *    the harness's own framing tables.
+   *
+   * 3. A LATE BAKE IS A LATE PROGRAM LINK, AND THAT IS THE WORST THING IN
+   *    THIS GAME. `get` does not merely bake textures - it constructs a new
+   *    `THREE.Material`. The boot warm (`prewarm` -> `rehearse` ->
+   *    `gfx/PreviewWarm.js`) draws the materials that exist AT THAT MOMENT to
+   *    force their programs to link. A material created afterwards has no
+   *    program, so its first draw links one on a gameplay frame - and this
+   *    project's own measurement is that ONE `linkProgram` costs up to
+   *    5,433 ms, 5,314 ms of it inside `renderBufferDirect`. Trading ~96 MB of
+   *    VRAM for a chance of a five-second freeze is the wrong way round.
+   *
+   * If this is ever revisited, the order is: make the scope DERIVED (a world
+   * declares its keys, or the library records what each build asked for and
+   * that recording is the manifest), and only then scope the bake - and the
+   * boot warm has to be scoped with it, in the same commit, or 3 above lands
+   * anyway.
+   *
    * @param {(progress:number, label:string)=>void} [onProgress]
    */
   async warmup(onProgress) {

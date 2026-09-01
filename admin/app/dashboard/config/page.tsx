@@ -99,14 +99,14 @@ export default async function ConfigPage({
 
   return (
     <div className="page-body">
-      <div className="page-title">Config</div>
+      <h1 className="page-title">Config</h1>
       {saved ? <div className="form-success">Config saved.</div> : null}
       {adminSaved ? <div className="form-success">Admin credentials updated.</div> : null}
       {error ? <div className="form-error" style={{ marginBottom: 16 }}>{error}</div> : null}
 
       <div className="grid-2">
         <section className="card">
-          <div className="section-title">Configuration keys</div>
+          <h2 className="section-title">Configuration keys</h2>
           <form action={saveConfig}>
             <div className="form-grid">
               <div className="form-row">
@@ -143,7 +143,7 @@ export default async function ConfigPage({
         </section>
 
         <section className="card">
-          <div className="section-title">Admin security</div>
+          <h2 className="section-title">Admin security</h2>
           <div style={{ color: 'var(--txt-dim)', marginBottom: 14, fontSize: 12 }}>
             Logged in as <span className="mono">{session.username}</span>
           </div>
@@ -176,7 +176,7 @@ export default async function ConfigPage({
 
           {totpSecret ? (
             <div style={{ marginTop: 24 }}>
-              <div className="section-title">New 2FA QR</div>
+              <h2 className="section-title">New 2FA QR</h2>
               <p style={{ color: 'var(--txt-dim)', fontSize: 12, marginTop: 0 }}>
                 Scan this code in your authenticator app now. Secret:
                 <span className="mono" style={{ display: 'block', marginTop: 6 }}>{totpSecret}</span>

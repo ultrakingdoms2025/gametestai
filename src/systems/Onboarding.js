@@ -80,6 +80,39 @@ import { CHARACTER_SKINS_BY_ID } from './Cosmetics.js';
  *
  * Every `text` is an instruction with a key in it. "Explore the station" is not
  * an instruction; "hold W to walk, Space to jump" is.
+ *
+ * ===========================================================================
+ *  `keys`, AND WHY THE PROSE IS NO LONGER ALLOWED TO BE THE ONLY RECORD
+ * ===========================================================================
+ *
+ * Two of these instructions named keys that do nothing, and both survived
+ * every gate this file had, because the gates asserted the `teaches` tag and
+ * the `event` and never once read the sentence the player is actually shown:
+ *
+ *   - step 7 said "G summons your mount". G is `fittings` in
+ *     `Input.BINDABLE` - a HOLD that reinterprets the digit row while you are
+ *     ALREADY riding. On foot it does nothing whatever. The only player-facing
+ *     summon is the mount wheel, which is the `map` action, which ships on M.
+ *   - the opening reward said "Press Tab for your bag". Tab is in
+ *     `Input.RESERVED_CODES`: it can never be bound, by `setBinding` or by
+ *     storage, and nothing in the game listens for it. The bag is `KeyI`.
+ *
+ * Step 7 of 8 could therefore not be completed by following its own
+ * instruction - in the first two minutes of the game, for every new player.
+ *
+ * So each step now DECLARES the keys its sentence names, as `keys`: a
+ * `BINDABLE` action (rebind-proof, because the action is the identity and the
+ * letter is not) or a literal `event.code` for the handful of keys that have
+ * private window listeners instead of bindings (`KeyB`, `KeyI`).
+ * `onboarding.test.mjs` then resolves BOTH directions: every key name in the
+ * prose has to appear in `keys`, and every entry in `keys` has to appear in
+ * the prose - and anything that resolves to no real key at all fails outright.
+ * Neither list can move without the other.
+ *
+ * What that still cannot see, said plainly: `keys` is written by the same hand
+ * as the sentence, so `keys: ['fittings']` beside "G summons your mount" would
+ * pass. The gate turns a silent proofreading miss into a deliberate lie, which
+ * is the most a static check of prose can honestly do.
  */
 export const ONBOARDING_STEPS = Object.freeze([
   Object.freeze({
@@ -87,6 +120,7 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'movement',
     event: 'player:footstep',
     title: 'Get your bearings',
+    keys: ['forward', 'left', 'back', 'right', 'jump', 'sprint'],
     text: 'W A S D to walk, Space to jump, Shift to sprint.',
   }),
   Object.freeze({
@@ -94,6 +128,7 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'interaction',
     event: 'chat:open',
     title: 'Talk to someone',
+    keys: ['interact'],
     text: 'Walk up to anybody on the concourse and press E. They will talk back.',
   }),
   Object.freeze({
@@ -101,6 +136,9 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'combat',
     event: 'weapon:fired',
     title: 'Draw and fire',
+    /* The digit row is not a BINDABLE action - it is claimed alternately by
+     * `Loadout.SLOT_KEYS` and `MountFittings`, so it is declared by code. */
+    keys: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'reload'],
     text: '1-4 picks a weapon, left mouse fires, R reloads.',
   }),
   Object.freeze({
@@ -108,6 +146,7 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'combat',
     event: 'npc:killed',
     title: 'Put a hostile down',
+    keys: [],
     text: 'Raiders work the outer ring. Down one.',
   }),
   Object.freeze({
@@ -115,6 +154,7 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'reward',
     event: 'loot:collected',
     title: 'Take the drop',
+    keys: [],
     text: 'Walk over what it left. Credits and ammunition go straight into your bag.',
   }),
   /* --- the station's record, which is also the end of the tutorial ------ */
@@ -123,6 +163,9 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'marketplace',
     event: 'market:trade',
     title: 'Trade',
+    /* B has no binding at all: `Marketplace.update` polls the literal
+     * `pressed('KeyB')` and the panel keeps its own window listener beside it. */
+    keys: ['KeyB'],
     text: 'Find a trader and press B. Buy or sell — either counts.',
   }),
   Object.freeze({
@@ -130,13 +173,25 @@ export const ONBOARDING_STEPS = Object.freeze([
     teaches: 'mount',
     event: 'mount:mounted',
     title: 'Ride',
-    text: 'G summons your mount. Get on it.',
+    keys: ['map'],
+    /* M, not G.
+     *
+     * G is `{action:'fittings', code:'KeyG'}` in `Input.BINDABLE` - a HOLD that
+     * reinterprets the digit row while you are ALREADY riding - so a player who
+     * followed this instruction on foot got nothing at all, and this is step 7
+     * of 8 in the sequence that is the first thing anybody does. The only
+     * player-facing summon is the mount wheel, which is the `map` action, which
+     * ships on M. `onboarding.test.mjs` now scrapes every one of these strings
+     * for key names and resolves each against the real binding table, because a
+     * proofread is not a gate and this drifted without one. */
+    text: 'M opens the mount wheel. Pick one and get on it.',
   }),
   Object.freeze({
     id: 'gateway',
     teaches: 'objective',
     event: 'portal:entering',
     title: 'Chart the Nexus',
+    keys: [],
     text: 'Six gateways ring this dome and eighteen worlds are missing their records. Step through one.',
   }),
 ]);
@@ -338,7 +393,14 @@ export class Onboarding {
   _pay() {
     this.inventory?.acquire?.(ONBOARDING_GRANT.item, ONBOARDING_GRANT.qty);
     this.bus?.emit('hud:notify', {
-      text: `${ONBOARDING_GRANT.label} — yours. Press Tab for your bag.`,
+      /* I, not Tab.
+       *
+       * Tab is in `Input.RESERVED_CODES` - it can never be bound to anything,
+       * by `setBinding` or by storage - and nothing in the game listens for it.
+       * The bag is `KeyI` (`main.js:3018`) and is also a row in the Esc hub.
+       * The first reward this game ever hands a player told them to press a key
+       * the build is incapable of answering. */
+      text: `${ONBOARDING_GRANT.label} — yours. Press I for your bag.`,
       tone: 'good',
     });
   }

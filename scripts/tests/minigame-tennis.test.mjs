@@ -557,9 +557,23 @@ test('winning the match 2-0 pays exactly 10 credits and frees Deborah', () => {
   assert.equal(fin.won, true);
   assert.equal(fin.place, 1);
   assert.equal(fin.score, '2-0', 'a clean sweep is two games to love');
+  /* 120, and no longer the 10 the user first asked for.
+   *
+   * The request ("if I win I get 10 credits") predates the shop, and the shop
+   * is what made it wrong: the cheapest row on any shelf is a medkit at 67-138
+   * CR, so a whole contest paid a ninth of the cheapest thing in the game while
+   * one raider paid 5 CR of bounty PLUS a guaranteed credit drop off the body.
+   * The Sep-2026 economy audit measured that and moved the prize onto shelf
+   * scale. `MINIGAME_PRIZE` carries the arithmetic, including why 120 is not a
+   * guess: it is what `BUTTS_REWARD` - the one venue authored after the shop
+   * existed - has always paid.
+   *
+   * The literal is kept beside the constant on purpose. Asserting only
+   * `MINIGAME_PRIZE` would let the number move silently; asserting both means
+   * moving it stays a deliberate act with a reason attached. */
   assert.equal(fin.credits, MINIGAME_PRIZE);
-  assert.equal(fin.credits, 10, 'the user asked for ten credits, in those words');
-  assert.equal(rig.economy.credits, 10, 'and the wallet has to actually contain them');
+  assert.equal(fin.credits, 120, 'a contest win must buy one shelf item — see MINIGAME_PRIZE');
+  assert.equal(rig.economy.credits, MINIGAME_PRIZE, 'and the wallet has to actually contain them');
   assert.equal(fin.rivalName, 'Deborah Quint-Halloway');
 
   const act = rig.seen.find((s) => s.type === 'quest:activity')?.e;

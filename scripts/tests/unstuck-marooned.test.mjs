@@ -227,6 +227,64 @@ test('K asks before it carries you, and both answers are true', async () => {
     `the player was carried to ${rig.player.position.toArray()} rather than to the pad`);
 });
 
+/* ================================================================== */
+/* THE RESCUE KEY CAN BE MOVED, AND SAYS WHERE IT MOVED TO             */
+/* ================================================================== */
+
+/**
+ * IT WAS THE ONE CONTROL A PLAYER COULD NOT REBIND.
+ *
+ * `if (e.code !== 'KeyK') return` was hard-coded here, and because it was, there
+ * was no `unstuck` row in `Input.BINDABLE`. Two consequences, and the second is
+ * the worse one:
+ *
+ *   - a player whose K is broken, claimed by an IME, or already taken by an
+ *     overlay could not move the rescue key ANYWHERE - and the rescue key is
+ *     what you reach for when everything else has stopped working; and
+ *   - a player who learns a game's controls by opening "Rebind keys" - a
+ *     perfectly ordinary way to do it - was never told the escape hatch exists,
+ *     because that panel is a list of what can be bound.
+ *
+ * The row exists now, and the two literals (`BINDABLE`'s shipped code and this
+ * file's `UNSTUCK_DEFAULT_CODE`) are pinned against each other here, because
+ * one key written down twice is one key that stops agreeing with itself.
+ */
+test('the rescue key is a real binding, and the two records of its default agree', async () => {
+  const { BINDABLE, RESERVED_CODES } = await import('../../src/core/Input.js');
+  const { UNSTUCK_DEFAULT_CODE } = await import('../../src/systems/Unstuck.js');
+
+  const row = BINDABLE.find((b) => b.action === 'unstuck');
+  assert.ok(row,
+    'there is no `unstuck` row in BINDABLE - the rescue key is back to being the one '
+    + 'control that cannot be moved and does not appear in the rebind panel');
+  assert.equal(row.code, UNSTUCK_DEFAULT_CODE,
+    'Unstuck.js and Input.js disagree about which key the rescue ships on');
+  assert.ok(!RESERVED_CODES.includes(row.code), 'the rescue ships on a key that cannot be bound');
+  assert.ok(row.label && row.group, 'the row would render blank in the rebind panel');
+});
+
+test('a rebind moves the window listener and the sentence that names the key', async () => {
+  const rig = makeRig({ pads: PAD });
+  const u = await system(rig);
+  const { UNSTUCK_DEFAULT_CODE } = await import('../../src/systems/Unstuck.js');
+
+  // No Input wired at all - the harness case. The default still answers.
+  assert.equal(u.keyCode, UNSTUCK_DEFAULT_CODE);
+
+  // ...and with one, the binding is read live rather than cached, because a
+  // rebind happens mid-session and there is nothing to re-register a listener.
+  u.input = { codeFor: (action) => (action === 'unstuck' ? 'Semicolon' : null) };
+  assert.equal(u.keyCode, 'Semicolon', 'the rescue key ignored the player\'s rebind');
+
+  rig.player.position.set(0, FLOOR, 0);
+  rig.physics.terrainHeight = (x, z) => (Math.hypot(x, z) < 20 ? FLOOR : FLOOR + 60);
+  u._keyUnstuck('manual');
+  const note = rig.events.filter((e) => e.evt === 'hud:notify').at(-1);
+  assert.match(note.payload.text, /Press ; again/,
+    'the offer still names K. This is the one message in the game whose whole purpose '
+    + `is to say which key to press next; it said "${note.payload.text}"`);
+});
+
 test('the offer expires, and an expired offer reports again rather than moving you', async () => {
   const rig = makeRig({ pads: PAD });
   const u = await system(rig);

@@ -7,6 +7,7 @@ import { ChatClient } from '../ai/ChatClient.js';
 import { WeaponWheel, makeIcon } from './WeaponWheel.js';
 import { PauseMenu } from './PauseMenu.js';
 import { allows } from '../worlds/WorldRules.js';
+import { ownedFittings } from '../mounts/MountFittings.js';
 
 /**
  * The whole player-facing interface: crosshair, health, ammo, weapon selector,
@@ -411,6 +412,10 @@ export class HUD {
 
     /* -- v2: mounts ---------------------------------------------------- */
     this._mountId = null;
+    /* True while the player is holding the fittings key, which is when the
+     * badges carry their digit. Published by `MountFittingKeys` on
+     * `mount:fittings`; this class never reads the keyboard itself. */
+    this._fittingsArmed = false;
     this._boost = 1;
     this._boostActive = false;
     this._boostWritten = -1;
@@ -2458,6 +2463,15 @@ export class HUD {
     this._on('mount:dismissed', () => this._setMount(null));
     // A tier bought while already mounted has to show without a remount.
     this._on('mount:powers', ({ mountId }) => this._setMountPowers(mountId));
+    /* The hold-to-switch gesture starting or ending. Only the badges change -
+     * they gain their digit and read as armed - so this is a redraw and
+     * nothing more. See `mounts/MountFittings.js`. */
+    this._on('mount:fittings', ({ armed }) => {
+      const on = armed === true;
+      if (on === this._fittingsArmed) return;
+      this._fittingsArmed = on;
+      this._setMountPowers();
+    });
     this._on('mount:boost', ({ active }) => {
       this._boostActive = !!active;
       this.mountPanel.classList.toggle('boosting', this._boostActive);
@@ -2543,7 +2557,16 @@ export class HUD {
      * has landed. */
     if (this.input?.touchMode) {
       /* Eight chips, not ten: crouch and sprint are labelled on their own
-       * buttons, and on a 390 px screen every chip is most of a line. */
+       * buttons, and on a 390 px screen every chip is most of a line.
+       *
+       * THE FITTINGS KEY IS DELIBERATELY ABSENT HERE. It is a keyboard hold,
+       * and a phone has no key to hold; more to the point it would be teaching
+       * a workaround for a problem this player does not have. The gesture
+       * exists because a locked pointer leaves no cursor to click the fitting
+       * badges with, and there is no pointer lock on touch - a thumb taps the
+       * badge directly, which is the route the badges have always carried and
+       * which this build keeps. A ninth chip that solves nothing here would
+       * cost most of a line on the screen that can least afford one. */
       list.innerHTML = [
         ['Left thumb', 'Drag to move'],
         ['Right thumb', 'Drag to look'],
@@ -2571,8 +2594,25 @@ export class HUD {
       ['Space', 'Jump / Swim'],
       ['Space', 'Hold at a wall to climb it'],
       ['Shift Space', 'Running leap'],
-      ['C', 'Crouch'],
-      ['C', 'Dive in air / roll on landing'],
+      /* ONE C CHIP, NOT TWO - AND IT PAYS FOR THE G CHIP BELOW. MEASURED.
+       *
+       * This list WRAPS, so a chip costs a whole line if it does not fit on
+       * the one it lands on, and the Z note further down records what that
+       * costs: nine lines puts "F1 - Full controls, any time" under the fold,
+       * which trades a control for the pointer to every other control.
+       * Measured in Chrome at 1440x760 with the save banner shown - the same
+       * worst case that note used:
+       *
+       *   as shipped, two C chips, no G      8 lines, bottom 764
+       *   + G, two C chips                   9 lines, bottom 804  A LINE WORSE
+       *   + G, these two merged              8 lines, bottom 764  break-even
+       *
+       * The wording is not invented to save space: `Crouch / dive / roll` is
+       * the label `BINDABLE`'s own crouch row carries, and the full sentence
+       * ("Sprint + tap: dodge roll. In the air: dive. On landing: roll") is on
+       * the F1 card this one exists to point at. Two chips under the same key
+       * was a duplicate before it was a budget problem. */
+      ['C', 'Crouch / dive / roll'],
       ['LMB', 'Fire / Charge'],
       ['RMB', 'Aim'],
       ['R', 'Reload'],
@@ -2581,6 +2621,15 @@ export class HUD {
       ['V', 'First / third person'],
       ['M', 'Mount wheel'],
       ['F', 'Dismount'],
+      /* The only way to switch a mount's fittings without ending the ride.
+       *
+       * Same failure this card's own header comment names: the badges shipped
+       * clickable in a build where the pointer is locked during play, so the
+       * control was on screen and unreachable, and the card taught the slow
+       * path (Esc) by teaching nothing. Kept to four words for the line budget
+       * measured below - "Hold" is the whole gesture and "1-4" is where to
+       * look. */
+      ['G', 'Hold: fittings on 1-4'],
       ['Space / C', 'Fly up / down'],
       ['F', 'Board / leave a ship'],
       ['W S', 'Throttle / reverse'],
@@ -3288,6 +3337,13 @@ export class HUD {
    * `preventDefault`s so the pause card underneath does not read the press as
    * "resume". A switched-off fitting is DIMMED AND STRUCK, never removed: the
    * player still owns the tier, and a badge that disappears reads as a refund.
+   *
+   * The click is not the only route and must never be removed: under pointer
+   * lock there is no cursor to click WITH, which is why the fittings key
+   * exists. It is still the only route on touch, where there is no pointer
+   * lock to fight and no keyboard to hold, and from inside the pause hub. So
+   * the badge carries two affordances at once - it is a button, and while the
+   * fittings key is held it is also numbered - and this method draws both.
    * @param {string} [mountId] only redraw if this is the mount being ridden
    */
   _setMountPowers(mountId) {
@@ -3298,19 +3354,29 @@ export class HUD {
     const id = this._mountId;
     const bag = this._mounts?.getPowers?.(id) ?? null;
     if (!bag) return;
-    for (const key of ['power', 'strength', 'shield', 'fire']) {
-      const tier = Math.floor(Number(bag[key]) || 0);
-      if (tier <= 0) continue;
-      // Anything but an explicit false is on, so a manager without the switch
-      // (an older save-only stub, a test double) draws every badge lit rather
-      // than every badge struck through.
-      const on = this._mounts?.isPowerEnabled?.(id, key) !== false;
-      const b = el('button', `mount-pip ${key}${on ? '' : ' off'}`, `${POWER_LABELS[key]}${tier}`);
+    /* `ownedFittings` decides both the membership and the ORDER, and it is the
+     * same call the fittings key makes to work out which badge a digit means.
+     * One source, so the number printed on a badge and the number that
+     * switches it cannot disagree - which matters most in the gapped case, a
+     * mount owning only `power` and `shield` numbering them 1 and 2 rather
+     * than 1 and 3. Anything but an explicit false is on inside it, so a
+     * manager without the switch (an older save-only stub, a test double)
+     * draws every badge lit rather than every badge struck through. */
+    const armed = this._fittingsArmed === true;
+    for (const f of ownedFittings(bag, (k) => this._mounts?.isPowerEnabled?.(id, k) !== false)) {
+      const { key, tier, on, digit } = f;
+      /* The digit is a PREFIX and only while the key is held. Printing it
+       * permanently would be a promise the HUD cannot keep - the digits are
+       * weapon slots the rest of the time - and it would widen every badge on
+       * a phone panel that is already measured to the pixel. */
+      const label = `${armed ? `${digit}·` : ''}${POWER_LABELS[key]}${tier}`;
+      const b = el('button', `mount-pip ${key}${on ? '' : ' off'}${armed ? ' armed' : ''}`, label);
       b.type = 'button';
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const press = armed ? `press ${digit}` : 'click';
       b.title = on
-        ? `${key} tier ${tier} — click to switch off`
-        : `${key} tier ${tier}, switched off — click to switch back on`;
+        ? `${key} tier ${tier} — ${press} to switch off`
+        : `${key} tier ${tier}, switched off — ${press} to switch back on`;
       b.addEventListener('mousedown', (e) => {
         // Same two lines the weapon strip carries: the press must not reach the
         // pause card behind the HUD, which treats a background press as resume.

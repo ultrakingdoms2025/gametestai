@@ -32,6 +32,7 @@ import { CreditReporter } from './systems/CreditReporter.js';
 import { SaveGame } from './systems/SaveGame.js';
 import { UnstuckSystem } from './systems/Unstuck.js';
 import { MountManager } from './mounts/MountManager.js';
+import { MountFittingKeys } from './mounts/MountFittings.js';
 import { WaterVolumes } from './systems/WaterVolumes.js';
 import { Stamina } from './systems/Stamina.js';
 import { Inventory } from './systems/Inventory.js';
@@ -353,6 +354,13 @@ const itemUse = new ItemUseSystem({
 const market = new Marketplace({ bus, economy, inventory, cosmetics, mounts, player, npcManager, input, root: uiRoot });
 const helpMenu = new HelpMenu({ root: uiRoot, bus, input });
 const mountWheel = new MountWheel({ root: uiRoot, bus, input, mounts, worldManager });
+/* Hold G mid-ride and the digit row switches the mount's fittings instead of
+ * weapons. No UI of its own: it publishes `mount:fittings`, the HUD numbers the
+ * badges it already draws, and `Input.claimDigits` is what stops the same press
+ * also changing the weapon. Like the mount wheel it owns its own keydown
+ * listener rather than going through `input.pressed`, because it has to see a
+ * digit press that `Input` has been told to stop reporting. */
+const mountFittingKeys = new MountFittingKeys({ bus, input, mounts });
 /* The on-screen touch layer. Constructed unconditionally and hidden until
  * `input:touchmode` says the session is being driven by a finger, so a desktop
  * player never has it and a tablet that is picked up mid-session does. */
@@ -1179,7 +1187,7 @@ if (overrides.dev) {
     mapOverlay,
     waterVolumes, stamina, inventory, loot, itemUse, effects, market, cosmetics, helpMenu, characterMenu, mountMenu, caches, contracts,
     worldPrefetch,
-  cheats, audio, audioMenu, relics, viewpoints, mountWheel, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
+  cheats, audio, audioMenu, relics, viewpoints, mountWheel, mountFittingKeys, race, raceUI, keybindMenu, questSystem, questBoard, bugReport,
   ships, shipMenu, piloting, spaceCombat, flightHUD, mining, objectives,
   interiors, mazeMap, minigames, minigameUI,
     /* The mission spine and the opening sequence. Exposed for the same reason

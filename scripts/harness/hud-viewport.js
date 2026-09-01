@@ -519,6 +519,20 @@ function dressPlayScene() {
    * the public route agree. */
   hud.attach({ mounts });
   hud._mounts = mounts;
+  /* ARMED, because the numbered badge is the WIDER of the two states.
+   *
+   * Holding the fittings key (G) prefixes every badge with its digit -
+   * "1·PWR 3" instead of "PWR 3" - and the badge row sits in a mount panel
+   * that is measured to the pixel on a 390 px screen. A gate that only ever
+   * saw the resting badges would grade the narrow case and let the wide one
+   * ship clipped, which is the same shape as the `getPowers: () => ({})`
+   * mistake this stub's own comment records. The resting state is strictly
+   * narrower, so measuring the wide one covers both.
+   *
+   * Still three badges and not four: the hoverboard this harness rides sells
+   * three stats, and a fourth would be measuring a mount the game cannot
+   * produce. */
+  hud._fittingsArmed = true;
   hud._setMount('hoverboard');
   hud.mountPanel.classList.add('show');
   hud.prompt.classList.add('show');

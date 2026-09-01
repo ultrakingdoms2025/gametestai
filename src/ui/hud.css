@@ -4393,6 +4393,24 @@ body.inv-menu-open .toasts {
   outline-offset: 1px;
 }
 
+/* THE FITTINGS KEY IS DOWN: the badge is numbered and reads as a live switch.
+
+   Border and glow only, no size change - the row is measured to the pixel on a
+   390 px panel and a badge that grew while armed would reflow the mount name
+   beside it every time the player reached for the key. The digit itself is in
+   the label; this is only what says the numbers mean something right now. */
+.mount-pip.armed {
+  border-color: rgba(255, 214, 92, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 214, 92, 0.35), 0 0 10px rgba(255, 214, 92, 0.28);
+}
+
+/* An armed badge that is switched OFF keeps its strike: the number tells the
+   player which key turns it back on, and the strike still tells them it is
+   off. Both facts are needed at once, so neither rule may cancel the other. */
+.mount-pip.armed.off {
+  opacity: 0.62;
+}
+
 /* Switched off: dimmed and STRUCK, never removed. The tier is still owned and
    still paid for, and a badge that vanishes reads as a refund. The strike is
    what carries the state - the difference between two opacities of cyan on a

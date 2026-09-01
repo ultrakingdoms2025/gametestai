@@ -46,7 +46,16 @@ import { allows } from '../worlds/WorldRules.js';
  * is absent, so the game is fully playable if that module lands late.
  */
 
-/** Slot order is also the 1/2/3/4 key order and the HUD's strip order. */
+/**
+ * Slot order is also the 1/2/3/4 key order and the HUD's strip order.
+ *
+ * These four codes are not exclusively ours. While a mount's fittings are
+ * being switched mid-ride (hold G - see `mounts/MountFittings.js`) the digit
+ * row is CLAIMED, and `Input.pressed` answers false for every code in this
+ * list until the key comes up. The selection loop below therefore needs no
+ * branch of its own: the press is simply not reported to it. `Input`'s
+ * `DIGIT_ROW_CODES` is the same four, and a test pins the two lists together.
+ */
 const SLOT_KEYS = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
 
 /**

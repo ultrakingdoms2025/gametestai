@@ -109,8 +109,31 @@ test('every rebindable verb is reachable without a keyboard', () => {
     ...STICK_ACTIONS,
     ...TOUCH_ACTIONS.map((r) => r.action).filter(Boolean),
   ]);
-  const missing = BINDABLE.map((b) => b.action).filter((a) => !covered.has(a));
+  /* A row may opt out with `touch: false`, and exactly one does.
+   *
+   * The exemption is deliberately narrow and declared in `BINDABLE` rather
+   * than listed here, so the reason sits beside the binding and a new verb
+   * still fails this gate unless somebody writes the word down. It is NOT a
+   * "this one is hard" escape hatch: it is for a verb whose touch route is
+   * something other than a key, which so far means only `fittings` - a key
+   * that reinterprets the digit row, over badges a thumb can already tap
+   * because touch has no pointer lock to fight. The next test pins the list to
+   * one entry so this cannot quietly become the way verbs get skipped. */
+  const missing = BINDABLE
+    .filter((b) => b.touch !== false)
+    .map((b) => b.action)
+    .filter((a) => !covered.has(a));
   assert.deepEqual(missing, [], `verbs with no touch control: ${missing.join(', ')}`);
+});
+
+test('opting out of a touch control stays a one-row exception', () => {
+  /* The gate above is only as strong as the number of rows allowed past it.
+   * `fittings` is reachable on a phone by TAPPING THE BADGE - see
+   * `HUD._setMountPowers`, and the badge-click test in
+   * `mount-fittings.test.mjs` that keeps that route alive. Anything else
+   * appearing here is a verb that shipped unreachable. */
+  const exempt = BINDABLE.filter((b) => b.touch === false).map((b) => b.action);
+  assert.deepEqual(exempt, ['fittings'], `verbs excused from touch coverage: ${exempt.join(', ')}`);
 });
 
 test('firing, aiming and standing down have controls of their own', () => {

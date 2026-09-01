@@ -20,8 +20,17 @@
  * key the player may spam.
  */
 
-/** Every binding, in the order the panel reads them. */
-const GROUPS = [
+/**
+ * Every binding, in the order the panel reads them.
+ *
+ * Exported so a test can assert against the rows themselves rather than
+ * against this file's source text. This list is HAND-MAINTAINED - it does not
+ * read `BINDABLE` - so a new keybind that lands in the rebinding panel
+ * automatically can still be missing from the only page that explains what it
+ * is for. `scripts/tests/mount-fittings.test.mjs` holds that shut for the
+ * fittings key; the next person to add a control should extend it.
+ */
+export const GROUPS = [
   {
     title: 'Movement',
     accent: 'cy',
@@ -78,6 +87,7 @@ const GROUPS = [
       ['M', 'Mount wheel — hold, aim, release'],
       ['1-6', 'Pick from the wheel directly'],
       ['F', 'Dismount'],
+      ['G', 'Fittings — hold, and 1-4 switch them off and on'],
       ['Shift', 'Gallop, sprint the pedals, or beat the eagle’s wings'],
       ['Space', 'Fly up — dragon and eagle; hop on the bicycle'],
       ['C', 'Fly down — dragon and eagle'],

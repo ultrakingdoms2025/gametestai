@@ -88,9 +88,40 @@ export const BINDABLE = [
    * control; `Piloting.TRANSIT_KEY` holds the literal and explains why Z and
    * not Q (Q is the only free half of the unbuilt lateral-thruster pair). */
   { action: 'transit', code: 'KeyZ', label: 'Transit drive (ship)', group: 'Actions' },
+  /* HOLD, and while it is held the digit row switches the ridden mount's
+   * fittings instead of weapons. See `mounts/MountFittings.js` for the whole
+   * gesture and for why the key is a letter rather than a modifier - the short
+   * version is that ShiftLeft is Sprint (four rows up), so Shift+digit would
+   * fire on every weapon change made while sprinting, and Ctrl/Alt/Meta are
+   * dropped outright by `onKey` below and are in RESERVED_CODES. */
+  /* `touch: false` - the ONLY row that carries it, and the only one that
+   * should. Every other verb here needs an on-screen button because a phone
+   * has no key to send it with, and `touch-controls.test.mjs` fails any row
+   * without one. This verb is different in kind: it is not a key that DOES a
+   * thing, it is a key that temporarily REINTERPRETS four other keys, and the
+   * thing it reinterprets them into - the fitting badges - is already a
+   * tappable button on touch. The gesture exists only because a locked pointer
+   * leaves a desktop player no cursor to tap that button WITH, and there is no
+   * pointer lock on touch. A tray button for it would be a control that solves
+   * a problem that phone does not have, and would then need four more buttons
+   * for the digits it arms. */
+  { action: 'fittings', code: 'KeyG', label: 'Hold: mount fittings on 1-4', group: 'Actions', touch: false },
   { action: 'mapOut', code: 'BracketLeft', label: 'Minimap zoom out', group: 'Actions' },
   { action: 'mapIn', code: 'BracketRight', label: 'Minimap zoom in', group: 'Actions' },
 ];
+
+/**
+ * The four digits the weapon slots live on, and the only keys {@link
+ * Input#claimDigits} can take away.
+ *
+ * Named here rather than at the one consumer because there are two now:
+ * `Loadout.SLOT_KEYS` reads them as weapon slots and `MountFittings` reads
+ * them as fitting switches, and the whole point of the claim is that exactly
+ * one of those is answering at a time. `scripts/tests/mount-fittings.test.mjs`
+ * pins this list against the one in `Loadout.js`, because two lists that must
+ * be identical and are written out twice will not stay identical.
+ */
+export const DIGIT_ROW_CODES = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
 
 const BIND_STORAGE = 'aether-nexus:binds:v1';
 const FS_STORAGE = 'aether:fullscreen';
@@ -187,6 +218,10 @@ export class Input {
     this._touchRight = 0;
     /** While the chat box has focus we swallow all gameplay input. */
     this._textCaptured = false;
+
+    /* While another gesture owns the digit row, `pressed` refuses to report
+     * Digit1-4. See {@link Input#claimDigits}. */
+    this._digitsClaimed = false;
 
     /* Fullscreen is a preference now, not an unconditional side effect of
      * taking the pointer: `requestLock` re-entered it on every resume, so the
@@ -783,7 +818,49 @@ export class Input {
    * without being touched.
    */
   pressed(code) {
-    return this._pressedThisFrame.has(this._bindsInverse.get(code) ?? code);
+    const resolved = this._bindsInverse.get(code) ?? code;
+    /* THE DIGIT ROW IS ON LOAN. See {@link Input#claimDigits}. */
+    if (this._digitsClaimed && DIGIT_ROW_CODES.includes(resolved)) return false;
+    return this._pressedThisFrame.has(resolved);
+  }
+
+  /** True while something has taken Digit1-4 away from `pressed`. */
+  get digitsClaimed() {
+    return this._digitsClaimed;
+  }
+
+  /**
+   * Lend the digit row to a gesture that means something else by it.
+   *
+   * ── Why the suppression lives HERE and not in `Loadout` ───────────────────
+   *
+   * `Loadout.update` runs `if (input.pressed(SLOT_KEYS[i])) this.select(i)`
+   * every frame, so the mount-fitting gesture (hold a key, tap a digit) would
+   * switch the weapon on the very same press that switched the fitting. Three
+   * cures were available and this is the one that cannot be got wrong:
+   *
+   *   - a flag `Loadout` consults would work, and would then have to be
+   *     re-remembered by the next thing that reads a digit. `TouchActions`
+   *     already routes four tray buttons through these codes; a future
+   *     hotbar would be a fourth reader. This covers all of them at once.
+   *   - `stopPropagation` on the claiming handler's capture-phase listener
+   *     would stop `Input` recording the press at all, which is tidy right up
+   *     until a held digit's keydown is swallowed and its keyup is not, and
+   *     the two halves of `_keys` disagree.
+   *   - answering `false` from the ONE funnel every gameplay consumer already
+   *     goes through, which is this. `_pressedThisFrame` is left exactly as it
+   *     was, so nothing about key bookkeeping changes and `endFrame` still
+   *     clears it; the press simply is not reported while it is spoken for.
+   *
+   * The claimant reads its digits from its own `keydown` listener, not from
+   * `pressed`, so it is unaffected by its own claim. `held()` is deliberately
+   * NOT gated: it answers "is this key physically down", nothing reads it for
+   * a digit, and a claim is about meaning rather than about physics.
+   *
+   * @param {boolean} on
+   */
+  claimDigits(on) {
+    this._digitsClaimed = !!on;
   }
 
   /**

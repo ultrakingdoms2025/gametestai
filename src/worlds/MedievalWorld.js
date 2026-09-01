@@ -406,6 +406,70 @@ const SLATE_TINTS = [0x9aa2ad, 0x8b939e, 0xa7afba, 0x7f8792];
 const SHUTTER_TINTS = [0x8a4b3c, 0x4f6b52, 0x3f5a78, 0x7a6132, 0x6b4a63];
 const HERALD = [0xb02a33, 0x2a5aa8, 0xd7a63f, 0x2f2723, 0x2f7a4d, 0x7d3f8f];
 
+/**
+ * Aldermoor's market furniture: the nine trestle stalls, `[x, z, yaw, kind, tint]`.
+ *
+ * ── Why this is a module constant and not nine calls in `_buildMarket` ─────
+ * It used to be nine literal `stall(...)` calls, which was fine while the only
+ * thing that wanted to know where a stall stood was the builder that drew it.
+ * It is not fine now that a MERCHANT stands behind one: a counter and its
+ * keeper written out separately are two coordinates to keep in step, and the
+ * one that drifts is always the one nobody can see drifting - a shopkeeper
+ * three metres behind a stall reads as a shopkeeper standing in the street,
+ * and nothing fails. `_buildMarket` draws from this table and
+ * `_buildInhabitants` derives its counters from the same rows, so a stall that
+ * moves takes its keeper with it. Same discipline as `PLOTS`.
+ *
+ * `yaw` is the stall's own rotation and it is load-bearing twice over: the
+ * awning and the goods are laid out in the stall's local frame, and the
+ * keeper's side is local -Z (behind the trestle), so `KEEPER_STANDOFF` and the
+ * merchant's facing both come out of this number rather than out of a guess.
+ */
+export const MARKET_STALLS = [
+  [21, 8, 0.05, 'produce', 0xd9534a],
+  [29, 7.5, -0.06, 'bread', 0xe0b455],
+  [37, 8, 0.04, 'fish', 0x4f83c4],
+  [45, 10, -0.32, 'cloth', 0x6fae6a],
+  [22, 28, Math.PI + 0.05, 'cloth', 0xc06fb0],
+  [31, 28.5, Math.PI - 0.04, 'produce', 0xd9534a],
+  [43, 27, Math.PI + 0.22, 'bread', 0xe0b455],
+  /* An east row, so the square is enclosed on three sides rather than being
+   * two facing rows across a void - and so the composed framing that looks
+   * west into the market has striped awning in its middle distance instead
+   * of forty metres of empty paving. */
+  [49.5, 14.5, Math.PI / 2 + 0.06, 'produce', 0xd9534a],
+  [48.2, 23.0, Math.PI / 2 - 0.05, 'fish', 0x4f83c4],
+];
+
+/**
+ * How far behind a trestle its keeper stands, metres, in the stall's own frame.
+ *
+ * The stall is 2.4 m deep (`D`), its board spans local z -0.9 to +0.9 and its
+ * four posts stand at local (+/-1.8, +/-1.2). 1.45 puts the merchant a hand's
+ * width behind his own board and a quarter of a metre behind the rear post
+ * line, which is (a) the side a stallholder stands on, (b) between the two
+ * rear posts rather than inside one, and (c) still under the awning, which
+ * spans local z -1.95 to +1.95. The customer gets the +Z side, which is the
+ * side that faces into the square on every one of the nine.
+ */
+export const KEEPER_STANDOFF = 1.45;
+
+/** The open-air smithy on the market's east side: forge, chimney and anvil. */
+export const SMITHY = { x: 47, z: 20 };
+
+/**
+ * Where the smith stands to be traded with.
+ *
+ * The smithy is not a trestle - it is a forge, a chimney, an anvil block at
+ * `SMITHY + (2.6, 1.4)` and a tool rack, all laid out unrotated - so there is
+ * no local +Z to hand a customer and the counter has to be named. (2.5, 2.5)
+ * is three metres off the anvil, on flat ground at 4.64 m with no collider
+ * over it and nothing to step up onto, and it is the pin Bram Tallow has stood
+ * on since the village was built. Written against `SMITHY` so that moving the
+ * forge moves the smith.
+ */
+export const FORGE_COUNTER = { x: SMITHY.x + 2.5, z: SMITHY.z + 2.5 };
+
 /* ------------------------------------------------------------------ *
  * Shell vernaculars.
  *
@@ -9708,7 +9772,17 @@ export class MedievalWorld extends World {
     };
 
     /* Which plots get what. Chosen by position rather than by index so the
-     * dressing lands on the plots the composed vantages actually see. */
+     * dressing lands on the plots the composed vantages actually see.
+     *
+     * SEVEN of these eight are dressed. `[8, -6]` names a plot that no longer
+     * exists - it was removed from `PLOTS` when it turned out to be sitting on
+     * the Quest Manager's spawn - so `PLOTS.find` returns undefined and the
+     * loop below `continue`s past it. Left in place rather than repointed
+     * because moving it would dress an eighth facade nobody has photographed,
+     * and written down rather than deleted because a silently-skipped row is
+     * exactly the sort of thing that gets counted as eight in a later plan.
+     * The village's merchants stand in the MARKET, not at these facades - see
+     * the note over the three counters in `_buildInhabitants` for why. */
     const TRADES = [
       [14, 4, 0xb02a33], [23, -6, 0xd7a63f], [45, -3, 0x2a5aa8],
       [11, 21, 0x2f7a4d], [33, 41, 0x7d3f8f], [58, 20, 0xb02a33],
@@ -10539,23 +10613,13 @@ export class MedievalWorld extends World {
       }
     };
 
-    stall(21, 8, 0.05, 'produce', 0xd9534a);
-    stall(29, 7.5, -0.06, 'bread', 0xe0b455);
-    stall(37, 8, 0.04, 'fish', 0x4f83c4);
-    stall(45, 10, -0.32, 'cloth', 0x6fae6a);
-    stall(22, 28, Math.PI + 0.05, 'cloth', 0xc06fb0);
-    stall(31, 28.5, Math.PI - 0.04, 'produce', 0xd9534a);
-    stall(43, 27, Math.PI + 0.22, 'bread', 0xe0b455);
-    // An east row, so the square is enclosed on three sides rather than being
-    // two facing rows across a void - and so the composed framing that looks
-    // west into the market has striped awning in its middle distance instead
-    // of forty metres of empty paving.
-    stall(49.5, 14.5, Math.PI / 2 + 0.06, 'produce', 0xd9534a);
-    stall(48.2, 23.0, Math.PI / 2 - 0.05, 'fish', 0x4f83c4);
+    // The table is at module scope because `_buildInhabitants` stands three
+    // merchants behind three of these boards and has to read the same rows.
+    for (const [sx, sz, sry, kind, tint] of MARKET_STALLS) stall(sx, sz, sry, kind, tint);
 
     /* ---- Smithy ---------------------------------------------------- */
-    const sx0 = 47;
-    const sz0 = 20;
+    const sx0 = SMITHY.x;
+    const sz0 = SMITHY.z;
     B.add('rubble', boxGeo(3.2, 1.5, 2.6, 0.6), place(sx0, MY + 0.75, sz0), 0xa79e8b);
     B.add('rubble', boxGeo(1.4, 5.5, 1.4, 0.7), place(sx0 - 1.0, MY + 2.75, sz0 - 0.4), 0x9e9682);
     B.add('rubble', boxGeo(1.7, 0.26, 1.7, 0.9), place(sx0 - 1.0, MY + 5.6, sz0 - 0.4), 0x958d7b);
@@ -13114,29 +13178,223 @@ export class MedievalWorld extends World {
   _buildInhabitants() {
     const at = (x, z, dy = 0) => new THREE.Vector3(x, this._height(x, z) + dy, z);
 
+    /* ------------------------------------------------------------------ *
+     * THE THREE COUNTERS
+     *
+     * ── What was actually wrong, which is not what it looked like ────────
+     * Aldermoor is not a world with no merchants in it. `medieval/Population.js`
+     * plans 24 across the vale and `applyMedievalPopulation` streams them, and
+     * three of those stand in Aldermoor. What the vale had was a HOLE IN THE
+     * STOCK and a hole in the square, and the two have the same cause.
+     *
+     * Aldermoor's trade character resolves to `rural`, whose table is
+     * `['health', 'tools']`. So every merchant a player could reach without
+     * leaving the starting village sold the same two categories, and the other
+     * four were a hike: the nearest `weapons` counter is Aldermoor Keep's at
+     * (-123, -50), the nearest `mounts` is Harrowgate Halt at (291, 166), the
+     * nearest `spells` is Pilgrims' Rest at (-211, 267) and the nearest
+     * `cosmetic` is Fenwick Cross at (195, 374) - 190 m, 300 m, 370 m and
+     * 420 m from the sky-gate respectively. A player who portals in with
+     * credits could buy a draught and a bag rig off anyone who meant to sell
+     * him something.
+     *
+     * The other four were reachable only BY ACCIDENT, and the accident is
+     * worse than the gap. `Marketplace._isVendor` falls back to matching
+     * `VENDOR_WORDS` against a name and a persona - `smith`, `stall`, `market`
+     * and a dozen more - so Bram Tallow ("the village blacksmith"), Rook Danby
+     * ("apprentice at the smithy") and Goodman Alder ("the price of everything
+     * on every stall") all read as traders. A word match authors no
+     * `vendorCategories`, so pressing B at any of them opened the WHOLE
+     * catalogue with a picker that offered `ships` - a category with no rows in
+     * this world at all. The vale's stock was reachable through people who were
+     * not merchants, at counters that were not counters, advertising goods that
+     * do not exist here. Three of these are now the real thing, which is also
+     * what makes `Marketplace._findVendor` rank an authored counter over a
+     * lucky word - see the note there, and the apprentice it was written for.
+     *
+     * ── And why the planner could never have fixed it ────────────────────
+     * `planSettlement` places its cast through `world._isOpenGround`, and
+     * `_isOpenGround` returns false inside `rectDist(.., MARKET.hx, MARKET.hz)
+     * < 2` - the market square plus two metres. Measured: every one of the
+     * nine stalls' keeper positions answers `_isOpenGround` false. The planner
+     * is structurally incapable of putting anybody in Aldermoor's market. The
+     * square's nine trestles, its awnings and the goods on its boards have
+     * therefore always been furniture with nobody behind it, and hand-authored
+     * spawns are the only mechanism that can change that. (Which is why the
+     * world already hand-places Goodman Alder, Tibb Marrow and Wilda there.)
+     *
+     * So the three counters are hand-authored, they stand behind market
+     * furniture that already exists, and between them they carry all six
+     * categories the Nexus catalogue stocks in this world - 48 rows, none of
+     * them `ships`, which is `dock`-only and would be a row no NPC here could
+     * show you.
+     *
+     *     Herbs & Physic     health, spells      north-row produce trestle
+     *     Forge & Armoury    weapons, tools      the smithy's anvil
+     *     Harness & Livery   mounts, cosmetic    north-row cloth trestle
+     *
+     * ── Which stalls, and why not the other six ──────────────────────────
+     * Measured, not chosen. `stall()` pins every trestle at `MARKET.y` (4.6)
+     * while the square's ground runs from 6.35 at its north-west corner to
+     * 4.61 at its south-east, so the west end of the south row is sunk into
+     * the hill: at (21, 8) the board's top is 5.60 and the ground beside it is
+     * 5.79, i.e. the counter is 19 cm BELOW the standing ground and a merchant
+     * behind it is a merchant behind a buried table. (29, 7.5) clears by
+     * 19 cm and (37, 8) by 54 cm. The five that give a real counter - 0.81 m
+     * to 0.96 m of board over the keeper's own ground - are (45,10), (22,28),
+     * (31,28.5), (49.5,14.5) and (48.2,23). Of those, (45,10)'s keeper side is
+     * under a 3.46 m collider and (43,27)'s has a 0.42 m riser through it, so
+     * the north row's two are what is left, and they are the two whose goods
+     * match the trade: herbs off a produce board, livery off a cloth board.
+     *
+     * ── Two of the three are people who already lived here ───────────────
+     * Inventing three strangers to stand next to Bram Tallow the blacksmith
+     * and Wilda Sorrel the herb-seller would have been writing two personas
+     * that already existed, in the same square, selling the same goods. It
+     * would also have cost three of Aldermoor's fourteen planned population
+     * slots instead of one - `applyMedievalPopulation` counts hand-authored
+     * civilians against the settlement's quota rather than doubling it, and at
+     * `already = 12` the village loses its planned reeve. At `already = 10` it
+     * keeps all three planned pedlars and the reeve and gives up one watchman.
+     *
+     * Wilda's own persona says she keeps the herb stall ON THE NORTH SIDE OF
+     * THE MARKET. She was pinned at (21.5, 10.8), which is the south-west
+     * corner. The persona was right and the pin was wrong; (31, 28.5) is the
+     * north-row produce trestle.
+     *
+     * ── The trade-off both of them pay ───────────────────────────────────
+     * `ROLE_DEFS[vendor].stationary` is true, so a vendor holds a post: both
+     * lose their patrols. That is the right way round - a blacksmith standing
+     * at his anvil and a herbalist standing at her stall are doing their jobs,
+     * where before they walked five-metre triangles past the tools of them.
+     * `anchored: true` is written for the same reason `DockWorld` writes it,
+     * and it is worth knowing that it is currently INERT on this path:
+     * `NPCManager.spawnForWorld` does not forward `spec.anchored` into
+     * `_createNPC` (only `spawnOne` and the hub filler set it). The role is
+     * what actually pins them; the flag says what was meant.
+     */
+
+    /**
+     * Where a merchant stands behind one of the market's trestles.
+     *
+     * Derived from `MARKET_STALLS` rather than written out, so a stall that
+     * moves takes its keeper with it - see the note on that table. The keeper
+     * takes local -Z (behind the board) and faces local +Z (the customer's
+     * side, which is the side that looks into the square on all nine).
+     *
+     * Characters face -Z at yaw 0, so facing the world direction
+     * `(sin ry, cos ry)` is `yaw = atan2(-sin ry, -cos ry)`, which is the same
+     * arithmetic `Population.planSettlement` and `NPCManager._populateHubs`
+     * use for their own facings.
+     *
+     * @param {number} index a row of `MARKET_STALLS`
+     * @returns {{ position: THREE.Vector3, yaw: number }}
+     */
+    const counter = (index) => {
+      const [sx, sz, ry] = MARKET_STALLS[index];
+      const s = Math.sin(ry);
+      const c = Math.cos(ry);
+      return {
+        position: at(sx - s * KEEPER_STANDOFF, sz - c * KEEPER_STANDOFF),
+        yaw: Math.atan2(-s, -c),
+      };
+    };
+
+    /**
+     * Face a character at the market cross.
+     *
+     * The smithy is not a trestle - it is a forge, a chimney, an anvil block
+     * and a tool rack, laid out unrotated about `SMITHY` - so there is no
+     * local +Z to hand a customer. The square is where the customer comes
+     * from, so the square is what the smith looks at.
+     */
+    const facingCross = (x, z) => Math.atan2(-(MARKET.x - x), -(MARKET.z - z));
+
+    const HERB = counter(5);        // (31, 28.5), the north row's produce board
+    const LIVERY = counter(4);      // (22, 28), the north row's cloth board
+
     this.npcSpawns = [
       {
-        position: at(49.5, 22.5),
+        position: at(FORGE_COUNTER.x, FORGE_COUNTER.z),
         type: 'friendly',
+        role: 'vendor',
+        anchored: true,
+        yaw: facingCross(FORGE_COUNTER.x, FORGE_COUNTER.z),
         name: 'Bram Tallow',
+        /* `name` then `persona`, ADJACENT, on every one of these three, and
+         * that is not a style preference. `scripts/quest-vocab.mjs` scrapes a
+         * world's authored cast with a regex that requires `persona:` to
+         * follow `name:` with nothing but comments between them, and a
+         * character it cannot see is a character no quest may name. Putting
+         * `vendorTitle` in the gap silently dropped Bram and Wilda out of
+         * medieval's talk vocabulary and broke Q12 and Q19, both of which are
+         * quests about trading in Aldermoor. The shop fields go BELOW. */
         persona:
           'Bram Tallow, the village blacksmith of Aldermoor: a broad, soot-streaked man who ' +
           'talks about steel the way poets talk about love, and who charges double for ' +
           'anything decorative. He has shod horses for three lords and buried two of them. ' +
-          'Strangers from the sky-gate do not surprise him; he just wants to know what their ' +
-          'armour is made of and whether it will take an edge.',
-        patrol: [at(49.5, 22.5), at(45, 24), at(48, 18)],
+          'He sells arrows by the sheaf, heads by the dozen and harness by the yard, quotes ' +
+          'off the anvil without looking up, and holds that a man who will not say what he ' +
+          'wants a blade for should not be sold one. Strangers from the sky-gate do not ' +
+          'surprise him; he just wants to know what their armour is made of and whether it ' +
+          'will take an edge.',
+        vendorTitle: 'Forge & Armoury',
+        /* Arrow bundles, rifle rounds and the four Firepower charms are
+         * `weapons`; the three bag rigs are `tools`. Both are things that come
+         * off a smith's bench - he cuts the heads and he stitches the straps -
+         * and `tools` is the one category Aldermoor already sold, so pairing it
+         * here rather than giving it its own counter keeps three stalls
+         * covering six categories instead of four covering seven. */
+        vendorCategories: ['weapons', 'tools'],
+        signLines: ['FORGE & ARMOURY', 'ALDERMOOR'],
       },
       {
-        position: at(21.5, 10.8),
+        position: HERB.position,
         type: 'friendly',
+        role: 'vendor',
+        anchored: true,
+        yaw: HERB.yaw,
         name: 'Wilda Sorrel',
         persona:
           'Wilda Sorrel keeps the herb stall on the north side of the market: sharp-eyed, ' +
           'cheerfully morbid, and convinced that half of Aldermoor would be dead without her ' +
           'tinctures. She trades gossip as readily as feverfew, prices things by how much she ' +
-          'likes you, and refers to gate-travellers as "the ones who arrive clean".',
-        patrol: [at(21.5, 10.8), at(28, 12), at(24, 20)],
+          'likes you, and sells charms and wards off the same board as the physic without ' +
+          'once conceding they are a different kind of thing. She refers to gate-travellers as ' +
+          '"the ones who arrive clean".',
+        vendorTitle: 'Herbs & Physic',
+        /* The five draughts are `health`; the fifteen runes, wards and sigils
+         * are `spells`, and they are the reason this counter matters most.
+         * Before it, the whole Nexus carried `spells` on exactly two boards -
+         * Sunspire's archive and the yard's Paint & Rope - so fifteen of
+         * Aldermoor's forty-eight rows were stock no medieval NPC could show
+         * you. A wise-woman who sells a tincture and a charm off the same
+         * board is the period-correct answer and the mechanically correct one
+         * at the same time. */
+        vendorCategories: ['health', 'spells'],
+        signLines: ['HERBS & PHYSIC', 'ALDERMOOR'],
+      },
+      {
+        position: LIVERY.position,
+        type: 'friendly',
+        role: 'vendor',
+        anchored: true,
+        yaw: LIVERY.yaw,
+        name: 'Aveline Pyke',
+        persona:
+          'Aveline Pyke, lorimer of Aldermoor: bits, buckles, girths, trappers and any ' +
+          'colours you care to be seen in. She came up from Fenwick Cross with a cart and a ' +
+          'grudge, holds that the vale has no idea what good harness costs, and will tell you ' +
+          'at length that a horse dressed properly is a horse that behaves. Measures ' +
+          'everything twice, haggles cheerfully, and has never once been paid what she asked ' +
+          'for the first time.',
+        vendorTitle: 'Harness & Livery',
+        /* The nine mount upgrades and five liveries are `mounts`; the five
+         * rider skins are `cosmetic`. Both are cloth and leather cut to a
+         * pattern, which is what a lorimer does, and the board she stands
+         * behind is already stacked with bolts and heraldic cloth. */
+        vendorCategories: ['mounts', 'cosmetic'],
+        signLines: ['HARNESS & LIVERY', 'ALDERMOOR'],
       },
       {
         position: at(-19, -55),

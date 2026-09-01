@@ -741,9 +741,9 @@ test('no pack can reach a cordon point, and the slack over it is the whole of MA
    *
    * WHAT THIS TEST MEASURES, STATED EXACTLY, because the two quantities are
    * within a tenth of a metre of each other's names and were transposed once.
-   * `people` is the CORDON's own input - the 149 points `Inhabitants.js` fed to
-   * `planBeasts`, which is 108 spawn pins plus the 41 authored waypoints. Over
-   * those 149 points the shipped placement's worst clearance is 22.2237 m, at
+   * `people` is the CORDON's own input - the 143 points `Inhabitants.js` fed to
+   * `planBeasts`, which is 108 spawn pins plus the 35 authored waypoints. Over
+   * those 143 points the shipped placement's worst clearance is 22.2237 m, at
    * the wolf at (314, -57) against the resident Watchman Perrin Redsill at
    * (319.4, -147.8). Over the ground those civilians can actually OCCUPY it is
    * a quarter of a metre, because the free-roam disc is 22 m wide and eats
@@ -767,9 +767,23 @@ test('no pack can reach a cordon point, and the slack over it is the whole of MA
       if (d - reach < worst) { worst = d - reach; where = `${s.species}@${s.x | 0},${s.z | 0}`; }
     }
   }
-  assert.ok(people.length === 149, `the cordon was drawn round ${people.length} points, not 149`);
+  /* 143 = 108 spawn pins + 35 authored waypoints. It was 149 while the vale's
+   * twelve authored friendlies contributed 41 waypoints between them; two of
+   * them - Bram Tallow and Wilda Sorrel - now hold market counters instead of
+   * walking rounds (`ROLE_DEFS[vendor].stationary`), which retires six legs,
+   * and a third counter was added with no round at all. The spawn-pin count is
+   * unchanged at 108 because `planSettlement` subtracts a hand-authored
+   * civilian from its settlement's quota rather than doubling it: one body
+   * gained here is one resident fewer at Aldermoor.
+   *
+   * Which is exactly why this is a floor-and-composition check and not a
+   * tautology: a counter that STOPPED an NPC walking removes real ground from
+   * the cordon's input, and the assertion below is what says the packs did not
+   * quietly move into it. They did not - the worst clearance is the same
+   * 22.2237 m against the same wolf and the same watchman. */
+  assert.ok(people.length === 143, `the cordon was drawn round ${people.length} points, not 143`);
   assert.ok(worst >= MARGIN && worst < MARGIN + 1,
-    `the worst clearance over the cordon's own 149 points is ${worst.toFixed(4)} m (${where}); it was `
+    `the worst clearance over the cordon's own 143 points is ${worst.toFixed(4)} m (${where}); it was `
     + `22.2237 m when this was written, and anything a metre clear of MARGIN (${MARGIN}) means the `
     + 'packs have drifted back onto the rim and this rule has stopped being the one that binds');
 });

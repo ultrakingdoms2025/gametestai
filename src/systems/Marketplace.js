@@ -745,22 +745,77 @@ export class Marketplace {
     return npc.position.distanceToSquared(p) <= VENDOR_RANGE * VENDOR_RANGE;
   }
 
-  /** Nearest friendly in range that reads as a trader. */
+  /**
+   * Nearest friendly in range that reads as a trader - an AUTHORED counter
+   * first, and only then the word match.
+   *
+   * ── Why rank and not just distance ────────────────────────────────────────
+   * `_isVendor` recognises two quite different things. One is a world author
+   * writing `role: 'vendor'` with a stall title and a stock list; the other is
+   * `VENDOR_WORDS` matching a persona, which exists because the roles came
+   * later and is deliberately generous - it fires on `smith`, `stall`,
+   * `market`, `kit` and a dozen more.
+   *
+   * Generous is right for finding SOMEBODY to trade with in a world that
+   * authored nobody. It is wrong the moment a real counter is standing there,
+   * because nearest-wins then lets a bystander whose persona happens to mention
+   * the smithy stand in front of the smith. Measured in the vale: Bram Tallow
+   * holds the Forge & Armoury counter at (49.5, 22.5) and his seventeen-year-old
+   * apprentice Rook Danby patrols to within 5.4 m of it. Rook's persona says
+   * "apprentice at the smithy", so he matched `smith`; standing at the anvil
+   * opened ROOK - an unrestricted trader, because a word match authors no
+   * `vendorCategories` - and the picker offered `ships`, a category with no
+   * rows in the medieval world at all. The counter behind him was unreachable.
+   *
+   * So: any explicitly-roled vendor in range beats every word match in range,
+   * and distance decides within each rank. It cannot open a shop that distance
+   * alone would not have opened - `VENDOR_RANGE` still bounds both passes - and
+   * where a world authors no vendors at all the behaviour is exactly what it
+   * was.
+   */
   _findVendor() {
     const p = this.player?.position;
     const list = this.npcManager?.friendlies;
     if (!p || !list) return null;
+    const RANGE_SQ = VENDOR_RANGE * VENDOR_RANGE;
     let best = null;
-    let bestSq = VENDOR_RANGE * VENDOR_RANGE;
+    let bestSq = Infinity;
+    let bestAuthored = false;
     for (const npc of list) {
       if (npc.isDead || !this._isVendor(npc)) continue;
       const d = npc.position.distanceToSquared(p);
+      // The range bound is checked FIRST and against the constant, never
+      // against the incumbent: an authored counter outranks a word match only
+      // among characters the player could already have opened.
+      if (d > RANGE_SQ) continue;
+      const authored = this._isAuthoredVendor(npc);
+      if (bestAuthored && !authored) continue;      // rank beats distance
+      if (authored && !bestAuthored) {              // ...in both directions
+        bestSq = d;
+        best = npc;
+        bestAuthored = true;
+        continue;
+      }
       if (d < bestSq) {
         bestSq = d;
         best = npc;
+        bestAuthored = authored;
       }
     }
     return best;
+  }
+
+  /**
+   * True when a world DECLARED this character a counter, rather than the word
+   * match having guessed it. @see _findVendor for why the two are ranked.
+   * @param {any} npc
+   * @returns {boolean}
+   */
+  _isAuthoredVendor(npc) {
+    if (!npc) return false;
+    if (Array.isArray(npc.vendorCategories) && npc.vendorCategories.length) return true;
+    const role = npc.role ?? npc.spawnSpec?.role ?? npc.job;
+    return typeof role === 'string' && /vendor|trader|merchant|shop/i.test(role);
   }
 
   /**

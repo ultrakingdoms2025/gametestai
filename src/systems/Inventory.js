@@ -448,8 +448,8 @@ export class Inventory {
     const rows = [...map.entries()].sort((a, b) => {
       const da = itemDef(a[0]);
       const db = itemDef(b[0]);
-      const ka = KIND_ORDER[da?.kind] ?? 9;
-      const kb = KIND_ORDER[db?.kind] ?? 9;
+      const ka = KIND_ORDER[da?.kind] ?? KIND_ORDER_UNKNOWN;
+      const kb = KIND_ORDER[db?.kind] ?? KIND_ORDER_UNKNOWN;
       if (ka !== kb) return ka - kb;
       return (da?.name ?? a[0]).localeCompare(db?.name ?? b[0]);
     });
@@ -695,5 +695,20 @@ export class Inventory {
  * a mount and then never see again: a player sorting their bag is looking for
  * the ammunition and the medkits, and a wall of 57 possible upgrade cells in
  * front of those would be the sort making the panel worse.
+ *
+ * `shipskin` takes rung 9, its own, BEHIND the mount skins rather than tied
+ * with them. Tied ranks fall through to a name comparison, which would have
+ * interleaved nine ship liveries alphabetically through twenty mount skins -
+ * and "which of these can I actually put on the thing I am standing next to"
+ * is exactly the question the sort is meant to answer. Two runs of cells, one
+ * per vehicle, answers it; one shuffled run does not.
+ *
+ * Rung 9 was the UNKNOWN bucket - `KIND_ORDER[kind] ?? 9` - so taking it moved
+ * the fallback to 99. Left at 9 an item of an unrecognised kind would have
+ * sorted in among the ship liveries by name, which is the one place a reader of
+ * a sorted bag would be least likely to notice it.
  */
-const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3, mountpower: 7, skin: 8 };
+const KIND_ORDER = { ammo: 0, consumable: 1, trinket: 2, currency: 3, mountpower: 7, skin: 8, shipskin: 9 };
+
+/** Where a kind nothing recognises sorts. Past every real rung, on purpose. */
+const KIND_ORDER_UNKNOWN = 99;

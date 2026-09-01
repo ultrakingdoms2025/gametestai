@@ -392,8 +392,22 @@ const mountMenu = new MountMenu({ root: uiRoot, bus, input, mounts, cosmetics, i
  * is in the Esc hub rather than on a function key: F2-F12 are Chrome's and only
  * answer when the page happens to have focus. */
 const ships = new ShipRegistry({ bus, worldManager });
+/* The nine PURCHASED liveries are bag items and the nine free yard schemes are
+ * not, so `ItemUse` needs the hull registry the way it already needs the mount
+ * manager. Assigned after construction, not passed to the constructor a hundred
+ * lines above, for exactly the reason `itemUse.viewpoints` and
+ * `itemUse.spaceCombat` are: `ShipRegistry` reads `worldManager`, which is
+ * built after the item system, and moving the item system down would only move
+ * the knot. `applyShipSkin` treats a null registry as "cannot paint", so the
+ * wire being absent refuses the use instead of eating the livery. */
+itemUse.ships = ships;
 const shipMenu = new ShipMenu({
   root: uiRoot, bus, input, ships, player,
+  /* The wardrobe and the bag, because half the liveries in this panel are
+   * bought. Without them every paid card would read `locked` for ever - the
+   * "built, visible and unreachable" card the ShipStats note names as this
+   * project's signature defect. */
+  cosmetics, inventory,
   /* The camera and the scene, so the panel can point at the hull it is
    * painting. See the turntable note in ShipMenu's constructor: the
    * customiser used to open while the player stood at the ship's stern

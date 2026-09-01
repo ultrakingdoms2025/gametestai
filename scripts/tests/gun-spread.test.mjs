@@ -14,7 +14,7 @@ const { ActiveEffects, EFFECT_KINDS } = await import('../../src/systems/ActiveEf
 const { ITEMS, PACKS, WORLD_MARKETS, KIND_ACCENT, buyMultiplier, setMarketWorld } =
   await import('../../src/systems/ItemDefs.js');
 const { DROP_TABLES } = await import('../../src/systems/Loot.js');
-const { SHIP_CLASSES } = await import('../../src/ships/ShipStats.js');
+const { SHIP_CLASSES, SHIP_SKINS } = await import('../../src/ships/ShipStats.js');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (rel) => readFile(path.join(root, rel), 'utf8');
@@ -691,6 +691,10 @@ test('laser_cell is a consumable, and the bag will therefore offer it a Use', as
   const hasUse = ui.match(/_hasUse\(def\)\s*\{[\s\S]*?\n {2}\}/)?.[0] ?? '';
   assert.ok(hasUse, 'found _hasUse');
   assert.match(hasUse, /'consumable'/, 'the hold-to-use ring no longer covers consumables');
+  /* The seventh kind, checked against the same gate. A `shipskin` the ring
+   * does not know is a bought livery with no Use button and no hold ring - the
+   * exact defect this whole file exists for, one kind later. */
+  assert.match(hasUse, /'shipskin'/, 'the hold-to-use ring does not cover ship liveries');
 
   // And it really does resolve to an effect the ledger knows how to draw.
   const sys = new ItemUseSystem({});
@@ -730,13 +734,42 @@ test('the kind census moved by exactly one item, from ammo to consumable', () =>
    * with a `SpaceCombat.chargeShield` behind it and no ring to press. The
    * census is what makes that visible in a diff instead of in play.
    *
+   * ── A SEVENTH BUCKET: `shipskin` 9 ─────────────────────────────────────
+   * The nine COMMISSIONED ship liveries. Nine and not eighteen, and the
+   * difference is the whole shape of that change: the yard's other nine
+   * liveries shipped FREE, they stayed free, and a free livery gets no item
+   * because there is nothing to carry - the panel paints it. An item generated
+   * for one would be a bag row for a thing every player already owns, which is
+   * a wall of dead cells wearing a Use button.
+   *
+   * A new kind and not a widening of `skin`, and that is not decoration
+   * either. `ItemUse` dispatches on `kind`, and a ship livery and a mount skin
+   * go through different systems, different registries and different refusals
+   * - `wrong-mount` versus `wrong-ship`/`not-here`. One kind for both would
+   * have meant `_useSkin` receiving an id `MOUNT_SKINS_BY_ID` has never heard
+   * of and answering `unsupported`: an item that exists, is bought, sits in
+   * the bag, draws a ring, and does nothing.
+   *
+   * `InventoryUI._hasUse` was widened to match in the same change - it is
+   * asserted on directly two cases below - because a `shipskin` it did not
+   * know would have been that same defect arriving through the UI instead.
+   *
    * The bucket totals are what this case protects, not any one item, so it is
-   * updated by adding the eight rather than by re-deriving the whole map. */
+   * updated by adding the nine rather than by re-deriving the whole map. */
   const census = {};
   for (const def of Object.values(ITEMS)) census[def.kind] = (census[def.kind] ?? 0) + 1;
   assert.deepEqual(census, {
-    currency: 1, ammo: 3, consumable: 30, trinket: 51, skin: 20, mountpower: 57,
+    currency: 1, ammo: 3, consumable: 30, trinket: 51, skin: 20, mountpower: 57, shipskin: 9,
   });
+
+  /* And the new bucket really is the PAID half only. Asserted here rather than
+   * only in ship-livery-item.test.mjs because this is the file that would
+   * redden if somebody "tidied up" by generating an item for all eighteen, and
+   * a census that only counted would not say what the number meant. */
+  assert.equal(Object.values(ITEMS).filter((d) => d.kind === 'shipskin').length,
+    SHIP_SKINS.filter((s) => s.paid).length,
+    'the shipskin bucket is not the paid liveries - a free scheme has grown a bag item');
+  assert.equal(SHIP_SKINS.length, 18, 'the livery catalogue moved; nine of them must still be free');
 
   /* The three that are still ammunition all feed a weapon that really does
    * spend them, which is the distinction the cell failed and the reason it

@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import './ship-menu.css';
-import { SHIP_STAT_META, SHIP_CLASSES, shipSkinsFor } from '../ships/ShipStats.js';
-import { SHIP_PALETTES, shipStatLine, schemeState, SCHEME_STATE_LABEL } from './ShipMenuLogic.js';
+import { SHIP_STAT_META, SHIP_CLASSES, shipSkinsFor, shipSkinItemId } from '../ships/ShipStats.js';
+import { applyShipSkin } from '../ships/ShipSkins.js';
+import {
+  SHIP_PALETTES, shipStatLine, schemeState, SCHEME_STATE_LABEL, schemeSections,
+} from './ShipMenuLogic.js';
 
 /**
  * The ship panel. Opened from the Esc pause hub while standing in a yard.
@@ -56,13 +59,19 @@ const _right = new THREE.Vector3();
 export class ShipMenu {
   /**
    * @param {{ root:HTMLElement, bus?:any, input?:any, ships:any, player?:any,
-   *           camera?:any, scene?:any }} ctx
+   *           cosmetics?:any, inventory?:any, camera?:any, scene?:any }} ctx
    */
-  constructor({ root, bus, input, ships, player, camera, scene }) {
+  constructor({ root, bus, input, ships, player, cosmetics, inventory, camera, scene }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.ships = ships;
     this.player = player ?? null;
+    /* The wardrobe and the bag, because half the liveries in this panel are
+     * bought. Both optional, and a panel built without them draws every paid
+     * card as `locked` - which is honest for a rig with no economy wired up,
+     * and is why `_schemeState` reads them defensively rather than assuming. */
+    this.cosmetics = cosmetics ?? null;
+    this.inventory = inventory ?? null;
     /* THE TURNTABLE, and why this panel needed a camera at all.
      *
      * The customiser is genuinely good - hull plating, trim, canopy tint,
@@ -104,6 +113,14 @@ export class ShipMenu {
       const resync = () => { if (this._open) this._sync(); };
       this._offs.push(bus.on('ship:livery', resync));
       this._offs.push(bus.on('ship:powers', resync));
+      /* Buying a livery at the counter and stowing it must relight the card
+       * that sells it, without closing and reopening the drawer.
+       * `cosmetic:unlocked` covers the burn-in and `inventory:changed` covers
+       * the bag copy arriving or leaving - the same two the mount drawer
+       * listens to, and for the same reason: a card whose state is read out of
+       * two other systems has to be told when either of them moves. */
+      this._offs.push(bus.on('cosmetic:unlocked', resync));
+      this._offs.push(bus.on('inventory:changed', resync));
       /* A world change disposes the hulls this panel is holding materials for.
        * There is no `mount:dismounted` equivalent to lean on, so the world
        * event IS the close: leaving the yard through a gateway with the drawer
@@ -202,10 +219,14 @@ export class ShipMenu {
       }));
     }
 
-    const schemes = shipSkinsFor(ship.id);
-    if (schemes.length) {
-      this._body.appendChild(this._section('Yard schemes', 'sm-schemes', (host) => {
-        host.appendChild(this._schemeCards(schemes));
+    /* Two blocks, free then paid, from `schemeSections`. One list of eighteen
+     * with mixed tags would have made an unowned commission read as a broken
+     * card rather than as a price; the heading is what turns YARD SHOP into a
+     * shelf label. A hull with only one kind gets only one heading. */
+    for (const sec of schemeSections(shipSkinsFor(ship.id))) {
+      this._body.appendChild(this._section(sec.title, `sm-schemes sm-schemes-${sec.key}`, (host) => {
+        host.appendChild(el('p', 'sm-secnote', sec.note));
+        host.appendChild(this._schemeCards(sec.schemes));
       }));
     }
 
@@ -308,22 +329,69 @@ export class ShipMenu {
       grid.appendChild(card);
 
       card.addEventListener('click', () => {
-        const res = this.ships.applyScheme?.(this._shipId, scheme.id);
-        if (!res?.ok) {
-          this.bus?.emit('hud:notify', { text: 'That scheme is for another hull.', tone: 'warn' });
+        /* A locked card is not a failed apply, it is a card nobody has bought
+         * yet, and pressing it must say where to buy it rather than anything
+         * about hulls. Read BEFORE the apply, so the message is the one for
+         * the state the player actually pressed. */
+        if (this._schemeState(scheme) === 'locked') {
+          this.bus?.emit('hud:notify', {
+            text: `${scheme.name} is commissioned work - buy it at the yard shop (B).`, tone: 'warn',
+          });
           return;
+        }
+        /* Everything else goes through `applyShipSkin`, free and paid alike,
+         * so this panel and the inventory Use button share one set of rules.
+         * This used to call `ships.applyScheme` directly, which was correct
+         * while nothing cost anything; routing a PAID livery that way now
+         * would paint it without ever taking the item out of the bag. */
+        const res = applyShipSkin(
+          { ships: this.ships, cosmetics: this.cosmetics, inventory: this.inventory },
+          this._shipId, scheme.id,
+        );
+        if (!res.ok) {
+          this.bus?.emit('hud:notify', {
+            text: res.reason === 'wrong-ship'
+              ? 'That livery is cut for another hull.'
+              : 'That livery could not go on. Nothing was spent.',
+            tone: 'warn',
+          });
+          return;
+        }
+        if (res.consumed) {
+          this.bus?.emit('hud:notify', { text: `${scheme.name} laid on - it is yours for good now.`, tone: 'info' });
         }
         // With a bus, ship:livery drives the resync; without one, do it here.
         if (!this.bus) this._sync();
       });
 
       this._syncers.push(() => {
-        const state = schemeState({ scheme, livery: this._livery() });
+        const state = this._schemeState(scheme);
         card.classList.toggle('on', state === 'applied');
+        card.classList.toggle('owned', state === 'owned');
+        card.classList.toggle('held', state === 'held');
+        card.classList.toggle('locked', state === 'locked');
         tag.textContent = SCHEME_STATE_LABEL[state];
       });
     }
     return grid;
+  }
+
+  /**
+   * The card ladder for one livery, with the two facts only this object can
+   * supply: does the wardrobe hold it, and is there a copy in the bag or store.
+   *
+   * `totalCount` and not `bagCount`, because `applyShipSkin` takes from the bag
+   * first and then the store - a card reading only the bag would say YARD SHOP
+   * over a livery sitting in the player's stowage, and clicking it would then
+   * work anyway, which is the worst of both.
+   */
+  _schemeState(scheme) {
+    return schemeState({
+      scheme,
+      livery: this._livery(),
+      owned: !!this.cosmetics?.has?.(scheme.id),
+      held: this.inventory?.totalCount?.(shipSkinItemId(scheme.id)) ?? 0,
+    });
   }
 
   _statRow(stat) {

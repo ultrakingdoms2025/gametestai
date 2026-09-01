@@ -1,5 +1,6 @@
 import { MOUNT_SKINS } from './Cosmetics.js';
 import { MOUNT_STATS, STAT_META } from '../mounts/Livery.js';
+import { PAID_SHIP_SKINS, shipSkinItemId } from '../ships/ShipStats.js';
 
 /**
  * Item catalogue, pack prices and the procedural icon set.
@@ -19,9 +20,16 @@ import { MOUNT_STATS, STAT_META } from '../mounts/Livery.js';
  * is generated per mount power tier (`MOUNT_STATS` x I-III), for the same
  * reason and by the same shape: a mount upgrade the map editor laid on the
  * ground has to be something a player can pick up and carry.
+ *
+ * A third loop, immediately after the mount-skin one, does the same job for the
+ * PAID ship liveries (`PAID_SHIP_SKINS` in `ships/ShipStats.js`). Nine rows,
+ * not eighteen: half that catalogue shipped free and stayed free, and a free
+ * livery has no item because there is nothing to carry - the panel paints it.
+ * An item generated for one would be a bag row for a thing every player
+ * already owns.
  */
 
-/** @typedef {'ammo'|'consumable'|'trinket'|'currency'|'skin'|'mountpower'} ItemKind */
+/** @typedef {'ammo'|'consumable'|'trinket'|'currency'|'skin'|'mountpower'|'shipskin'} ItemKind */
 
 /** Accent colours, shared by the UI panels and the world pickups. */
 export const KIND_ACCENT = {
@@ -35,6 +43,16 @@ export const KIND_ACCENT = {
    * at ~40 and pink skin at ~325. A blue at ~228 is the only accent a player
    * can tell from all five at pickup range, which is the whole job of these. */
   mountpower: '#6f8cff',
+  /* Seventh kind, same arithmetic run again over six hues instead of five.
+   * Sorted, they are 40 currency, 85 consumable, 195 ammo, 228 mountpower, 285
+   * trinket, 325 skin - and the widest remaining gap by a distance is the 110
+   * degrees between consumable green and ammo cyan. Its midpoint is ~144, a
+   * saturated jade, 58 deg off the pale yellow-green of `consumable` and 51 off
+   * cyan, which is further from its nearest neighbour than `mountpower` blue is
+   * from ammo cyan (33). The runner-up gap is the 75 between skin pink and
+   * currency amber, whose midpoint is a plain red - rejected because red means
+   * damage everywhere else on this HUD and a pickup is not a warning. */
+  shipskin: '#36e27a',
 };
 
 /**
@@ -44,7 +62,8 @@ export const KIND_ACCENT = {
  * @type {Record<string, {id:string, name:string, short:string, stack:number,
  *   icon:string, value:number, kind:ItemKind, virtual?:boolean, desc:string,
  *   skinId?:string, colors?:number[], noSell?:boolean, bagSlots?:number,
- *   mount?:string, power?:string, tier?:number}>}
+ *   mount?:string, power?:string, tier?:number, shipSkinId?:string,
+ *   ship?:string}>}
  */
 export const ITEMS = {
   credits: {
@@ -1319,6 +1338,85 @@ for (const skin of MOUNT_SKINS) {
 }
 
 /* ====================================================================== */
+/* Ship liveries, as things you can carry                                 */
+/* ====================================================================== */
+
+/** Bag-item `short` prefix per hull, the shape `MOUNT_ABBR` has. */
+export const SHIP_ABBR = { kestrel: 'KES', dray: 'DRY', pike: 'PIK' };
+
+/**
+ * Fraction of the counter price a livery is WORTH once it is in the bag.
+ *
+ * `sellValue` is `value * SELL_RATE`, so this number decides the whole
+ * buy-back economy of a livery in one place: at 0.30 against a 0.40 sell rate,
+ * a 640 CR commission sells back for 77 and a 940 CR one for 113. That is
+ * roughly an eighth of the counter price, in every world - no region declares a
+ * `buy` multiplier for `shipskin`, so `buyMultiplier` answers 1 everywhere and
+ * there is nothing to fly between.
+ *
+ * ── Why these are SELLABLE at all, when mount upgrades are not ────────────
+ * `noSell` is on the mount-power items two loops down because those have a
+ * SECOND source: the map editor lays them on the ground, and a placed pickup
+ * respawns for anyone who does not own the power, so a vendor willing to buy
+ * one back would have been a credit printer on a loop.
+ *
+ * A livery has exactly one source. It is sold at one counter, in one world
+ * (`category: 'ships'` + `worlds: ['dock']`, the pairing dock-economy.test.mjs
+ * asserts over every ships row), it appears in no drop, cache or supply table -
+ * asserted in citadel-economy.test.mjs and again in ship-livery-item.test.mjs -
+ * and it can be applied exactly once, after which the ledger owns it and the
+ * item is gone. So there is no loop to close, and the buy-back is a straight
+ * loss the player chooses. Taking the sale away would only trap someone who
+ * bought a Kestrel livery for a Pike, which is a mis-click the yard should not
+ * punish with a dead bag slot for the rest of the save.
+ */
+const SHIP_SKIN_VALUE_RATIO = 0.30;
+
+/*
+ * One bag item per PAID ship livery. Nine, not eighteen.
+ *
+ * Bought at the yard counter (`grant_item`), it sits in the bag until applied
+ * from the yard panel or the inventory Use button, which consumes it and burns
+ * the livery into the Cosmetics ledger - the mount-skin contract exactly, one
+ * vehicle over. The nine FREE yard schemes get no item, because there is
+ * nothing to carry: the panel paints them, for nothing, as it always has.
+ *
+ * Generated from `PAID_SHIP_SKINS` rather than hand-written for the reason the
+ * loop above it is: a tenth commission is a data row, and a data row that
+ * cannot forget to bring its item.
+ */
+for (const skin of PAID_SHIP_SKINS) {
+  const id = shipSkinItemId(skin.id);
+  /* The hull's proper name, capitalised here rather than read off
+   * `SHIP_CLASSES`. `capWord` is declared with `const` further down this file
+   * and these loops run at module evaluation, so calling it here would be a
+   * temporal-dead-zone throw at import time - the whole catalogue gone, over a
+   * capital letter. */
+  const hull = skin.ship[0].toUpperCase() + skin.ship.slice(1);
+  const colors = Object.values(skin.livery).map((v) => v.color).filter((c) => typeof c === 'number');
+  ITEMS[id] = {
+    id,
+    name: `${skin.name} Livery`,
+    // Falls back to the hull id for a hull with no entry in the abbreviation
+    // table, the rule both loops above use, so a fourth hull's liveries still
+    // get a legible prefix instead of `undefined LIV`.
+    short: `${SHIP_ABBR[skin.ship] ?? skin.ship.slice(0, 3).toUpperCase()} LIV`,
+    stack: 1,
+    icon: 'shipskin',
+    /* Derived from the livery's own counter price, not authored a second time.
+     * Two independent numbers for one livery is how a purchase comes to sell
+     * back for more than it cost; `ship-livery-item.test.mjs` pins the
+     * derivation and the catalogue against the same `cost`. */
+    value: Math.round(skin.cost * SHIP_SKIN_VALUE_RATIO),
+    kind: 'shipskin',
+    shipSkinId: skin.id,
+    ship: skin.ship,
+    colors,
+    desc: `${skin.blurb} Goes on your ${hull} from the Esc menu → Customise ship, in the yard; one use, then it is yours for good.`,
+  };
+}
+
+/* ====================================================================== */
 /* Mount upgrades, as things you can carry                                */
 /* ====================================================================== */
 
@@ -1967,6 +2065,37 @@ const ICONS = {
     <rect x="5" y="5" width="22" height="22" rx="4" fill="${hex(c1)}" stroke="${a}" stroke-width="1"/>
     <path d="M27 5 L27 27 L5 27 z" fill="${hex(c2)}" opacity="0.95"/>
     <path d="M9 22 q7 -9 14 -12" stroke="#ffffff" stroke-width="1.2" fill="none" opacity="0.55"/>`;
+  },
+  /* ---- Ship livery ---------------------------------------------------
+   *
+   * A hull in profile, painted in the livery's own first two colours the way
+   * `skin` above paints its square - `colors` is authored order, which is slot
+   * order, which is hull then trim, so the wedge is the hull colour and the
+   * stripe down it is the trim.
+   *
+   * A SILHOUETTE and not a second swatch, and that is the whole reason this is
+   * a separate renderer rather than `icon: 'skin'` with different data. A bag
+   * holding both a mount skin and a ship livery would otherwise be two
+   * identical rounded squares in two colours each, and the one distinction that
+   * matters at 32 px - can I put this on my horse or on my ship - would be
+   * carried only by four characters of `short` text. The wedge says ship
+   * before the label is read.
+   *
+   * NOT `ICONS.unknown`: that renderer is the question mark, and an item that
+   * falls through to it is the recorded `planet-minerals` failure - registered,
+   * drawn, and invisible, because a question mark still looks like art. */
+  shipskin: (g, a, def) => {
+    const [c1 = 0x8996a6, c2 = c1] = def?.colors ?? [];
+    const hex = (c) => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
+    return `
+    <defs><linearGradient id="${g}a" x1="0" y1="1" x2="0.4" y2="0">
+      <stop offset="0" stop-color="#000" stop-opacity="0.45"/><stop offset="1" stop-color="${hex(c1)}"/>
+    </linearGradient></defs>
+    <path d="M3 18.5 L17 13.5 L26.5 14.2 L29 17 L26.5 19.8 L17 20.5 Z" fill="url(#${g}a)" stroke="${a}" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M6 17.6 L25.5 15.6" stroke="${hex(c2)}" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M18.5 14.2 L23.5 14.6 L22.5 16.2 L18 16.4 Z" fill="#dff4ff" opacity="0.7"/>
+    <path d="M12 20.4 L14.5 24.5 M18.5 20.2 L21 24" stroke="${a}" stroke-width="1.1" stroke-linecap="round" opacity="0.8"/>
+    <path d="M3 18.5 L0.5 17.2 M3 18.5 L0.5 20" stroke="${a}" stroke-width="0.9" stroke-linecap="round" opacity="0.55"/>`;
   },
   /* ---- Mount upgrade -------------------------------------------------
    *

@@ -6,7 +6,13 @@ import path from 'node:path';
 import * as THREE from 'three';
 
 import { Loot, DROP_TABLES } from '../../src/systems/Loot.js';
-import { ITEMS, WORLD_MARKETS, KIND_ACCENT, itemDef } from '../../src/systems/ItemDefs.js';
+import {
+  ITEMS, WORLD_MARKETS, KIND_ACCENT, itemDef, sellValue, setMarketWorld,
+} from '../../src/systems/ItemDefs.js';
+import { PAID_SHIP_SKINS, shipSkinItemId } from '../../src/ships/ShipStats.js';
+
+/** Counter price per livery bag-item id, off the game's own rows. */
+const LIVERY_COST = Object.fromEntries(PAID_SHIP_SKINS.map((s) => [shipSkinItemId(s.id), s.cost]));
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p) => readFileSync(path.join(root, p), 'utf8');
@@ -121,6 +127,69 @@ function rollDrops(worldId, n, seed = 1) {
 /* ---------------------------------------------------------------------- */
 /* The row exists at all                                                   */
 /* ---------------------------------------------------------------------- */
+
+test('a ship livery is purchase-only: no drop, no cache, no supply want', () => {
+  /* THE LAWS IN THIS FILE ARE BUCKETED BY ITEM KIND, AND `shipskin` IS A KIND
+   * THAT MUST NEVER APPEAR IN ANY OF THEM.
+   *
+   * The nine commissioned ship liveries have exactly one source: a counter at
+   * Lodestar Yard, at 640-940 credits, in one world. That single-source fact
+   * is what the whole economy around them is built on - it is the reason
+   * `ItemDefs` leaves them SELLABLE where a mount upgrade is `noSell`. A mount
+   * upgrade is `noSell` because it has a SECOND source: the map editor lays it
+   * on the ground and the pickup respawns for anyone who does not own the
+   * power, so a vendor willing to buy one back would print credits on a loop.
+   *
+   * Put a livery in a drop table and that reasoning silently inverts: bodies
+   * would start dropping a 940 CR article that a vendor buys back, and the
+   * `noSell` decision recorded in `ItemDefs` next to `SHIP_SKIN_VALUE_RATIO`
+   * would be wrong without one line of that file having changed. So the
+   * assumption is asserted here, in the file that owns the drop-table laws,
+   * rather than only being written down where the consequence lives.
+   *
+   * All three sources, because they are three different tables with three
+   * different owners: `DROP_TABLES` (Loot), `CACHE_TABLES` (Caches) and
+   * `SUPPLY_WANTS` (Contracts). A supply want is included because it is the
+   * one that pays the OTHER way - a contract asking a player to bring three
+   * liveries would be a quest they can only complete by buying them. */
+  const liveries = Object.keys(ITEMS).filter((id) => ITEMS[id].kind === 'shipskin');
+  assert.equal(liveries.length, 9, `${liveries.length} shipskin items - the catalogue moved`);
+
+  for (const world of Object.keys(DROP_TABLES)) {
+    for (const e of DROP_TABLES[world]) {
+      assert.notEqual(kindOf(e.id), 'shipskin',
+        `${e.id} is a ship livery in DROP_TABLES.${world} - a 940 CR article now falls off corpses`);
+    }
+  }
+
+  const cacheSrc = read('src/systems/Caches.js');
+  for (const id of liveries) {
+    assert.ok(!cacheSrc.includes(`'${id}'`), `${id} is paid out by a cache`);
+  }
+
+  const contractsSrc = read('src/systems/Contracts.js');
+  for (const id of liveries) {
+    assert.ok(!contractsSrc.includes(`'${id}'`), `${id} is asked for by a supply contract`);
+  }
+
+  /* And the arithmetic that makes selling one a straight loss, measured rather
+   * than asserted: the BEST buy-back any world pays, against the CHEAPEST
+   * counter price. No region declares a `buy` multiplier for `shipskin`, so
+   * `buyMultiplier` answers 1 everywhere and the two numbers are far apart -
+   * but this is derived, so a region that grew a `shipskin` rate tomorrow
+   * would have to grow a 5x one before it reddened, and 5x is exactly the
+   * point at which someone should look. */
+  const cheapest = Math.min(...liveries.map((id) => LIVERY_COST[id]));
+  let best = 0;
+  for (const world of Object.keys(WORLD_MARKETS)) {
+    setMarketWorld(world);
+    for (const id of liveries) best = Math.max(best, sellValue(id, 1));
+  }
+  setMarketWorld(null);
+  assert.ok(best < cheapest,
+    `a livery sells back for ${best} in some world and the cheapest costs ${cheapest} - `
+    + 'that is a buy-low loop, and the items must become noSell');
+});
 
 test('DROP_TABLES has a citadel row, so the citadel stops borrowing the station\'s', () => {
   assert.ok(DROP_TABLES.citadel, 'no DROP_TABLES.citadel - Loot.js:309 falls back to the station table');

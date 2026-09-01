@@ -42,11 +42,22 @@ import { WORLD_MARKETS } from './ItemDefs.js';
  * The two GENERATED arrays in that file - `MOUNT_SKIN_ROWS` and the 60
  * `MOUNT_UPGRADE_ROWS` for the non-car mounts - are deliberately NOT copied.
  * They are a product of three tables and copying a product is how a copy rots.
- * Offline, a vendor stocks the 54 hand-authored rows, which includes every
- * yard row, every consumable - the four stamina draughts and three damage
- * wards included - and all three bag expansion rigs; the mount upgrade wall is
- * the one thing that needs the API up. `offlineCatalog` says so in its return
- * value.
+ * Offline, a vendor stocks the 63 hand-authored rows, which includes every
+ * yard row, all nine commissioned ship liveries, every consumable - the four
+ * stamina draughts and three damage wards included - and all three bag
+ * expansion rigs; the mount upgrade wall is the one thing that needs the API
+ * up. `offlineCatalog` says so in its return value.
+ *
+ * ── WHY THE LIVERIES ARE HAND-AUTHORED AND THE MOUNT SKINS ARE NOT ────────
+ * They are the same kind of row and they were built the other way round on
+ * purpose. A mount skin is seeded into all six worlds, so a player with the
+ * API down still has a shop full of other things; losing that wall costs them
+ * a side dish. A ship livery is sold at ONE counter in ONE world - the Fitting
+ * Shop that greeted this file's author with NOT FOUND - so leaving it out of
+ * the bundle would have meant "unavailable offline" AND "unavailable at the
+ * only place it exists". Nine literal rows, compared field by field against
+ * the TypeScript by marketplace-offline.test.mjs, is the cheaper of the two
+ * costs.
  *
  * ===========================================================================
  *  PRICING
@@ -200,6 +211,147 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
     cost_sell: 70,
     pricing_kind: 'fixed',
     sort_order: 58,
+    worlds: ['dock'],
+  },
+  /* ---- Commissioned ship liveries, all nine, bundled ------------------
+   *
+   * Hand-authored in `BASE_ITEMS` rather than generated the way
+   * `MOUNT_SKIN_ROWS` is, and mirrored here, and the two facts are the same
+   * decision. The generated mount-skin wall is deliberately NOT bundled (see
+   * the header: copying a product of three tables is how a copy rots), and
+   * the price of that is that mount skins cannot be bought with the API down.
+   * Mount skins are seeded into all six worlds and are a side dish.
+   *
+   * A ship livery is sold at ONE counter in ONE world - the same Fitting Shop
+   * that greeted this file's author with NOT FOUND - so "unavailable offline"
+   * would have meant unavailable at the only place it exists. Nine literal
+   * rows, checked field by field against the TypeScript by
+   * marketplace-offline.test.mjs, is the cheaper of the two costs.
+   */
+  {
+    source_key: 'shipskin_kestrel_kingfisher',
+    name: 'Kingfisher Livery',
+    description: 'Kestrel livery. Enamel blue over a white belly, copper shells. Ordered by a courier who was never once late. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_kingfisher' },
+    quantity: null,
+    cost_buy: 640,
+    cost_sell: 256,
+    pricing_kind: 'fixed',
+    sort_order: 60,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_kestrel_blackline',
+    name: 'Blackline Livery',
+    description: 'Kestrel livery. Six coats of black, flatted between each one, and a silver hairline laid by hand. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_blackline' },
+    quantity: null,
+    cost_buy: 700,
+    cost_sell: 280,
+    pricing_kind: 'fixed',
+    sort_order: 61,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_kestrel_solstice',
+    name: 'Solstice Livery',
+    description: 'Kestrel livery. Bone white and old gold, off a hull that flew the long side of the ring in daylight. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_solstice' },
+    quantity: null,
+    cost_buy: 760,
+    cost_sell: 304,
+    pricing_kind: 'fixed',
+    sort_order: 62,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_dray_brasshearth',
+    name: 'Brass Hearth Livery',
+    description: 'Dray livery. Dark bronze under polished brass. The tender an ore family kept for four generations. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_brasshearth' },
+    quantity: null,
+    cost_buy: 720,
+    cost_sell: 288,
+    pricing_kind: 'fixed',
+    sort_order: 63,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_dray_anthracite',
+    name: 'Anthracite Livery',
+    description: 'Dray livery. Graphite that eats the light, with an oxblood line. Nothing on this hull wants to be seen. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_anthracite' },
+    quantity: null,
+    cost_buy: 780,
+    cost_sell: 312,
+    pricing_kind: 'fixed',
+    sort_order: 64,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_dray_meridian',
+    name: 'Meridian Livery',
+    description: 'Dray livery. Deep blue with an ivory boot line, the way the survey tenders were finished before the war. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_meridian' },
+    quantity: null,
+    cost_buy: 840,
+    cost_sell: 336,
+    pricing_kind: 'fixed',
+    sort_order: 65,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_pike_cinnabar',
+    name: 'Cinnabar Livery',
+    description: 'Pike livery. Lacquer red over black ordnance, and chrome on the shrouds. Flown by somebody who wanted to be found. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_cinnabar' },
+    quantity: null,
+    cost_buy: 820,
+    cost_sell: 328,
+    pricing_kind: 'fixed',
+    sort_order: 66,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_pike_covert',
+    name: 'Covert Livery',
+    description: 'Pike livery. Dead green, dead grey, brass on the shrouds because brass does not flash. The opposite argument. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_covert' },
+    quantity: null,
+    cost_buy: 880,
+    cost_sell: 352,
+    pricing_kind: 'fixed',
+    sort_order: 67,
+    worlds: ['dock'],
+  },
+  {
+    source_key: 'shipskin_pike_whitecap',
+    name: 'Whitecap Livery',
+    description: 'Pike livery. White to the waterline with a cobalt spine. The only Pike in the yard nobody has ever scratched. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships',
+    game_action: 'ship_livery',
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_whitecap' },
+    quantity: null,
+    cost_buy: 940,
+    cost_sell: 376,
+    pricing_kind: 'fixed',
+    sort_order: 68,
     worlds: ['dock'],
   },
   {

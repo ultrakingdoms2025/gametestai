@@ -208,8 +208,19 @@ export const DROP_TABLES = {
  * about what is on the floor) or, if `_buildPool` had been keyed on
  * `KIND_ACCENT` instead, link its shaders on first sight - the 1.65 s freeze
  * this file's header records.
+ *
+ * `shipskin` leads the list, ahead even of `skin`, and it is here for the
+ * WARM-UP rather than for the ranking. A ship livery is purchase-only: it is
+ * in no drop table, no cache table and no supply want, and
+ * `citadel-economy.test.mjs` and `ship-livery-item.test.mjs` both assert that.
+ * So in normal play it never reaches a pickup at all - but the map editor can
+ * lay any item on the ground, and the cost of NOT having it here is not a
+ * wrong colour, it is a shader link on first sight in front of the player.
+ * One extra material set at boot against that is not a trade worth thinking
+ * about. Ranked first because if one ever IS on the floor beside a medkit, the
+ * livery is unambiguously the rarer of the two.
  */
-const ACCENT_PRIORITY = ['skin', 'mountpower', 'trinket', 'consumable', 'ammo', 'currency'];
+const ACCENT_PRIORITY = ['shipskin', 'skin', 'mountpower', 'trinket', 'consumable', 'ammo', 'currency'];
 
 /* ------------------------------------------------------------------ */
 /* What a pickup holds, and what collecting one does                    */

@@ -482,7 +482,44 @@ test('mount skin bag items prefix `short` with the mount\'s declared MOUNT_ABBR 
   }
 });
 
-test('Cosmetics.js contains no import statement, keeping the ItemDefs -> Cosmetics edge one-way', () => {
-  const src = readFileSync(fileURLToPath(new URL('../../src/systems/Cosmetics.js', import.meta.url)), 'utf8');
-  assert.equal(/^import\s/m.test(src), false);
+test('the ItemDefs -> Cosmetics edge stays one-way, and Cosmetics only ever reaches leaves', () => {
+  /* ── THIS CASE USED TO SAY `Cosmetics.js` CONTAINS NO IMPORT AT ALL ──────
+   *
+   * That was a proxy for the thing that actually matters, which is that
+   * `ItemDefs` imports `Cosmetics` and the reverse edge must never exist or
+   * the catalogue is a cycle. "No imports" is the cheapest way to guarantee
+   * that and it held for as long as the wardrobe only knew about characters
+   * and mounts.
+   *
+   * It stopped holding when ship liveries joined the ledger. Their ids live in
+   * `ships/ShipStats.js`, beside the eighteen rows they guard and next to the
+   * hull tables that give them meaning - that file's own header explains why
+   * they cannot move into `mounts/Livery.js`, and moving them into THIS file
+   * would be a wardrobe carrying its own copy of a catalogue it does not own,
+   * which goes stale the first time a livery is renamed and fails silently
+   * when it does.
+   *
+   * So the proxy is replaced by the invariant it stood for, which is strictly
+   * stronger than the old line: `Cosmetics` may not import `ItemDefs`, may not
+   * reach into `systems/` at all, and everything it DOES import must itself be
+   * import-free - a leaf. A leaf cannot close a cycle, and checking the leaves
+   * catches the case the old rule could not: an allowed-looking import that
+   * pulls a subtree in behind it. */
+  const at = (rel) => fileURLToPath(new URL(`../../src/${rel}`, import.meta.url));
+  const importsOf = (src) => [...src.matchAll(/^import\s[^;]*?from\s+'([^']+)'/gm)].map((m) => m[1]);
+
+  const src = readFileSync(at('systems/Cosmetics.js'), 'utf8');
+  const specs = importsOf(src);
+
+  assert.ok(!specs.some((s) => /ItemDefs/.test(s)),
+    'Cosmetics imports ItemDefs, which closes the cycle this rule exists to prevent');
+  assert.ok(!specs.some((s) => s.startsWith('./')),
+    `Cosmetics reaches sideways into systems/ (${specs.filter((s) => s.startsWith('./')).join(', ')})`);
+
+  for (const spec of specs) {
+    const rel = spec.replace(/^\.\.\//, '');
+    const leaf = readFileSync(at(rel), 'utf8');
+    assert.deepEqual(importsOf(leaf), [],
+      `Cosmetics imports ${spec}, which is not a leaf - it pulls a whole subtree in behind it`);
+  }
 });

@@ -75,6 +75,19 @@ export const CONSUMABLE_SOURCE_KEYS: ReadonlySet<string> = new Set([
   'firepower_boost_50',
   'firepower_boost_75',
   'firepower_boost_100',
+  /* The stamina draughts and the damage wards. These are mapped in the game's
+   * `MARKETPLACE_CONSUMABLE_ITEMS` exactly as the ladders above are, so a
+   * placement whose source_key is one of them resolves to a real pickup and
+   * the map editor must offer it. `mapPlaceableContract.test.ts` compares this
+   * set against the game's mapping key for key, which is what caught the drift
+   * the moment the two families landed. */
+  'stamina_slowdown_25',
+  'stamina_slowdown_50',
+  'stamina_slowdown_75',
+  'stamina_slowdown_100',
+  'ward_20',
+  'ward_35',
+  'ward_50',
 ]);
 
 /** The applier's `NEVER_PLACEABLE` item ids (`src/systems/MapOverlay.js`) — pinned by `mapPlaceableContract.test.ts`. */

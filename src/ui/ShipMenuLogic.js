@@ -1,4 +1,4 @@
-import { SHIP_STAT_META, SHIP_BASE_STATS, holdCapacity } from '../ships/ShipStats.js';
+import { SHIP_STAT_META, SHIP_BASE_STATS, holdCapacity, isPaidShipSkin } from '../ships/ShipStats.js';
 import { liveryMatches } from '../mounts/Livery.js';
 
 /**
@@ -107,19 +107,96 @@ export function shipStatLine(shipId, stat, tier) {
 }
 
 /**
- * Card state for a yard scheme: 'applied' | 'available'.
+ * Card state for a livery card.
  *
- * Two states rather than the mount panel's four, and the difference is honest:
- * a mount skin is a purchasable cosmetic with an owned/held/locked ladder
- * behind it, and a yard scheme is paint the Paint & Rope counter stencils for
- * nothing. A 'locked' state here would be a card that can never be unlocked,
- * which is this project's signature defect rendered as a UI element.
+ * ── This used to be two states, and the note said two was honest ──────────
+ * It said: "a mount skin is a purchasable cosmetic with an owned/held/locked
+ * ladder behind it, and a yard scheme is paint the Paint & Rope counter
+ * stencils for nothing. A 'locked' state here would be a card that can never
+ * be unlocked, which is this project's signature defect rendered as a UI
+ * element." That was exactly right for a catalogue in which nothing could be
+ * bought. It is now half right, because half the catalogue can be.
+ *
+ * So the ladder is per-card, not per-panel, and it forks on the ONE fact that
+ * decides it — `isPaidShipSkin`:
+ *
+ *   free   'applied' | 'available'                        (unchanged, for ever)
+ *   paid   'applied' | 'owned' | 'held' | 'locked'        (the mount ladder)
+ *
+ * A free card can NEVER reach 'locked'. That is the guarantee the old note was
+ * protecting and it is worth more now than it was then: the nine schemes
+ * players already have must not acquire a padlock because nine others turned
+ * up beside them wearing one.
+ *
+ * 'applied' for a paid livery additionally requires ownership, the way
+ * `MountMenuLogic.skinState` requires it for 'equipped'. Hand-mixing the five
+ * slots to a paid livery's exact colours is reachable — the pickers are right
+ * there — and a card that lit up "on the hull" for someone who never bought it
+ * would be telling them they own something they do not.
+ *
+ * @param {{scheme:object, livery:object, owned?:boolean, held?:number}} ctx
+ * @returns {'applied'|'available'|'owned'|'held'|'locked'}
  */
-export function schemeState({ scheme, livery }) {
-  return liveryMatches(livery, scheme.livery) ? 'applied' : 'available';
+export function schemeState({ scheme, livery, owned = false, held = 0 }) {
+  const worn = liveryMatches(livery, scheme.livery);
+  if (!isPaidShipSkin(scheme)) return worn ? 'applied' : 'available';
+  if (owned) return worn ? 'applied' : 'owned';
+  return held > 0 ? 'held' : 'locked';
 }
 
+/**
+ * The tag on each card. Every one of them is what the click DOES, not what the
+ * card is, because the tag is the only affordance on a row that is otherwise a
+ * name and three or five dots.
+ *
+ * `locked` names the counter and the world, because the yard is the only place
+ * in the Nexus with a `ships` counter and a player reading this in Aldermoor
+ * Vale needs to know that before they go looking for a shop.
+ */
 export const SCHEME_STATE_LABEL = {
   applied: 'On the hull',
   available: 'Paint it',
+  owned: 'Wear it',
+  held: 'In your bag',
+  locked: 'Yard shop',
 };
+
+/**
+ * The two blocks the panel draws, in order, with the heading each gets.
+ *
+ * Split HERE rather than in `ShipMenu.js` so the rule "free first, paid second,
+ * and a hull with none of one kind shows no empty heading" is a pure function a
+ * headless test can drive - which is the same argument that put `schemeState`
+ * and `shipStatLine` in this file rather than in the DOM one.
+ *
+ * The headings are load-bearing, not decoration. They are what makes a
+ * `locked` card legible as "not bought yet" rather than "broken": a card
+ * saying YARD SHOP under a heading that says the yard commissions these reads
+ * as a price tag, and the same card sitting in an undifferentiated list of
+ * eighteen reads as a bug.
+ *
+ * @param {ReadonlyArray<object>} schemes every livery for one hull
+ * @returns {Array<{key:'free'|'paid', title:string, note:string, schemes:object[]}>}
+ */
+export function schemeSections(schemes) {
+  const free = schemes.filter((s) => !isPaidShipSkin(s));
+  const paid = schemes.filter(isPaidShipSkin);
+  const out = [];
+  if (free.length) {
+    out.push({
+      key: 'free',
+      title: 'Yard schemes',
+      note: 'Stencilled at the Paint and Rope counter. Yours already, all of them.',
+      schemes: free,
+    });
+  }
+  if (paid.length) {
+    out.push({
+      key: 'paid',
+      title: 'Commissioned liveries',
+      note: 'Ordered, not stencilled. Bought at the yard shop, then yours for good.',
+      schemes: paid,
+    });
+  }
+  return out;
+}

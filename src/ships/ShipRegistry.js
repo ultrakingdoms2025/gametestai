@@ -115,6 +115,21 @@ export class ShipRegistry {
   /** True when there is a hull to customise here at all. */
   get canCustomise() { return this._ships.size > 0; }
 
+  /**
+   * Is THIS hull standing in the live world?
+   *
+   * `_ships` is world-scoped and private, and `applyScheme` already reads it to
+   * answer `not-here`. That answer had no public form, so a caller about to
+   * spend a bag item on a livery had no way to ask the question BEFORE the
+   * spend - it could only find out from the refusal, one line after the bag had
+   * been charged. `ShipSkins.applyShipSkin` asks this first for exactly that
+   * reason; see its note on why the check is required rather than optional.
+   *
+   * @param {string} shipId
+   * @returns {boolean}
+   */
+  hasHull(shipId) { return !!shipId && this._ships.has(shipId); }
+
   /** The hull the panel is pointed at, or null. */
   get selected() { return this._selected ? this._ships.get(this._selected) ?? null : null; }
   get selectedId() { return this._selected; }

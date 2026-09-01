@@ -683,6 +683,19 @@ body.sm-open .pause {
 /* No --sm-cy-glow is defined at .sm-root (unlike --sm-cy above), so this stays a literal rather than var(--sm-cy-glow, rgba(82,233,255,0.5)) referencing a token that does not exist. */
 .sm-pip.on { background: var(--sm-cy, #52e9ff); border-color: var(--sm-cy, #52e9ff); box-shadow: 0 0 8px rgba(82,233,255,0.5); }
 .sm-schemecard.held .sm-schemetag { color: #b6ff5a; }
+/* Owned but not on the hull. Jade, matching KIND_ACCENT.shipskin in ItemDefs,
+   so the colour a player learns on the bag item is the colour on the card. */
+.sm-schemecard.owned .sm-schemetag { color: #36e27a; }
+/* The one-line shelf label under each heading. It is what makes a YARD SHOP
+   tag read as a price rather than as a broken card, so it is dim but never
+   hidden - see `schemeSections` in ShipMenuLogic.js. */
+.sm-secnote {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--sm-dim);
+  opacity: 0.85;
+}
 .sm-finish { margin-top: 6px; }
 
 

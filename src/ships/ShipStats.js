@@ -189,23 +189,52 @@ export function holdCapacity(shipId, tier = 0) {
 }
 
 /**
- * Yard schemes: livery presets over each hull's slots.
+ * Ship liveries: presets over each hull's slots. Eighteen of them, in two
+ * tiers, and the tier is a field on the row rather than a second table.
  *
- * ── Why these are painted rather than purchased in this drop ─────────────
- * The mount arrangement is 20 data rows for 20 skins, and the LAST of those
- * rows is a `BASE_ITEMS` entry in `site/lib/marketplaceCatalog.ts` plus a
- * `kind === 'shipskin'` dispatch in `ItemUse` plus a `KNOWN_*` guard in the
- * cosmetics ledger — files this stage does not own. A skin card that can never
- * be unlocked is the signature defect of this project rendered as a UI element:
- * built, visible, and unreachable.
+ * ══════════════════════════════════════════════════════════════════════════
+ *  THE NINE FREE SCHEMES STAYED FREE. THAT IS THE WHOLE SHAPE OF THIS FILE.
+ * ══════════════════════════════════════════════════════════════════════════
  *
- * So in this drop they are what the yard would actually call them — schemes the
- * Paint & Rope counter stencils for nothing, applied straight from the panel.
- * {@link KNOWN_SHIP_SKIN_IDS} is exported ready for the ledger guard, and the
- * ids are stable, so wiring the purchase path later adds rows and changes no
- * data.
+ * This note used to say the schemes were painted rather than purchased because
+ * the purchase path was "files this stage does not own" — a `BASE_ITEMS` row,
+ * a `kind === 'shipskin'` dispatch in `ItemUse`, a `KNOWN_*` guard in the
+ * cosmetics ledger. Every one of those now exists, so that reason is dead and
+ * the note that gave it would be a confident explanation of a decision that
+ * has been reversed, which is worse than no note at all.
+ *
+ * What did NOT happen is the obvious move: putting the existing nine behind
+ * the till. They shipped free, players have them, and taking a thing away to
+ * sell it back is a regression whatever the catalogue gains. So the nine are
+ * untouched — same ids, same colours, same "Paint it" button — and NINE NEW
+ * ones were authored beside them, three per hull, matching the free count
+ * exactly so no hull's panel looks short-changed against another's.
+ *
+ * ── What makes a paid one worth paying for, stated as a rule ─────────────
+ * A yard scheme is three tins off a shelf: the free nine each touch THREE
+ * slots and leave the rest at factory. A commissioned livery is the whole
+ * ship — all FIVE slots, canopy tint and nacelle shells included. That is a
+ * rule and not a taste call, it is asserted in `ship-customizer.test.mjs`, and
+ * it is legible in the panel without reading a price: a free card draws three
+ * colour dots and a paid one draws five.
+ *
+ * ── `paid` and `cost`, and why the cost lives HERE ───────────────────────
+ * `cost` is the counter price in credits, and it is on the game's own row
+ * rather than only in `site/lib/marketplaceCatalog.ts`, because the item's
+ * `value` in `ItemDefs` is derived from it. Two independently authored numbers
+ * for one livery is how a 900 CR purchase comes to sell back for more than it
+ * cost; one number with the catalogue checked against it cannot drift.
+ *
+ * The free nine carry NO `paid` and NO `cost`. Absence is the free state, so a
+ * scheme authored without thinking about money is free by default — which is
+ * the safe direction for the mistake to fall in.
+ *
+ * @type {ReadonlyArray<{id:string, ship:string, name:string, blurb:string,
+ *   paid?:true, cost?:number,
+ *   livery:Object<string,{color:number, finish?:'matt'|'gloss'}>}>}
  */
 export const SHIP_SKINS = Object.freeze([
+  /* ---- The yard's own, free, three slots each -------------------------- */
   { id: 'kestrel_courier', ship: 'kestrel', name: 'Ring Courier', blurb: 'Yard white, courier orange.', livery: { hull: { color: 0xe6e9ee, finish: 'gloss' }, trim: { color: 0xf27b1f, finish: 'gloss' }, thruster: { color: 0x4fe3ff } } },
   { id: 'kestrel_nightmail', ship: 'kestrel', name: 'Night Mail', blurb: 'Matt charcoal with a cold flash.', livery: { hull: { color: 0x2c2f36, finish: 'matt' }, trim: { color: 0xbcd8ff, finish: 'gloss' }, thruster: { color: 0xadefff } } },
   { id: 'kestrel_survey', ship: 'kestrel', name: 'Survey 06', blurb: 'The livery the site wore before it was a yard.', livery: { hull: { color: 0xb9c2cc, finish: 'matt' }, trim: { color: 0xc9a13c, finish: 'matt' }, accent: { color: 0x6f7a88, finish: 'matt' } } },
@@ -215,23 +244,89 @@ export const SHIP_SKINS = Object.freeze([
   { id: 'pike_redflight', ship: 'pike', name: 'Red Flight', blurb: 'Gunmetal with a race-red spine.', livery: { hull: { color: 0x2a2e33, finish: 'gloss' }, trim: { color: 0xc21f2f, finish: 'gloss' }, thruster: { color: 0xff6a3a } } },
   { id: 'pike_splinter', ship: 'pike', name: 'Splinter', blurb: 'Pale grey, black ordnance.', livery: { hull: { color: 0xd9dde2, finish: 'matt' }, trim: { color: 0x0d0f12, finish: 'matt' }, accent: { color: 0x0d0f12, finish: 'matt' } } },
   { id: 'pike_venom', ship: 'pike', name: 'Venom', blurb: 'Acid green over black, and a green throat.', livery: { hull: { color: 0x18a86b, finish: 'gloss' }, trim: { color: 0x14181f, finish: 'matt' }, thruster: { color: 0xa8ff3b } } },
+
+  /* ---- Commissioned, purchased, five slots each ------------------------
+   *
+   * Nine liveries a pilot ordered rather than nine the yard keeps in stock, so
+   * every blurb names a person or a job and none of them says "yard". They are
+   * priced by hull, not by how much anyone likes them: a Kestrel is fourteen
+   * metres and a Pike is the hull people look at, so the courier is the cheap
+   * commission and the interceptor is the dear one. The spread within a hull
+   * is the labour — a hand-laid line costs more than a single flatted coat. */
+  { id: 'kestrel_kingfisher', ship: 'kestrel', name: 'Kingfisher', paid: true, cost: 640, blurb: 'Enamel blue over a white belly, copper shells. Ordered by a courier who was never once late.', livery: { hull: { color: 0x1b4f7a, finish: 'gloss' }, trim: { color: 0xe8eef4, finish: 'gloss' }, canopy: { color: 0x1b2530 }, thruster: { color: 0x4fe3ff }, accent: { color: 0xb87333, finish: 'gloss' } } },
+  { id: 'kestrel_blackline', ship: 'kestrel', name: 'Blackline', paid: true, cost: 700, blurb: 'Six coats of black, flatted between each one, and a silver hairline laid by hand.', livery: { hull: { color: 0x0d0f12, finish: 'gloss' }, trim: { color: 0xd9dde2, finish: 'gloss' }, canopy: { color: 0x203a3a }, thruster: { color: 0xffffff }, accent: { color: 0x2a2e33, finish: 'gloss' } } },
+  { id: 'kestrel_solstice', ship: 'kestrel', name: 'Solstice', paid: true, cost: 760, blurb: 'Bone white and old gold, off a hull that flew the long side of the ring in daylight.', livery: { hull: { color: 0xf2f4f6, finish: 'gloss' }, trim: { color: 0xc9a24a, finish: 'gloss' }, canopy: { color: 0x5a4a1f }, thruster: { color: 0xffe14a }, accent: { color: 0x8a5a2b, finish: 'matt' } } },
+  { id: 'dray_brasshearth', ship: 'dray', name: 'Brass Hearth', paid: true, cost: 720, blurb: 'Dark bronze under polished brass. The tender an ore family kept for four generations.', livery: { hull: { color: 0x4a3627, finish: 'gloss' }, trim: { color: 0xc9a24a, finish: 'gloss' }, canopy: { color: 0x2a3540 }, thruster: { color: 0xffb347 }, accent: { color: 0x8a5a2b, finish: 'gloss' } } },
+  { id: 'dray_anthracite', ship: 'dray', name: 'Anthracite', paid: true, cost: 780, blurb: 'Graphite that eats the light, with an oxblood line. Nothing on this hull wants to be seen.', livery: { hull: { color: 0x1c1e22, finish: 'matt' }, trim: { color: 0x7a2a1a, finish: 'gloss' }, canopy: { color: 0x1b2530 }, thruster: { color: 0xff6a3a }, accent: { color: 0x3a4a5c, finish: 'matt' } } },
+  { id: 'dray_meridian', ship: 'dray', name: 'Meridian', paid: true, cost: 840, blurb: 'Deep blue with an ivory boot line, the way the survey tenders were finished before the war.', livery: { hull: { color: 0x14315c, finish: 'gloss' }, trim: { color: 0xe6e6ea, finish: 'gloss' }, canopy: { color: 0x203a3a }, thruster: { color: 0xadefff }, accent: { color: 0xc9a24a, finish: 'gloss' } } },
+  { id: 'pike_cinnabar', ship: 'pike', name: 'Cinnabar', paid: true, cost: 820, blurb: 'Lacquer red over black ordnance, and chrome on the shrouds. Flown by somebody who wanted to be found.', livery: { hull: { color: 0x8c1710, finish: 'gloss' }, trim: { color: 0x0d0f12, finish: 'gloss' }, canopy: { color: 0x24323f }, thruster: { color: 0xff2b2b }, accent: { color: 0xd9dde2, finish: 'gloss' } } },
+  { id: 'pike_covert', ship: 'pike', name: 'Covert', paid: true, cost: 880, blurb: 'Dead green, dead grey, brass on the shrouds because brass does not flash. The opposite argument.', livery: { hull: { color: 0x1f3326, finish: 'matt' }, trim: { color: 0x2a2e33, finish: 'matt' }, canopy: { color: 0x203a3a }, thruster: { color: 0x3bffd2 }, accent: { color: 0xc9a24a, finish: 'gloss' } } },
+  { id: 'pike_whitecap', ship: 'pike', name: 'Whitecap', paid: true, cost: 940, blurb: 'White to the waterline with a cobalt spine. The only Pike in the yard nobody has ever scratched.', livery: { hull: { color: 0xe6e9ee, finish: 'gloss' }, trim: { color: 0x1f6fd0, finish: 'gloss' }, canopy: { color: 0x1b2530 }, thruster: { color: 0x2fe0ff }, accent: { color: 0x3a4a5c, finish: 'gloss' } } },
 ]);
 
 /** Fast lookup, the shape `MOUNT_SKINS_BY_ID` has. */
 export const SHIP_SKINS_BY_ID = new Map(SHIP_SKINS.map((s) => [s.id, s]));
 
 /**
- * Every ship-skin id a ledger is allowed to grant. Exported now so the guard is
- * written next to the data it guards, the way `Cosmetics.KNOWN_SKIN_IDS` is.
+ * Every ship-livery id a ledger is allowed to grant. Written next to the data
+ * it guards, the way `Cosmetics.KNOWN_SKIN_IDS` is, and it is ALL EIGHTEEN
+ * rather than only the paid nine.
+ *
+ * That is deliberate. The guard's job is to stop a typo in seed data from
+ * poisoning the wardrobe, not to re-state the free/paid rule — that rule lives
+ * in {@link isPaidShipSkin} and is enforced at the one place it matters, the
+ * apply path. A row that tried to SELL a free scheme would resolve to
+ * `shipskin_kestrel_courier`, and no such item is generated, so the item side
+ * refuses it long before a ledger ever sees the id.
  */
 export const KNOWN_SHIP_SKIN_IDS = new Set(SHIP_SKINS.map((s) => s.id));
 
-/** Schemes for one hull, in catalogue order. */
+/** Liveries for one hull, in catalogue order: the free ones first, then the paid. */
 export function shipSkinsFor(shipId) {
   return SHIP_SKINS.filter((s) => s.ship === shipId);
 }
 
-/** The bag-item id a purchasable ship skin WOULD carry. Stable from day one. */
+/**
+ * True for a livery that has to be bought before it can be worn.
+ *
+ * Takes a row OR an id, because the two callers genuinely have different
+ * things in hand: the panel is iterating rows and `ItemUse` has parsed an id
+ * off a bag item. A single predicate means there is one answer to "is this one
+ * paid for", which is the question every guard in the apply path turns on.
+ *
+ * Reads `paid === true` and not `!!cost`, so a free scheme that one day grows
+ * a display price does not silently become a purchase.
+ *
+ * @param {{paid?:boolean}|string|null|undefined} skinOrId
+ * @returns {boolean}
+ */
+export function isPaidShipSkin(skinOrId) {
+  const row = typeof skinOrId === 'string' ? SHIP_SKINS_BY_ID.get(skinOrId) : skinOrId;
+  return row?.paid === true;
+}
+
+/** The paid liveries, in catalogue order. The set the shop and `ItemDefs` build from. */
+export const PAID_SHIP_SKINS = Object.freeze(SHIP_SKINS.filter(isPaidShipSkin));
+
+/** The bag-item id a purchasable ship livery carries. Stable since day one. */
 export function shipSkinItemId(skinId) {
   return `shipskin_${skinId}`;
+}
+
+/**
+ * The livery id a `shipskin_*` bag-item id stands for, or null.
+ *
+ * The inverse of {@link shipSkinItemId}, and it VALIDATES rather than merely
+ * stripping the prefix: an id that survives the strip but names nothing in
+ * {@link PAID_SHIP_SKINS} comes back null. That is what stops a stale save, a
+ * renamed livery or a hand-typed cheat from handing `applyScheme` an id it
+ * would refuse only after the bag had been charged for it.
+ *
+ * @param {unknown} itemId
+ * @returns {string|null}
+ */
+export function shipSkinIdFromItem(itemId) {
+  if (typeof itemId !== 'string' || !itemId.startsWith('shipskin_')) return null;
+  const id = itemId.slice('shipskin_'.length);
+  return isPaidShipSkin(id) ? id : null;
 }

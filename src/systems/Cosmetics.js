@@ -18,7 +18,17 @@
  * mount skin is a livery over that mount's colour slots (F10). That keeps a
  * "limited edition skin" a data row here and in the catalog, with nothing to
  * author in the humanoid or car factories.
+ *
+ * ── SHIP LIVERIES ARE IN THE SAME LEDGER, AND AUTHORED SOMEWHERE ELSE ─────
+ * A purchased ship livery unlocks here too, so an owned-but-unapplied one and
+ * an applied one both survive a save round trip through the one ledger that
+ * already does that on every device. The ROWS are not here - they are in
+ * `ships/ShipStats.js` with the hull tables, for the reason that file's own
+ * header gives (`Livery.MOUNT_STATS` is an authority a marketplace test
+ * validates against, and widening it to hulls would make a catalogue row that
+ * sells a mount power for a ship pass silently). Only the guard is shared.
  */
+import { KNOWN_SHIP_SKIN_IDS } from '../ships/ShipStats.js';
 
 /**
  * Limited-edition character colourways. `preset` maps straight onto the avatar
@@ -102,8 +112,26 @@ export function skinsForMount(mountId) {
   return MOUNT_SKINS.filter((s) => s.mount === mountId);
 }
 
-/** Every id the catalog is allowed to grant. Guards against typos in seed data. */
-const KNOWN_SKIN_IDS = new Set([...CHARACTER_SKINS_BY_ID.keys(), ...MOUNT_SKINS_BY_ID.keys()]);
+/**
+ * Every id the catalog is allowed to grant. Guards against typos in seed data.
+ *
+ * ── The ship liveries are in here, and they are not authored in this file ──
+ * `KNOWN_SHIP_SKIN_IDS` lives in `ships/ShipStats.js`, beside the eighteen rows
+ * it is built from, and was exported for this line before this line existed.
+ * Importing it rather than restating the ids is the whole point: a wardrobe
+ * guard that carries its own copy of the catalogue is a guard that goes stale
+ * the first time a livery is renamed, and the failure is silent - `unlock`
+ * simply answers false and the player who paid for the livery does not get it.
+ *
+ * The edge is one-way (`Cosmetics` -> `ShipStats`) and `ShipStats` imports
+ * nothing at all, so there is no cycle to worry about. It carries no THREE.js
+ * either, which is what keeps this module headless-testable.
+ */
+const KNOWN_SKIN_IDS = new Set([
+  ...CHARACTER_SKINS_BY_ID.keys(),
+  ...MOUNT_SKINS_BY_ID.keys(),
+  ...KNOWN_SHIP_SKIN_IDS,
+]);
 
 export class Cosmetics {
   constructor({ bus } = {}) {

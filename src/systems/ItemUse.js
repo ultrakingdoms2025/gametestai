@@ -1,6 +1,8 @@
 import { itemDef, mountPowerFromItem, skinIdFromItem } from './ItemDefs.js';
 import { applyMountSkin } from './MountSkins.js';
 import { MOUNT_SKINS_BY_ID } from './Cosmetics.js';
+import { applyShipSkin } from '../ships/ShipSkins.js';
+import { SHIP_SKINS_BY_ID, shipSkinIdFromItem } from '../ships/ShipStats.js';
 /* The bag's ceiling, imported rather than re-typed. `Inventory` owns the
  * number, clamps `deserialize` to it and stops `expandBag` at it; this file
  * needs the same 60 to refuse a rig BEFORE the consume and to word the toast.
@@ -16,10 +18,38 @@ import { BAG_CAPACITY_MAX } from './Inventory.js';
  * 3. apply the effect through the owning gameplay systems.
  */
 
+/** A hull id as the yard spells it: `pike` -> `Pike`. */
+const shipName = (id) => (id ? id[0].toUpperCase() + id.slice(1) : 'ship');
+
+/**
+ * What a refused ship livery says, per reason.
+ *
+ * A table rather than a ternary chain because there are four distinct pieces
+ * of news here and `_useSkin` above already shows what happens when two of
+ * them are collapsed: mount skins tell a player to "mount your dragon" whether
+ * the problem is that they are on foot or that they are riding the wrong
+ * animal. The whole value of a reason code is spent if the toast throws it
+ * away, and every line below names the ACTION rather than the state -
+ * `_effectFor`'s `refusal` convention, applied to a dispatch that predates it.
+ *
+ * Each ends by saying the livery is kept. That sentence is doing real work:
+ * the player is holding a single-use item they paid several hundred credits
+ * for, and "it did not go on" and "it is gone" are the same picture from the
+ * outside unless somebody says otherwise.
+ * @type {Record<string, (skin:{name:string, ship:string}) => string>}
+ */
+const REFUSAL_TEXT = {
+  'wrong-ship': (s) => `${s.name} is cut for the ${shipName(s.ship)} — pick that berth in Esc → Customise ship. Kept, not spent.`,
+  'not-here': (s) => `Your ${shipName(s.ship)} is not in this world — fly to Lodestar Yard to have it painted. Kept, not spent.`,
+  'not-owned': (s) => `You are not carrying a ${s.name} livery any more. Nothing was spent.`,
+  unavailable: (s) => `${s.name} cannot go on right now. Kept, not spent.`,
+  'unknown-scheme': (s) => `${s.name} is not a livery this yard recognises. Kept, not spent.`,
+};
+
 export class ItemUseSystem {
   constructor({
     bus, player, inventory, loot, portals, npcManager, combat, mounts, cosmetics, viewpoints, effects,
-    spaceCombat, stamina,
+    spaceCombat, stamina, ships,
   } = {}) {
     this.bus = bus ?? null;
     this.player = player ?? null;
@@ -62,6 +92,18 @@ export class ItemUseSystem {
      * same reason: re-ordering the two would only move the knot.
      * @see ../ships/SpaceCombat.js */
     this.spaceCombat = spaceCombat ?? null;
+    /* The hull registry, read - never written - by `_useShipSkin`, which asks
+     * it the two questions a livery turns on: is this livery for the hull the
+     * panel is pointed at, and is that hull standing in this world at all.
+     *
+     * Optional like every other collaborator here, and for the identical
+     * reason: `applyShipSkin` answers `unavailable` without it, which refuses
+     * the use BEFORE `consumeFromBag`, so an unwired registry is a livery the
+     * player still has. Assigned in main.js after construction, like
+     * `viewpoints` and `spaceCombat` - `ShipRegistry` needs the world manager,
+     * which is built after this system, and moving this system down would only
+     * move the knot. @see ../ships/ShipRegistry.js */
+    this.ships = ships ?? null;
   }
 
   use(itemId) {
@@ -81,6 +123,14 @@ export class ItemUseSystem {
     // the player - and BEFORE the generic path, whose `consumeFromBag` runs
     // ahead of `_apply` and would spend the kit on a refusal.
     if (itemDef(itemId)?.kind === 'mountpower') return this._useMountPower(itemId);
+
+    // A ship livery is the mount skin's twin, one vehicle over, and gets the
+    // same treatment for the same reason: `applyShipSkin` consumes it only on
+    // a successful apply, so it must never reach the generic consume below.
+    // Dispatched here because it needs `ships`, `cosmetics` and the bag - not
+    // the player, who does not have to be alive, healthy or anywhere near a
+    // seat to have a hull painted.
+    if (itemDef(itemId)?.kind === 'shipskin') return this._useShipSkin(itemId);
 
     if (!this.player) return { ok: false, reason: 'unavailable' };
 
@@ -144,6 +194,62 @@ export class ItemUseSystem {
     }
     if (res.consumed) this.bus?.emit('inventory:item-used', { itemId, effect: 'skin', amount: 1 });
     this.bus?.emit('hud:notify', { text: `${skin.name} applied to your ${skin.mount}`, tone: 'info' });
+    return { ok: true, consumed: res.consumed };
+  }
+
+  /**
+   * Wear a ship livery: paint one hull, and spend the tin.
+   *
+   * `_useSkin`'s twin, and it differs in exactly one place - the refusal copy -
+   * because the two failures a livery has are DIFFERENT PROBLEMS with different
+   * fixes, and a single "cannot be applied right now" would have hidden that:
+   *
+   *   `wrong-ship`  You are holding a Kestrel livery and the panel is pointed
+   *                 at the Pike. The fix is one click: take the other tab. The
+   *                 message names the hull the livery is FOR, because that is
+   *                 the fact the player is missing.
+   *   `not-here`    The hull is not in this world. The fix is a flight to the
+   *                 yard, and telling someone in Aldermoor Vale to "take the
+   *                 other tab" would send them looking for a panel that does
+   *                 not open there.
+   *   `not-owned`   The bag row is gone from under the use - a second window,
+   *                 a stale panel. Says so rather than blaming the hull.
+   *
+   * Nothing here is consumed on any of those: `applyShipSkin` asks every one of
+   * these questions BEFORE `consumeFromBag`, which is the rule this whole file
+   * is built around and the one `_useMountPower` states at length.
+   *
+   * The hull it aims at is the SELECTED one - `ships.selectedId` - and falls
+   * back to the livery's own hull when nothing is selected. That fallback is
+   * what makes the inventory Use button work at all: a player who opens the bag
+   * without first opening the ship panel has selected nothing, and refusing
+   * them for it would be a button that only works after you have pressed a
+   * different button. With the fallback, using a Pike livery in the yard paints
+   * the Pike, which is the only thing it could have meant.
+   *
+   * @param {string} itemId
+   * @returns {{ok:boolean, reason?:string, consumed?:boolean}}
+   */
+  _useShipSkin(itemId) {
+    const skinId = shipSkinIdFromItem(itemId);
+    const skin = skinId ? SHIP_SKINS_BY_ID.get(skinId) : null;
+    if (!skin) return { ok: false, reason: 'unsupported' };
+
+    /* Selected hull first, the livery's own hull second. `selectedId` is a
+     * plain getter and answers null off a registry with no world, so this is
+     * safe against an unwired one - which `applyShipSkin` then refuses on its
+     * own terms, keeping the tin. */
+    const shipId = this.ships?.selectedId ?? skin.ship;
+    const res = applyShipSkin(
+      { ships: this.ships, cosmetics: this.cosmetics, inventory: this.inventory }, shipId, skinId,
+    );
+    if (!res.ok) {
+      const text = REFUSAL_TEXT[res.reason]?.(skin) ?? `The ${skin.name} livery cannot go on right now`;
+      this.bus?.emit('hud:notify', { text, tone: 'warn' });
+      return { ok: false, reason: res.reason };
+    }
+    if (res.consumed) this.bus?.emit('inventory:item-used', { itemId, effect: 'shipskin', amount: 1 });
+    this.bus?.emit('hud:notify', { text: `${skin.name} laid on your ${shipName(skin.ship)}`, tone: 'info' });
     return { ok: true, consumed: res.consumed };
   }
 

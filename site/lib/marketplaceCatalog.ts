@@ -358,6 +358,24 @@ export const MARKETPLACE_ACTIONS = [
     description: 'Grants a mount skin item; apply it from Esc → Customise mount while riding.',
     effect: 'grant_item',
   },
+  /* Ship liveries. ONE action id for all nine rows, the shape `ship_part`,
+   * `refined_ore` and `bag_expand` already have: the action names the KIND of
+   * thing being sold and `action_config.item_id` names which one, so a tenth
+   * commission is a `BASE_ITEMS` row and not a widening of the
+   * `MarketplaceActionId` union.
+   *
+   * `grant_item`, the generic effect `Marketplace._purchaseGrant` already
+   * reads, so this skips step 7 of the nine-step item registration - the
+   * `MARKETPLACE_CONSUMABLE_ITEMS` mapping whose recorded failure is a
+   * `source_key` resolving to nothing and every purchase coming back
+   * `unsupported`. A livery needs no bespoke grant: it is a bag item, and
+   * `ItemUse` is what turns it into paint when the pilot is in the yard. */
+  {
+    id: 'ship_livery',
+    label: 'Ship livery',
+    description: 'Grants a ship livery item; apply it from Esc → Customise ship, in the yard.',
+    effect: 'grant_item',
+  },
   {
     id: 'mount_strength_1',
     label: 'Mount Strength I',
@@ -761,6 +779,186 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
     cost_sell: 70,
     pricing_kind: 'fixed' as const,
     sort_order: 58,
+    worlds: ['dock'] as const,
+  },
+
+  /* ---- Commissioned ship liveries --------------------------------------
+   *
+   * Nine rows, and the number nine is the whole point of them. The yard's
+   * customiser already carried nine liveries and every one of them was FREE -
+   * schemes the Paint and Rope counter stencils for nothing. Selling those
+   * back to players who already have them would have been a regression
+   * dressed as a catalogue, so they were left alone and nine new ones were
+   * commissioned beside them, three per hull, matching the free count exactly
+   * so no hull's panel looks short-changed against another's.
+   *
+   * `category: 'ships'` with `worlds: ['dock']`, which is not a choice: the
+   * whole Nexus has ONE counter carrying `ships` (Suri Vane, `DockWorld`), so
+   * a `ships` row seeded anywhere else is a row no NPC alive can show you.
+   * dock-economy.test.mjs asserts that pairing over every `ships` row.
+   *
+   * `pricing_kind: 'fixed'`, like the mount skins and the bag rigs and every
+   * other permanent grant, and NOT `consumable`. The two rows above that took
+   * `consumable` did so because they exist in exactly one world, where a rate
+   * produces one price and there is nothing to fly between. A livery is a
+   * PERMANENT unlock and permanent unlocks are `fixed` as a rule, so that the
+   * day someone stocks a second yard the answer is not "buy your paint in the
+   * cheap world first".
+   *
+   * `cost_sell` follows the file's 0.4 convention and is decorative: nothing in
+   * `src/` reads it. What a vendor actually pays for a livery in the bag comes
+   * from `ItemDefs.sellValue`, which is `value * SELL_RATE` at
+   * `SHIP_SKIN_VALUE_RATIO` - about an eighth of the price below. That file
+   * carries the note on why these are sellable at all when a mount upgrade is
+   * not.
+   *
+   * The prices are the `cost` field on the game's own rows in
+   * `src/ships/ShipStats.js`, not a second set of numbers: the bag item's
+   * `value` is derived from that field, and ship-livery-item.test.mjs asserts
+   * the catalogue against it. Two independently authored prices for one livery
+   * is how a purchase comes to sell back for more than it cost. */
+  {
+    source_key: 'shipskin_kestrel_kingfisher',
+    name: 'Kingfisher Livery',
+    description: 'Kestrel livery. Enamel blue over a white belly, copper shells. Ordered by a courier who was never once late. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'KINGFISHER',
+    image_color: '#1b4f7a',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_kingfisher' },
+    quantity: null,
+    cost_buy: 640,
+    cost_sell: 256,
+    pricing_kind: 'fixed' as const,
+    sort_order: 60,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_kestrel_blackline',
+    name: 'Blackline Livery',
+    description: 'Kestrel livery. Six coats of black, flatted between each one, and a silver hairline laid by hand. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'BLACKLINE',
+    image_color: '#0d0f12',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_blackline' },
+    quantity: null,
+    cost_buy: 700,
+    cost_sell: 280,
+    pricing_kind: 'fixed' as const,
+    sort_order: 61,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_kestrel_solstice',
+    name: 'Solstice Livery',
+    description: 'Kestrel livery. Bone white and old gold, off a hull that flew the long side of the ring in daylight. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'SOLSTICE',
+    image_color: '#f2f4f6',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_kestrel_solstice' },
+    quantity: null,
+    cost_buy: 760,
+    cost_sell: 304,
+    pricing_kind: 'fixed' as const,
+    sort_order: 62,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_dray_brasshearth',
+    name: 'Brass Hearth Livery',
+    description: 'Dray livery. Dark bronze under polished brass. The tender an ore family kept for four generations. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'BRASS',
+    image_color: '#4a3627',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_brasshearth' },
+    quantity: null,
+    cost_buy: 720,
+    cost_sell: 288,
+    pricing_kind: 'fixed' as const,
+    sort_order: 63,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_dray_anthracite',
+    name: 'Anthracite Livery',
+    description: 'Dray livery. Graphite that eats the light, with an oxblood line. Nothing on this hull wants to be seen. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'ANTHRACITE',
+    image_color: '#1c1e22',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_anthracite' },
+    quantity: null,
+    cost_buy: 780,
+    cost_sell: 312,
+    pricing_kind: 'fixed' as const,
+    sort_order: 64,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_dray_meridian',
+    name: 'Meridian Livery',
+    description: 'Dray livery. Deep blue with an ivory boot line, the way the survey tenders were finished before the war. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'MERIDIAN',
+    image_color: '#14315c',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_dray_meridian' },
+    quantity: null,
+    cost_buy: 840,
+    cost_sell: 336,
+    pricing_kind: 'fixed' as const,
+    sort_order: 65,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_pike_cinnabar',
+    name: 'Cinnabar Livery',
+    description: 'Pike livery. Lacquer red over black ordnance, and chrome on the shrouds. Flown by somebody who wanted to be found. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'CINNABAR',
+    image_color: '#8c1710',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_cinnabar' },
+    quantity: null,
+    cost_buy: 820,
+    cost_sell: 328,
+    pricing_kind: 'fixed' as const,
+    sort_order: 66,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_pike_covert',
+    name: 'Covert Livery',
+    description: 'Pike livery. Dead green, dead grey, brass on the shrouds because brass does not flash. The opposite argument. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'COVERT',
+    image_color: '#1f3326',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_covert' },
+    quantity: null,
+    cost_buy: 880,
+    cost_sell: 352,
+    pricing_kind: 'fixed' as const,
+    sort_order: 67,
+    worlds: ['dock'] as const,
+  },
+  {
+    source_key: 'shipskin_pike_whitecap',
+    name: 'Whitecap Livery',
+    description: 'Pike livery. White to the waterline with a cobalt spine. The only Pike in the yard nobody has ever scratched. Goes on from Esc → Customise ship, in the yard; one use, then yours for good.',
+    category: 'ships' as const,
+    image_label: 'WHITECAP',
+    image_color: '#e6e9ee',
+    game_action: 'ship_livery' as MarketplaceActionId,
+    action_config: { effect: 'grant_item', item_id: 'shipskin_pike_whitecap' },
+    quantity: null,
+    cost_buy: 940,
+    cost_sell: 376,
+    pricing_kind: 'fixed' as const,
+    sort_order: 68,
     worlds: ['dock'] as const,
   },
 

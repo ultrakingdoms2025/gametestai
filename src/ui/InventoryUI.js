@@ -464,7 +464,8 @@ export class InventoryUI {
    * @returns {boolean}
    */
   _hasUse(def) {
-    return !!def && (def.kind === 'consumable' || def.kind === 'skin' || def.kind === 'mountpower');
+    return !!def && (def.kind === 'consumable' || def.kind === 'skin' || def.kind === 'mountpower'
+      || def.kind === 'shipskin');
   }
 
   /* -- hold to use --------------------------------------------------------- */

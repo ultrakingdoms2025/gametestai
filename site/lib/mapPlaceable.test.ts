@@ -110,7 +110,11 @@ describe('placeableReason', () => {
 
   it('a consumable is placeable by its KEY, world stamp and all: every spell, the shield and the firepower boosts', () => {
     const consumables = seed.filter((s) => CONSUMABLE_SOURCE_KEYS.has(s.source_key.slice(0, s.source_key.lastIndexOf(':'))));
-    expect(new Set(consumables.map((s) => s.source_key.slice(0, s.source_key.lastIndexOf(':')))).size).toBe(15);
+    // 15 until the stamina draughts (4) and the damage wards (3) landed. Both
+    // families are mapped in the game's MARKETPLACE_CONSUMABLE_ITEMS exactly as
+    // the speed/stasis/firepower ladders are, so both resolve to real pickups
+    // and both are legitimately placeable.
+    expect(new Set(consumables.map((s) => s.source_key.slice(0, s.source_key.lastIndexOf(':')))).size).toBe(22);
     for (const s of consumables) {
       expect(placeableReason({ source_key: s.source_key, config: s.action_config }), s.source_key).toBeNull();
     }
@@ -160,7 +164,17 @@ describe('partitionPlaceable and hiddenItemsText', () => {
     const { placeable, hidden } = partitionPlaceable(seed.map((s) => ({ ...s, id: s.source_key })));
     const effectsOf = (rows: Array<{ action_config: Record<string, unknown> }>) => new Set(rows.map((r) => String(r.action_config.effect)));
     expect(effectsOf(hidden.map((h) => h.item))).toEqual(new Set(['unlock_cosmetic', 'restore_health']));
-    expect([...effectsOf(placeable)].sort()).toEqual(['grant_ammo', 'grant_item', 'grant_mount_power', 'loot_magnet', 'modify_firepower', 'modify_speed', 'pause_npcs', 'portal_ping', 'shield']);
+    // `modify_damage_taken` (wards) and `modify_stamina_drain` (draughts) join
+    // the list the day those families are sold. Both are placeable for the same
+    // reason `modify_firepower` is: the key resolves to a bag item the game can
+    // spawn as a pickup. `restore_health` stays HIDDEN beside `unlock_cosmetic`
+    // because a heal has no pickup form, which is the distinction this case is
+    // really pinning - not the length of the list.
+    expect([...effectsOf(placeable)].sort()).toEqual([
+      'grant_ammo', 'grant_item', 'grant_mount_power', 'loot_magnet',
+      'modify_damage_taken', 'modify_firepower', 'modify_speed',
+      'modify_stamina_drain', 'pause_npcs', 'portal_ping', 'shield',
+    ]);
     expect(placeable.length + hidden.length).toBe(seed.length);
   });
 });

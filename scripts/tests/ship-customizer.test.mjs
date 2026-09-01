@@ -11,7 +11,9 @@ import {
 } from '../../src/ships/ShipStats.js';
 import { Ship, MAX_TIER } from '../../src/ships/Ship.js';
 import { ShipRegistry } from '../../src/ships/ShipRegistry.js';
-import { REFIT_SOURCE, SHIP_PALETTES, shipStatLine, schemeState, SCHEME_STATE_LABEL } from '../../src/ui/ShipMenuLogic.js';
+import {
+  REFIT_SOURCE, SHIP_PALETTES, shipStatLine, schemeState, SCHEME_STATE_LABEL, schemeSections,
+} from '../../src/ui/ShipMenuLogic.js';
 import { MOUNT_STATS, FINISH_PROPS, applyLivery, cloneLivery } from '../../src/mounts/Livery.js';
 import { HULLS, WALKABLE } from '../../src/worlds/dock/HullPlan.js';
 import { KILL_TIERS, ORE_TIERS, WING_SET_POWER } from '../../src/systems/SpaceObjectives.js';
@@ -177,6 +179,24 @@ test('every scheme paints slots its own hull actually sells', () => {
       }
     }
     assert.ok(Object.keys(s.livery).length >= 2, `scheme ${s.id} changes only one slot`);
+
+    /* THE RULE THAT MAKES A PAID LIVERY WORTH PAYING FOR, AS A NUMBER.
+     *
+     * A free yard scheme is three tins off a shelf and touches THREE slots. A
+     * commission is the whole ship and touches all FIVE - canopy tint and
+     * nacelle shells included. That is legible in the panel without a price
+     * being read, because the card draws one dot per painted slot: three dots
+     * is stock paint, five is a commission. Asserted rather than trusted
+     * because it is the only thing separating "worth 940 credits" from "a
+     * fourth free scheme with a padlock on it". */
+    const slotCount = Object.keys(s.livery).length;
+    if (s.paid) {
+      assert.equal(slotCount, 5, `commission ${s.id} paints ${slotCount} slots, not the whole ship`);
+      assert.ok(Number.isFinite(s.cost) && s.cost > 0, `commission ${s.id} has no price`);
+    } else {
+      assert.equal(slotCount, 3, `yard scheme ${s.id} paints ${slotCount} slots, not three`);
+      assert.equal(s.cost, undefined, `yard scheme ${s.id} has grown a price`);
+    }
   }
 });
 
@@ -192,12 +212,28 @@ test('scheme ids are unique, known, and evenly spread across the hulls', () => {
   }
   for (const id of WALKABLE) {
     assert.ok(shipSkinsFor(id).length >= 3, `${id} has only ${shipSkinsFor(id).length} schemes`);
+    /* Three free and three paid, per hull, and the balance is the point rather
+     * than the totals. A hull with three commissions against another hull's
+     * one is a panel that tells a Dray owner the yard likes Pikes better. */
+    const forHull = shipSkinsFor(id);
+    assert.equal(forHull.filter((s) => !s.paid).length, 3, `${id} does not have three free schemes`);
+    assert.equal(forHull.filter((s) => s.paid === true).length, 3, `${id} does not have three commissions`);
   }
   assert.equal(shipSkinsFor('bastion').length, 0, 'the hulk has schemes and no slots to paint them onto');
 });
 
-test('schemeState: applied when the hull is already wearing it', () => {
+test('schemeState: a FREE scheme still has exactly two states, and neither locks', () => {
+  /* THE ONE THING THE PURCHASE WORK WAS NOT ALLOWED TO DO.
+   *
+   * The nine yard schemes shipped free. Putting them behind the till - or
+   * letting them reach 'locked' by accident when the ladder grew - would take
+   * away a thing players already have, which is a regression whatever the
+   * catalogue gains. So this case is unchanged from the day it was written
+   * apart from its name, and it is now the guard on that promise: a free
+   * scheme is 'available' or 'applied' and can be neither of the other three
+   * whatever the wardrobe and the bag say. */
   const scheme = SHIP_SKINS.find((s) => s.id === 'pike_redflight');
+  assert.equal(scheme.paid, undefined, 'pike_redflight has been made a purchase');
   assert.equal(schemeState({ scheme, livery: {} }), 'available');
   assert.equal(schemeState({ scheme, livery: cloneLivery(scheme.livery) }), 'applied');
   // One slot off is not "applied": a card that lights on a partial match tells
@@ -205,7 +241,80 @@ test('schemeState: applied when the hull is already wearing it', () => {
   const partial = cloneLivery(scheme.livery);
   delete partial.trim;
   assert.equal(schemeState({ scheme, livery: partial }), 'available');
-  assert.deepEqual(Object.keys(SCHEME_STATE_LABEL).sort(), ['applied', 'available']);
+
+  // Owning nothing and holding nothing changes nothing, in either direction.
+  for (const owned of [false, true]) {
+    for (const held of [0, 1]) {
+      assert.equal(schemeState({ scheme, livery: {}, owned, held }), 'available',
+        `a free scheme read as something other than 'available' at owned=${owned} held=${held}`);
+    }
+  }
+
+  for (const free of SHIP_SKINS.filter((s) => !s.paid)) {
+    assert.notEqual(schemeState({ scheme: free, livery: {}, owned: false, held: 0 }), 'locked',
+      `${free.id} shipped free and can now be locked - that is a thing taken away from players`);
+  }
+});
+
+test('schemeState: a PAID livery walks the mount panel ladder', () => {
+  /* Four states, and they are `MountMenuLogic.skinState`'s four with the mount
+   * words swapped out - deliberately, because a player who has learnt what a
+   * locked mount-skin card means must not have to learn it twice. */
+  const scheme = SHIP_SKINS.find((s) => s.id === 'pike_whitecap');
+  assert.equal(scheme.paid, true, 'pike_whitecap is no longer a purchase');
+  const worn = cloneLivery(scheme.livery);
+
+  assert.equal(schemeState({ scheme, livery: {}, owned: false, held: 0 }), 'locked');
+  assert.equal(schemeState({ scheme, livery: {}, owned: false, held: 1 }), 'held');
+  assert.equal(schemeState({ scheme, livery: {}, owned: true, held: 0 }), 'owned');
+  assert.equal(schemeState({ scheme, livery: worn, owned: true, held: 0 }), 'applied');
+
+  /* Wearing the colours without owning the livery is NOT 'applied'. It is
+   * reachable - the five slot pickers are right there and a patient player can
+   * hand-mix any livery in the file - and a card lighting up "on the hull" for
+   * someone who never bought it would be telling them they own something they
+   * do not. `skinState` requires ownership for 'equipped' for the same reason.
+   * The bag copy still reads 'held', so the card still says what to press. */
+  assert.equal(schemeState({ scheme, livery: worn, owned: false, held: 0 }), 'locked');
+  assert.equal(schemeState({ scheme, livery: worn, owned: false, held: 1 }), 'held');
+});
+
+test('every card state has a label, and every label says what the click does', () => {
+  /* The ladder grew from two states to five when half the catalogue became
+   * purchasable, so the pinned key list moved with it. A state with no label
+   * draws an empty tag - a card with a name, some dots, and no affordance at
+   * all - which is the silent half of the "built, visible and unreachable"
+   * defect the ShipStats note names. */
+  assert.deepEqual(Object.keys(SCHEME_STATE_LABEL).sort(),
+    ['applied', 'available', 'held', 'locked', 'owned']);
+  for (const [state, label] of Object.entries(SCHEME_STATE_LABEL)) {
+    assert.ok(label && label.trim().length >= 4, `${state} has no usable label`);
+  }
+  // The two states a free card can reach must not read like a purchase.
+  assert.doesNotMatch(SCHEME_STATE_LABEL.available, /shop|buy|market/i);
+  assert.doesNotMatch(SCHEME_STATE_LABEL.applied, /shop|buy|market/i);
+  // And the locked one must name where to go, or it is a padlock with no door.
+  assert.match(SCHEME_STATE_LABEL.locked, /shop/i);
+});
+
+test('schemeSections splits the panel free-first, and never emits an empty block', () => {
+  /* The headings are what make an unowned commission read as a price rather
+   * than as a broken card, so "which block does this go in" is a rule with a
+   * test and not a line of DOM code. */
+  const secs = schemeSections(shipSkinsFor('dray'));
+  assert.deepEqual(secs.map((s) => s.key), ['free', 'paid'], 'the blocks are in the wrong order');
+  assert.equal(secs[0].schemes.length, 3);
+  assert.equal(secs[1].schemes.length, 3);
+  for (const s of secs) {
+    assert.ok(s.title && s.note, `${s.key} block has no heading or no shelf label`);
+    assert.ok(s.schemes.length > 0, 'an empty block still drew a heading');
+  }
+  assert.ok(secs[0].schemes.every((s) => !s.paid), 'a purchase is in the free block');
+  assert.ok(secs[1].schemes.every((s) => s.paid === true), 'a free scheme is in the paid block');
+
+  // A hull with nothing at all gets nothing at all, heading included.
+  assert.deepEqual(schemeSections(shipSkinsFor('bastion')), []);
+  assert.deepEqual(schemeSections([]), []);
 });
 
 /* ================================================================== */

@@ -127,6 +127,120 @@ const AIM_RAISE_START = 0.35;
 /** How fast the hand targets sweep between the swing and the hold, 1/s. */
 const AIM_RAISE_RATE = 2.0;
 
+/* ------------------------------------------------------------------ */
+/* Hands: grip, off hand and the melee track                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * FINGER_DRIVER - how a hand closes on something.
+ *
+ * `Humanoid` gives each hand two driver bones, `fingers` and `thumb`, and
+ * carries the axis to rotate them about on the bone spec itself (`def.axis`,
+ * built by `handFrame`). A positive angle closes; zero is the bind pose, which
+ * is now an OPEN hand. Before this existed the closure was baked into the
+ * vertices, so every character in the game held every object with the same
+ * permanently half-open hook and a weapon was simply pushed into it.
+ *
+ * The pairs below are [fingers, thumb], radians. They are targets, not poses:
+ * `_poseHands` approaches them at GRIP_RATE, so a weapon switch closes and
+ * reopens the hand over about a fifth of a second instead of snapping.
+ *
+ * The ceiling is deliberate. At ~1.05 rad the knuckle has folded 60 degrees
+ * and the fingertips sit 7 cm clear of the palm slab, so the hand reads as a
+ * closed fist without a rigid digit driving through the palm it is folding
+ * onto - which is the price of one driver instead of three per digit.
+ * @see FINGERS in Humanoid.js
+ */
+export const GRIPS = Object.freeze({
+  /** Flat, fingers extended - a salute, a push, a held-out palm. */
+  open: [0.05, 0.02],
+  /** Nothing in the hand. The bind pose's old baked hook, restored honestly. */
+  relaxed: [0.42, 0.10],
+  fist: [1.05, 0.42],
+  /** A pistol grip or a rifle's: fingers round a 30 mm section, thumb over. */
+  grip: [0.80, 0.34],
+  /** A sword hilt or a staff shaft - a fatter section, held harder. */
+  hilt: [0.92, 0.30],
+  /** Support hand under a handguard: open enough to be a rest, not a clamp. */
+  fore: [0.62, 0.26],
+  /** The bow hand. A riser is held, not squeezed, or the shot pulls. */
+  riser: [0.70, 0.22],
+  /** The string hand: two fingers hooked, thumb clear. */
+  draw: [0.98, 0.14],
+});
+
+/** How fast a hand opens or closes onto a new grip, nepers/second. */
+const GRIP_RATE = 11;
+
+/**
+ * What the arms do when nothing is in the hand.
+ *
+ * Shaped exactly like the resolved hold a weapon publishes (@see
+ * NPCWeapons.weaponHold), so `_poseAimArms` has one code path and no null
+ * checks scattered through it.
+ */
+const EMPTY_HOLD = Object.freeze({
+  hands: 1,
+  /* A MIRROR of the right hand, not zero. Zero would be the same offsets on
+   * both sides, which puts the two fists at the identical point - the pose an
+   * empty-handed character got the instant the prop was hidden (the character
+   * preview does exactly that). Doubling the right hand's lateral back across
+   * the centreline gives the symmetric guard an unarmed body should have. */
+  along: 0,
+  lateral: -0.23,
+  drop: 0.06,
+  right: 'relaxed',
+  left: 'relaxed',
+  wristR: [0.1, 0, -0.18],
+  wristL: [0.1, 0, 0.24],
+});
+
+/**
+ * THE OFF HAND USED TO GRIP AIR.
+ *
+ * The left hand's target was a hardcoded 0.44 m from the chest along the aim
+ * direction, for every weapon. That number is not arbitrary and it is not
+ * wrong - it is 36% of the way down a RIFLE's handguard, which is where a
+ * support hand belongs. It was wrong for everything else: a pistol's muzzle is
+ * 0.169 m from its grip (`WEAPON_MOUNTS`), the right hand grips at 0.20 m, so
+ * 0.44 m put the left hand 7 cm past the end of the barrel, closing on nothing
+ * at all. A staff is 1.08 m long and got the same 0.44.
+ *
+ * So the off hand is now derived from the weapon's own mount data, which each
+ * model already publishes, and the constants below are only the RIGHT hand's -
+ * the one thing that genuinely does not vary, because the grip is where the
+ * prop is parented.
+ */
+const HAND_REACH = 0.2;
+const HAND_LATERAL = 0.115;
+/** Hand height above the chest bone at the aim hold, metres. */
+const HAND_RISE = 0.16;
+/** How fast the off hand travels between two weapons' holds, nepers/second. */
+const HOLD_RATE = 9;
+
+/**
+ * A MELEE SWING IS A TARGET TRACK, NOT A NEW LAYER.
+ *
+ * `Sword` already emits `weapon:swing`, and until now the only listener in the
+ * codebase played a sound: in third person the blade was swung by a body
+ * standing perfectly still. The arc here rides the machinery that is already
+ * present - the two-bone solver and the hand target it aims at - by displacing
+ * the RIGHT hand's target through a wind-up and a cut. Nothing about the
+ * blend, the twist routing or the pole vector changes, so the swing cannot
+ * reintroduce the crossfade singularity AIM_RAISE_START exists to avoid: the
+ * layer holds full authority throughout and only the point it is reaching for
+ * moves, which is the same discipline the sprint stow uses.
+ *
+ * The timeline matches `Sword`'s own: wind-up to 0.2, the cut from 0.2 to
+ * 0.56, recovery after. `SWING_TIME` is `WEAPON_STATS.sword.swingTime`,
+ * duplicated rather than imported because the animator must not depend on the
+ * weapon module - an NPC brawler swings too and has no `WeaponStats` entry.
+ */
+const SWING_TIME = 0.72;
+/** Wind-up: up, back and across, in (right, up, aim) metres. */
+const SWING_WIND = [0.24, 0.30, -0.18];
+/** The end of the cut: down, forward and across to the far side. */
+const SWING_CUT = [-0.34, -0.20, 0.20];
 /**
  * Build the rotation that takes a bone from its rest orientation to one whose
  * primary axis points along `dir` with `ref` resolving the twist.
@@ -398,6 +512,37 @@ export class NPCAnimator {
     this.glanceTimer = 1 + rnd() * 5;
     this.handTwitch = rnd() * 6.28;
 
+    /* --- hands ------------------------------------------------------
+     * Resolved once: the driver bone indices and the axis each rotates
+     * about, straight off the bone spec. `null` on a rig built before the
+     * finger bones existed (or a stub one in a test), and every hand path
+     * below is a no-op in that case rather than a crash. @see FINGER_DRIVER */
+    this._hands = null;
+    const fi = this._index.get('fingersR');
+    if (fi !== undefined && spec[fi].axis) {
+      const ax = (n) => {
+        const d = spec[this._index.get(n)];
+        return new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]);
+      };
+      this._hands = {
+        R: { f: this._index.get('fingersR'), t: this._index.get('thumbR'), a: ax('fingersR') },
+        L: { f: this._index.get('fingersL'), t: this._index.get('thumbL'), a: ax('fingersL') },
+      };
+    }
+    /** Live curl angles, [fingers, thumb] per side. @see GRIPS */
+    this._curl = { R: [0, 0], L: [0, 0] };
+    this._curlSeeded = false;
+    /** The resolved hold published by whatever is in the right hand. */
+    this._hold = EMPTY_HOLD;
+    /** Damped off-hand offsets, so a weapon switch sweeps instead of jumping. */
+    this._off = { along: 0, lateral: 0, drop: 0 };
+    this._offSeeded = false;
+    this._wristR = EMPTY_HOLD.wristR.slice();
+    this._wristL = EMPTY_HOLD.wristL.slice();
+    /** Melee arc: -1 when idle, else seconds into the swing. @see SWING_TIME */
+    this._swingT = -1;
+    this._swingDir = 1;
+
     this.blinkTimer = 1 + rnd() * 4;
     this.blink = 0;
     this._blinking = 0;
@@ -505,6 +650,52 @@ export class NPCAnimator {
     this._aimWeight = v;
     if (v >= 0.999) this._aimRaise = 1;
     else if (v <= 0.001) this._aimRaise = 0;
+  }
+
+  /**
+   * Start a melee arc on the right arm.
+   *
+   * Idempotent within a swing on purpose: a second call restarts the track, so
+   * a combo re-triggers the arc rather than queueing one. It rides the aim
+   * layer, so it is visible exactly when the arms are up - which for the
+   * player is always (`PlayerAvatar` parks `aimWeight` at 1 against a live
+   * target) and for an NPC brawler is whenever it has closed to its target.
+   *
+   * @param {number} [dir] +1 cuts right-to-left, -1 left-to-right, matching
+   *   the `dir` field on `Sword`'s `weapon:swing` event.
+   * @see SWING_TIME
+   */
+  meleeSwing(dir = 1) {
+    this._swingT = 0;
+    this._swingDir = dir < 0 ? -1 : 1;
+  }
+
+  /** True while a melee arc is in flight. */
+  get swinging() {
+    return this._swingT >= 0;
+  }
+
+  /**
+   * The hold published by whatever is actually in the right hand.
+   *
+   * Read off the prop rather than told to us, because the two callers that
+   * own weapons - `HostileNPC` and `PlayerAvatar` - already parent the model
+   * to `humanoid.weaponMount` and already know which one is showing.
+   * `HostileNPC` in particular prebuilds every model it could ever draw and
+   * switches with a `visible` flip, so the visible child IS the weapon and
+   * anything else would be a second copy of that state to keep in step.
+   *
+   * @returns {typeof EMPTY_HOLD}
+   */
+  _readHold() {
+    const kids = this.h.weaponMount?.children;
+    if (kids) {
+      for (let i = kids.length - 1; i >= 0; i--) {
+        const k = kids[i];
+        if (k.visible && k.userData?.hold) return k.userData.hold;
+      }
+    }
+    return EMPTY_HOLD;
   }
 
   /**
@@ -692,6 +883,11 @@ export class NPCAnimator {
     this.flinchX = this.flinchZ = this.flinchVX = this.flinchVZ = 0;
     this.staggerT = 0;
     for (const b of this.bones) b.quaternion.identity();
+    // The hands were just flattened along with everything else, so the grip is
+    // re-seeded rather than ramped: a recycled body comes back already holding
+    // its weapon. @see _poseHands
+    this._curlSeeded = false;
+    this._swingT = -1;
     this.byName.get('pelvis').position.set(0, this.P.pelvisY, 0);
   }
 
@@ -718,6 +914,7 @@ export class NPCAnimator {
     this._updateIdle(dt, elapsed);
     this._updateFlinch(dt);
     this._poseSpine(dt, elapsed);
+    this._poseHands(dt);
     this._runFK();
     if (this.aimWeight > 0.001 && this.aimTarget) this._poseAimArms();
     if (this.seated || this.seatWeight > 0.02) this._poseSeatedLegs(dt);
@@ -738,6 +935,38 @@ export class NPCAnimator {
     const raiseWant = smoothstep(AIM_RAISE_START, 1, this._aimWeight);
     const cap = AIM_RAISE_RATE * dt;
     this._aimRaise += clamp(raiseWant - this._aimRaise, -cap, cap);
+
+    /* The hold, and the off hand's travel between two of them.
+     *
+     * Damped on the OFFSETS, which are the target's coordinates, and never on
+     * the arm's rotation - the same rule AIM_RAISE_START is built on. Two
+     * holds can put the off hand a long way apart (0.24 m up a rifle's
+     * handguard versus hanging at the hip beside a pistol) and slerping the
+     * shoulder between those two poses is the antipodal configuration this
+     * file spent a whole crossfade rewrite escaping. Moving the point instead
+     * keeps the solver at full authority and sweeps the arm as one piece.
+     *
+     * The first frame SNAPS: a body spawned holding a rifle is already holding
+     * it, exactly as `aimWeight`'s setter parks the raise. @see EMPTY_HOLD */
+    const hold = this._readHold();
+    this._hold = hold;
+    const off = this._off;
+    // Written out rather than run through a helper: this file allocates
+    // nothing per frame, and a closure is an allocation. @see the scratch
+    // block at the top.
+    const holdK = this._offSeeded ? 1 - Math.exp(-HOLD_RATE * dt) : 1;
+    this._offSeeded = true;
+    off.along += (hold.along - off.along) * holdK;
+    off.lateral += (hold.lateral - off.lateral) * holdK;
+    off.drop += (hold.drop - off.drop) * holdK;
+    for (let i = 0; i < 3; i++) {
+      this._wristR[i] += (hold.wristR[i] - this._wristR[i]) * holdK;
+      this._wristL[i] += (hold.wristL[i] - this._wristL[i]) * holdK;
+    }
+    if (this._swingT >= 0) {
+      this._swingT += dt;
+      if (this._swingT >= SWING_TIME) this._swingT = -1;
+    }
     this.postureWeight = approach(this.postureWeight, this.posturePose ? 1 : 0, 3.2, dt);
     // Sitting down and standing up are both fast; the ramp exists so neither is
     // a single-frame pop, not to animate a deliberate movement.
@@ -1034,6 +1263,68 @@ export class NPCAnimator {
   }
 
   /**
+   * Close each hand onto whatever it is holding.
+   *
+   * Two bones a hand, one scalar each, absolute (not additive): nothing else
+   * writes these bones, so there is nothing to blend against. The whole cost
+   * is four `setFromAxisAngle` calls and four `approach`es per character.
+   *
+   * Measured on this machine, node 22, one aiming character at 60 Hz over
+   * 40 000 updates: `update` is 7.31 us, of which this is 0.201 us (2.7%), and
+   * the four extra bones add 0.037 us to `_runFK` (which runs at 0.009 us a
+   * bone). 0.24 us a character - under 4 us a frame for a sixteen-strong
+   * crowd, against a 16.7 ms budget. That is the price of the whole feature.
+   *
+   * The OFF hand only takes the weapon's grip once the weapon is actually up
+   * there. A rifle carried at the side has one hand on it; the support hand
+   * arrives with the raise, and `_aimRaise` is exactly the fraction that
+   * already describes that journey.
+   *
+   * @see FINGER_DRIVER @see GRIPS
+   */
+  _poseHands(dt) {
+    const H = this._hands;
+    if (!H) return;
+    const hold = this._hold;
+    const onWeapon = hold.hands === 2 && this._aimRaise > 0.5;
+    const seed = !this._curlSeeded;
+    this._curlSeeded = true;
+    for (const s of ['R', 'L']) {
+      const want = GRIPS[s === 'R' ? hold.right : onWeapon ? hold.left : 'relaxed'] ?? GRIPS.relaxed;
+      const c = this._curl[s];
+      c[0] = seed ? want[0] : approach(c[0], want[0], GRIP_RATE, dt);
+      c[1] = seed ? want[1] : approach(c[1], want[1], GRIP_RATE, dt);
+      const h = H[s];
+      this.bones[h.f].quaternion.setFromAxisAngle(h.a, c[0]);
+      this.bones[h.t].quaternion.setFromAxisAngle(h.a, c[1]);
+    }
+  }
+
+  /**
+   * Displace the right hand's target through the melee arc, in place.
+   *
+   * Wind-up and cut are two overlapping envelopes rather than one waypoint
+   * path, so the hand never stops at the top of the swing - a hand that
+   * arrives, pauses and leaves reads as two animations, which is what a
+   * key-framed waypoint gives you for free. @see SWING_TIME
+   */
+  _applySwing(target, aimDir, right) {
+    const t = this._swingT / SWING_TIME;
+    // Peaks at the top of the wind-up, gone by the end of the cut.
+    const w = smoothstep(0, 0.2, t) * (1 - smoothstep(0.2, 0.56, t));
+    // Rises through the cut, decays through the recovery.
+    const c = smoothstep(0.2, 0.56, t) * (1 - smoothstep(0.62, 1, t));
+    /* `dir` is +1 for a cut that ENDS on the player's left (Sword's bearing
+     * runs +half -> -half, positive left), so the hand winds up on the left
+     * and finishes on the right: the lateral term is negated, the vertical
+     * and forward ones are not. */
+    const sgn = -this._swingDir;
+    target.addScaledVector(right, sgn * (SWING_WIND[0] * w + SWING_CUT[0] * c));
+    target.y += SWING_WIND[1] * w + SWING_CUT[1] * c;
+    target.addScaledVector(aimDir, SWING_WIND[2] * w + SWING_CUT[2] * c);
+  }
+
+  /**
    * Point the weapon at the target with both arms while the legs keep running
    * their own cycle. Solved as two-bone IK on hand targets derived from the aim
    * direction, then blended against the FK swing pose.
@@ -1067,15 +1358,19 @@ export class NPCAnimator {
       const ui = this._idx(`upperArm${s}`);
       const fi = this._idx(`foreArm${s}`);
       const shoulder = this._fkPos[ui];
-      // The right hand grips at the shoulder, the left supports further down
-      // the barrel - a readable two-handed rifle stance.
-      const reach = s === 'R' ? 0.2 : 0.44;
-      const lateral = s === 'R' ? 0.115 : 0.02;
+      /* The right hand grips where the prop is parented; the left goes
+       * wherever the weapon in that hand says its off hand belongs - somewhere
+       * along grip -> muzzle for a two-hander, out and down as a counterweight
+       * for anything held in one. @see HAND_REACH */
+      const off = this._off;
+      const reach = s === 'R' ? HAND_REACH : HAND_REACH + off.along;
+      const lateral = s === 'R' ? HAND_LATERAL : HAND_LATERAL + off.lateral;
       const target = this._handTarget
         .copy(chest)
         .addScaledVector(aimDir, reach)
         .addScaledVector(right, lateral);
-      target.y = chest.y + 0.16 + aimDir.y * reach;
+      target.y = chest.y + HAND_RISE + aimDir.y * reach - (s === 'R' ? 0 : off.drop);
+      if (s === 'R' && this._swingT >= 0) this._applySwing(target, aimDir, right);
 
       const pole = this._pole.set(sgn * 0.55, -0.85, 0.25).normalize();
       if (raise < 1) {
@@ -1142,13 +1437,20 @@ export class NPCAnimator {
       fore.quaternion.slerp(_q3, blend);
       this._fkQuat[fi].copy(this._fkQuat[ui]).multiply(fore.quaternion);
     }
-    // Wrists straighten onto the weapon. These ride the raw weight, exactly
-    // as they always did: their two endpoints are only 6-9 degrees apart, so
-    // the weight's own continuous ramp was never part of the singularity.
-    _e1.set(0.1, 0, -0.18);
+    /* Wrists roll onto the weapon. These ride the raw weight, exactly as they
+     * always did: their two endpoints are only 6-9 degrees apart, so the
+     * weight's own continuous ramp was never part of the singularity.
+     *
+     * They used to be two literals for every weapon, which is the same defect
+     * as the off hand's 0.44 one joint further out: a bow's draw hand and a
+     * rifle's support hand do not hold the wrist the same way. The angles now
+     * come from the hold, damped alongside the off-hand offsets. */
+    const wr = this._wristR;
+    const wl = this._wristL;
+    _e1.set(wr[0], wr[1], wr[2]);
     _q3.setFromEuler(_e1);
     this.bones[this._idx('handR')].quaternion.slerp(_q3, this.aimWeight * 0.85);
-    _e1.set(0.1, 0, 0.24);
+    _e1.set(wl[0], wl[1], wl[2]);
     _q3.setFromEuler(_e1);
     this.bones[this._idx('handL')].quaternion.slerp(_q3, this.aimWeight * 0.85);
   }

@@ -966,6 +966,31 @@ export function makeDetailNormal(o = {}) {
  *    `roughnessMap` as well and it lands in a bucket of its own. So this
  *    attaches exactly one slot - `normalMap` - and never a second, whatever
  *    the surface is.
+ *
+ *    WHAT IT ACTUALLY COST, and it is not zero. Measured per world on a
+ *    booted session, `renderer.info.programs.length` at the boot warm before
+ *    and after the conversion:
+ *
+ *      maze +2      citadel 0      station +2      sports +6
+ *
+ *    Sports is the instructive one, and the model above predicts it once the
+ *    condition is read carefully: a bucket MOVE requires the whole family to
+ *    move. 33 of the 64 conversions landed in `SportsWorld`, and several of
+ *    its materials are deliberately left flat - the transparent ones, the
+ *    emissive fittings, the `fog:false` background props - so six families
+ *    now hold a normal-mapped material AND a flat one, and each of those
+ *    six pays for a second bucket. Half a family converted is a SPLIT, not a
+ *    move, and it costs the same +1 as a second slot would.
+ *
+ *    That was judged proportionate to the picture and is not being reverted,
+ *    but it is spent budget and the ledger says so here rather than in a
+ *    commit message nobody greps. The standing gate is
+ *    `scripts/tests/frame-gaps-program-gate.test.mjs`: the station's boot warm
+ *    is baselined at 142 programs with +-4 allowed either way, and the +2
+ *    above puts it at 144 - HALF THE MARGIN. The next material family added
+ *    to the station boot path has to be argued for out loud, and a family
+ *    converted here in halves spends the rest of it.
+ *
  * 2. MEMORY. 512^2 RGBA with mips is 1.33 MB. Per-material detail maps would
  *    have been ~140 MB of near-identical noise.
  *

@@ -11,6 +11,7 @@ import {
 } from '../npc/Humanoid.js';
 import { NPCAnimator } from '../npc/NPCAnimator.js';
 import { AVATAR_FADE_LENGTH } from './CameraRig.js';
+import { WEAPON_MOUNTS, weaponHold } from '../npc/NPCWeapons.js';
 
 /**
  * The player's body.
@@ -235,23 +236,106 @@ const STOW_HEIGHT = 0.15;
 /** How fast the muzzle drops and comes back up, nepers/second. */
 const STOW_RATE = 7;
 
-/** Barrel tip in the weapon prop's local frame (end of the muzzle brake). */
-const MUZZLE_Z = -0.79;
 
 /**
- * Seating of the carbine in the right hand.
+ * Seating of a prop in the right hand.
  *
- * Measured, not guessed. `HostileNPC`'s numbers are authored for a rifle carried
- * at the side and put the barrel through the top of the head once the aim IK
- * raises the arms - the tip sat 2.16 m above the feet on the first run. These
- * were solved in-engine from the hand's world basis while the aim layer was at
- * full weight: align the prop's -Z with the aim direction and roll it so the
- * optic faces world up. The roll is ~166 degrees because the hand bone's rest
- * frame is close to inverted about the grip axis.
+ * Measured, not guessed, and now shared with the NPCs rather than duplicated:
+ * `WEAPON_MOUNTS` is the one table that says where a model sits in a fist and
+ * where its business end is, and `weaponHold` turns each entry into what the
+ * arms do with it. The carbine's numbers - a roll of ~166 degrees, because the
+ * hand bone's rest frame is close to inverted about the grip axis - moved into
+ * that table verbatim under the key `carbine`, so nothing about the rifle's
+ * seating changed. `HostileNPC`'s `rifle` entry is authored for a weapon
+ * carried at the side and put the barrel through the top of the head once the
+ * aim IK raised the arms; that is why the two are separate keys.
  */
-const HAND_ROT = [-0.06, 0.03, 2.9];
-/** Places the grip, not the model origin, in the palm. */
-const HAND_POS = [-0.015, -0.056, -0.046];
+
+/**
+ * THIRD PERSON USED TO SHOW A CARBINE NO MATTER WHAT.
+ *
+ * `_buildWeapon` built eight boxes unconditionally and parented them at a
+ * fixed transform, from the constructor and the appearance rebuild only. It
+ * took no weapon id and nothing rebuilt it, so equipping the sword and pressing
+ * V showed a rifle - held perfectly still, because `weapon:swing` had exactly
+ * one listener in the whole codebase and it played a sound.
+ *
+ * One table, one builder. Each entry is a list of primitives in the prop's own
+ * frame (-Z is the business end, matching `WEAPON_MOUNTS`), plus the colour and
+ * roughness of the single material it is drawn with.
+ *
+ * ── The material rule, which is not negotiable ────────────────────────────
+ * Every prop here calls `assets.metal(colour, 'panel', roughness)`. Colour and
+ * roughness are UNIFORMS on a `MeshStandardMaterial`; the pattern chooses the
+ * map set, and the map set is what would change the shader's defines. So four
+ * props share the one program the carbine already had, and the station
+ * boot-warm program count - 144 against a pin of 142 +/- 4, half the margin
+ * already spent - does not move by one. A leather grip wrap would have been
+ * prettier and would have cost a program family the budget cannot pay for.
+ *
+ * @type {Readonly<Record<string, {model:string, color:number, rough:number,
+ *   parts:Array<[number,number,number,number,number,number,number?]>}>>}
+ */
+const PLAYER_PROPS = Object.freeze({
+  /* [sx, sy, sz, x, y, z, rotX?] - a box, or a cylinder when rotX is given
+   * (sx is then the top radius, sy the bottom, sz the length). */
+  machinegun: {
+    // `carbine`, NOT `rifle`: the NPC entry is authored for a weapon carried
+    // at the side, and pointing the player's prop at it put the muzzle 2.12 m
+    // above the feet - through the top of the head - the moment the aim IK
+    // raised the arms. Measured against the baseline's 1.42 m.
+    model: 'carbine', color: 0x33383f, rough: 0.38,
+    parts: [
+      [0.055, 0.082, 0.38, 0, 0, -0.07],
+      [0.04, 0.056, 0.32, 0, -0.004, -0.38],
+      [0.013, 0.011, 0.3, 0, 0.008, -0.62, Math.PI / 2],
+      [0.021, 0.018, 0.07, 0, 0.008, -0.755, Math.PI / 2],
+      [0.046, 0.115, 0.115, 0, -0.082, -0.03],
+      [0.05, 0.09, 0.22, 0, -0.014, 0.21],
+      [0.032, 0.06, 0.14, 0, 0.062, -0.06],
+      [0.03, 0.075, 0.05, 0, -0.07, 0.05],
+    ],
+  },
+  /* A cruciform arming sword: pommel, grip, quillons, then a blade that
+   * tapers in two stages. The point sits at -0.98, which is what
+   * `WEAPON_MOUNTS.sword.muzzle` records, so the aim rig and the prop agree. */
+  sword: {
+    model: 'sword', color: 0xb9c0cb, rough: 0.24,
+    parts: [
+      [0.030, 0.026, 0.030, 0, 0, 0.10],
+      [0.026, 0.026, 0.155, 0, 0, 0.008],
+      [0.022, 0.030, 0.230, 0, 0, -0.085],
+      [0.040, 0.018, 0.036, 0, 0, -0.075],
+      [0.052, 0.012, 0.560, 0, 0, -0.38],
+      [0.030, 0.010, 0.160, 0, 0, -0.74],
+      [0.014, 0.008, 0.090, 0, 0, -0.87],
+    ],
+  },
+  /* A recurve, held side-on: the riser is the vertical bar, the limbs are the
+   * two angled slabs, and the string is the thin one down the front. */
+  bow: {
+    model: 'longbow', color: 0x6f5a42, rough: 0.62,
+    parts: [
+      [0.026, 0.180, 0.030, 0, 0, -0.02],
+      [0.018, 0.230, 0.022, 0, 0.185, -0.075],
+      [0.018, 0.230, 0.022, 0, -0.185, -0.075],
+      [0.012, 0.100, 0.016, 0, 0.300, -0.145],
+      [0.012, 0.100, 0.016, 0, -0.300, -0.145],
+      [0.006, 0.700, 0.006, 0, 0, -0.185],
+    ],
+  },
+  /* A focus gauntlet: a bracer, a knuckle plate and a vane over the wrist.
+   * The palm has to stay clear - it is where the bolt comes from. */
+  fireball: {
+    model: 'gauntlet', color: 0x5a6472, rough: 0.30,
+    parts: [
+      [0.086, 0.070, 0.150, 0, 0, 0.075],
+      [0.078, 0.030, 0.060, 0, 0.040, -0.030],
+      [0.030, 0.052, 0.096, 0.038, 0.010, 0.010],
+      [0.030, 0.052, 0.096, -0.038, 0.010, 0.010],
+    ],
+  },
+});
 
 /* ================================================================== */
 /* Character configuration                                             */
@@ -526,7 +610,11 @@ export class PlayerAvatar {
 
     this.animator = new NPCAnimator({ humanoid: this.humanoid, physics: this.physics, seed: 11 });
 
-    this._weapon = this._buildWeapon();
+    /** Which prop is in the hand. @see PLAYER_PROPS */
+    this._weaponId = 'machinegun';
+    /** Its business end, in the prop's own frame. @see getMuzzleWorld */
+    this._weaponMuzzle = WEAPON_MOUNTS.carbine.muzzle;
+    this._weapon = this._buildWeapon(this._weaponId);
 
     /* --- render-state bookkeeping --------------------------------- */
     /** @type {THREE.Material[]} */
@@ -598,6 +686,16 @@ export class PlayerAvatar {
       );
       this._offs.push(bus.on('player:respawned', () => this._revive()));
       this._offs.push(bus.on('player:spawned', () => this._snap()));
+      /* The third-person body now shows what the player is actually holding.
+       * `Loadout.select` raises this on every switch, so the prop and the
+       * loadout cannot drift apart - and the startup select is silent, which
+       * is why the constructor seeds the carbine rather than waiting. */
+      this._offs.push(bus.on('weapon:switched', (e) => this._setWeapon(e?.id)));
+      /* And it swings it. `Sword` has emitted this since it shipped; until now
+       * the only listener in the codebase played a sound, so a third-person
+       * player watched a rifle-shaped statue cut through three enemies.
+       * @see NPCAnimator.meleeSwing */
+      this._offs.push(bus.on('weapon:swing', (e) => this.animator.meleeSwing(e?.dir ?? 1)));
     }
 
     if (player) player.avatar = this;
@@ -625,14 +723,18 @@ export class PlayerAvatar {
 
   /**
    * World-space barrel tip. This is the origin `CameraRig` fires third-person
-   * shots from, so it has to be the real prop, not an estimate.
+   * shots from, so it has to be the real prop, not an estimate - and now that
+   * the prop changes with the weapon, the tip has to change with it too. The
+   * offset comes from the prop's own mount entry, so a sword's point and a
+   * bow's arrow pass are as honest as the carbine's brake was.
    * @param {THREE.Vector3} out
    * @returns {THREE.Vector3|null}
    */
   getMuzzleWorld(out) {
     if (!this._weapon) return null;
     this._weapon.updateWorldMatrix(true, false);
-    return out.set(0, 0.006, MUZZLE_Z).applyMatrix4(this._weapon.matrixWorld);
+    const m = this._weaponMuzzle;
+    return out.set(m[0], m[1], m[2]).applyMatrix4(this._weapon.matrixWorld);
   }
 
   /**
@@ -807,7 +909,8 @@ export class PlayerAvatar {
     this.scene.add(this._root);
 
     this.animator = new NPCAnimator({ humanoid: this.humanoid, physics: this.physics, seed: 11 });
-    this._weapon = this._buildWeapon();
+    // The body changed, not the loadout: the same weapon comes back.
+    this._weapon = this._buildWeapon(this._weaponId);
     if (this._weapon) this._weapon.visible = !this._preview;
 
     this._materials.length = 0;
@@ -894,28 +997,36 @@ export class PlayerAvatar {
   }
 
   /**
-   * Compact carbine matching the VK-7 viewmodel's silhouette, parented to the
-   * right hand so the animator's aim IK carries it. Hand-merged for the same
-   * reason `HostileNPC` does it - six primitives is not worth an addon import.
+   * Build the third-person prop for `id`, parented to the right hand so the
+   * animator's aim IK carries it.
+   *
+   * Hand-merged for the same reason `HostileNPC` does it - a handful of
+   * primitives is not worth an addon import - and one merged geometry per
+   * weapon rather than a group, because the body is drawn twice (beauty and
+   * shadow) and eight child meshes would be sixteen draw calls for a prop
+   * nobody sees in first person.
+   *
+   * @param {string} [id] loadout weapon id; unknown ids fall back to the
+   *   carbine, which is what a world with no `Loadout` yet still shows.
+   * @returns {THREE.Mesh|null}
    */
-  _buildWeapon() {
+  _buildWeapon(id) {
     const assets = this.factory.assets;
     if (!assets) return null;
+    const key = PLAYER_PROPS[id] ? id : 'machinegun';
+    const def = PLAYER_PROPS[key];
+    const mount = WEAPON_MOUNTS[def.model];
 
     const parts = [];
-    const push = (geo, x, y, z, rx = 0) => {
+    for (const [a, b, c, x, y, z, rx] of def.parts) {
+      // A rotX entry means a cylinder laid along -Z: (top r, bottom r, length).
+      const geo = rx === undefined
+        ? new THREE.BoxGeometry(a, b, c)
+        : new THREE.CylinderGeometry(a, b, c, 8);
       if (rx) geo.rotateX(rx);
       geo.translate(x, y, z);
       parts.push(geo);
-    };
-    push(new THREE.BoxGeometry(0.055, 0.082, 0.38), 0, 0, -0.07); // receiver
-    push(new THREE.BoxGeometry(0.04, 0.056, 0.32), 0, -0.004, -0.38); // handguard
-    push(new THREE.CylinderGeometry(0.013, 0.011, 0.3, 8), 0, 0.008, -0.62, Math.PI / 2); // barrel
-    push(new THREE.CylinderGeometry(0.021, 0.018, 0.07, 8), 0, 0.008, -0.755, Math.PI / 2); // brake
-    push(new THREE.BoxGeometry(0.046, 0.115, 0.115), 0, -0.082, -0.03); // magazine
-    push(new THREE.BoxGeometry(0.05, 0.09, 0.22), 0, -0.014, 0.21); // stock
-    push(new THREE.BoxGeometry(0.032, 0.06, 0.14), 0, 0.062, -0.06); // optic rail + sight
-    push(new THREE.BoxGeometry(0.03, 0.075, 0.05), 0, -0.07, 0.05); // pistol grip
+    }
 
     let vTotal = 0;
     let iTotal = 0;
@@ -947,14 +1058,47 @@ export class PlayerAvatar {
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeBoundingSphere();
     this._weaponGeo = geo;
+    this._weaponId = key;
+    this._weaponMuzzle = mount.muzzle;
 
-    const mesh = new THREE.Mesh(geo, assets.metal(0x33383f, 'panel', 0.38));
+    // `metal`, always, and always 'panel'. @see PLAYER_PROPS - colour and
+    // roughness are uniforms, the pattern is what would cost a program.
+    const mesh = new THREE.Mesh(geo, assets.metal(def.color, 'panel', def.rough));
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.position.set(HAND_POS[0], HAND_POS[1], HAND_POS[2]);
-    mesh.rotation.set(HAND_ROT[0], HAND_ROT[1], HAND_ROT[2]);
+    mesh.position.set(mount.pos[0], mount.pos[1], mount.pos[2]);
+    mesh.rotation.set(mount.rot[0], mount.rot[1], mount.rot[2]);
+    /* What the arms do with it. The animator reads this off whatever is
+     * visible in the hand rather than being told, which is the same contract
+     * `HostileNPC`'s props use. @see NPCAnimator._readHold */
+    mesh.userData.hold = weaponHold(def.model);
     this.humanoid.weaponMount.add(mesh);
     return mesh;
+  }
+
+  /**
+   * Swap the third-person prop when the loadout changes weapon.
+   *
+   * Cheap enough to do eagerly: seven boxes and a cache hit on a material that
+   * is already resident. Caching one mesh per weapon instead - the trick
+   * `HostileNPC` uses - would hold four geometries alive for a body that is
+   * invisible in first person, which is where the player spends most of a
+   * session.
+   *
+   * @param {string} id
+   */
+  _setWeapon(id) {
+    const key = PLAYER_PROPS[id] ? id : 'machinegun';
+    if (key === this._weaponId && this._weapon) return;
+    const oldGeo = this._weaponGeo;
+    this._weapon?.removeFromParent();
+    this._weapon = this._buildWeapon(key);
+    if (this._weapon) this._weapon.visible = !this._preview;
+    if (oldGeo && oldGeo !== this._weaponGeo) oldGeo.dispose();
+    // The prop is part of the body as far as the first-person silencing is
+    // concerned, so the material list has to be rebuilt around it or a fresh
+    // sword renders at full brightness through the player's own head.
+    this._editMaterials(() => {});
   }
 
   /** Every material in the avatar subtree, so render state can be flipped as one. */

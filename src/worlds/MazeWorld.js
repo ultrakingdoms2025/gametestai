@@ -475,6 +475,80 @@ export class MazeWorld extends World {
      * vertical walls. Measured as the weakest of the three redistributions
      * tried (hemi-heavy h=1.10/e=1.00 came back at corridor 38.3, below base). */
     this.environment.hemiIntensity = 0.45;
+    /* ── THE HEMISPHERE PAIR, AND THE VIOLET FLOOR IT FIXES ────────────────
+     *
+     * These two were never stated, so `applyEnvironment` fell back to
+     * `skyColor ?? ambientColor` (the olive 0x6f7f68 above) and
+     * `groundColor ?? fogColor` (the blue-grey 0xa8c0ce above). Neither was
+     * authored as a bounce colour: one is an ambient tint, the other is fog.
+     * Every other world that has thought about its bounce states the pair -
+     * `CitadelWorld`, `MedievalWorld`, `RaceWorld`, `SpaceWorld` - and this is
+     * the maze doing the same, for the same reason the citadel gives: shade
+     * over warm ground has to land BROWN, not violet.
+     *
+     * WHAT WENT WRONG. Moving the ambient into the probe (0.12 / 1.75, above)
+     * put the maze's fill into `ENV_MOODS.daylight`, which is a BLUE SKY, and
+     * a roofed candle-lit corridor cannot see the sky at all - three has no
+     * occlusion on `scene.environment`, so the floor was lit by a sky that is
+     * not there. Measured on the shipped frames (seed 110548205, mean B minus
+     * mean R over the frame, and over the lower third where the floor is):
+     *
+     *   corridor  full  base -11.4  ->  Phase 3  -2.2   (+9.2 toward blue)
+     *   corridor  low3  base  -7.4  ->  Phase 3  +9.3   (+16.7)
+     *   lift-car  full  base  -1.5  ->  Phase 3  +5.6
+     *   tower-top full  base -31.4  ->  Phase 3 -23.1
+     *
+     * Terracotta dirt under an orange ceiling was reading LILAC. The luma
+     * instrument that signed off Phase 3 cannot see this: corridor luma moved
+     * 39.5 -> 42.0 and crush 0.90% -> 0.44%, both improvements, while the
+     * frame turned violet underneath them. A scalar is blind along every axis
+     * it does not measure - which is why the numbers below are RGB.
+     *
+     * WHY THE HUE AND NOT THE INTENSITY. Dropping `envMapIntensity` was tried
+     * first and is the wrong knob twice over: at 1.35 the corridor is still
+     * blue (low3 +4.9, barely half way back) and the crush the probe bought
+     * goes with it - 0.44% -> 0.96%, WORSE than the 0.90% before Phase 3. The
+     * probe's blue is in the picture because the probe is bright, and the only
+     * cure by subtraction is to give back the legibility. So the probe keeps
+     * its 1.75 and the hemisphere carries warmth instead, which is the
+     * citadel's answer to the identical failure.
+     *
+     * WHAT THIS PAIR IS. `skyColor` is what a maze floor sees looking up: a
+     * candle-lit ceiling on the roofed levels. `groundColor` is the terracotta
+     * bouncing back up into every soffit and hedge underside, where the fog's
+     * blue-grey used to sit. Measured, same seed, the three framings the swing
+     * was measured on:
+     *
+     *                    base        Phase 3      THIS
+     *   corridor  full   -11.4         -2.2      -11.1   crush 0.90/0.44/0.36%
+     *   corridor  low3    -7.4         +9.3       -9.0
+     *   lift-car  full    -1.5         +5.6       +1.4   crush 1.30/0.69/0.58%
+     *   tower-top full   -31.4        -23.1      -30.0   crush 0.29/0.16/0.13%
+     *
+     * All three framings are back inside 3 of the pre-Phase-3 hue and every
+     * crush figure is at or below the Phase 3 one, so the legibility Phase 3
+     * bought is kept in full. The corridor is 9% brighter than Phase 3 (luma
+     * 42.0 -> 46.0): a hemisphere can only ADD, and the probe's blue can only
+     * be balanced by adding red, never by removing blue. Trimming that back
+     * was tried (the same pair at 0.84 of this luminance) and it costs the
+     * lift-car framing its margin - +2.6 against a base of -1.5 - for 1.3 of
+     * luma, so it was refused.
+     *
+     * WHAT IS STILL WRONG, and it is not fixable from this file: the maze
+     * wants a WARM env mood, not `daylight` dimmed or counterweighted.
+     * `ENV_MOODS` offers `space`, `daylight` and `alpine` - two blue skies and
+     * a starfield - and a fourth mood costs a fourth PMREM prefilter in
+     * `MaterialLibrary.warmup` for every world, on this project's most
+     * sensitive path. If one is ever added for another reason, this world
+     * should take it and these two lines should be re-measured against it.
+     * @see gfx/Materials.js `ENV_MOODS`
+     *
+     * Zero shader programs: 128 in every one of the seven runs behind the
+     * numbers above, candidates included - both
+     * hemisphere colours are uniforms and `gfx/LightRig.js` pools the light
+     * COUNT, which is the part of the cache key that could have moved. */
+    this.environment.skyColor = new THREE.Color(0xffd6a0);
+    this.environment.groundColor = new THREE.Color(0xb07a52);
     this.environment.sunColor = new THREE.Color(0xfff2d8);
     this.environment.sunIntensity = 2.2;
     this.environment.sunDirection = new THREE.Vector3(-0.3, 0.9, -0.25).normalize();

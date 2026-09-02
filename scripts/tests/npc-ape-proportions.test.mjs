@@ -444,10 +444,19 @@ test('the ape keys leave every human archetype byte-identical', () => {
       }
     }
   }
-  assert.equal(lines.length, 6240, 'the sampling grid changed, so the hash below means nothing');
+  /* 6336, not 6240: the hand gained two driver bones per side (`fingersR/L`,
+   * `thumbR/L`), which is 4 more `s` lines on each of the 24 archetypes.
+   *
+   * The golden was re-taken rather than reasoned about, and the re-take was
+   * itself checked: filtering the four new names back out of `lines` and
+   * hashing the remainder reproduces the previous digest
+   * 9f861457d487e994f75aa4b577099bd6a97d5169f628a844a5966bace6547334 EXACTLY,
+   * so every pre-existing number in this grid is still byte-identical and the
+   * only change is the addition. @see FINGERS in Humanoid.js */
+  assert.equal(lines.length, 6336, 'the sampling grid changed, so the hash below means nothing');
   assert.equal(
     crypto.createHash('sha256').update(lines.join('\n')).digest('hex'),
-    '9f861457d487e994f75aa4b577099bd6a97d5169f628a844a5966bace6547334',
+    'a8f51cf835b1fab6ec1785e02cbafb1cbb5116d8d01995d6b41c0e741e795149',
     'a human archetype moved; the ape keys are not gated'
   );
 });

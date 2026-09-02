@@ -75,6 +75,58 @@ const GAITS = [
   { name: 'gallop', max: Infinity, stride: 6.8, lift: 0.44, bob: 0.2 },
 ];
 
+/** Fraction of a leg's cycle spent in the air. Stance is the rest of it. */
+const SWING_FRAC = 0.4;
+
+/**
+ * Hip height above the ground, metres, ordered [front, hind].
+ *
+ * The leg is a rigid link pivoting at the hip - no IK, and a knee that does not
+ * extend through stance - so the height of the pivot above the GROUND PLANE is
+ * the radius the contact point swings on. It is not the length of the modelled
+ * limb, which reaches 1.475 m below the hip and therefore hangs a little under
+ * y = 0; the contact is wherever the leg crosses the ground, and that is at the
+ * hip's own height.
+ */
+const HIP_Y = [BODY_Y - 0.16, BODY_Y - 0.1];
+
+/**
+ * How far one leg may sweep fore and aft, radians. The same arithmetic, and the
+ * same two facts fighting over it, as `BeastGait.stanceReach` - read the long
+ * note there.
+ *
+ * In short: while a hoof is down the horse covers `(1 - SWING_FRAC) * stride`,
+ * and the contact point must travel exactly that far rearward relative to the
+ * hip or the hoof is sliding, which asks for asin(travel / 2L). But the same
+ * rigid leg lifts its hoof L*(1 - cos theta) at the ends of that sweep, and
+ * nothing here can put it back down, so the sweep is also capped where a
+ * PLANTED hoof rises no higher than the gait already lifts a SWINGING one.
+ *
+ * The cap is what binds at every gait this horse has (front leg, metres either
+ * side of the hip, needed against available):
+ *
+ *   walk 0.78 / 0.63  81%      canter 1.68 / 0.88  52%
+ *   trot 1.32 / 0.79  60%      gallop 2.04 / 0.96  47%
+ *
+ * - so a hoof still creeps, by a fifth of a stance at a walk and by half of one
+ * at a gallop. It used to creep by ALL of it: the stance curve was a sine hump
+ * that swept the hoof back to mid-stance and then forward again and put it down
+ * exactly where it was picked up, so the contact point moved by nothing at all
+ * and the horse skated its whole stride, at every gait, from the day it shipped.
+ * What is left needs shorter strides - these are a real horse's, on a leg that
+ * is only just a real horse's - or a stance-phase knee, and both are bigger
+ * changes than a pose curve.
+ *
+ * Both arguments are the DAMPED gait values, so a change of band walks the
+ * sweep across rather than stepping it. @see GAIT_BLEND
+ */
+function stanceReach(stride, lift, legLength) {
+  if (!(stride > 0) || !(legLength > 0)) return 0;
+  const wanted = Math.asin(clamp(((1 - SWING_FRAC) * stride) / (2 * legLength), -0.95, 0.95));
+  const holdable = Math.acos(clamp(1 - lift / legLength, -1, 1));
+  return Math.min(wanted, holdable);
+}
+
 /**
  * Leg phase offsets per gait, in turns, ordered [FL, FR, HL, HR].
  *
@@ -959,42 +1011,64 @@ export class Horse {
     const gaitLift = this._gaitLift;
     const gaitBob = this._gaitBob;
 
+    /* The sweep a leg is allowed this frame, derived from the stride rather
+     * than authored, so a planted hoof travels rearward at something close to
+     * the speed the ground is going past. @see stanceReach */
+    const reachFore = stanceReach(this._gaitStride, gaitLift, HIP_Y[0]);
+    const reachHind = stanceReach(this._gaitStride, gaitLift, HIP_Y[1]);
+
     for (let i = 0; i < this.legs.length; i++) {
       const leg = this.legs[i];
       const t = (phase + table[i]) % 1;
-      // Swing phase over the first 40% of the cycle, stance for the rest -
-      // that asymmetry is what makes a leg look like it is pushing off rather
-      // than pedalling.
+      const reach = leg.front ? reachFore : reachHind;
+      /* Swing over the first 40% of the cycle, stance for the rest - that
+       * asymmetry is what makes a leg look like it is pushing off rather than
+       * pedalling - and the two halves have to MEET: swing carries the hoof
+       * from fully back to fully forward, stance walks it monotonically back
+       * again. Both used to be sine humps, which start and end at zero, so the
+       * hoof landed under the shoulder and the stance ended where it began.
+       * @see stanceReach */
       let swing;
       let lift;
-      if (t < 0.4) {
-        const u = t / 0.4;
-        swing = Math.sin(u * Math.PI) * (leg.front ? 0.85 : 0.7);
-        lift = Math.sin(u * Math.PI) * gaitLift;
+      let fold;
+      if (t < SWING_FRAC) {
+        const u = t / SWING_FRAC;
+        const hump = Math.sin(u * Math.PI);
+        // Smoothstep plus the 7% lead the humanoid swings on (`NPCAnimator`
+        // ~876): the hoof is a little ahead of schedule through the middle of
+        // the reach and is slowing down as it arrives at the plant.
+        const ease = u * u * (3 - 2 * u) + 0.07 * hump;
+        swing = -reach + 2 * reach * ease;
+        lift = hump * gaitLift;
+        // The knee keeps the fold it always had - the old swing amplitude times
+        // the old fold gain. How hard a knee tucks is ground clearance, not a
+        // contact point, and fixing the latter has no business restyling it.
+        fold = hump * (leg.front ? 0.85 * 0.8 : 0.7 * 1.05);
       } else {
-        const u = (t - 0.4) / 0.6;
-        swing = -Math.sin(u * Math.PI) * (leg.front ? 0.5 : 0.62);
+        const u = (t - SWING_FRAC) / (1 - SWING_FRAC);
+        swing = reach * (1 - 2 * u);
         lift = 0;
+        fold = 0;
       }
       leg.upper.rotation.x = swing;
       // The knee folds only on the way through, and only forwards.
-      leg.lower.rotation.x = -Math.max(0, swing) * (leg.front ? 0.8 : 1.05);
+      leg.lower.rotation.x = -fold;
       leg.upper.position.y = (leg.front ? BODY_Y - 0.16 : BODY_Y - 0.1) + lift * 0.12;
 
       /* The instant this hoof touches down.
        *
-       * t = 0.4 is where the swing ends and the stance begins, which is by
+       * `SWING_FRAC` is where the swing ends and the stance begins, which is by
        * definition the moment the foot is on the ground. Taking the sound from
        * the same phase table that placed the leg is the only way four hooves
        * land audibly in the pattern they visibly land in - a timer would drift
        * out of step with the gait within a couple of strides, and a trot that
        * sounds like a canter is worse than no sound at all. */
       /* The cross-fade can slide an offset backwards, so the crossing test
-       * needs to know the phase actually ADVANCED through 0.4 rather than that
+       * needs to know the phase actually ADVANCED through it rather than that
        * it merely straddles it now: a leg being re-timed past the boundary
        * would otherwise sound a hoofbeat it never took. */
       const advanced = wrapTurn(t - leg.prevT) > 0;
-      const landed = advanced && leg.prevT < 0.4 && t >= 0.4;
+      const landed = advanced && leg.prevT < SWING_FRAC && t >= SWING_FRAC;
       leg.prevT = t;
       if (landed && this._grounded && Math.abs(this.speed) > 0.4) {
         this.bus?.emit('mount:footfall', {

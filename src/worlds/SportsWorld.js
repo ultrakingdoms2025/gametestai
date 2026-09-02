@@ -2224,6 +2224,10 @@ export class SportsWorld extends World {
         size: sun.shadow.mapSize.x,
         bias: sun.shadow.bias,
         normalBias: sun.shadow.normalBias,
+        // Borrowed like the rest: the PCF disk radius set below is sized for
+        // THIS world's 4096 near cascade, and left behind it would follow the
+        // player into every other world's 2048 map at 5.86 cm/texel.
+        radius: sun.shadow.radius,
         intensity: sun.intensity,
       };
       // normalBias 0.02, not 0.07.
@@ -2236,7 +2240,21 @@ export class SportsWorld extends World {
       // suppress acne and the depth bias picks up the rest.
       sun.shadow.bias = -0.0006;
       sun.shadow.normalBias = 0.02;
-      sun.shadow.blurSamples = 12;
+      /* `blurSamples = 12` used to sit here and did nothing at all: three reads
+       * `blurSamples` only inside `VSMPass` (WebGLShadowMap.js), and this game
+       * runs `PCFShadowMap` (core/Engine.js). Under PCF the knob that softens
+       * an edge is `shadow.radius`, which scales the 5-tap Vogel disk - and the
+       * tap count is fixed at 5, so a wider disk is free.
+       *
+       * The near cascade is a 4096 map over the sphere fit of the first 55 m of
+       * the frustum (`_updateSunRig`): radius ~60 m at 4:3, ~86 m at 16:9, so
+       * 2.9-4.2 cm per texel. The outermost tap is at 0.95 of the radius, so 5
+       * softens an edge over ~28-40 cm. Deliberately a shade tighter in world
+       * terms than main.js's 4 on its 5.86 cm texel: this cascade exists for
+       * contact shadows, and the normalBias above was cut to 0.02 precisely to
+       * put those contacts back on the ground.
+       */
+      sun.shadow.radius = 5;
     }
 
     // Cascade 1: fixed box over the whole site, rendered once. See the note on
@@ -2252,7 +2270,16 @@ export class SportsWorld extends World {
     far.shadow.mapSize.set(this._farShadowMapSize, this._farShadowMapSize);
     far.shadow.bias = -0.0011;
     far.shadow.normalBias = 0.12;
-    far.shadow.blurSamples = 8;
+    /* Was `blurSamples = 8`, dead under PCF for the same reason as the near
+     * cascade above. The far cascade wants a SMALLER radius, not a matching
+     * one: this box is 600 m across a 2048 map - 29.3 cm per texel, 7-10x the
+     * near cascade - so radius 5 here would smear a band nearly 3 m wide and,
+     * stacked on a 12 cm normalBias, leak daylight in under the ski mound. At 2
+     * the band is ~1.1 m, which at the 55 m cascade split subtends the same
+     * angle as the near cascade's ~30 cm does at 15 m (both about 1/50 of the
+     * viewing distance), so the seam between the two does not announce itself.
+     */
+    far.shadow.radius = 2;
     {
       const sc = far.shadow.camera;
       sc.left = -farRadius;
@@ -2402,6 +2429,7 @@ export class SportsWorld extends World {
       if (this._sun) {
         this._sun.shadow.bias = this._sunRestore.bias;
         this._sun.shadow.normalBias = this._sunRestore.normalBias;
+        this._sun.shadow.radius = this._sunRestore.radius;
         this._sun.intensity = this._sunRestore.intensity;
       }
     }

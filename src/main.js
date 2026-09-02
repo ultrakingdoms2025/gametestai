@@ -252,6 +252,29 @@ sun.shadow.camera.near = 0.5;
 sun.shadow.camera.far = 400;
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.035;
+/* A penumbra, not a staircase.
+ *
+ * three r185 replaced the fixed PCF kernel with a 5-tap Vogel disk scaled by
+ * `shadow.radius` (shadowmap_pars_fragment.glsl.js: `radius = shadowRadius *
+ * texelSize.x`). THE TAP COUNT IS FIXED AT 5 WHATEVER THE RADIUS - widening
+ * this costs zero GPU time, so do not "optimise" it back down.
+ *
+ * Left at three's default of 1 the whole disk fits inside one texel, which is
+ * how every shadow in the game has been drawing: one texel hard, aliased,
+ * stair-stepped along the edge. The ortho box is refit each frame (see the
+ * frame updater further down) to `CONFIG.render.shadowDistance * 0.5` = 60 m,
+ * so 120 m across a 2048 map = 5.86 cm per texel. The outermost Vogel tap sits
+ * at sqrt(0.9) = 0.95 of the radius, so 4 puts it 3.8 texels (~22 cm) off
+ * centre and an edge softens over a band of roughly twice that, ~45 cm. That
+ * is the real sun's penumbra at about 24 m of caster-to-receiver separation -
+ * the scale of the walls, gantries and roofs a 120 m box actually holds -
+ * while a foot contact still resolves well inside half a metre, which is what
+ * the tight frustum below is for.
+ *
+ * Below 3 the band collapses back onto the texel grid and the staircase
+ * returns; above 5 ground contacts start to visibly detach.
+ */
+sun.shadow.radius = 4;
 const sunTarget = new THREE.Object3D();
 engine.scene.add(ambient, hemi, sun, sunTarget, sun.target);
 sun.target = sunTarget;

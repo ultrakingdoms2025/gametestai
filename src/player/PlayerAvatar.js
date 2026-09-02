@@ -123,6 +123,61 @@ const MOVE_LEAVE = 0.42;
 const TURN_CEILING = 14;
 
 /**
+ * ── THE GAIT CLAMP: how much of its intent the body is allowed to believe ──
+ *
+ * The animator used to be handed `hypot(velocity.x, velocity.z)` - what the
+ * controller MEANT to travel - so a player pinned against a wall, wedged in a
+ * corner, or shoved by a beast ran on the spot at a full sprint cadence while
+ * the body did not move a millimetre. `Player._move` already knows better: it
+ * computes both `wanted` and `got` every step and uses `got` for the step-up
+ * probe alone, never reconciling the velocity against it. Reconciling it there
+ * would change how the controller FEELS - friction, the roll's speed floor and
+ * the whole air-control model all read that velocity back - so the physics is
+ * left exactly as it is and the gait is clamped here instead, to the ground the
+ * body actually covered since the last frame.
+ *
+ * `GAIT_SLACK` converts a PLANAR measurement into the along-surface distance
+ * the feet really cover, which is the quantity `NPCAnimator._updateBlend`
+ * matches its stride length against. A slope understates that by `1/cos p`, and
+ * `1/cos(29.6 deg) = 1.15` - so on the steepest ramp anyone walks up in this
+ * game the clamp reports exactly the speed the feet see; flatter than that it
+ * is slightly generous and steeper slightly mean, which is what climbing looks
+ * like anyway. It also means a shortfall under a seventh never reaches the gait
+ * at all. Flat ground needs none of it: measured against `resolveCapsule`,
+ * unobstructed motion returns 1.0000 of its intent to fifteen decimal places,
+ * so the clamp is a strict no-op on a floor.
+ *
+ * Vertical travel is deliberately excluded. Including it would drive a walk
+ * cycle off a 40 m/s fall.
+ *
+ * `GAIT_FALL` damps only the way DOWN. The measurement rises instantly and
+ * decays at 8/s, and that asymmetry is what keeps the clamp honest on ground
+ * that is legitimately lossy:
+ *
+ *   - A staircase alternates between full frames and near-zero ones as the step
+ *     probe finds each riser. Measured over a 0.25 m rise / 0.30 m run flight at
+ *     walking pace, the raw per-frame ratio spans 0.03 to 1.00; the filter holds
+ *     the gait at 0.65 m/s at its lowest, which keeps `moveBlend` above 0.8 and
+ *     the walk pose intact. An undamped clamp would flicker to idle on every
+ *     tread - the same square wave the turn shuffle is damped against.
+ *     @see _driveYaw
+ *   - A wall is a SUSTAINED loss, so the decay governs: sprinting into one at
+ *     7 m/s, the gait drops below the run blend in 150 ms and to a near stop in
+ *     333 ms. Legs that wind down over a third of a second read as running into
+ *     something; legs that stop in one frame read as a dropped animation.
+ *   - A teleport, a respawn, a world change or a frame the avatar spent hidden
+ *     all produce an ENORMOUS apparent displacement, and are handled by
+ *     construction rather than by a special case: the clamp is a `Math.min`
+ *     against the intent, so no measurement can ever raise the gait above what
+ *     the controller asked for. The rise being instant then puts the gait back
+ *     on the intent for the very next frame. There is no portal hook here and
+ *     there deliberately is not one.
+ */
+const GAIT_SLACK = 1.15;
+/** @see GAIT_SLACK - decay of the gait clamp, per second, downwards only. */
+const GAIT_FALL = 8;
+
+/**
  * Locomotion lean.
  *
  * `NPCAnimator` has one upright gait and no lean layer, because an NPC walks
@@ -517,6 +572,14 @@ export class PlayerAvatar {
     this._leanPitch = 0;
     this._leanRoll = 0;
     this._prevSpeed = 0;
+    /** Damped displacement clamp on the animator's speed. @see GAIT_SLACK */
+    this._gait = 0;
+    /* Last posed frame's planar position, for that clamp. The origin is a safe
+     * seed either way: a body spawned away from it reads one frame of enormous
+     * displacement, which a `Math.min` against a standing player's zero intent
+     * discards. @see _gaitSpeed */
+    this._gaitX = 0;
+    this._gaitZ = 0;
     this._dead = false;
     /** Mounts set this false and drive `root` themselves. */
     this.followPlayer = true;
@@ -1074,10 +1137,46 @@ export class PlayerAvatar {
     this._root.rotation.y = this._bodyYaw;
   }
 
+  /**
+   * The speed the BODY is allowed to believe in: the intent, clamped to the
+   * ground actually covered since the last posed frame.
+   *
+   * `dt` is the render frame's, and that is the right timebase: `main.js` calls
+   * `player.update` and then `avatar.update` inside one `onFrameUpdate` with
+   * the same `dt`, so this reads the position the controller finished the very
+   * same step at, exactly one integration behind the last sample.
+   *
+   * `_driveYaw` deliberately does NOT use this and keeps the raw intent: a body
+   * held against a wall is still facing the way it is pushing, and clamping the
+   * facing too would swing it back to the camera the moment it stopped moving.
+   *
+   * @see GAIT_SLACK for the two constants and everything this is defending
+   * @param {import('./Player.js').Player} p
+   * @param {number} dt
+   * @returns {number} metres/second for the animator
+   */
+  _gaitSpeed(p, dt) {
+    const want = Math.hypot(p.velocity.x, p.velocity.z);
+    const moved = Math.hypot(p.position.x - this._gaitX, p.position.z - this._gaitZ);
+    this._gaitX = p.position.x;
+    this._gaitZ = p.position.z;
+    const raw = (moved / Math.max(dt, 1e-4)) * GAIT_SLACK;
+    // Up instantly, down damped. @see GAIT_FALL
+    const held = raw >= this._gait ? raw : approach(this._gait, raw, GAIT_FALL, dt);
+    this._gait = Math.min(want, held);
+    return this._gait;
+  }
+
   _driveLocomotion(dt, elapsed, third, rig) {
     const p = this.player;
     const a = this.animator;
-    const speed = Math.hypot(p.velocity.x, p.velocity.z);
+    /* Not `hypot(p.velocity.x, p.velocity.z)`: that is the intent, and a body
+     * held against a wall has an intent it is not being paid. @see GAIT_SLACK
+     *
+     * Everything below the feet reads this too - the sprint fold and the
+     * acceleration lean - and that is deliberate. A torso folded into a full
+     * sprint above legs that have stopped is the same defect one layer up. */
+    const speed = this._gaitSpeed(p, dt);
     // A rider is neither grounded nor falling as far as the body is concerned:
     // the mount holds them up. Treating the hoverboard's permanent hover as
     // free-fall spread the arms into a starfish, which is what this guards.

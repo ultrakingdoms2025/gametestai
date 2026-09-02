@@ -614,6 +614,11 @@ export class LightRig {
     }
     a.bias = b.bias;
     a.normalBias = b.normalBias;
+    // `radius` scales the 5-tap PCF Vogel disk (see main.js's note on the sun)
+    // and is the ONLY soft-shadow knob that does anything under PCFShadowMap.
+    // Omitted here it was silently dropped, so a world that softened its own
+    // shadows got the one-texel default back the moment the light was pooled.
+    a.radius = b.radius;
     a.blurSamples = b.blurSamples;
 
     const ca = a.camera;

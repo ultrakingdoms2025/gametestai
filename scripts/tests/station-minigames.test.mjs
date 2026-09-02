@@ -297,12 +297,72 @@ test('a body can walk the hub deck from the freight kiosk to every rim kiosk', a
    *
    * (-40.5, -18) is the same KIND of point, chosen from the 596 cells the
    * flood still refuses that pass every local check: outside the gateway ring,
-   * eight walkable neighbours, no headroom obstruction. */
-  const dead = idx(-40.5, -18);
+   * eight walkable neighbours, no headroom obstruction.
+   *
+   * ── RE-TAKEN 2026-09-02, AND IT HAPPENED AGAIN ───────────────────────────
+   *
+   * (-40.5, -18) went reachable. A/B'd first, as the line above demands, by
+   * building the world at both values of the one constant that moved:
+   *
+   *   GATEWAY.TRIM_PROUD = 0.06  ->  reached 4637, the point REFUSED
+   *   GATEWAY.TRIM_PROUD = 0.005 ->  reached 4939, the point REACHED
+   *
+   * and nothing else in the tree touched. So the cause is named, not guessed.
+   *
+   * THE MECHANISM, which is the thing this note owes its author. (-40.5, -18)
+   * is not "outside the gateway ring" at all - that description was wrong when
+   * it was written. Its floor is 2.40 m and it is standing ON THE TOP TREAD of
+   * the 210-degree gateway's approach flight, one cell short of the dais deck
+   * at 2.625. Walk the flood's own predecessor chain back from it and the
+   * first nine hops are the flight itself, descending 2.4, 2.0, 1.6, 1.2, 0.8,
+   * 0.4, 0.0 onto the plaza.
+   *
+   * It was unreachable because that flight could not be climbed. The station
+   * collides its DRAWN geometry, so the trim nosing capping each tread is the
+   * surface a body stands on, and at 0.06 proud those surfaces were 0.46, 0.86,
+   * 1.26, 1.66, 2.06, 2.46. The first riser off the plaza was 0.46 against this
+   * flood's STEP of 0.45 - `CONFIG.player.stepHeight`, the same figure the game
+   * uses - so the flood was refused at the foot of all six flights and the
+   * whole of every dais with it. `Player._move` refused it too, and by a
+   * hair worth recording: its probe accepts a tread at
+   * `prev.y + stepHeight + 0.01`, which is 0.46 exactly, and the float32
+   * collision mesh returned 0.460000008344650269 against 0.460000000000000020.
+   * The flight was authored precisely on the limit and lost by 8 nanometres.
+   *
+   * So this control had been resting on a defect for the second time running,
+   * and on the same shape of defect: a surface that should never have been at
+   * that height. The point becoming reachable is the fix working - the flood
+   * and the player now agree that a gateway approach can be walked up.
+   *
+   * THE REPLACEMENT, and the standard it had to meet. The obvious candidates
+   * were checked and thrown away rather than taken:
+   *
+   *   the monument plinth top (y 1.46, 60 cells at r 6-10.6) - REJECTED. The
+   *   1.5 m lattice steps over the tiers that climb it; a 0.25 m flood from the
+   *   open deck reaches 4,428 of its 4,553 cells. It is refused here only as a
+   *   sampling artefact, which is the very thing a control must not be.
+   *
+   *   the far side of a gateway dais (y 2.625, r 57-58.7) - REJECTED as
+   *   durable but gateway-coupled, and gateway coupling is what just retired
+   *   the last one.
+   *
+   * (-54, -55.5) is deck at y = 0, and it survives every flood run at it:
+   * refused at 1.5 m/span 60 (this test), at 0.75 m/span 60, at 1.5 m/span 100
+   * and at 0.5 m/span 100. It is outside the promenade ring, and the ring is a
+   * hard edge for this flood BY DESIGN rather than by accident - its deck is at
+   * 10.005 m and the `g > 3` band above deliberately excludes it, which is the
+   * clause whose comment says it is "what keeps the flood ON the deck". So this
+   * control fires if that band is widened, if STEP is loosened, or if the flood
+   * is ever allowed to leave the hub - and it is coupled to no gateway, no prop
+   * and no crowd figure. It was refused under BOTH geometries above, so it is
+   * not a point this change created. */
+  const dead = idx(-54, -55.5);
   assert.notEqual(seen[dead[1] * N + dead[0]], 2,
-    '(-40.5, -18) is now reachable — the hub flood has been loosened and proves nothing. '
-    + 'Before re-taking this point, A/B the change: the last time it moved, the cause was a collider '
-    + 'that should never have existed.');
+    '(-54, -55.5) is now reachable — the hub flood has been loosened and proves nothing. '
+    + 'Before re-taking this point, A/B the change: both times it has moved, the cause was a surface '
+    + 'that should never have been where it was — a crowd collider, then a nosing 6 mm too proud. '
+    + 'And check the replacement against a finer flood: the last candidate rejected for this slot '
+    + 'was unreachable only because a 1.5 m lattice stepped over the stairs that climb it.');
 });
 
 /* ================================================================== */

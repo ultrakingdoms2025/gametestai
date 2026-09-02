@@ -1091,7 +1091,7 @@
   "name": "gateway-citadel:trim",
   "position": {
    "x": -43.109,
-   "y": 0.38,
+   "y": 0.325,
    "z": -25.771
   }
  },
@@ -1203,7 +1203,7 @@
   "name": "gateway-dock:trim",
   "position": {
    "x": 43.109,
-   "y": 0.38,
+   "y": 0.325,
    "z": -25.771
   }
  },
@@ -1315,7 +1315,7 @@
   "name": "gateway-maze:trim",
   "position": {
    "x": -43.109,
-   "y": 0.38,
+   "y": 0.325,
    "z": 25.771
   }
  },
@@ -1427,7 +1427,7 @@
   "name": "gateway-medieval:trim",
   "position": {
    "x": 0,
-   "y": 0.38,
+   "y": 0.325,
    "z": -50.026
   }
  },
@@ -1539,7 +1539,7 @@
   "name": "gateway-race:trim",
   "position": {
    "x": 43.109,
-   "y": 0.38,
+   "y": 0.325,
    "z": 25.771
   }
  },
@@ -1651,7 +1651,7 @@
   "name": "gateway-sports:trim",
   "position": {
    "x": 0,
-   "y": 0.38,
+   "y": 0.325,
    "z": 50.026
   }
  },

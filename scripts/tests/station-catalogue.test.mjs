@@ -384,12 +384,48 @@ test('the collision the world derives from its own geometry is unchanged', async
    * `BEVEL_MIN` comment in `StationKit.js`. Its collision column is now the
    * cost of a chamfer that IS collided, which none of them is.
    */
+  /* -- RE-TAKEN 2026-09-02: the gateway nosing sat 6 mm too proud ---------
+   * boxed 170,485 -> 170,751 (+266), kept 202,307 -> 202,041 (-266), chunks
+   * 8,763 -> 8,715 (-48), colliders 26,757 -> 26,709 (-48). `found` and
+   * `planting` are unchanged, which is the check that this moved a surface
+   * rather than adding or removing any geometry: the same 36 nosing plates
+   * are drawn, 0.055 m lower.
+   *
+   * WHY THEY MOVED AT ALL. `GATEWAY.TRIM_PROUD` went 0.06 -> 0.005, so each
+   * approach nosing now sits 5 mm proud of the tread it caps instead of
+   * 60 mm. A plate that stands 60 mm above its tread has its top surface
+   * outside the tread's own box collider and is therefore soup to be kept; a
+   * plate sunk to 5 mm is swallowed by that box, and `_dropEnclosedTriangles`
+   * moves it to `boxed`. 266 triangles over six gateways and six treads, and
+   * the 48 chunks they used to need are 48 colliders that no longer exist.
+   *
+   * WHY IT MOVED, which is the part worth reading. The station is the only
+   * world that collides its DRAWN geometry, so those plates are the surface a
+   * body stands on, and the profile this line measures WAS the flight: the
+   * physics returned 0.46, 0.86, 1.26, 1.66, 2.06, 2.46 up the centre lane.
+   * The first riser off the plaza was therefore 0.46 m against
+   * `CONFIG.player.stepHeight` 0.45 - and `Player._move`'s step probe accepts
+   * a tread at `prev.y + stepHeight + 0.01`, which is 0.46 exactly. It still
+   * refused, on all six bearings, because the collision mesh stores its
+   * vertices as float32: the probe read 0.460000008344650269 against a limit
+   * of 0.460000000000000020 and lost by 8.3 nanometres.
+   *
+   * That is the whole defect and it is why this is a repair and not a nudge.
+   * The flight had NO margin - it was authored exactly on the limit - and the
+   * rounding fell the wrong way, so all six gateway approaches were
+   * unclimbable at their foot in the centre lane, which is the lane a player
+   * walking at a gateway uses. Every later riser was 0.40 and fine, because
+   * every tread after the first is climbed FROM a plate and the plate
+   * cancels. Measured both ways with the world built at each value; at 0.005
+   * the same probe reads 0.400000000000000022 and passes on all six.
+   * @see GATEWAY.TRIM_PROUD, scripts/tests/portal-walkthrough.test.mjs
+   */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 372792, boxed: 170485, kept: 202307, planting: 1361 },
+    { found: 372792, boxed: 170751, kept: 202041, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8763, 'the chunking changed');
+  assert.equal(chunks, 8715, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -465,8 +501,16 @@ test('the collision the world derives from its own geometry is unchanged', async
    * the deepEqual above. Nothing about the drawn world was undone; the mesh
    * count, the material count and the named-node set never moved in either
    * direction.
+   *
+   * -- And 48 of them were the gateway nosings' own chunks -----------------
+   * 26,757 -> 26,709 on 2026-09-02, exactly one per chunk lost, for the reason
+   * on the deepEqual above: a nosing sunk to 5 mm proud lies inside the tread
+   * box that already collides it, so it stops needing collision of its own.
+   * Eight per gateway. Nothing a body can stand on was removed - the tread box
+   * is still there, and it is now the surface the step probe finds, 0.40 m up
+   * instead of 0.46.
    */
-  assert.equal(physics.colliders.length, 26757, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26709, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {
@@ -505,6 +549,29 @@ test('every reported position is finite', async () => {
  * the old anchor, so it now lands half a metre off and still reports ok:true.
  * `scripts/check-stored-overlays.mjs` reads this same fixture, and it is what
  * says whether any stored document actually targets the name.
+ *
+ * ── Re-taken 2026-09-02: six anchors, 0.055 m each ──────────────────────
+ * `gateway-race:trim`, `gateway-sports:trim`, `gateway-maze:trim`,
+ * `gateway-citadel:trim`, `gateway-medieval:trim` and `gateway-dock:trim` all
+ * fell from y = 0.38 to y = 0.325. No name was minted or retired, and no x or
+ * z moved on any of them.
+ *
+ * An anchor is the bottom-centre of the batch's bounds, and the bottom of each
+ * gateway's `trim` batch is the underside of the LOWEST approach nosing.
+ * `GATEWAY.TRIM_PROUD` went 0.06 -> 0.005, which lowers every nosing by
+ * 0.055, so the bound follows it down by 0.055 and nothing else in the batch -
+ * the handrails, the stanchion caps, the terminal posts - moved at all. The
+ * measurement that made that change is on the collision pin above: the nosing
+ * was the surface a body stood on, and at 0.06 proud it put the first riser
+ * off the plaza 8.3 nanometres beyond what `Player._move`'s step probe will
+ * accept, on all six bearings.
+ *
+ * 55 mm is under the half-metre that mattered for `habitat:panelDark`, but it
+ * is recorded the same way and for the same reason: a stored move against one
+ * of these six names was authored as a translation from the old anchor and now
+ * lands 55 mm low, still reporting ok:true. `check-stored-overlays.mjs` reads
+ * this fixture and is what answers whether any stored document targets these
+ * six; it was NOT re-run for this change, because it needs production credentials.
  */
 test('the name set and every anchor match the pin', async () => {
   const cat = await catalogue();

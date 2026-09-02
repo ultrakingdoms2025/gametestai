@@ -95,6 +95,27 @@ const OVERLAY_TIMED_OUT = Symbol('overlay timed out');
  */
 const OVERLAY_BREAKER_RETRY_MS = 60000;
 
+/**
+ * How far in front of the return gateway an arriving player is stood, metres.
+ *
+ * ── WHY THIS IS A NAMED EXPORT AND NOT THE 2.6 IT USED TO BE ─────────────
+ * It is one half of a cross-file invariant with `PORTAL_REARM_DEPTH` in
+ * `systems/Portals.js`, and nothing pinned the pair. Arrival plants the player
+ * ON the return gateway's plinth, already radially INSIDE its aperture - the
+ * chest sits 1.726 m below the disc centre, well within the 2.226 m entry
+ * radius - so the only thing that stops the walk-through trigger from firing
+ * on the arrival step is this depth measured against the disc plane. It has to
+ * clear `PORTAL_REARM_DEPTH` (1.15) or the gateway never arms at all.
+ *
+ * The failure that would cause is not a bounce-back loop, which is loud. It is
+ * that walking through gateways SILENTLY STOPS WORKING, forever, with nothing
+ * logged and nothing visibly different - the exact defect
+ * `scripts/tests/portal-walkthrough.test.mjs` was written for, reintroduced by
+ * a change to a completely different file. `DockWorld.js`'s note about wanting
+ * a shorter offset is how close that already came.
+ */
+export const PORTAL_ARRIVAL_OFFSET = 2.6;
+
 export class WorldManager {
   /**
    * @param {{ scene: THREE.Scene, engine: any, physics: import('../physics/Physics.js').Physics,
@@ -805,7 +826,7 @@ export class WorldManager {
         const rotY = spec.rotationY ?? 0;
         const nx = Math.sin(rotY);
         const nz = Math.cos(rotY);
-        const offset = 2.6;
+        const offset = PORTAL_ARRIVAL_OFFSET;
         position.set(
           spec.position.x + nx * offset,
           spec.position.y,

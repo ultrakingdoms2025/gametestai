@@ -2145,6 +2145,32 @@ export const GATEWAY = {
   TREAD_W0: 14,
   TREAD_TAPER: 0.75,
   /**
+   * The decorative nosing plate that caps each tread, and how far its top
+   * stands PROUD of the tread it caps.
+   *
+   * ── WHY THIS IS A CONSTANT AND NOT A LITERAL IN THE DRAWING CODE ────────
+   * The station is the only world that turns its drawn geometry into colliders
+   * (`_solidifyStructure`), so the nosing is not decoration to a walking body -
+   * it is the surface the body steps onto. It shipped centred at `rise + 0.02`,
+   * 0.08 thick, so its top was `rise + 0.06`, and the FIRST riser off the plaza
+   * was 0.46 against `CONFIG.player.stepHeight` 0.45. Measured on the running
+   * page: KeyW held from the plaza stops dead at the tread face and never
+   * moves, on all six bearings, in the centre lane - the exact lane a player
+   * aiming at the gateway walks up. Only the first riser fails, because every
+   * tread after it is climbed FROM a plate, so the plate cancels.
+   *
+   * The tread heights above were already chosen against `stepHeight` (six of
+   * 0.40, not five of 0.48) and the note saying so is beside them. That fix
+   * landed on the tread box; the plate carried the flight back over the limit
+   * on top of it. 5 mm proud, not 0, so the plate does not z-fight with the
+   * tread top it completely covers.
+   */
+  TRIM_T: 0.08,
+  TRIM_PROUD: 0.005,
+  /** Guide-light pad on each tread: size, and how far it sinks into the plate. */
+  GUIDE_T: 0.14,
+  GUIDE_SINK: 0.04,
+  /**
    * Service ramp on the far side: 8 m of run over the dais's 2.4 m.
    *
    * ── 14.6 and not 12, because at 12 the ramp climbed INSIDE the dais ─────
@@ -2169,6 +2195,69 @@ export const GATEWAY = {
   RAMP_LEN: 8.4,
   RAMP_HALF_W: 4.2,
 };
+
+/**
+ * The approach flight, tread by tread, in the gateway's local frame.
+ *
+ * ── WHY THE GEOMETRY CALLS THIS RATHER THAN RE-DERIVING IT ──────────────
+ * Same reason `Portals.portalAperture` is exported: a checker that re-derives
+ * the arithmetic is a second copy that can be wrong on its own, and this
+ * particular arithmetic already shipped wrong once (see `GATEWAY.TRIM_PROUD`).
+ * `StationWorld._buildGatewayRing` places its treads, nosings and guide pads
+ * from these rows, and `scripts/tests/portal-walkthrough.test.mjs` walks the
+ * same rows, so a flight that a player cannot climb cannot be built without the
+ * test seeing it.
+ *
+ * `i` counts OUTWARD from the dais, so `i = 0` is the tallest tread, against
+ * the dais rim, and `i = TREADS - 1` is the one a body meets first walking in
+ * from the plaza.
+ *
+ * @returns {Array<{i:number, w:number, z:number, rise:number, trimY:number,
+ *   trimTop:number, guideY:number}>} `trimY`/`guideY` are box CENTRES, ready to
+ *   place; `trimTop` is the surface a body actually stands on.
+ */
+export function gatewayApproachFlight() {
+  const out = [];
+  for (let i = 0; i < GATEWAY.TREADS; i++) {
+    const rise = GATEWAY.TREAD_RISE * (GATEWAY.TREADS - i);
+    const trimTop = rise + GATEWAY.TRIM_PROUD;
+    out.push({
+      i,
+      w: GATEWAY.TREAD_W0 - i * GATEWAY.TREAD_TAPER,
+      z: -(GATEWAY.TREAD_Z0 + i * GATEWAY.TREAD_PITCH),
+      rise,
+      trimY: trimTop - GATEWAY.TRIM_T / 2,
+      trimTop,
+      guideY: trimTop + GATEWAY.GUIDE_T / 2 - GATEWAY.GUIDE_SINK,
+    });
+  }
+  return out;
+}
+
+/**
+ * Every step a body climbing in from the plaza actually has to make, in order.
+ *
+ * The heights are the COLLIDABLE tops - the nosing plate, not the tread box -
+ * because that is what the capsule meets, and measuring the box alone is what
+ * let a 6 mm error in the plate close all six gateways to a walking player
+ * while every number a test looked at stayed correct.
+ *
+ * @returns {Array<{from:number, to:number, riser:number, what:string}>}
+ */
+export function gatewayApproachRisers() {
+  const flight = gatewayApproachFlight();
+  const steps = [];
+  let from = 0;                       // plaza deck
+  let what = 'plaza';
+  for (let k = flight.length - 1; k >= 0; k--) {
+    const t = flight[k];
+    steps.push({ from, to: t.trimTop, riser: t.trimTop - from, what: `${what} -> tread ${t.i}` });
+    from = t.trimTop;
+    what = `tread ${t.i}`;
+  }
+  steps.push({ from, to: GATEWAY_DECK_Y, riser: GATEWAY_DECK_Y - from, what: `${what} -> dais deck` });
+  return steps;
+}
 
 /** Yaw that maps the gateway's local frame onto the world at bearing `deg`. */
 export function gatewayFrameYaw(deg) {

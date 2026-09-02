@@ -53,7 +53,7 @@ import {
   roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
   ROAD_ANGLES_DEG,
   STRIP_ACROSS, STRIP_HALF_W, DECAL_SIZE, DECAL_GAP,
-  GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES,
+  GATEWAY, GATEWAY_BEARINGS_DEG, GATEWAY_CENTRES, gatewayApproachFlight,
   gatewayCentre, gatewayFrameYaw, avenueClearance,
   PROMENADE, promenadeFlight, promenadeRailRuns, boxOnPromenade,
 } from './station/StationKit.js';
@@ -6600,14 +6600,22 @@ export class StationWorld extends World {
      *
      * The numbers live in `GATEWAY` in StationKit, because the clearance maths
      * that chose these bearings measures this flight and has to measure the
-     * one that gets built. */
-    const TREADS = GATEWAY.TREADS;
-    for (let i = 0; i < TREADS; i++) {
-      const w = GATEWAY.TREAD_W0 - i * GATEWAY.TREAD_TAPER;
-      const lz = -(GATEWAY.TREAD_Z0 + i * GATEWAY.TREAD_PITCH);
-      const rise = GATEWAY.TREAD_RISE * (TREADS - i);
+     * one that gets built.
+     *
+     * The heights come from `gatewayApproachFlight()` for the same reason, and
+     * because of what happened when they did not: this world is the only one
+     * that collides its DRAWN geometry (`_solidifyStructure`), so the trim
+     * nosing is a walking surface, and a nosing standing 60 mm above the tread
+     * put the first riser off the plaza at 0.46 against `stepHeight` 0.45. Six
+     * gateways, none of them climbable in the centre lane, while `TREAD_RISE`
+     * stayed at the 0.40 that had been chosen to avoid exactly that.
+     * @see GATEWAY.TRIM_PROUD */
+    for (const t of gatewayApproachFlight()) {
+      const w = t.w;
+      const lz = t.z;
+      const rise = t.rise;
       P('plaza', boxGeo(w, rise, 1.4, 2), 0, rise / 2, lz);
-      P('trim', boxGeo(w, 0.08, 1.5, 1), 0, rise + 0.02, lz);
+      P('trim', boxGeo(w, GATEWAY.TRIM_T, 1.5, 1), 0, t.trimY, lz);
       P(s.em, boxGeo(w - 1.2, 0.06, 0.1, 1), 0, rise - 0.06, lz - 0.72);
       const tw = W(0, lz);
       this._solidRot(tw.x, rise / 2, tw.z, w / 2, rise / 2, 0.75, TH);
@@ -6615,11 +6623,13 @@ export class StationWorld extends World {
       /* Guide lights marching up to the threshold - one pair per tread, ON the
        * tread. The old run was a fixed y = 2.5 across four z values with three
        * different tread tops under them, so it floated by up to 0.9 m; deriving
-       * the height from the tread it stands on cannot do that. The trim nosing
-       * is 0.08 thick on top of the tread, so a 0.14 pad centred at rise + 0.09
-       * sits on the nosing rather than inside it. */
+       * the height from the tread it stands on cannot do that. `guideY` sinks
+       * the pad `GUIDE_SINK` into the nosing so it reads as set INTO the step
+       * rather than resting on it - unchanged by the nosing's reseating, since
+       * it is measured from the nosing's top either way. These are `em` keys,
+       * which `_collisionSoup` excludes by prefix, so they are visual only. */
       for (const sx of [-1, 1]) {
-        P(s.em, boxGeo(0.5, 0.14, 0.5, 1), sx * (w / 2 - 1.6), rise + 0.09, lz, 0);
+        P(s.em, boxGeo(0.5, GATEWAY.GUIDE_T, 0.5, 1), sx * (w / 2 - 1.6), t.guideY, lz, 0);
       }
     }
 

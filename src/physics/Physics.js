@@ -62,6 +62,16 @@ const _hr1 = new THREE.Vector3();
 const _hr2 = new THREE.Vector3();
 const _hr3 = new THREE.Vector3();
 /**
+ * Where `Collider._column` leaves its answer: the cell a column falls in and
+ * how far into it, so the two callers that need it share ONE derivation.
+ *
+ * A plain object rather than a return value because `sampleHeight` is called
+ * tens of thousands of times per world build and once per capsule per tick;
+ * allocating a result there was never affordable. Both callers read it before
+ * yielding, and neither can be re-entered from the other.
+ */
+const _col = { i: 0, j: 0, tx: 0, tz: 0 };
+/**
  * Set by `_closestPoint` when the query point was *inside* the collider, in
  * which case the surface point it returns lies outward from the query point
  * rather than inward and the caller must reverse its push. Module-scoped rather
@@ -382,6 +392,55 @@ export class Collider {
   }
 
   /**
+   * Resolve (x,z) to the cell that owns it and the fractions inside that cell,
+   * into `_col`. False means "no surface here" - outside the footprint, or over
+   * an authored hole.
+   *
+   * ── Why this is shared rather than written twice ──────────────────────────
+   * The cell index and the position inside the cell MUST come from the same
+   * division. Deriving the index by `floor((x - originX) / stepX)` and then
+   * rebuilding the cell's left edge as `originX + i * stepX` gives two doubles
+   * that do not always agree: at x = 33.8 on the lido's 2.6 m grid,
+   * `(33.8 + 260) / 2.6` is exactly 113, but `-260 + 113 * 2.6` is
+   * 33.800000000000011 - one and a half hundredths of a femtometre to the RIGHT
+   * of the query. The query point then sits fractionally OUTSIDE the cell that
+   * floor chose for it.
+   *
+   * `sampleHeight` has always been immune because it takes `tx = fx - i` from
+   * the division it floored, so the overshoot becomes a harmless 1e-16
+   * extrapolation. `_raycastHeightfield` was not: it named the cell by division
+   * and then built the cell's CORNERS by multiply-add, handed both to
+   * Moller-Trumbore, and got a barycentric coordinate a hair below zero from
+   * both triangles. A vertical ray takes the single-cell early-out, so there
+   * was no neighbouring cell to recover in, and a downward ray at x = 33.8
+   * returned null over a floor `sampleHeight` reported at -0.218 and a dropped
+   * capsule rested on. Measured: 64 of the lido field's 199 interior x grid
+   * lines and the identical 64 z lines fail that way when the coordinate has
+   * been through a decimal - which is every hand-typed coordinate in the repo.
+   *
+   * One derivation, one answer. The raycast now asks this the same question the
+   * capsule solver and `terrainHeight` ask, so the three cannot disagree.
+   */
+  _column(x, z) {
+    const nx = this.nx;
+    const fx = (x - this.originX) / this.stepX;
+    const fz = (z - this.originZ) / this.stepZ;
+    if (fx < 0 || fz < 0 || fx > nx - 1 || fz > this.nz - 1) return false;
+
+    let i = Math.floor(fx);
+    let j = Math.floor(fz);
+    if (i > nx - 2) i = nx - 2;
+    if (j > this.nz - 2) j = this.nz - 2;
+    if (this.holes !== null && this.holes[j * (nx - 1) + i]) return false;
+
+    _col.i = i;
+    _col.j = j;
+    _col.tx = fx - i;
+    _col.tz = fz - j;
+    return true;
+  }
+
+  /**
    * Surface height at (x,z), or `null` outside the footprint.
    *
    * Interpolates across the same two triangles the collision uses rather than
@@ -391,18 +450,12 @@ export class Collider {
    * half-buried prop.
    */
   sampleHeight(x, z) {
+    if (!this._column(x, z)) return null;
     const nx = this.nx;
-    const fx = (x - this.originX) / this.stepX;
-    const fz = (z - this.originZ) / this.stepZ;
-    if (fx < 0 || fz < 0 || fx > nx - 1 || fz > this.nz - 1) return null;
-
-    let i = Math.floor(fx);
-    let j = Math.floor(fz);
-    if (i > nx - 2) i = nx - 2;
-    if (j > this.nz - 2) j = this.nz - 2;
-    if (this.holes !== null && this.holes[j * (nx - 1) + i]) return null;
-    const tx = fx - i;
-    const tz = fz - j;
+    const i = _col.i;
+    const j = _col.j;
+    const tx = _col.tx;
+    const tz = _col.tz;
 
     const h = this.heights;
     const r0 = j * nx + i;
@@ -1630,6 +1683,82 @@ export class Physics {
     }
     if (t1 <= 0 || t0 >= maxDist) return null;
     if (t0 < 0) t0 = 0;
+
+    /* ── Straight up or straight down: solve it, do not march it ────────────
+     *
+     * A ray with no horizontal component touches exactly one cell, so the DDA
+     * below has nowhere to recover to if that one cell test says no - and the
+     * cell test HAD a way to say no wrongly. See `Collider._column`: naming the
+     * cell by division and rebuilding its corners by multiply-add put the query
+     * point one or two ULP outside its own cell, both triangles rejected on the
+     * barycentric edge, and `groundHeight` reported open sky over a floor the
+     * capsule solver was standing bodies on. Every ground probe, foot-IK probe,
+     * `Grounding.surfaceStack` walk and spawn placement in the game is this ray.
+     *
+     * For a vertical ray the barycentric coordinates ARE the cell fractions, so
+     * Moller-Trumbore has nothing to add: the answer is the surface height, and
+     * `sampleHeight` already computes that from one consistent division. Asking
+     * it is a strict correction, not a tolerance - it introduces no epsilon, it
+     * cannot widen a footprint or fill a hole (the hole mask and the edge test
+     * ARE `_column`'s, byte for byte), and it makes the collider's own promise
+     * up at the constructor - that the height `sampleHeight` reports is the
+     * height a ray hits - true instead of nearly true. It is also cheaper than
+     * what it replaces: two divisions and three multiply-adds against two full
+     * cross-product triangle tests plus four divisions of DDA setup.
+     *
+     * Non-vertical rays are left on the DDA. They meet the same 1-ULP
+     * disagreement at the entry cell, but a marching ray steps into the
+     * neighbour that does contain the point within femtometres of travel, so
+     * the miss is a sliver of one triangle rather than the whole answer. Not
+     * worth a second code path in the loop that costs the most here.
+     *
+     * `_col` is live only between `sampleHeight` returning and the normal being
+     * built, and nothing in that window can re-enter it. */
+    /* Exactly the predicate `stepI`/`stepJ` use below, written once so the fast
+     * path and the DDA can never disagree about which rays are vertical. A
+     * direction with no Y either is degenerate; leave it to the slab clip and
+     * the triangle test rather than dividing by it. */
+    const movesX = direction.x > 1e-9 || direction.x < -1e-9;
+    const movesZ = direction.z > 1e-9 || direction.z < -1e-9;
+    if (!movesX && !movesZ && (direction.y > 1e-9 || direction.y < -1e-9)) {
+      const surf = collider.sampleHeight(origin.x, origin.z);
+      if (surf === null) return null;
+      const t = (surf - origin.y) / direction.y;
+      // Same acceptance window as `rayTriangle`: the 1e-5 keeps a body standing
+      // on the surface from hitting the floor it is already on, and back faces
+      // count because recovery walks the terrain from underneath.
+      if (!(t > 1e-5 && t < maxDist)) return null;
+
+      /* The winning triangle, from the SAME fractions the height came from.
+       * `>=` rather than `>` so a query on the 00->11 diagonal - which includes
+       * every cell corner, tx = tz = 0 - keeps naming triangle (0,1,2), the one
+       * the two-attempt order below has always returned there. The two planes
+       * agree on height along that edge and differ only in normal, and a normal
+       * that flips at every lattice point would move `surfaceStack`'s walkable
+       * classification for no reason. */
+      const k = collider.cellCorners(_col.i, _col.j, _hfCorners);
+      const a = _hr1.set(k[0], k[1], k[2]);
+      let b;
+      let c;
+      if (_col.tz >= _col.tx) {
+        b = _hr2.set(k[3], k[4], k[5]);
+        c = _hr3.set(k[6], k[7], k[8]);
+      } else {
+        b = _hr2.set(k[6], k[7], k[8]);
+        c = _hr3.set(k[9], k[10], k[11]);
+      }
+      const normal = new THREE.Vector3()
+        .crossVectors(_rt1.subVectors(b, a), _rt2.subVectors(c, a))
+        .normalize();
+      if (normal.dot(direction) > 0) normal.negate();
+      const point = new THREE.Vector3().copy(origin).addScaledVector(direction, t);
+      /* Pin the hit exactly on the sampled surface. `origin.y + dy * t` rounds
+       * back to within an ULP of `surf`, and callers - `groundHeight` returns
+       * `point.y` to 117 sites - compare that number against `terrainHeight`,
+       * which is `sampleHeight`. Equal is worth more here than re-derived. */
+      point.y = surf;
+      return { distance: t, point, normal, collider };
+    }
 
     // Enter the grid a hair past the boundary so the starting cell is the one
     // the ray is actually inside.

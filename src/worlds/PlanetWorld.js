@@ -912,6 +912,21 @@ export class PlanetWorld extends World {
       sunIntensity: sky.sun?.intensity ?? 2.2,
       sunDirection: sunDir,
       envMapIntensity: sky.envMapIntensity ?? 1.0,
+      /* DECLARED null, filled in by `_bakeEnvMap` once the dome exists.
+       *
+       * The intensity above was being applied to a map these ten worlds never
+       * supplied. `applyEnvironment` used to skip the assignment for a world
+       * that published none, so every planet's minerals, ship hull, ice and
+       * standing water were multiplied by `sky.envMapIntensity` of WHICHEVER
+       * WORLD RAN LAST - Tessera's deliberate 0.35 dimmed the station's cyan
+       * probe rather than its own sky - or of nothing at all on a cold
+       * `?world=planet:...` boot.
+       *
+       * Stating the field here rather than leaving it undefined is the point:
+       * `main.js` and `Portals._configurePreview` both read `env.envMap ??
+       * null`, and a descriptor-driven world that has not been built yet must
+       * answer "no probe" rather than "ask the scene what it is wearing". */
+      envMap: null,
       bloom: sky.bloom ?? null,
       grade: sky.grade ?? null,
     };
@@ -919,6 +934,9 @@ export class PlanetWorld extends World {
     /** Everything this world owns and must dispose. */
     this._owned = [];
     this._sky = null;
+    /** This planet's prefiltered probe. Owned here; see `_bakeEnvMap`.
+     *  @type {THREE.WebGLRenderTarget|null} */
+    this._envRT = null;
     this._liquidUniforms = null;
     /**
      * This world's own answer for its liquid, read by `WaterVolumes` instead of
@@ -1057,9 +1075,120 @@ export class PlanetWorld extends World {
     params.camera = params.camera ?? this.engine?.camera ?? null;
     const built = createSky(sky.kind ?? 'daylight', params);
     built.mesh.name = `planet:sky:${this.planet.id}`;
+    /* Before the dome joins the world group, while it is still parented
+     * nowhere and still sitting at the origin `createSky` left it at - the
+     * probe wants it centred, and `Sky.update` moves it onto the camera from
+     * the first frame onward. */
+    this._bakeEnvMap(built, params.radius);
     this.group.add(built.mesh);
     this._sky = built;
     this.census.drawCalls++;
+  }
+
+  /**
+   * Prefilter THIS planet's sky into a reflection probe.
+   *
+   * ── Why not `Materials.getEnvMap` ─────────────────────────────────────────
+   *
+   * That accessor has three moods - `space`, `daylight`, `alpine` - and the
+   * ten planets happen to name their dome with those same three words. Reusing
+   * it would have cost nothing and would have been wrong: Sallow, Shoal,
+   * Sirocco and Volcanic are all `kind: 'daylight'`, and their skies are
+   * sulphur-yellow, sea-blue, amber and ember-red. One shared blue-sky probe
+   * would have put a clear noon sky in the puddles of lava on Cinder, which is
+   * the same "a red planet reflects a blue one" failure this change exists to
+   * remove, only harder to see because it would look plausible.
+   *
+   * So the probe is baked from the dome the player is actually standing under,
+   * exactly as `SportsWorld._buildSky` and `MedievalWorld._buildEnvMap`
+   * already do. The reflection in a hull then agrees with the horizon behind
+   * it, which is the whole reason to have one.
+   *
+   * ── The cost, and why it is one target and not ten ────────────────────────
+   *
+   * `fromScene` with no `size` option bakes a 256 cube, which is a 768x1024
+   * half-float target: ~6 MB, and `envMapCubeUVHeight` 1024, THE SAME 1024 as
+   * `Materials._generateEnvMap`, sports and the vale. That number is a program
+   * cache key - see the block comment on `MedievalWorld._buildEnvMap`, where
+   * getting it wrong cost 24 of one arrival's 28 linked programs - so this
+   * must never be tuned as if it were a quality dial.
+   *
+   * One target per BUILT planet, released by `dispose` with the rest of
+   * `_owned`. Ten only exist if all ten planets are resident at once, which is
+   * the `?prefetch=all` diagnostic path; alongside a resident planet's
+   * heightfield, bed and liquid-depth buffers, 6 MB is not the term that
+   * decides whether that path fits.
+   *
+   * @param {{mesh: THREE.Mesh}} built the dome `createSky` just returned
+   * @param {number} radius its radius, in metres
+   */
+  _bakeEnvMap(built, radius) {
+    const renderer = this.engine?.renderer;
+    /* `isWebGLRenderer` rather than a truthiness check, because the headless
+     * rigs DO supply a renderer - a hand-written stub with `render`,
+     * `setRenderTarget` and `capabilities` on it, and no `xr`, which is the
+     * first field `PMREMGenerator.fromScene` touches. Without this the bake
+     * threw into the catch below and printed a warning per planet build across
+     * fifteen test files. No GL, no probe, no noise. */
+    if (!renderer?.isWebGLRenderer) return;
+
+    /* The lower hemisphere, and it is not optional: with only a dome, every
+     * metal in the scene has a black underside and reads as floating in void
+     * (the same note `Materials._generateEnvMap` carries on its ground disc).
+     * The colour is this planet's own ground - `sky.params.groundColor` is the
+     * albedo its atmosphere already scatters against, so the probe and the
+     * horizon agree - falling back to the mean of the descriptor's height
+     * bands for the airless planets, which declare no scattering ground. */
+    const ground = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 0.99, 24, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        color: this._groundBounceColor(),
+        side: THREE.BackSide,
+        toneMapped: false,
+        fog: false,
+      })
+    );
+
+    const envScene = new THREE.Scene();
+    let pmrem = null;
+    try {
+      pmrem = new THREE.PMREMGenerator(renderer);
+      envScene.add(built.mesh, ground);
+      /* 0.02 of extra blur, matching sports: the dome is already a smooth
+       * analytic sky and PMREM's own roughness chain does the rest. `far` is
+       * past the dome or the bake photographs the inside of the near plane. */
+      this._envRT = pmrem.fromScene(envScene, 0.02, 1, radius * 1.5);
+      this._envRT.texture.name = `planet.env.${this.planet.id}`;
+      this.environment.envMap = this._envRT.texture;
+      this._owned.push(this._envRT);
+    } catch (err) {
+      console.warn(`[PlanetWorld] ${this.planet.id} environment probe unavailable:`, err?.message ?? err);
+    } finally {
+      // The dome belongs to the world group, not to the bake.
+      envScene.remove(built.mesh);
+      ground.geometry.dispose();
+      ground.material.dispose();
+      pmrem?.dispose();
+    }
+  }
+
+  /**
+   * The colour the ground bounces into the probe.
+   * @returns {THREE.Color}
+   */
+  _groundBounceColor() {
+    const g = this.planet.sky?.params?.groundColor;
+    if (g !== undefined && g !== null) return new THREE.Color(g);
+    const bands = this.planet.palette?.bands ?? [];
+    if (!bands.length) return new THREE.Color(0x404040);
+    /* No boost. The band colours are the descriptor's own measured table of
+     * what LIT ground on this planet looks like, not raw albedo, so scaling
+     * them would double-count the sun - the reason `ENV_MOODS` carries a
+     * `groundBoost` and `SportsWorld` does not. */
+    const mean = new THREE.Color(0, 0, 0);
+    const c = new THREE.Color();
+    for (const b of bands) mean.add(c.set(b.color));
+    return mean.multiplyScalar(1 / bands.length);
   }
 
   /**
@@ -3341,6 +3470,13 @@ export class PlanetWorld extends World {
     this._owned.length = 0;
     this._sky?.dispose?.();
     this._sky = null;
+    /* The probe goes with the dome it was baked from. `_owned` freed the
+     * target on the line above; these two drop the world's last references so
+     * a rebuilt planet cannot hand `applyEnvironment` a texture whose GPU
+     * storage is gone. Same pair, and the same reason, as
+     * `MedievalWorld.dispose`. */
+    this._envRT = null;
+    this.environment.envMap = null;
     this._plumes.length = 0;
     this._ash = null;
     this._propMat = null;

@@ -1002,16 +1002,31 @@ export function tfbm(x, y, period, seed, octaves = 4) {
  */
 const _BOX_SU = [0, 0, 0, 0, 0, 0];
 const _BOX_SV = [0, 0, 0, 0, 0, 0];
-export function boxUV(geo, w, h, d, tile) {
+export function boxUV(geo, w, h, d, tile, r = 0) {
   const uv = geo.attributes.uv;
-  if (!uv || uv.count !== 24) return geo;
-  _BOX_SU[0] = _BOX_SU[1] = d; _BOX_SU[2] = _BOX_SU[3] = w; _BOX_SU[4] = _BOX_SU[5] = w;
-  _BOX_SV[0] = _BOX_SV[1] = h; _BOX_SV[2] = _BOX_SV[3] = d; _BOX_SV[4] = _BOX_SV[5] = h;
+  /* 24 is a plain box (4 vertices a face), 96 a chamfered one (16). Both lay
+   * their vertices out face by face in the same order, so the only thing that
+   * changes is the stride. Anything else is not a box and is returned
+   * untouched, which is what the old `!== 24` guard was for. */
+  if (!uv || (uv.count !== 24 && uv.count !== 96)) return geo;
+  const per = uv.count / 6;
+  /* The chamfer's own share of the UV span, in metres of face.
+   *
+   * `chamferBox` inherits three's RoundedBoxGeometry parameterisation, which
+   * divides each face's 0..1 into a flat centre of `s - 2r` and two chamfer
+   * bands that together take `pi*r/2` - the arc length of ONE quarter round,
+   * not two. So the span a face's UV actually covers is `s - 2r + pi*r/2`,
+   * and scaling by plain `s` would run the texture 5% dense on a 55 cm box
+   * against the unbevelled box next to it. Zero for a plain box, where the
+   * span is exactly `s`. */
+  const pad = r * (Math.PI / 2 - 2);
+  _BOX_SU[0] = _BOX_SU[1] = d + pad; _BOX_SU[2] = _BOX_SU[3] = w + pad; _BOX_SU[4] = _BOX_SU[5] = w + pad;
+  _BOX_SV[0] = _BOX_SV[1] = h + pad; _BOX_SV[2] = _BOX_SV[3] = d + pad; _BOX_SV[4] = _BOX_SV[5] = h + pad;
   for (let f = 0; f < 6; f++) {
     const su = _BOX_SU[f] / tile;
     const sv = _BOX_SV[f] / tile;
-    for (let i = 0; i < 4; i++) {
-      const k = f * 4 + i;
+    for (let i = 0; i < per; i++) {
+      const k = f * per + i;
       uv.setXY(k, uv.getX(k) * su, uv.getY(k) * sv);
     }
   }
@@ -1078,9 +1093,273 @@ export function signUV(geo, cell) {
   return atlasUV(geo, c % SIGN_COLS, Math.floor(c / SIGN_COLS), SIGN_COLS, SIGN_ROWS);
 }
 
-/** A textured box, UV-corrected, ready to be pushed into a batch. */
-export function boxGeo(w, h, d, tile) {
-  return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
+/* ------------------------------------------------------------------ */
+/* The chamfer                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE EDGE ROUND, AND WHY MOST BOXES DO NOT GET ONE.
+ *
+ * A hard 90-degree edge returns exactly one shade to the camera, so a prop
+ * built from plain boxes has no edges in it at all - just flat panels meeting
+ * at invisible seams, which is what reads as "CG" long before polygon count
+ * does. A few centimetres of chamfer gives every edge a highlight on the lit
+ * side and a dark line away from it, and the silhouette stops being a cut-out.
+ *
+ * `CitadelWorld`'s `Batch.box` has done this since the citadel shipped and the
+ * numbers here are the same shape as its: a chamfered box is 108 triangles
+ * against a plain one's 12. What is different is the scale it is applied at.
+ * The citadel emits ~12,000 boxes; this kit is the funnel for the station
+ * (30,041 `boxGeo` calls in a headless build, median smallest-dimension 16 cm),
+ * the dock (10,274) and every ship interior, and the station is already the
+ * heaviest world in the game at 3.47M triangles of world geometry. So the
+ * threshold is not a taste decision here, it is a budget one, and it was
+ * measured on a built world rather than copied - see `BEVEL_MIN`.
+ *
+ * `BEVEL` is the radius itself. 6 cm rather than the citadel's 7.5: station
+ * props are smaller than desert architecture, and the round has to read as an
+ * eased edge rather than as a soft corner.
+ */
+const BEVEL = 0.06;
+
+/**
+ * Smallest dimension a box must have before it is worth chamfering, in metres.
+ *
+ * MEASURED END TO END, on a headless `buildStationFresh()`, because the
+ * obvious way to pick this number is wrong. Counting `boxGeo` calls that pass
+ * a threshold and multiplying by 96 says 0.55 m costs the station +452k
+ * triangles. It costs +675k. The difference is `instanced()`: a chamfered
+ * prototype is authored once and drawn 1,875 times, so a threshold that catches
+ * one scatter prototype charges for the whole scatter. Everything below is the
+ * built world, walked mesh by mesh.
+ *
+ *                    world tris        collision kept      chunks    soup
+ *   square           3,468,968              202,307         8,763   6.9 MB
+ *   >= 0.55 m   +675,456  (+19.5%)  +86,172  (+42.6%)      12,411   9.9 MB
+ *   >= 0.80 m   +448,224  (+12.9%)  +61,345  (+30.3%)      11,359   9.1 MB
+ *   >= 1.00 m   +330,624   (+9.5%)  +54,773  (+27.1%)      11,203   8.8 MB
+ *   >= 1.20 m   +262,944   (+7.6%)  +44,943  (+22.2%)      10,804   8.5 MB
+ *   >= 1.60 m   +146,112   (+4.2%)  +26,788  (+13.2%)       9,819   7.9 MB
+ *
+ * There is no knee in that curve - it is close to linear in pieces chamfered -
+ * so this is a budget call and not an optimum, and it is made against two
+ * budgets rather than one. The station is already the heaviest world in the
+ * game (framings measure 2.12M-3.41M drawn), and `_solidifyStructure` builds
+ * its collision out of the DRAWN geometry, so every triangle added to a box is
+ * charged a second time: to the soup, to the enclosure drop that filters it,
+ * to the chunk count and to every raycast against them. That second column is
+ * why 0.55 - the number `CitadelWorld` uses, on a world with no such pass - is
+ * refused here.
+ *
+ * 1.0 m holds the geometry under +10% and the soup under +2 MB while still
+ * chamfering 3,469 pieces, and a metre in EVERY axis is a readable line: it is
+ * a mass a body could stand on - crate, kiosk body, planter, pillar base,
+ * machine housing - rather than trim, sills, rails and treads, which sit a
+ * hand's width from a surface that already carries the highlight and would
+ * have been 1,225 more pieces at 0.8.
+ *
+ * The frame-time consequence of +9.5% is NOT measured here; there is no
+ * headless GPU. What is measured is the geometry, the collision and the build,
+ * and the build pass costs +199 ms of the +2.0 s a full station build gains.
+ *
+ * -- WHAT THIS MOVES ON THE EDITOR SIDE, AND WHAT IT DOES NOT BUY ----------
+ * More collision chunks means more collider centres inside any given name's
+ * bounds, so `station-move-colliders`' table moves for 207 names and three of
+ * them cross `_moveColliders`' cap of 200 into the refuse-with-span outcome:
+ * `plaza-props:glassWindow` 200, `commercial:emAmber` 195 and
+ * `commercial:panel` 184. Those three were already sitting at 92-100% of the
+ * cap, and raising this threshold does NOT rescue them - measured at 1.6 m,
+ * which halves the table churn to 104 names and loses half the chamfer, all
+ * three still cross. So the editor cost is not something a threshold can buy
+ * back, and it is not an argument for a number above 1.0.
+ *
+ * The catalogue anchors move too, by 2 to 26 mm across 33 names with none
+ * minted or retired: an anchor is the centre of a batch's BOUNDS, and a
+ * chamfer trims the corner off a box, which is the extreme point of a box the
+ * batch placed at an angle. No axis-aligned box changes its bounds at all -
+ * the flat centre of every face still reaches `w/2`.
+ *
+ * The three fixtures this obliges a re-take of, all of which say so in their
+ * own headers: `station-catalogue.json`, `station-move-colliders.json`,
+ * `dock-catalogue.json` (one name, `yard:tarp`), plus the collision line
+ * pinned inline in `station-catalogue.test.mjs`.
+ *
+ * The rule is on the SMALLEST dimension on purpose, and that is why the tiling
+ * problem mostly takes care of itself in this kit: a floor slab, a wall panel
+ * and a hull plate are all thin in one axis, so none of them is ever a
+ * candidate and none of them grows a groove where it meets its neighbour.
+ * `bevel: false` is for pieces that are chunky AND laid end to end.
+ * `InteriorKit`, whose walls are 50 cm of stone, does not get that for free -
+ * see the note on its `vbox`.
+ */
+const BEVEL_MIN = 1.0;
+
+/**
+ * The chamfer radius for a box, or 0 when it should stay square.
+ *
+ * Clamped against the smallest dimension whatever the threshold said, because
+ * a round wider than the piece it is rounding turns the piece inside out.
+ * Under 2 cm there is nothing there to catch a highlight and the 9x is waste.
+ */
+function bevelRadius(w, h, d, min) {
+  if (Math.min(w, h, d) < min) return 0;
+  const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
+  return r > 0.02 ? r : 0;
+}
+
+/* Scratch for the chamfer loop; one box is built per call and never escapes. */
+const _cbP = new THREE.Vector3();
+const _cbN = new THREE.Vector3();
+const _cbF = new THREE.Vector3();
+const _cbT = new THREE.Vector3();
+
+/**
+ * `getUv` from three's RoundedBoxGeometry, unchanged.
+ *
+ * Copied rather than imported because the addon exposes only the finished
+ * geometry, and the finished geometry is the one thing this kit cannot use -
+ * see `chamferBox`.
+ */
+function chamferUV(faceDir, normal, uvAxis, projectionAxis, radius, sideLength) {
+  const totArcLength = 2 * Math.PI * radius / 4;
+  const centerLength = Math.max(sideLength - 2 * radius, 0);
+  const halfArc = Math.PI / 4;
+  _cbT.copy(normal);
+  _cbT[projectionAxis] = 0;
+  _cbT.normalize();
+  const arcUvRatio = 0.5 * totArcLength / (totArcLength + centerLength);
+  const arcAngleRatio = 1.0 - (_cbT.angleTo(faceDir) / halfArc);
+  if (Math.sign(_cbT[uvAxis]) === 1) return arcAngleRatio * arcUvRatio;
+  const lenUv = centerLength / (totArcLength + centerLength);
+  return lenUv + arcUvRatio + arcUvRatio * (1.0 - arcAngleRatio);
+}
+
+/**
+ * A chamfered box, INDEXED - three's `RoundedBoxGeometry` maths on a geometry
+ * this kit can actually merge.
+ *
+ * -- Why not just call `new RoundedBoxGeometry(w, h, d, 1, r)` --------------
+ * Two reasons, both fatal, both measured.
+ *
+ * It is NOT INDEXED. `RoundedBoxGeometry` builds an indexed 3x3x3 box, calls
+ * `toNonIndexed()` and throws the index away. `mergeGeometries` returns null
+ * the moment two of its inputs disagree about whether they have one, so one
+ * rounded box in a bucket of plain ones silently drops the whole bucket - and
+ * `InteriorKit.finish` merges with no normalisation at all. Where `GeoBatch`
+ * does normalise, it does it by handing the geometry a trivial 0..n-1 index,
+ * which keeps all 324 duplicated vertices: 11 KB a box against a plain box's
+ * 840 bytes, or 52 MB across the station's candidates.
+ *
+ * Welding it back with `mergeVertices` reaches 92 vertices and costs 0.43 ms
+ * PER BOX - 2 seconds of build time across the station, on a project that has
+ * spent two rounds deleting exactly that kind of hitch.
+ *
+ * Building it indexed in the first place costs neither. The rounding is a pure
+ * function of a vertex's position on the unit box, so the 96 vertices of an
+ * INDEXED `BoxGeometry(1, 1, 1, 3, 3, 3)` transform into exactly the same 108
+ * triangles the addon emits from 324 - verified vertex for vertex against
+ * `new RoundedBoxGeometry(...)` rather than assumed.
+ *
+ * 3 segments is the fewest that leaves a flat panel between the rounds. With
+ * one segment of round per edge the "arc" is a single flat facet, which is a
+ * chamfer, which is what was wanted.
+ */
+function chamferBox(w, h, d, radius) {
+  const geo = new THREE.BoxGeometry(1, 1, 1, 3, 3, 3);
+  const r = Math.min(w / 2, h / 2, d / 2, radius);
+  const pos = geo.attributes.position.array;
+  const nrm = geo.attributes.normal.array;
+  const uv = geo.attributes.uv.array;
+  const perFace = pos.length / 6;
+  const bx = w / 2 - r, by = h / 2 - r, bz = d / 2 - r;
+  const halfSeg = 0.5 / 3;
+  for (let i = 0, j = 0; i < pos.length; i += 3, j += 2) {
+    _cbP.fromArray(pos, i);
+    _cbN.copy(_cbP);
+    _cbN.x -= Math.sign(_cbN.x) * halfSeg;
+    _cbN.y -= Math.sign(_cbN.y) * halfSeg;
+    _cbN.z -= Math.sign(_cbN.z) * halfSeg;
+    _cbN.normalize();
+    pos[i] = bx * Math.sign(_cbP.x) + _cbN.x * r;
+    pos[i + 1] = by * Math.sign(_cbP.y) + _cbN.y * r;
+    pos[i + 2] = bz * Math.sign(_cbP.z) + _cbN.z * r;
+    nrm[i] = _cbN.x; nrm[i + 1] = _cbN.y; nrm[i + 2] = _cbN.z;
+    switch (Math.floor(i / perFace)) {
+      case 0: // +x
+        _cbF.set(1, 0, 0);
+        uv[j] = chamferUV(_cbF, _cbN, 'z', 'y', r, d);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'z', r, h);
+        break;
+      case 1: // -x
+        _cbF.set(-1, 0, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'z', 'y', r, d);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'z', r, h);
+        break;
+      case 2: // +y
+        _cbF.set(0, 1, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'z', r, w);
+        uv[j + 1] = chamferUV(_cbF, _cbN, 'z', 'x', r, d);
+        break;
+      case 3: // -y
+        _cbF.set(0, -1, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'z', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'z', 'x', r, d);
+        break;
+      case 4: // +z
+        _cbF.set(0, 0, 1);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'y', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'x', r, h);
+        break;
+      default: // -z
+        _cbF.set(0, 0, -1);
+        uv[j] = chamferUV(_cbF, _cbN, 'x', 'y', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'x', r, h);
+        break;
+    }
+  }
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.normal.needsUpdate = true;
+  geo.attributes.uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * A box, chamfered when it is big enough, with three's plain 0..1 face UVs.
+ *
+ * `boxGeo`'s world-scaled UVs are right for a kit whose materials tile across
+ * whatever they are painted on. `InteriorKit` is the other case: it either
+ * draws with an unmapped flat palette, or reprojects every UV it has after the
+ * merge (`_prepGeoForWorldMat`), so `boxUV` there is work thrown away twice
+ * over. Same chamfer, same 108 triangles, same index.
+ */
+export function bevelBox(w, h, d, min = BEVEL_MIN) {
+  const r = bevelRadius(w, h, d, min);
+  return r > 0 ? chamferBox(w, h, d, r) : new THREE.BoxGeometry(w, h, d);
+}
+
+/**
+ * A textured box, UV-corrected, ready to be pushed into a batch.
+ *
+ * Chamfered when it is big enough to be worth it - see `BEVEL_MIN`.
+ *
+ * @param {number|boolean} [bevel] `true` for the kit default, `false` to
+ *   decline the chamfer, or a threshold in metres for a kit read from a
+ *   different distance (`ShipKit.ibox` passes one: a ship's interior fittings
+ *   are looked at from 1 m and its hull plating from 30).
+ *
+ *   DECLINE IT FOR ANYTHING THAT TILES. Two chamfered boxes butted together
+ *   leave a groove the width of both rounds at the joint, and a run of them
+ *   turns a continuous surface into a ladder of dark lines. The smallest-
+ *   dimension rule already excludes every slab, panel and plate in the kit
+ *   because those are thin in one axis; `false` is for pieces that are chunky
+ *   AND laid end to end.
+ */
+export function boxGeo(w, h, d, tile, bevel = true) {
+  if (bevel === false) return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
+  const r = bevelRadius(w, h, d, bevel === true ? BEVEL_MIN : bevel);
+  return r > 0
+    ? boxUV(chamferBox(w, h, d, r), w, h, d, tile ?? 2, r)
+    : boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
 }
 
 /* ------------------------------------------------------------------ */

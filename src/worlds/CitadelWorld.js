@@ -1151,7 +1151,7 @@ export class CitadelWorld extends World {
     env.sunDirection = new THREE.Vector3(0.55, 0.42, 0.72).normalize();
     env.envMapIntensity = 1.0;
     env.bloom = { strength: 0.42, radius: 0.5, threshold: 0.92 };
-    env.envMap = this.materials?.getEnvMap?.('daylight') ?? undefined;
+    env.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
   }
 
   /* ================================================================== */

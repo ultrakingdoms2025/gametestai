@@ -2136,6 +2136,60 @@ export class MaterialLibrary {
       temp.push(geo, mat);
     }
 
+    /* ═══════════════════════════════════════════════════════════════════════
+     *  256 IS THE RIGHT SIZE. RAISING IT WAS SPECIFIED, MEASURED AND REFUSED
+     *  (2 Sep 2026, RTX 5080, three 0.185.1)
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * The standing complaint about this line is that the station's near-mirror
+     * (`StationWorld` `M.mirror`: metalness 1, roughness 0.09, envMapIntensity
+     * 3) is nearly sharp and can only read as coloured fog off a 256 px
+     * source. Both halves are wrong, and acting on them is expensive.
+     *
+     * 1. 256 IS THE SIZE THREE'S OWN ROUGHNESS FLOOR IS DEFINED AGAINST.
+     *    `lights_physical_fragment` runs `material.roughness = max(rough,
+     *    0.0525)` under the comment "0.0525 corresponds to the base mip of a
+     *    256 cubemap". A material samples cubeUV mip `-2*log2(1.16*roughness)`
+     *    clamped to `CUBEUV_MAX_MIP = log2(size)`; the floored roughness asks
+     *    for mip 8.07 and 256 supplies mip 8. 512 adds a mip only a 7% blend
+     *    weight can reach, 1024 one that no material can express at all.
+     *
+     * 2. ROUGHNESS 0.09 IS NOWHERE NEAR THE TOP MIP ANYWAY. That mip index is
+     *    absolute - mip N is a 2^N-texel cube face, not "N down from the top"
+     *    - so 0.09 samples mip 6.52, a ~92 px face, at 256, 512 and 1024
+     *    alike. Rendering that exact material against all three probes with
+     *    the pre-blur removed gave mean luminance gradients of 1.014 / 0.979 /
+     *    0.931: bigger is fractionally BLURRIER, because three's GGX prefilter
+     *    hands tile k the roughness k/(lods-1) and the lod count grows with
+     *    the size. 256 vs 512 differed by 0.14 of one 0-255 level per channel.
+     *
+     * 3. THE ONE THING A RAISE WOULD CHANGE IS A TRUNCATION, NOT DETAIL. The
+     *    0.22 rad pre-blur below is not being applied: three caps the kernel
+     *    at MAX_SAMPLES = 20 and warns, on every bake we already ship, that
+     *    0.22 asked for 108. What lands is samples * PI/(2*(size-1)) = 0.123
+     *    rad here, 0.062 at 512, 0.031 at 1024 - so doubling the size silently
+     *    halves an authored softening. That does read as sharper (gradient
+     *    0.670 -> 0.790 -> 0.861 at roughness 0.09, the only difference the
+     *    sphere test could see) but it is a clipped Gaussian, and it is free
+     *    at 256 by lowering sigma. Above ~0.039 rad here, sigma is a wish.
+     *
+     * 4. AND THE PROBE IS FOUR OBJECTS. A sky, a ground disc, a sun and, in
+     *    `space`, four accent bars. A perfect mirror of that still reflects a
+     *    sky, a ground, a sun and four bars. The fog is the CONTENT. Making
+     *    the mirror reflect the station needs a probe containing the station.
+     *
+     * The bill for going anyway, since `_pmrem` is held for the session and
+     * all three moods stay resident: colour is RGBA16F over 3*size x 4*size
+     * and `fromScene` attaches a DEPTH_COMPONENT24 buffer to each target, so
+     * 12 B/px - 34.6 MB today, 138 MB at 512, 554 MB at 1024, against the
+     * ~96 MB that every baked surface in the game costs put together.
+     *
+     * Time is NOT the objection, recorded so nobody re-times it: all three
+     * moods cost 19.1 ms at 256, 19.7 ms at 512, 20.0 ms at 1024, and the
+     * one-off blur/GGX program link that dominates the first bake (410-480 ms,
+     * behind the loading bar) is size-independent. It is cheap and it buys
+     * nothing.
+     */
     const rt = this._pmrem.fromScene(scene, 0.22, 1, 500, { size: 256 });
     this._envTargets.push(rt);
     rt.texture.name = `env.${mood}`;

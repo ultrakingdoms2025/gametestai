@@ -1,5 +1,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+/* The chamfer, shared with the station kit rather than restated. `StationKit`
+ * imports nothing but three and one flag module, so this stays as portable as
+ * the header above claims - and `dock/ShipKit.js` already reaches for the same
+ * geometry helpers from here. */
+import { bevelBox } from './station/StationKit.js';
+
+/** Smallest dimension a prop is chamfered from; see `InteriorKit#vbox`. */
+const PROP_BEVEL_MIN = 0.12;
 
 /**
  * InteriorKit - a small, self-contained builder for walkable building interiors.
@@ -156,9 +164,38 @@ export class InteriorKit {
     arr.push(geo);
   }
 
-  /** Visual box (merged). `hx/hy/hz` are half-extents. */
-  vbox(matKey, cx, cy, cz, hx, hy, hz) {
-    const g = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+  /**
+   * Visual box (merged). `hx/hy/hz` are half-extents.
+   *
+   * CHAMFERED BY DEFAULT, above 12 cm. A room is the one place in the game
+   * read from a metre away, and a hard 90-degree edge returns exactly one
+   * shade to the camera - so a chest, a table leg and a hearth built from
+   * plain boxes are three cut-outs standing in a box. 12 cm is where the
+   * radius rule stops refusing anyway (it clamps to 22% of the smallest
+   * dimension, so under ~9 cm there is no round left to catch a highlight).
+   * Measured by building one of each: the guild tower goes 4,020 -> 6,516
+   * triangles, the church 1,880 -> 3,224 and the bulk-rollout house 588 ->
+   * 1,548. The house is the one that multiplies - `Interiors.js` raises one
+   * per enterable across a district - and 960 triangles apiece is a bill a
+   * furnished room can pay.
+   *
+   * `bevel: false` IS FOR ANYTHING THAT TILES, and this kit needs it far more
+   * than the station one does. The station's rule leans on its tiling surfaces
+   * being thin, and they are - the median smallest dimension across its 30,041
+   * boxes is 16 cm and a plate is thinner still. Here the walls measure
+   * 4.3 x 6.4 x 0.5 m and the decks 11 x 1.2 x 11, laid edge to edge, so the
+   * smallest-dimension test does NOT save them: chamfer a tower's four walls
+   * and every corner of the room grows a vertical slot you can see daylight
+   * through. Every structural surface below therefore declines it explicitly -
+   * `solid` (which is only ever floors, walls, jambs, lintels and parapets),
+   * the deck quadrants, the stair treads, the roof courses and the window
+   * plugs - and what is left taking the default is furniture.
+   *
+   * @param {boolean} [bevel] false for a surface that butts against another
+   */
+  vbox(matKey, cx, cy, cz, hx, hy, hz, bevel = true) {
+    const w = hx * 2, h = hy * 2, d = hz * 2;
+    const g = bevel ? bevelBox(w, h, d, PROP_BEVEL_MIN) : new THREE.BoxGeometry(w, h, d);
     g.translate(cx, cy, cz);
     this._push(matKey, g);
   }
@@ -175,9 +212,16 @@ export class InteriorKit {
     return this.world.track(this.physics.addBox(cx, cy, cz, hx, hy, hz, opts));
   }
 
-  /** Visual + collider box in one call. */
+  /**
+   * Visual + collider box in one call.
+   *
+   * Square, always. Every one of this kit's 27 `solid` calls is a floor slab,
+   * a wall, a door jamb, a lintel or a parapet - the pieces that meet another
+   * copy of themselves at a shared face - and there is no prop in the file
+   * that both draws and collides. See `vbox` for why that matters here.
+   */
   solid(matKey, cx, cy, cz, hx, hy, hz, opts = {}) {
-    this.vbox(matKey, cx, cy, cz, hx, hy, hz);
+    this.vbox(matKey, cx, cy, cz, hx, hy, hz, false);
     return this.cbox(cx, cy, cz, hx, hy, hz, opts);
   }
 
@@ -571,7 +615,8 @@ export class InteriorKit {
     roofB.position.set(ox + OUT_W * 0.5, roofMidY, oz);
     roofB.rotation.z = -slope; // east slab mirrors it
     this.group.add(roofA, roofB);
-    this.vbox('slate', ox, ridgeY + 0.1, oz, 0.42, 0.14, OUT_D + 0.35);
+    // Roof and window courses: each one meets the next at a shared face.
+    this.vbox('slate', ox, ridgeY + 0.1, oz, 0.42, 0.14, OUT_D + 0.35, false);
 
     // Gable infill so the roof ends are sealed (stepped stone triangles).
     for (const gz of [northZ, southZ]) {
@@ -579,14 +624,14 @@ export class InteriorKit {
         const t = (s + 0.5) / 4;
         const gw = OUT_W * (1 - t);
         const gh = roofRise / 8;
-        this.vbox('stone', ox, y0 + wallH + roofRise * t, gz, gw, gh, 0.24);
+        this.vbox('stone', ox, y0 + wallH + roofRise * t, gz, gw, gh, 0.24, false);
       }
     }
 
     // Bell tower and spire straddling the ridge at the rear gable.
     const towerZ = oz - OUT_D + 1.15;
     this.solid('stone', ox, ridgeY + 0.9, towerZ, 1.45, 1.35, 1.45);
-    this.vbox('stone', ox, ridgeY + 2.55, towerZ, 1.12, 0.45, 1.12);
+    this.vbox('stone', ox, ridgeY + 2.55, towerZ, 1.12, 0.45, 1.12, false);
     this.vcyl('gilt', ox, ridgeY + 3.65, towerZ, 0.12, 0.98, 1.7, 10);
 
     // Tall lancet windows.
@@ -684,7 +729,9 @@ export class InteriorKit {
           }
         }
         if (blocked) continue;
-        this.vbox('plank', ox + lx, y - 0.1, oz + lz, half, 0.1, half);
+        // A floor in four pieces. Chamfer them and the room has a cross
+        // sawn into it.
+        this.vbox('plank', ox + lx, y - 0.1, oz + lz, half, 0.1, half, false);
       }
     }
     // Colliders: cover the deck with a few large boxes minus the hole bands is
@@ -713,7 +760,8 @@ export class InteriorKit {
       const topY = yBase + (i + 1) * rise;
       const cz = oz + z0Local + i * tread + tread / 2;
       const cy = topY - 0.25;
-      this.vbox('plank', cx, cy, cz, halfW, 0.25, tread / 2 + 0.02);
+      // Treads overlap their neighbours by 2 cm; a chamfer opens the lap.
+      this.vbox('plank', cx, cy, cz, halfW, 0.25, tread / 2 + 0.02, false);
       this.cbox(cx, cy, cz, halfW, 0.25, tread / 2 + 0.02);
     }
   }
@@ -784,10 +832,11 @@ export class InteriorKit {
     const place = (cx, cy, cz, wall) => {
       const t = 0.06;
       if (wall === 'south' || wall === 'north') {
-        this.vbox('beam', cx, cy, cz, 0.72, 0.62, t);
+        // The frame plugs a hole in the wall; an eased edge is a gap.
+        this.vbox('beam', cx, cy, cz, 0.72, 0.62, t, false);
         this.vbox('glass', cx, cy, cz + (wall === 'south' ? 0.04 : -0.04), 0.6, 0.5, t * 0.4);
       } else {
-        this.vbox('beam', cx, cy, cz, t, 0.62, 0.72);
+        this.vbox('beam', cx, cy, cz, t, 0.62, 0.72, false);
         this.vbox('glass', cx + (wall === 'west' ? 0.04 : -0.04), cy, cz, t * 0.4, 0.5, 0.6);
       }
     };

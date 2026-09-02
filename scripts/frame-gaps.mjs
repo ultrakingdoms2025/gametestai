@@ -1593,7 +1593,17 @@ async function runOnce(args, pageUrl, runIndex) {
             if (w._fog) sc.fog = w._fog;
             else if (env.fogFar > 0) sc.fog = new G.THREE.Fog(env.fogColor.getHex(), env.fogNear, env.fogFar);
             else sc.fog = null;
-            if (env.envMap !== undefined) sc.environment = env.envMap;
+            /* TOTAL, exactly as \`applyEnvironment\` is. This mirrored the old
+             * partial \`if (env.envMap !== undefined)\` until 2026-09-02, and a
+             * harness that models the applier has to move when the applier
+             * does: under the partial form a world publishing no probe was
+             * warmed against whatever map the DEPARTURE world left on the
+             * scene, while the arrival cleared it - so this experiment would
+             * have compiled the wrong key set and still reported a saving.
+             * All eighteen worlds publish a probe today, so the two forms
+             * agree in practice and no number here moves; it is written this
+             * way so it stays true the day one stops. */
+            sc.environment = env.envMap ?? null;
             const p0 = r.info.programs.length;
             const t0 = performance.now();
             try {

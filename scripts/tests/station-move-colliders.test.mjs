@@ -61,6 +61,35 @@ import { MapOverlay } from '../../src/systems/MapOverlay.js';
  *
  * Three names, one collider each, and no name crossed the -1 boundary - which
  * is the outcome this table exists to distinguish a real change from.
+ *
+ * -- Re-taken 2026-09-02: 207 names, and THREE DID cross -----------------
+ *
+ *   plaza-props:glassWindow   200 -> -1
+ *   commercial:emAmber        195 -> -1
+ *   commercial:panel          184 -> -1
+ *
+ * These three can no longer be dragged in the map editor. Nothing else
+ * crossed, and no name went the other way (-1 -> a number), so no
+ * district-scale drag became possible.
+ *
+ * The cause is not in this system. `StationKit.boxGeo` now chamfers boxes at
+ * or over a metre in every axis, `StationWorld._solidifyStructure` derives
+ * collision from the DRAWN geometry, and the station's collision therefore
+ * went 8,763 -> 11,203 chunks and 26,757 -> 29,197 colliders. More collider
+ * centres fall inside any given name's bounds, so the geometric guess counts
+ * higher for 207 names; three of them were already sitting at 92-100% of the
+ * cap (200, 195, 184) and the extra tipped them over.
+ *
+ * A LOWER CHAMFER IS NOT THE FIX, and this was measured rather than assumed:
+ * at a 1.6 m threshold the table churn halves to 104 names and half the
+ * chamfer is lost, and all three still cross. The only dial that rescues them
+ * is `MAX_MOVE_COLLIDERS` itself, which is a deliberate safety envelope for
+ * an admin tool - a box holding thousands of collider centres is a district,
+ * not a prop - so raising it is a decision about how much a mis-drag may
+ * destroy, not a number to nudge to keep a fixture quiet. LEFT AS IS
+ * PENDING THAT DECISION: refusing is the safe outcome (nothing moves, the
+ * admin is told, and the move reports `span`), and it is pinned here so the
+ * decision is made in the open rather than discovered by an admin.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

@@ -30,6 +30,27 @@ const DEV_CAPTURE =
  */
 const STALL_MEDIAN_MS = 60;
 
+/**
+ * How far one adaptation moves the internal resolution scale.
+ *
+ * 0.05 is ~10% of the pixels (area goes as the square) and rather less than
+ * that off the frame, since only the fragment-bound part of it scales at all.
+ * That is deliberately far smaller than the 10.8 ms dead band between the two
+ * thresholds in `_adaptResolution`, which is the condition for a stepped
+ * scaler not to pump: one step cannot carry the next sample across the band it
+ * just left.
+ */
+const RES_STEP = 0.05;
+
+/**
+ * 0.05 does not survive repeated binary addition - four steps down and four
+ * back up land on 0.9999999999999999, which is neither 1 nor a value the
+ * `< 1` guard stops stepping at. Snapping each step back onto the 0.01 lattice
+ * keeps the ladder exact and the pixel ratio a round number.
+ * @param {number} s
+ */
+const snapScale = (s) => Math.round(s * 100) / 100;
+
 export class Engine {
   constructor(canvas, bus) {
     this.canvas = canvas;
@@ -147,6 +168,10 @@ export class Engine {
     /* Consecutive 2 Hz samples over/under budget. @see `_adaptResolution` */
     this._resSlowStrikes = 0;
     this._resFastStrikes = 0;
+    /* Whether the last announced state was full resolution, so the scaler can
+     * speak on the EDGES of a degraded episode rather than on every rung of
+     * the ladder. @see `_adaptResolution` */
+    this._resAtFull = true;
 
     // `frameMs` is the mean (what the debug panel wants to show); `frameMsMedian`
     // is what quality decisions are made on. A world streaming in on a background
@@ -154,7 +179,17 @@ export class Engine {
     // 2.5 ms - enough to make the scaler and PostFX's budget guard drop quality
     // permanently in response to a hitch that has already ended. The median simply
     // does not see it.
-    this.stats = { fps: 0, frameMs: 0, frameMsMedian: 0, drawCalls: 0, triangles: 0, programs: 0 };
+    /* `resolutionScale` is here rather than left private because a quality drop
+     * nobody can see is indistinguishable from the engine simply being bad at
+     * its job - this is the mechanism a "the rendering is not smooth" report is
+     * most likely to be describing, and it used to leave no trace anywhere but
+     * the console. It rides `engine:stats`, which the diagnostics panel
+     * (`ui/HUD.js#_updateDebug`) and the review harness (`dev/Harness.js`)
+     * already consume. @see _adaptResolution */
+    this.stats = {
+      fps: 0, frameMs: 0, frameMsMedian: 0, drawCalls: 0, triangles: 0, programs: 0,
+      resolutionScale: 1,
+    };
     this._fpsAccum = 0;
     this._fpsFrames = 0;
 
@@ -428,6 +463,11 @@ export class Engine {
       this.stats.programs = this.renderer.info.programs?.length ?? 0;
 
       if (this.adaptiveResolution) this._adaptResolution();
+      /* Read back here rather than written from `_adaptResolution` so the stat
+       * is right on every path into it - the scaler being switched off, and
+       * `setResolutionFloor` raising a scale that was below a tightened floor,
+       * both move it without an adaptation. */
+      this.stats.resolutionScale = this._resolutionScale;
       this.bus.emit('engine:stats', this.stats);
     }
   }
@@ -481,15 +521,44 @@ export class Engine {
    * That guard sits ten metres away in the same renderer and is properly
    * hysteretic: 150-frame sampling, four strikes down, six up, and an explicit
    * `ms > 60` guard that refuses to read a build stall as a budget problem.
-   * This had none of the three. It now has all three, plus one thing that
-   * guard does not need:
+   * This had none of the three. It now has all three - and, unlike that guard,
+   * a ladder rather than a switch, because AO is on or off and resolution has
+   * everything in between:
    *
-   *   STEP STRAIGHT TO THE FLOOR, not in increments. The floor is 0.8 by
-   *   default (0.25-1 by tier), so the whole available range is one 20% step.
-   *   Walking there in four increments cannot reach a useful resolution any
-   *   sooner than one step does - it is the same destination - and it costs
-   *   four reallocations instead of one. Coming back up is a single step for
-   *   the same reason.
+   *   A LADDER, NOT A LEAP. Note what that is not: the version that fixed the
+   *   four-reallocations bug above also stepped STRAIGHT TO THE FLOOR,
+   *   arguing that the increments "cannot reach a useful resolution any
+   *   sooner - it is the same destination". They are not the same
+   *   destination. The floor is the destination only for a machine that
+   *   cannot hold the budget at any scale. A 22.6 ms median - 44 fps, 35%
+   *   over budget - was being answered with the entire 20% cut, 36% fewer
+   *   pixels, which then took six consecutive fast samples to undo. So a
+   *   machine hovering just under 45 fps rendered at 0.8x and upscaled
+   *   indefinitely, stair-stepping every edge, for a deficit that one 0.05
+   *   step usually covers.
+   *
+   *   The reallocation cost is paid for by the GATE, not by the step size.
+   *   Every step still costs three consecutive slow samples, so steps are
+   *   1.5 s apart at 2 Hz and the full 1.0 -> 0.8 descent takes six seconds
+   *   and four reallocations - and only while the frame stays persistently
+   *   slow. Four reallocations spread over six bad seconds is not the defect
+   *   above; four inside two, off a single sample, was.
+   *
+   * ── Why a 0.05 ladder does not pump ─────────────────────────────────────
+   *
+   * What oscillates a stepped scaler is a step big enough to carry the next
+   * sample back across the band it just left. It cannot here: the dead band
+   * between the down threshold (22.5 ms) and the up threshold (11.7 ms) is
+   * 10.8 ms wide, while one step moves ~10% of the pixels and rather less
+   * than that off the frame, since only the fragment-bound part of it scales.
+   * The 3-down/6-up asymmetry is kept on top of that, so a lull has to hold
+   * for three seconds before any of it is given back.
+   *
+   * The consequence worth knowing: the scaler now settles on the FIRST rung
+   * that brings the median back inside 22.5 ms, not on the floor. That is a
+   * sharper image at a slightly lower frame rate than the leap produced, and
+   * it is the intended trade - the leap's extra headroom was being spent on a
+   * budget overrun that had already been paid off.
    *
    * The `ms > 60` guard matters more here than it does in PostFX: this is the
    * mechanism most likely to fire during a world build or a tab restore, and
@@ -535,7 +604,7 @@ export class Engine {
       this._resSlowStrikes = (this._resSlowStrikes || 0) + 1;
       if (this._resSlowStrikes >= 3 && this._resolutionScale > floor) {
         this._resSlowStrikes = 0;
-        this._resolutionScale = floor;
+        this._resolutionScale = Math.max(floor, snapScale(this._resolutionScale - RES_STEP));
       }
     } else if (avg < target * 0.7) {
       this._resSlowStrikes = 0;
@@ -545,7 +614,7 @@ export class Engine {
       this._resFastStrikes = (this._resFastStrikes || 0) + 1;
       if (this._resFastStrikes >= 6 && this._resolutionScale < 1) {
         this._resFastStrikes = 0;
-        this._resolutionScale = 1;
+        this._resolutionScale = Math.min(1, snapScale(this._resolutionScale + RES_STEP));
       }
     } else {
       this._resSlowStrikes = 0;
@@ -555,6 +624,29 @@ export class Engine {
     if (Math.abs(prev - this._resolutionScale) > 0.001) {
       console.info(`[Engine] resolution scale ${prev.toFixed(2)} -> ${this._resolutionScale.toFixed(2)} `
         + `(${avg.toFixed(1)} ms median)`);
+
+      /* SAY SO. The silent drop is the real defect here - the ladder above
+       * only changes how it manifests. `stats.resolutionScale` carries the
+       * live value to the diagnostics panel, but a player who never opens it
+       * still deserves to know the image they are looking at is not the image
+       * the game can draw.
+       *
+       * Only on the EDGES of an episode, though: a rung every 1.5 s down a
+       * four-rung ladder and back would be eight toasts for one rough patch,
+       * which is how a useful signal becomes noise the player learns to
+       * ignore. `hud:notify` is an existing contract (`ui/HUD.js#_wire`), so
+       * this needs no new wiring and no reference to the HUD. */
+      const full = this._resolutionScale >= 1;
+      if (full !== this._resAtFull) {
+        this._resAtFull = full;
+        this.bus?.emit('hud:notify', full
+          ? { text: 'Render scale restored — 100%', tone: 'info' }
+          : {
+            text: `Render scale ${Math.round(this._resolutionScale * 100)}% — holding frame rate`,
+            tone: 'warn',
+          });
+      }
+
       this.renderer.setPixelRatio(
         Math.min(window.devicePixelRatio, CONFIG.render.maxPixelRatio) * this._resolutionScale
       );

@@ -1773,9 +1773,9 @@ const _warmFog = new THREE.Fog(0, 1, 100);
  * restore, so no frame can ever render under it, and the restore is in a
  * `finally` so a throwing compile cannot leave the station wearing sports' fog.
  *
- * `env.envMap === undefined` is left alone rather than cleared, because that is
- * exactly what `applyEnvironment` does - a world that publishes no map keeps
- * whatever was there.
+ * `env.envMap ?? null` is TOTAL, because that is what `applyEnvironment` now
+ * does - a world that publishes no map arrives with no map. See the note there
+ * for why the old "leave it alone" read was a bug rather than a policy.
  *
  * @param {any} world
  * @param {() => void} fn
@@ -1787,7 +1787,7 @@ function withArrivalKey(world, fn) {
   const environment = scene.environment;
   try {
     scene.fog = world?.sceneFog ?? (env.fogFar > 0 ? _warmFog : null);
-    if (env.envMap !== undefined) scene.environment = env.envMap;
+    scene.environment = env.envMap ?? null;
     fn();
   } finally {
     scene.fog = fog;
@@ -1849,8 +1849,9 @@ let _parkedMountRoots = [];
  * and still cost an idle callback each. Warming once per distinct key is the
  * same coverage for a fraction of the background settle.
  *
- * `envMap === undefined` reads the live scene, because that is what
- * `applyEnvironment` leaves in place for a world that publishes no map.
+ * `envMap ?? null` rather than a read of the live scene: `applyEnvironment` is
+ * total now, so a world that publishes no map arrives under no map, and a key
+ * that guessed the DEPARTURE world's map would warm the wrong build.
  *
  * @param {any} world
  * @returns {string}
@@ -1858,7 +1859,7 @@ let _parkedMountRoots = [];
 function arrivalKeyOf(world) {
   const env = world?.environment ?? {};
   const fog = world?.sceneFog ?? (env.fogFar > 0 ? _warmFog : null);
-  const map = env.envMap === undefined ? engine.scene.environment : env.envMap;
+  const map = env.envMap ?? null;
   return [
     /* `fog.type` DOES NOT EXIST, on either fog class.
      *
@@ -3345,7 +3346,30 @@ function applyEnvironment(env) {
   sun.intensity = env.sunIntensity;
   engine.renderer.toneMappingExposure = env.exposure ?? 1;
   scene.environmentIntensity = env.envMapIntensity ?? 1;
-  if (env.envMap !== undefined) scene.environment = env.envMap;
+  /* TOTAL, and it used to be `if (env.envMap !== undefined)`.
+   *
+   * A partial assignment makes "publishes no map" mean "keeps the map the last
+   * world left on the scene", which is not a state anybody authored: booting
+   * straight into a mapless world gave its metals and glass nothing at all,
+   * and walking into the same world from the station gave them the station's
+   * baked cyan-and-amber probe. Which look you got depended on your route.
+   * `DockWorld._buildLights` documents that exact pair of wrong answers as the
+   * reason it started publishing a probe of its own.
+   *
+   * It was also a two-scene disagreement: `Portals._configurePreview` has
+   * always written `env.envMap ?? null`, so a mapless world seen THROUGH a
+   * gateway arch was already lit with no probe, while the same world walked
+   * INTO wore the departure's. `envMap` presence and `envMapCubeUVHeight` are
+   * both program cache keys, so the preview warm compiled the mapless build
+   * and the arrival frame then asked for the inherited-map build - the same
+   * "warm keys to the departure world" failure `withArrivalKey` above exists
+   * to prevent.
+   *
+   * All eighteen worlds publish a probe now, so in practice this crossing is
+   * always texture-to-texture at the same 1024 cubeUV height and the key does
+   * not move; the `?? null` is what a world that ever stops publishing one
+   * gets, instead of silently wearing its neighbour's sky. */
+  scene.environment = env.envMap ?? null;
 }
 
 /** Keep the shadow frustum tight around the player for crisp contact shadows. */

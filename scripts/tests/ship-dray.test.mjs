@@ -239,13 +239,13 @@ test('the generator holds the plan constants it duplicates', async () => {
 test('the authored arm draws the asset and the procedural arm does not', () => {
   /* Exact counts, and they are this deliverable's headline numbers:
    *
-   *   procedural   22,612 exterior triangles   (+848 interior, unchanged)
-   *   authored     13,257 exterior triangles   (+848 interior, unchanged)
+   *   procedural   22,900 exterior triangles   (+4,208 interior, both arms)
+   *   authored     13,257 exterior triangles   (+4,208 interior, both arms)
    *
    * of which 7,779 are the .glb itself; the rest is the two weather decks, the
    * foredeck furniture, the derrick, the hoppers, the radiator, the gear, the
    * cargo door and the bridge roof, all of which both arms draw. The authored
-   * hull is LIGHTER than the box hull it replaces by 9,355 triangles, which is
+   * hull is LIGHTER than the box hull it replaces by 9,643 triangles, which is
    * the answer to "state your triangle count against the current one and
    * justify it": the budget went DOWN, and the triangles that remain are
    * describing curvature instead of standing plates on edge. 222 `relief`
@@ -254,8 +254,33 @@ test('the authored arm draws the asset and the procedural arm does not', () => {
    * Pinned rather than bounded on purpose. The fallback is not a degraded
    * mode — it is the hull `dock-hulls`, `dock-reach`, `dock-interiors` and
    * `dock-hull-shape` all measure — so a change to it should be a decision
-   * somebody made, not a number that drifted. */
-  assert.equal(triCountOf(noAsset.extRoot) + triCountOf(noAsset.group), 22612,
+   * somebody made, not a number that drifted.
+   *
+   * ── Re-taken 2026-09-02: the kit learned to chamfer ──────────────────
+   * Procedural exterior 22,612 -> 22,900, +288. Authored exterior UNCHANGED at
+   * 13,257, and that asymmetry is the proof of what moved: `boxGeo` now
+   * chamfers a box whose smallest dimension reaches the kit's 1.0 m, and the
+   * only three boxes on this hull that qualify are the engine-bell mounts on
+   * the transom — 1.9 x 1.9 x 1.2, at lx -3/0/+3, drawn by `cbox` inside the
+   * `mute(true)` region. The authored arm does not draw that region (the
+   * bells are part of the one baked surface), so it cannot move. Three boxes
+   * x 96 triangles a chamfered box costs over a plain one = 288, exactly.
+   *
+   * They are the case the kit default is FOR and not the case it warns about:
+   * chunky masses standing proud of the transom with a 1.1 m gap between
+   * neighbours, so there is no butted run to grow a ladder of dark seams. The
+   * mounts are drawn through `cbox`, which collides the FULL box, so the
+   * chamfer only ever cuts geometry away from inside the collider — and
+   * `both arms register the same STRUCTURE` below is unchanged, which is the
+   * measurement that says so.
+   *
+   * The interior figure moved with the same commit and for a different rule:
+   * `ShipKit.ibox` chamfers from 12 cm, which catches 35 of this hull's
+   * fittings for +3,360, taking 848 -> 4,208. It is stated per arm rather
+   * than pinned because the assertion below compares the two arms to each
+   * other — `mute` suppresses exterior drawing only, so both arms fit out the
+   * same compartments and both grew by the same 3,360. */
+  assert.equal(triCountOf(noAsset.extRoot) + triCountOf(noAsset.group), 22900,
     'the procedural hull changed shape');
   assert.equal(triCountOf(withAsset.extRoot) + triCountOf(withAsset.group), 13257,
     'the authored hull changed shape');

@@ -3694,20 +3694,28 @@ export class DockWorld extends World {
      * `environment.envMapIntensity` is 0.75 and twenty of this world's
      * materials are authored around it, up to `M.glass` at 2.0 with clearcoat
      * — which is almost entirely image-based and collapses to a flat dark
-     * sheet with no probe behind it. But `main.js` only assigns
-     * `scene.environment` when the world publishes `envMap`, so leaving it
-     * unset does not mean "no reflections": it means the yard is lit by
+     * sheet with no probe behind it. But `main.js` USED TO assign
+     * `scene.environment` only when the world published `envMap`, so leaving
+     * it unset did not mean "no reflections": it meant the yard was lit by
      * WHICHEVER WORLD RAN LAST. Booting `?world=dock` gave every metal in the
      * shed nothing at all; walking in from the concourse gave a cold shipyard
      * the station's baked cyan-and-amber probe. Neither is a look anybody
-     * authored, and which one you got depended on the route.
+     * authored, and which one you got depended on the route. (That applier is
+     * total as of 2026-09-02 and every world publishes a probe, so the trap is
+     * closed on both sides now; `world-envmap.test.mjs` holds it closed.)
      *
      * `'space'` rather than `'daylight'`: the shed has a roof and a starfield
      * past the blast door, and a blue sky probe indoors reads as a hole in the
-     * wall. Same one line as `CitadelWorld` and `RaceWorld`; `?? undefined`
-     * keeps `scene.environment` untouched in a headless build where the
-     * material library is a stub. */
-    this.environment.envMap = this.materials?.getEnvMap?.('space') ?? undefined;
+     * wall. Same one line as `CitadelWorld` and `RaceWorld`.
+     *
+     * `?? null` and not `?? undefined`. That read "keeps `scene.environment`
+     * untouched in a headless build where the material library is a stub",
+     * which was true only while the applier was partial - `undefined` is now
+     * cleared like any other absent probe, so the old spelling described a
+     * behaviour it no longer had while leaving this world the only one that
+     * declared nothing. `null` is the honest answer a stub should give: this
+     * world asked for a probe and the library had none. */
+    this.environment.envMap = this.materials?.getEnvMap?.('space') ?? null;
   }
 
   /* ---------------------------------------------------------------- */

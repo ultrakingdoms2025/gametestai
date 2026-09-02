@@ -448,6 +448,28 @@ export class MazeWorld extends World {
     this.environment.sunColor = new THREE.Color(0xfff2d8);
     this.environment.sunIntensity = 2.2;
     this.environment.sunDirection = new THREE.Vector3(-0.3, 0.9, -0.25).normalize();
+    /* ── The reflection probe ──────────────────────────────────────────────
+     *
+     * This world published no `envMap` at all, and `applyEnvironment` used to
+     * skip the assignment when a world published none - so the maze's stone,
+     * its candle brass and its water were lit by WHICHEVER WORLD RAN LAST, or
+     * by nothing at all on a cold `?world=maze` boot. Neither is a look
+     * anybody authored, and which one you got depended on your route. Same
+     * one line, and the same reasoning, as `CitadelWorld`, `RaceWorld` and
+     * `DockWorld`.
+     *
+     * `'daylight'`: the top level is open to the sky, the background is an
+     * overcast blue-grey and the sun comes almost straight down. `'space'`
+     * would put a starfield in the puddles of a daylit hedge maze.
+     *
+     * This does NOT touch `ambientIntensity` above. That 1.25 is a paint
+     * roller over the roofed levels and it is a coordinated retune to move
+     * energy out of it and into this probe; the probe has to exist first.
+     * `?? undefined` in the sibling worlds meant "keep whatever was there",
+     * which is the bug; `?? null` is "no probe", which is what a headless
+     * build with a stub material library should honestly get.
+     * @see gfx/Materials.js `getEnvMap` */
+    this.environment.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
   }
 
   /**

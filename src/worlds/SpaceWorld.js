@@ -219,6 +219,22 @@ export class SpaceWorld extends World {
       sunIntensity: 3.1,
       sunDirection: this.starDirection,
       envMapIntensity: 0.95,
+      /* ── The reflection probe the 0.95 above was already written for ──────
+       *
+       * That intensity was declared against a map this world never supplied,
+       * and `applyEnvironment` used to skip the assignment when a world
+       * published none - so the Kestrel's hull, the yard's plating and the
+       * belt's ice were multiplied by 0.95 of WHICHEVER WORLD RAN LAST, or of
+       * nothing at all on a cold `?world=space` boot. An intensity without a
+       * membership is not a setting, it is a coin flip on the route taken.
+       *
+       * `'space'` is the mood built for exactly this: a near-black sky, a dim
+       * ground term and four coloured accents, so a polished hull picks up
+       * nebula colour along its edges instead of reading as grey plastic.
+       * The library bakes all three moods once during warmup, so this line
+       * adds no PMREM target and no boot cost.
+       * @see gfx/Materials.js `ENV_MOODS.space` */
+      envMap: this.materials?.getEnvMap?.('space') ?? null,
       /* null keeps GRADE_PRESETS.space, whose bloom threshold is 1.60. Every
        * emissive value in this world was chosen against that number: the star
        * at 2.9, the bay mouth at 2.4, the running lights at 2.6, Cinder's

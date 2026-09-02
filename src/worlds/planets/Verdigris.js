@@ -1427,6 +1427,65 @@ export const VERDIGRIS = definePlanet({
    * That is a smaller frame and a much stronger place, and it is where the ore
    * a player is sent for actually is.
    */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS, AND THE HEAVY END OF THE GRAVITY SPREAD ──────────────
+   * 10.10 m/s2. The heaviest body in the system, 6.2x Tessera, and through
+   * `worldGravityRatio` that is a jump apex of 0.922 m against Tessera's 1.697,
+   * a hang time of 0.571 s against 1.935, and a sprint broad jump of 4.7 m
+   * against 15.9. On Tessera a rim notch is a step; here it is a detour.
+   *
+   * The Green Cut is where that stops being a table of numbers. It is 46 m
+   * wide, 38 m deep, and walled on both sides by 26 m scarps with 9 m of run -
+   * 71 degrees, past the 59 degrees where the player's own step-up ladder gives
+   * out. A 4.7 m jump crosses none of it. Its two brows are therefore two
+   * different places, and the only way from one to the other is the ramp that
+   * runs the length of the floor: 1.1 km of walking to move 91 m sideways.
+   * `planet-viewpoints.test.mjs` measures that on the built world, and measures
+   * that adding jump edges at this planet's own 4.7 m carry changes the route
+   * to every viewpoint here by zero metres.
+   *
+   * Only the EAST brow is published. The west brow is on the far side of the
+   * Cut, the walk lattice cannot reach it from any pad at all, and a viewpoint
+   * over there would be a marker you can see and never stand on. */
+  viewpoints: [
+    {
+      /* The west brow of the Crown, 145.9 m - the highest ground on any planet
+       * in the system - with 33.6 m of prominence and the whole Greenspan
+       * below. 76 m clear of Crown Deck, which is out of sight behind you. */
+      id: 'crown_brow', name: 'Crown Brow', x: 120, z: -270, r: 8,
+      terrain: 'outcrop', place: 'the Crown',
+      climb: 'West off Crown Deck across the mesa top.',
+    },
+    {
+      /* The east brow of the Green Cut at its head: 76.4 m with the 38 m gorge
+       * immediately west of it and a 26 m wall going down. */
+      id: 'cut_brow', name: 'Green Cut Brow', x: -140, z: 20, r: 7,
+      terrain: 'channel', place: 'the east brow of the Green Cut',
+      climb: 'West from Greenspan Clearing until the ground stops.',
+    },
+    {
+      /* The east edge of the Resinwood mesa, 103.9 m, 593 m from Greenspan and
+       * the longest walk on the planet. */
+      id: 'resin_edge', name: 'Resinwood Edge', x: 310, z: 240, r: 8,
+      terrain: 'highland', place: 'the Resinwood',
+      climb: 'The resinwood road east from Greenspan, then out to the rim.',
+    },
+  ],
+
   landing: [
     {
       /* The Greenspan. On the bench, at the head of the Stairgill, with the
@@ -1447,6 +1506,7 @@ export const VERDIGRIS = definePlanet({
       id: 'crown', name: 'Crown Deck', x: 210, z: -230, r: 22, yaw: 2.6,
     },
   ],
+
 
   hazards: {
     /** Spore and pollen drift rather than ash. `PlanetWorld._buildAtmosphere`

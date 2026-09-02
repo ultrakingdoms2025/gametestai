@@ -1527,10 +1527,10 @@ export class HUD {
   }
 
   /**
-   * THE STANDING ALERT BAR: the three failures a toast is the wrong shape for.
+   * THE STANDING ALERT BAR: the failures a toast is the wrong shape for.
    *
    * A toast fades in five seconds. That is right for "picked up 30 credits"
-   * and wrong for every condition on this bar, because all three of them are
+   * and wrong for every condition on this bar, because all of them are
    * STATES rather than events - they persist, the player needs to be able to
    * find out about them at any point after they began, and each one changes
    * what the player should reasonably expect the game to be doing:
@@ -1551,8 +1551,15 @@ export class HUD {
    *     see them; an hour of play silently not reaching the account is a
    *     failure the player has to be able to see while it is happening.
    *
-   * One bar, one message at a time, most recent wins. Three separate banners
-   * would be three ways to cover the crosshair.
+   *  4. `player:hazard` - the planet's weather is charging the body: Cinder's
+   *     radiant heat, Sirocco's blown sand, Cathedra's thin air. The world
+   *     publishes the field and `Swim.tickHazard` charges it; until that
+   *     wiring landed all three were drawn, measured and completely inert. A
+   *     player losing health with no idea why is worse than a hazard that does
+   *     nothing, so the bar names the weather AND the way out of it.
+   *
+   * One bar, one message at a time, most recent wins. Four separate banners
+   * would be four ways to cover the crosshair.
    */
   _buildAlerts(hud) {
     const bar = el('div', 'hud-alert');
@@ -1564,11 +1571,13 @@ export class HUD {
     /**
      * Every condition currently true, by id, in the order they arrived.
      *
-     * A Map rather than one slot, and that is not over-engineering: the three
+     * A Map rather than one slot, and that is not over-engineering: the
      * conditions are independent and overlap easily - a driver hiccup during a
      * session that is already offline is exactly the sort of bad afternoon that
-     * produces both at once. With a single slot, clearing the newer one would
-     * blank the bar and silently take down a warning that is still true.
+     * produces both at once, and standing in a heat band is a fourth thing
+     * that can be true at the same time as any of them. With a single slot,
+     * clearing the newer one would blank the bar and silently take down a
+     * warning that is still true.
      * Insertion order is what makes "newest wins", and what makes the bar fall
      * back to whatever is still wrong instead of to nothing.
      * @type {Map<string, string>}
@@ -1599,7 +1608,7 @@ export class HUD {
   }
 
   /**
-   * The three standing conditions, subscribed in one place.
+   * The standing conditions, subscribed in one place.
    *
    * A prototype method called from `_wire` for the same reason `_wireSession`
    * is one: a headless rig can register the REAL wiring over a real bus and a
@@ -1625,6 +1634,33 @@ export class HUD {
      * is built, it emits and this gains one line. */
     this._on('session:offline', ({ reason } = {}) => this.setAlert('offline',
       `Offline${reason ? ` (${reason})` : ''} — progress is local only and will not reach your account.`));
+
+    /* 4. `player:hazard` - the planet's own weather, being charged against the
+     * body right now. A STATE and not an event, exactly like the three above:
+     * it persists, it starts costing the moment it begins, and a player whose
+     * health bar is falling with no idea why is the worst version of this
+     * feature there is. `Swim.tickHazard` emits it once on entry and once on
+     * exit, so this raises and clears rather than repeating.
+     *
+     * The text is `name` (the world's own words for its weather) plus the way
+     * OUT, keyed on `cause`. The way out is the important half - `PlanetHazard`
+     * guarantees one exists within 40 m and this is the only place the player
+     * is ever told what it is. An unrecognised cause still gets the name and
+     * the bar, because a fourth hazard should be visible on the day it lands
+     * and not on the day somebody remembers this switch. */
+    this._on('player:hazard', ({ in: inside, name, cause } = {}) => {
+      if (!inside) {
+        this.setAlert('hazard', null);
+        return;
+      }
+      const escape = {
+        heat: 'walk off the scorched ground.',
+        wind: 'get into the lee of a dune.',
+        altitude: 'sprint and climb are rationed up here. Descend to get your breath back.',
+      }[cause] ?? 'move clear of it.';
+      const what = name ? String(name) : 'A hazard';
+      this.setAlert('hazard', `${what.charAt(0).toUpperCase()}${what.slice(1)} — ${escape}`);
+    });
   }
 
   _buildMinimap(hud) {

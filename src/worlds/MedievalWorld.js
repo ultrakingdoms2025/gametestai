@@ -63,6 +63,7 @@ import {
 } from './medieval/TerrainTiles.js';
 import { GrassResidency } from './medieval/GrassResidency.js';
 import { loadBeastAssets } from './medieval/BeastAssets.js';
+import { medievalObjectives } from './medieval/Objectives.js';
 import { loadFrameAssets, framePart, FRAME_WELDABLE } from './medieval/FrameAssets.js';
 
 /**
@@ -13342,6 +13343,17 @@ export class MedievalWorld extends World {
 
     this._buildInhabitants();
     this._buildMinimap();
+    /* Viewpoints, trials and the circuit.
+     *
+     * LAST, and after the minimap, because it reads the finished world and
+     * writes nothing back into it: the descriptors are plain data hung on the
+     * world object for `Viewpoints`, `MinigameManager` and `RaceManager` to
+     * find, and none of the three is even constructed yet. It draws no RNG, so
+     * every seeded placement in the vale - the twelve beast sites, the 88
+     * residents, the treasure, the woodland - is bit-identical to the build
+     * before it existed. @see ./medieval/Objectives.js
+     */
+    medievalObjectives(this);
   }
 
   _buildInhabitants() {

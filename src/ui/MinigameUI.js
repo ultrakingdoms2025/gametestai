@@ -60,11 +60,14 @@ export function ordinal(n) {
  *
  * The card read four keys - `distance`, `splits`, `lengths`, `reason` - out of
  * an object that twelve of the sixteen venues fill with something richer, and
- * threw the rest away. `RooftopTrial._finish` returns the whole medal system as
- * a sentence ("4 of 7 rings · gold 1:02 · silver 1:14 · bronze 1:26 · personal
- * best") and it was rendered NOWHERE: a player could beat their own best time
- * on the Skyline and the only thing the game said about it was "BEATEN" or
- * "WON". `TrackRace` returns lane, lap length and the margin the nearest ghost
+ * threw the rest away. `RooftopTrial._finish` returned the whole medal system
+ * as a sentence ("4 of 7 rings · gold 1:02 · silver 1:14 · bronze 1:26 ·
+ * personal best") and it was rendered NOWHERE: a player could beat their own
+ * best time on the Skyline and the only thing the game said about it was
+ * "BEATEN" or "WON". It publishes those numbers as KEYS now - `medal`,
+ * `parGold`/`parSilver`/`parBronze`, `best` - and the five rows at the head of
+ * the table below draw them as boxes, with what is left of the sentence riding
+ * in `note`. `TrackRace` returns lane, lap length and the margin the nearest ghost
  * still had to run; `TennisMatch` returns points won, points lost and the
  * longest rally; `SkiRun` returns gates passed, gates missed and the penalty
  * seconds those misses cost. None of it reached the screen.
@@ -82,7 +85,36 @@ export function ordinal(n) {
  *
  * Each entry is `[label, (d) => string|null]`. Returning null draws nothing.
  */
+/** `m:ss.mm`, the spelling every timed contest in this game already uses. */
+function clockText(seconds) {
+  const s = Number(seconds);
+  if (!(s > 0)) return null;
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return `${m}:${r < 10 ? '0' : ''}${r.toFixed(2)}`;
+}
+
 const DETAIL_STATS = [
+  /* ---- the medal ladder ------------------------------------------------
+   *
+   * `RooftopTrial` grades a finish against three MEASURED par times and seven
+   * citadel venues use it, and until these five rows the whole system reached
+   * the card as one run-on sentence of prose under the stats - "4 of 7 rings ·
+   * gold 1:02 · silver 1:14 · bronze 1:26 · personal best". The card is where
+   * a player reads a number slowly, so the numbers they are racing belong in
+   * the boxes and not in the footnote.
+   *
+   * MEDAL first, because it is the answer; the three pars after it in the order
+   * they are hard, so the eye can find the one just missed. All four are null
+   * for the nine ungraded venues and draw nothing at all, which is the
+   * table's whole contract. */
+  ['MEDAL', (d) => (typeof d.medal === 'string' && d.medal ? d.medal.toUpperCase() : null)],
+  ['GOLD', (d) => clockText(d.parGold)],
+  ['SILVER', (d) => clockText(d.parSilver)],
+  ['BRONZE', (d) => clockText(d.parBronze)],
+  /* The record this run was measured against. Drawn only when there IS one -
+   * a first attempt has no best, and "BEST —" is a box that teaches nothing. */
+  ['BEST', (d) => clockText(d.best)],
   ['DISTANCE', (d) => (Number.isFinite(d.distance) ? `${Math.round(d.distance)} m` : null)],
   ['LENGTHS', (d) => (Array.isArray(d.splits) && d.splits.length
     ? `${d.splits.length}/${d.lengths ?? d.splits.length}`
@@ -330,8 +362,17 @@ export class MinigameUI {
      * under them. `d` stays an object either way so the table's readers never
      * index into a string. */
     const rawDetail = result.detail ?? null;
-    const detailText = typeof rawDetail === 'string' ? rawDetail.trim() : '';
     const d = (rawDetail && typeof rawDetail === 'object') ? rawDetail : {};
+    /* An OBJECT detail may still have a sentence to say. `RooftopTrial` used to
+     * publish its whole result as prose and now publishes the numbers as keys
+     * the table above draws - but "4 of 7 rings · personal best" is not a stat
+     * box, it is a remark, and losing it to the change would have traded one
+     * defect for another. `note` is that remark, and it is read from the same
+     * band the string form has always used, so a module may publish either or
+     * both and the card looks the same either way. */
+    const detailText = typeof rawDetail === 'string'
+      ? rawDetail.trim()
+      : (typeof d.note === 'string' ? d.note.trim() : '');
     const stat = (k, v) => {
       const box = el('div', 'mg-stat');
       box.append(el('div', 'mg-stat-v', v), el('div', 'mg-stat-k', k));

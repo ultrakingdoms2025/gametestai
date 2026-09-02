@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RaceRings } from '../race/RaceRings.js';
 import { sweptPass } from '../race/CheckpointSweep.js';
 import { GhostCompetitor } from './GhostCompetitor.js';
+import { GhostReplay, ReplayRecorder, courseKey } from './GhostReplay.js';
 
 /**
  * Rooftop time trials: the citadel's roofs, scored.
@@ -82,9 +83,31 @@ import { GhostCompetitor } from './GhostCompetitor.js';
  *
  * A finish inside bronze is a WIN, which is what makes `SaveGame._recordTrial`
  * keep the time (it records wins only, deliberately) and what pays the venue's
- * credits. The medal itself rides in the result's `score`, so the result card
- * and any future quest step can read it without this file needing an economy
- * handle of its own.
+ * credits. The medal itself rides in the result's `score`, so the result card,
+ * the payout and any future quest step can read it without this file needing an
+ * economy handle of its own.
+ *
+ * Three things now read it, and each reads it for a different span of time:
+ *
+ *  - `MinigameManager.medalPrize` grades THIS payout. Gold pays the venue's
+ *    whole prize and the lesser grades pay a share of it, so a medal can only
+ *    ever cost credits, never mint them - which is the only shape available,
+ *    because the reported-credit ceiling for a minigame is 250 and the richest
+ *    venue already pays 216.
+ *  - `SaveGame._recordTrial` keeps the BEST medal for ever, as a record
+ *    separate from the best time, because a slower gold must survive the
+ *    MIN-on-time guard that (correctly) drops the slower run.
+ *  - `Charters.mastery` counts the golds across every venue at once.
+ *
+ * ── AND THE RUN ITSELF IS KEPT, twenty floats of it ─────────────────────────
+ *
+ * A finishing run hands up a `replay`: the polyline of `(time, progress)`
+ * sampled at the checkpoints this file was already emitting. `SaveGame` stores
+ * it beside the fastest time, and the NEXT attempt at this venue races it
+ * instead of the analytic silver-par pacesetter - so the second visit is
+ * against Nadira the Swift and the fiftieth is against the player's own best
+ * afternoon. See `GhostReplay.js` for why it is a progress fraction and not a
+ * position track, and `_paceRival` for the one field both rivals write.
  *
  * @see ../race/CheckpointSweep.js
  * @see ../../scripts/tests/minigame-rooftop.test.mjs
@@ -172,6 +195,17 @@ const DEFAULT_RING_R = 2.6;
 
 /** `SkiRun.js:159`, same one-liner. */
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/**
+ * Emissive accent the rival's body wears, by what the rival IS.
+ *
+ * Two different contests share one body, and the player has to be able to tell
+ * which one they are in from the roof rather than from the HUD. The authored
+ * pacesetter keeps the cyan it has always had; a personal-best ghost is the
+ * player's own run and wears the gold of the medal it is usually chasing.
+ */
+const TINT_PACESETTER = 0x52e9ff;
+const TINT_SELF = 0xffd23b;
 
 /* Scratch. Module level, never inside a step - the house rule. */
 const _ghostPos = new THREE.Vector3();
@@ -363,6 +397,30 @@ export class RooftopTrial {
 
     this.par = parTimes(this.route, venue?.config?.routeLength);
     this.best = Number(this.save?.bestTrialTime?.(venue.id, this.worldId)) || null;
+    /**
+     * The best medal ever taken here, which is NOT implied by `best`.
+     *
+     * A medal is graded against a par, a par is a function of the route, and
+     * the route can be re-authored - so "the fastest time I have" and "the best
+     * grade I have" are two records, kept apart by `SaveGame._recordTrial` for
+     * the reason its own header gives. Read separately here for the same
+     * reason: deriving the medal from `best` would re-grade an old run against
+     * today's par and could silently take a gold away.
+     */
+    this.bestMedal = this.save?.bestTrialMedal?.(venue.id, this.worldId) ?? null;
+
+    /**
+     * This route's fingerprint, and the two halves of the personal-best ghost.
+     *
+     * `courseKey` is what makes a stored replay refuse rather than drive: it is
+     * measured off the chain itself, so a re-authored route produces a
+     * different key and `GhostReplay.from` answers null. The recorder runs on
+     * EVERY attempt because deciding whether a run is worth keeping is
+     * `serialize()`'s job and `SaveGame`'s, not this file's.
+     */
+    this.courseKey = courseKey(this.route, this.par.chain);
+    this.replay = GhostReplay.from(this.save?.bestTrialReplay?.(venue.id, this.worldId), this.courseKey);
+    this._recorder = new ReplayRecorder(this.courseKey);
 
     /** The checkpoint the cursor is on. The player STARTS on 0, so 1 is next. */
     this.nextCp = 1;
@@ -373,10 +431,25 @@ export class RooftopTrial {
     this._px = 0;
     this._pz = 0;
 
-    this.rivalName = venue?.rival?.name ?? 'the pacesetter';
+    /**
+     * WHO is on the roof, which is the whole point of the replay.
+     *
+     * Until there is a recorded run, the rival is the authored pacesetter and
+     * the contest is "beat the silver par with a body attached to it". Once
+     * there is one, the rival is the player's own fastest run - and the name
+     * has to change with it, because `MinigameUI._footerFor` prints "You beat
+     * <rivalName>" and telling a player they beat Nadira the Swift when they
+     * beat themselves is the card asserting something that did not happen.
+     */
+    this.racingSelf = !!this.replay;
+    this.rivalName = this.racingSelf
+      ? 'your best run'
+      : (venue?.rival?.name ?? 'the pacesetter');
     this.rivalDist = 0;
-    /* The rival runs the SILVER par, so "beat the body on the roof" and "beat
-     * the silver time" are the same statement rather than two. */
+    /* The ANALYTIC pace, and the fallback whenever there is no stored ghost.
+     * The rival runs the SILVER par, so "beat the body on the roof" and "beat
+     * the silver time" are the same statement rather than two - which is the
+     * right first contest, and exactly the wrong fiftieth. See `_paceRival`. */
     this.rivalPace = this.par.chain / this.par.silver;
 
     this._host = ctx.worldManager?.active?.group ?? ctx.scene ?? this.player?.scene ?? null;
@@ -423,9 +496,14 @@ export class RooftopTrial {
       physics: this.player?.physics ?? null,
       factory,
       name: this.rivalName,
-      tint: 0x52e9ff,
+      tint: this.racingSelf ? TINT_SELF : TINT_PACESETTER,
       seed: 51479,
-      theme: 'citadel',
+      /* The rival wears the world it runs in, not the world this module was
+       * written for. `rooftop` was a citadel-only kind until Aldermoor Vale
+       * published three trials against it, at which point Brother Wystan would
+       * have run the Pilgrim Road as a cyan citadel figure. A venue may name
+       * its own theme; otherwise the active world's id is the honest default. */
+      theme: this.venue?.rival?.theme ?? ctx?.worldManager?.active?.id ?? 'citadel',
     });
     if (!this.ghost) return;
     this.ghost.setPose('run');
@@ -448,12 +526,21 @@ export class RooftopTrial {
     this._px = p?.x ?? this.route[0].x;
     this._pz = p?.z ?? this.route[0].z;
     this.clock = 0;
+    /* The polyline's origin knot. Recorded rather than assumed so the stored
+     * shape is self-contained - `GhostReplay.progressAt` will interpolate from
+     * (0, 0) anyway, but a replay that carries its own start is one fewer
+     * convention two files have to agree about. */
+    this._recorder.mark(0, 0);
     this.bus?.emit('trial:started', {
       venueId: this.venue.id,
       label: this.venue.label,
       checkpoints: this.route.length,
       par: { gold: this.par.gold, silver: this.par.silver, bronze: this.par.bronze },
       best: this.best,
+      bestMedal: this.bestMedal,
+      /* So a listener can say WHO is on the roof without re-deriving it. */
+      rival: this.rivalName,
+      racingSelf: this.racingSelf,
     });
   }
 
@@ -504,6 +591,14 @@ export class RooftopTrial {
     this.nextCp++;
     if (this.nextCp >= this.route.length) this.rings?.clear();
     else this.rings?.pass(passed, this.nextCp);
+    /* ONE KNOT OF THE GHOST, taken at the moment the ring was swept.
+     *
+     * `_playerChainDist()` is summed to `this.done`, which the line above has
+     * just advanced, so it is exactly the chain distance of the checkpoint
+     * that was passed - the same number `snapshot()` draws the progress bar
+     * from. Recording the bar's own number is what stops the stored ghost and
+     * the live readout from ever describing different runs. */
+    this._recorder.mark(this.clock, this._playerChainDist() / this.par.chain);
     this.bus?.emit('trial:checkpoint', {
       venueId: this.venue.id,
       label: this.venue.label,
@@ -517,9 +612,27 @@ export class RooftopTrial {
     });
   }
 
-  /** Move the rival's body to exactly the distance its pace reports. */
+  /**
+   * Move the rival's body to exactly the distance its pace reports.
+   *
+   * ── Two rivals, one number ─────────────────────────────────────────────────
+   *
+   * With no stored ghost this is the analytic pace it always was: a constant
+   * `chain / silver` metres a second, so the body IS the silver par. With one,
+   * `progressAt` reads the recorded polyline and the body is the player's own
+   * fastest run - varying pace, resting where they rested, and arriving at the
+   * finish at exactly the time on the ledger.
+   *
+   * Both branches write the SAME field, and everything downstream - the RIVAL
+   * row, the rival marker on the progress bar, the ghost's feet - reads that
+   * field. That is the whole reason a replay is a progress polyline and not a
+   * position track: swapping the pace source cannot desynchronise anything,
+   * because there is only one number and the live route decides where it is.
+   */
   _paceRival() {
-    this.rivalDist = Math.min(this.par.chain, this.rivalPace * this.clock);
+    this.rivalDist = this.replay
+      ? Math.min(this.par.chain, this.replay.progressAt(this.clock) * this.par.chain)
+      : Math.min(this.par.chain, this.rivalPace * this.clock);
     this._syncGhost();
   }
 
@@ -527,7 +640,13 @@ export class RooftopTrial {
     if (!this.ghost) return;
     const heading = this._chainPoint(this.rivalDist, _ghostPos);
     this.ghost.place(_ghostPos, heading);
-    this.ghost.setSpeedForAnim(this.rivalPace);
+    /* Cosmetic only - stride rate, never position. Driven off the polyline's
+     * local slope so a recorded run that stopped to wait for stamina has a
+     * body that stops running, rather than one that mimes a sprint while
+     * standing still. */
+    this.ghost.setSpeedForAnim(this.replay
+      ? this.replay.paceAt(this.clock) * this.par.chain
+      : this.rivalPace);
   }
 
   /**
@@ -574,7 +693,17 @@ export class RooftopTrial {
     const medal = completed ? medalFor(time, this.par) : null;
     const won = !!medal;
     const beatBest = won && (!this.best || time < this.best);
-    const pars = `gold ${clockText(this.par.gold)} · silver ${clockText(this.par.silver)} · bronze ${clockText(this.par.bronze)}`;
+    /* An UPGRADE, which is not the same event as a personal best and is the
+     * one the old single-string card could not say at all. A slower gold after
+     * a faster silver moves the medal ledger and not the clock; `SaveGame`
+     * keeps both, so the card has to be able to name both.
+     *
+     * `MEDAL_FACTOR` is the order, because it is this file's own authority for
+     * what the three words mean - and note it runs the OTHER WAY round from
+     * `SaveGame.MEDAL_ORDER`: a lower time multiplier is a better medal. */
+    const beatMedal = won
+      && (!this.bestMedal || MEDAL_FACTOR[medal] < MEDAL_FACTOR[this.bestMedal]);
+    const rings = `${this.done} of ${this.route.length - 1} rings`;
     return {
       won,
       place: won ? 1 : 2,
@@ -582,9 +711,49 @@ export class RooftopTrial {
       score: medal ?? (completed ? 'none' : 'dnf'),
       scoreLabel: completed ? `${clockText(time)}${medal ? ` · ${medal}` : ''}` : (why ?? 'did not finish'),
       rivalName: this.rivalName,
-      detail: completed
-        ? `${this.done} of ${this.route.length - 1} rings · ${pars}${beatBest ? ' · personal best' : ''}`
-        : `${this.done} of ${this.route.length - 1} rings before the clock ran out`,
+      /* AN OBJECT, and this used to be a prose string.
+       *
+       * `MinigameUI._showBoard` splits the two: an object drives the stat boxes
+       * through its `DETAIL_STATS` table and a string is prose under them. The
+       * whole medal system was arriving as one sentence - "4 of 7 rings · gold
+       * 1:02 · silver 1:14 · bronze 1:26 · personal best" - so the three par
+       * times a player is racing against were a run-on line of small text under
+       * the card rather than the four numbers the card is for. Every key below
+       * is read by a declared entry in that table; `note` carries what is left
+       * as prose, so nothing is lost by the change.
+       *
+       * `checkpoints` and `passed` are spelled that way deliberately: the
+       * table's existing MARKS row already reads exactly those two keys, so the
+       * ring count draws itself with no new entry. */
+      detail: {
+        checkpoints: this.route.length - 1,
+        passed: this.done,
+        medal,
+        best: this.best,
+        bestMedal: this.bestMedal,
+        parGold: this.par.gold,
+        parSilver: this.par.silver,
+        parBronze: this.par.bronze,
+        personalBest: beatBest,
+        medalGained: beatMedal ? medal : null,
+        racingSelf: this.racingSelf,
+        /* 'time' is the word `_footerFor` reads to say "Out of time." rather
+         * than falling through to its kind-based guesses, which have no case
+         * for a rooftop and would print "The clock beat you." */
+        reason: completed ? null : 'time',
+        note: completed
+          ? `${rings}${beatBest ? ' · personal best' : ''}${beatMedal && !beatBest ? ` · first ${medal} here` : ''}`
+          : `${rings} before the clock ran out`,
+      },
+      /* The ghost this run leaves behind, or null.
+       *
+       * Offered on every completed run and not only on a win: the recorder
+       * refuses a run that did not reach the finish, and `SaveGame` refuses to
+       * store one that did not also beat the clock, so the two guards that
+       * matter are already elsewhere and this file does not need a third
+       * opinion. What it must NOT do is hand up a replay for a run that was
+       * cut off mid-route, and `serialize()` is what makes that impossible. */
+      replay: completed ? this._recorder.serialize(time) : null,
     };
   }
 
@@ -598,8 +767,13 @@ export class RooftopTrial {
    * labels and the literal string "undefined" in every value cell, with the
    * progress bar frozen at 0% - all four other game modules (`SwimChallenge`,
    * `SkiRun`, `TrackRace`, `TennisMatch`) publish `{k, v}` and this one did
-   * not. Nothing reads `medal`/`gold`/`silver`/`bronze`, so they are gone;
-   * `detail` on the outcome already carries the pars.
+   * not. Nothing reads `medal`/`gold`/`silver`/`bronze` off the LIVE readout,
+   * so they are not rows here; the three pars and the grade held ride in the
+   * subtitle, and the result card reads them off the outcome's `detail`.
+   *
+   * Five rows and no more, deliberately. `.mg-rows` is a fixed strip of HUD
+   * furniture over the top of a rooftop the player is running on, and a sixth
+   * cell buys one number at the price of the view.
    */
   snapshot() {
     const chain = this._playerChainDist();
@@ -630,6 +804,7 @@ export class RooftopTrial {
       banner: this.finished ? null : (this.nextCp >= this.route.length ? 'FINISH' : null),
       subtitle: `${n} rings · gold ${clockText(this.par.gold)}`
         + ` · silver ${clockText(this.par.silver)} · bronze ${clockText(this.par.bronze)}`
+        + (this.bestMedal ? ` · held ${this.bestMedal}` : '')
         + ` · racing ${this.rivalName}`,
     };
   }

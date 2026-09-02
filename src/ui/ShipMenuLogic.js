@@ -1,4 +1,7 @@
-import { SHIP_STAT_META, SHIP_BASE_STATS, holdCapacity, isPaidShipSkin } from '../ships/ShipStats.js';
+import {
+  SHIP_STAT_META, SHIP_BASE_STATS, SHIP_POWER_TIERS, SHIP_TIER_ROMAN,
+  holdCapacity, isPaidShipSkin, shipPowerPrice,
+} from '../ships/ShipStats.js';
 import { liveryMatches } from '../mounts/Livery.js';
 
 /**
@@ -69,6 +72,88 @@ export const REFIT_SOURCE = Object.freeze({
 });
 
 /**
+ * THE NEXT RUNG, AND WHAT IT COSTS. The till this panel used to point at.
+ *
+ * ── The defect, stated by the file that had it ────────────────────────────
+ *
+ * `shipStatLine` below used to end an unpurchased stat with "upgrade at the
+ * Fitting Shop", and the comment inside it recorded the reason that was a lie:
+ * *"the Fitting Shop has never sold a ship stat in any code path, wired or
+ * unwired. `SpaceObjectives._refit` is the ONLY caller of
+ * `ShipRegistry.grantPower` anywhere in src/."* The fix at the time was to
+ * stop naming a counter that could not serve the player and to name the four
+ * campaign refits instead. That was honest and it was not a till: the campaign
+ * hands out four fittings, one per stat, at four fixed moments, and after that
+ * there is nothing to spend an ore fortune on.
+ *
+ * This is the till. Twelve rows - four stats, three tiers - priced from
+ * `SHIP_STAT_META.base` in `ShipStats.js`, which is the same function the
+ * yard's catalogue rows are generated from, so the panel and the shop cannot
+ * quote different numbers for one fitting.
+ *
+ * ── Why it returns rows rather than drawing them ──────────────────────────
+ *
+ * The same argument that put `schemeState` and `shipStatLine` in this file:
+ * every interesting thing about a purchase is a decision, and a decision is
+ * testable without a browser. `state` is the whole of it -
+ *
+ *   'owned'     this tier or better is already fitted; nothing to sell
+ *   'locked'    the tier below it is not owned yet, so this rung is not next
+ *   'afford'    it is the next rung and the credits are there
+ *   'dear'      it is the next rung and they are not
+ *
+ * 'locked' exists so the ladder cannot be climbed out of order. `grantPower`
+ * takes `max(owned, tier)`, so buying III first would silently make I and II
+ * unsellable and cost the player the two cheap rungs - a purchase that removes
+ * value, which is worse than one that adds none.
+ *
+ * `owned` is read from the registry by the caller and passed in, because a
+ * pure function that reached into a live registry would not be one.
+ *
+ * @param {{shipId:string, stats:ReadonlyArray<string>, powers?:object,
+ *          credits?:number}} ctx
+ * @returns {Array<{shipId:string, stat:string, tier:number, price:number,
+ *   label:string, effect:string, state:'owned'|'locked'|'afford'|'dear'}>}
+ */
+export function fittingRows({ shipId, stats, powers = {}, credits = 0 }) {
+  const out = [];
+  const purse = Math.max(0, Math.floor(Number(credits) || 0));
+  for (const stat of stats) {
+    const meta = SHIP_STAT_META[stat];
+    if (!meta) continue;
+    const owned = Math.max(0, Math.floor(Number(powers?.[stat]) || 0));
+    for (let tier = 1; tier <= SHIP_POWER_TIERS; tier++) {
+      const price = shipPowerPrice(stat, tier);
+      const state = tier <= owned ? 'owned'
+        : tier > owned + 1 ? 'locked'
+          : purse >= price ? 'afford' : 'dear';
+      out.push({
+        shipId,
+        stat,
+        tier,
+        price,
+        label: `${meta.label} ${SHIP_TIER_ROMAN[tier - 1]}`,
+        /* The EFFECT AT THIS TIER, cumulative, not the per-tier step. A row
+         * reading "+12%" three times over is three rows that look identical
+         * and a ladder with no visible top; `+12 / +24 / +36% top speed` is
+         * the same data saying what the money buys. */
+        effect: `+${meta.perTier * tier}% ${meta.unit}`,
+        state,
+      });
+    }
+  }
+  return out;
+}
+
+/** The tag on a fitting row. What the click DOES, the rule `SCHEME_STATE_LABEL` follows. */
+export const FITTING_STATE_LABEL = {
+  owned: 'Fitted',
+  locked: 'Needs the tier below',
+  afford: 'Buy',
+  dear: 'Not enough credits',
+};
+
+/**
  * One-line effect copy for a stat at an owned tier.
  *
  * The hull's BASE bias is named as well as the purchased tier, because that is
@@ -101,7 +186,14 @@ export function shipStatLine(shipId, stat, tier) {
    * (27 kills) pays firepower, the completed wing set pays shields, the
    * completed survey pays thrust and Corecutter (2,000 CR of ore cut) pays
    * hold. Those are the words on the OBJECTIVES panel, so the player can find
-   * the row this sentence is talking about. */
+   * the row this sentence is talking about.
+   *
+   * ── And there is now a second way, which is why this still says the first ─
+   * `fittingRows` above sells all three tiers of all four stats over a
+   * counter. This line deliberately keeps naming the campaign rung anyway,
+   * because the two are not the same offer: the refit is free and lands on one
+   * stat at one moment, and the rows below cost 380 to 1,638 credits. A player
+   * who is four kills from a free firepower tier should not be sold one. */
   if (t <= 0) return base > 0 ? `Stock ${meta.label.toLowerCase()} — ${REFIT_SOURCE[stat] ?? 'earned in the field'}` : 'Not fitted';
   return `+${meta.perTier * t}% ${meta.unit}`;
 }

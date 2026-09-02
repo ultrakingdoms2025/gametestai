@@ -39,12 +39,63 @@ const REWARD = { bounty: 55, supply: 14, survey: 260 };
 
 const _v = new THREE.Vector3();
 
-/** What each world plausibly wants brought to it. */
+/**
+ * What each world plausibly wants brought to it.
+ *
+ * ── THE ORE ROWS, AND WHY THEY COULD NOT EXIST UNTIL NOW ──────────────────
+ *
+ * A supply contract is checked by looking in the bag (`_scan` below reads
+ * `inventory.bagCount`), so an item that can never reach a bag can never be
+ * the subject of one. Every mined ore was in exactly that position: `ItemDefs`
+ * declared forty-seven of them and `Mining` handed every node to
+ * `Piloting.stow`, which writes a hold row, not an item. Naming `rheniite`
+ * here before that changed would have authored a contract nobody could ever
+ * complete - the "built but not reachable" defect, printed on a job board.
+ *
+ * `Mining.mine` now pockets a HAND SAMPLE when the hold cannot take one, so
+ * the rare and exotic seams reach the bag for real. That is what these rows
+ * are: the fifth kind of errand this system can offer, and it needed no new
+ * verb, no new event and no new state machine - only an item that exists.
+ *
+ * ── The `need` counts are small ON PURPOSE ────────────────────────────────
+ *
+ * `min: 1, max: 2`, against 4-8 for scrap. A rare ore sample is one node of a
+ * seam there are ten of on a planet 88 to 288 km out, and the hold takes it
+ * first - so a sample is what is left over from a full run, not something a
+ * player can go and farm. Asking for four of them would be asking for four
+ * mining trips, and `REWARD.supply * 3` pays 42 credits a unit.
+ *
+ * ── Which ore each world asks for, and why it is not the same one ─────────
+ *
+ * Each is the ore whose own description gives the client a reason: Aldermoor
+ * has no foundry and wants Tessera's platinum cubes; the Citadel is cut off on
+ * a mesa and wants Vitrine's flux; the athletic grounds want Verdigris amber
+ * for strapping; the yard refines Cinder ore and wants the rheniite it cannot
+ * get from its own tenders; the station's assayers want Shoal's nodules. A
+ * board that asked five worlds for the same rock would be one contract shown
+ * five times.
+ */
 const SUPPLY_WANTS = {
-  station: [{ id: 'alloy_scrap', min: 4, max: 8 }, { id: 'nexus_shard', min: 1, max: 2 }],
-  medieval: [{ id: 'alloy_scrap', min: 3, max: 6 }, { id: 'relic_coin', min: 3, max: 6 }],
-  citadel: [{ id: 'alloy_scrap', min: 4, max: 8 }, { id: 'medkit', min: 2, max: 3 }],
-  sports: [{ id: 'medkit', min: 2, max: 3 }, { id: 'alloy_scrap', min: 3, max: 6 }],
+  station: [
+    { id: 'alloy_scrap', min: 4, max: 8 },
+    { id: 'nexus_shard', min: 1, max: 2 },
+    { id: 'polymetal', min: 1, max: 2 },
+  ],
+  medieval: [
+    { id: 'alloy_scrap', min: 3, max: 6 },
+    { id: 'relic_coin', min: 3, max: 6 },
+    { id: 'sperrylite', min: 1, max: 2 },
+  ],
+  citadel: [
+    { id: 'alloy_scrap', min: 4, max: 8 },
+    { id: 'medkit', min: 2, max: 3 },
+    { id: 'cryolite', min: 1, max: 2 },
+  ],
+  sports: [
+    { id: 'medkit', min: 2, max: 3 },
+    { id: 'alloy_scrap', min: 3, max: 6 },
+    { id: 'sporecryst', min: 1, max: 2 },
+  ],
   /* Lodestar Yard wants what a yard wants: plate, coil and scrap. Without this
    * row the lookup falls back to the station's, and the shipyard that MAKES
    * hull plate would be asking the player to fetch it `nexus_shard`. */
@@ -52,6 +103,7 @@ const SUPPLY_WANTS = {
     { id: 'hull_plate', min: 3, max: 6 },
     { id: 'thruster_coil', min: 1, max: 2 },
     { id: 'alloy_scrap', min: 4, max: 8 },
+    { id: 'rheniite', min: 1, max: 2 },
   ],
 };
 

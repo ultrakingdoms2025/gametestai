@@ -93,6 +93,35 @@ export const PLAYER_GRID_SLOT = 4;
 export const RACE_TYPES = { CAR: 'car', DRAGON: 'dragon' };
 
 /**
+ * The mounts a circuit offers when it says nothing: both of them.
+ *
+ * ── Why a circuit is allowed to say something ─────────────────────────────
+ * This list used to be a constructor literal and nothing could change it, so
+ * every circuit in the game offered CAR and DRAGON whether the road could
+ * carry a car or the fiction could carry one at all. Vellum Ridge is a
+ * motor-racing estate and both belong there. Aldermoor Vale is a medieval
+ * valley whose widest carriageway is 7.6 m of cobble, and `MountManager`
+ * unlocks `car` in every world - so the moment the vale published a circuit,
+ * the race panel offered a hovercar down the drove road past the parish
+ * church. That is not a difficulty setting, it is the wrong game.
+ *
+ * So a circuit may publish `raceTypes` and get exactly those; one that
+ * publishes nothing keeps the pair it has always had. The list is COPIED per
+ * instance and per read - `RaceUI` renders straight off it and a shared array
+ * that one world narrowed would stay narrowed in the next.
+ *
+ * What this is NOT: it is not a way to add a race type. A type is a mount, a
+ * grid placement, a contact model, a rival appearance and a measured pace
+ * band, and every one of those lives in code rather than in a descriptor. A
+ * world that publishes a type this file does not implement gets it dropped
+ * here, not a broken race - see `_readTrack`.
+ */
+export const DEFAULT_RACE_TYPES = Object.freeze([RACE_TYPES.CAR, RACE_TYPES.DRAGON]);
+
+/** Every type this file actually implements, as a membership test. */
+const KNOWN_RACE_TYPES = new Set(Object.values(RACE_TYPES));
+
+/**
  * Per-difficulty field shape, shared by the car and dragon races.
  *
  * The three bands are meant to feel genuinely different rather than being the
@@ -244,7 +273,8 @@ export class RaceManager {
      */
     this._difficultyChosen = false;
     this.raceType = RACE_TYPES.CAR;
-    this.raceTypes = [RACE_TYPES.CAR, RACE_TYPES.DRAGON];
+    /** Mounts the armed circuit offers. Replaced per circuit; see {@link DEFAULT_RACE_TYPES}. */
+    this.raceTypes = [...DEFAULT_RACE_TYPES];
     this.lapCount = 3;
     /** 0-based grid slot the player took at the last start; drives placement
      * and the "you start Nth" readout. Set from DIFFICULTY_FIELD in start(). */
@@ -366,8 +396,18 @@ export class RaceManager {
     return this._source?.activeTrackId ?? null;
   }
 
+  /**
+   * Pick the mount this race is run on.
+   *
+   * Membership in `this.raceTypes`, not a two-way ternary. The ternary was
+   * correct while every circuit offered both and CAR was the honest fallback
+   * for anything unrecognised; on a circuit that offers only DRAGON it turned
+   * every rejected argument - including a stale `'car'` from a UI built before
+   * the re-arm - into a car race the circuit had refused to hold. A type this
+   * circuit does not offer now leaves the selection alone.
+   */
   setRaceType(type) {
-    this.raceType = type === RACE_TYPES.DRAGON ? RACE_TYPES.DRAGON : RACE_TYPES.CAR;
+    if (this.raceTypes.includes(type)) this.raceType = type;
     if (this.track && this.state === RACE_STATE.IDLE) this._prepareRaceCheckpoints();
     return this.raceType;
   }
@@ -416,6 +456,12 @@ export class RaceManager {
       this.markers.length = 0;
       this.field.setVisible(false);
       this.rings.clear();
+      /* Back to both. A narrowed list belongs to the circuit that narrowed it,
+       * and leaving the vale's dragon-only list standing in a world with no
+       * circuit at all would hand the next one a restriction it never asked
+       * for - the same "one world's setting outlived its world" shape the
+       * difficulty default was fixed for. */
+      this.raceTypes = [...DEFAULT_RACE_TYPES];
       return false;
     }
     // The live world, kept alongside the normalised reading of it - see the
@@ -489,7 +535,11 @@ export class RaceManager {
     this._unrail();
 
     this.difficulty = DIFFICULTIES[difficulty] ? difficulty : (this.difficulties[0] ?? 'standard');
-    if (!this.raceTypes.includes(this.raceType)) this.raceType = RACE_TYPES.CAR;
+    /* The circuit's first offer, not CAR. A circuit that does not offer cars
+     * used to have one summoned here anyway. @see DEFAULT_RACE_TYPES */
+    if (!this.raceTypes.includes(this.raceType)) {
+      this.raceType = this.raceTypes[0] ?? RACE_TYPES.CAR;
+    }
 
     /* Let the circuit reconfigure itself for this difficulty.
      *
@@ -856,10 +906,20 @@ export class RaceManager {
       ? source.difficulties.filter((d) => DIFFICULTIES[d])
       : [];
 
+    /* Mounts this circuit offers. Filtered against what this file implements
+     * BEFORE the fallback, so a circuit that publishes only names this build
+     * does not know gets the default pair rather than an empty list - an empty
+     * `raceTypes` would leave the race panel with no vehicle to pick and no
+     * way to start. @see DEFAULT_RACE_TYPES */
+    const wanted = Array.isArray(source.raceTypes)
+      ? source.raceTypes.filter((t) => KNOWN_RACE_TYPES.has(t))
+      : [];
+
     return {
       trackPath: path,
       checkpoints,
       startGrid,
+      raceTypes: wanted.length ? [...new Set(wanted)] : [...DEFAULT_RACE_TYPES],
       lapCount: Math.max(1, Math.round(Number(source.lapCount) || 3)),
       difficulties: difficulties.length ? difficulties : ['standard'],
       synthetic: !!source.synthetic,
@@ -883,6 +943,16 @@ export class RaceManager {
     this.track = t;
     this.lapCount = t.lapCount;
     this.difficulties = t.difficulties;
+    /* The circuit's own vehicle list, and the selection dragged back inside it.
+     *
+     * The clamp is not a formality: `raceType` persists across a re-arm the way
+     * `difficulty` does, so a player who last raced a car on Vellum arrives in a
+     * dragon-only vale still holding `'car'` - and `start()` would have summoned
+     * a hovercar onto a bridleway. `start()` has its own membership check for
+     * the same reason; this one is what makes the RACE PANEL show the right
+     * thing before anybody presses start. */
+    this.raceTypes = [...t.raceTypes];
+    if (!this.raceTypes.includes(this.raceType)) this.raceType = this.raceTypes[0];
     /* The easiest band the circuit offers, unless the player has chosen one -
      * see the note on `this.difficulty` in the constructor for why the default
      * had to move off CONTENDER. A hand-picked band that this circuit does not

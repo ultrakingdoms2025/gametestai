@@ -88,6 +88,7 @@ import { MinigameUI } from './ui/MinigameUI.js';
 import { QuestBoard } from './ui/QuestBoard.js';
 import { BugReport } from './ui/BugReport.js';
 import { RecordsPanel } from './ui/RecordsPanel.js';
+import { ChatPanel } from './ui/ChatPanel.js';
 import { forceDrawable } from './gfx/RehearsalDraw.js';
 import { WorldPrefetch } from './systems/WorldPrefetch.js';
 import { planCompileWarm, chunkUnits, runSliced } from './gfx/PreviewWarm.js';
@@ -507,6 +508,9 @@ const shipMenu = new ShipMenu({
    * "built, visible and unreachable" card the ShipStats note names as this
    * project's signature defect. */
   cosmetics, inventory,
+  /* The purse, so the fitting counter can price a rung and refuse a click it
+   * cannot afford. Without it every ladder renders and every buy is declined. */
+  economy,
   /* The camera and the scene, so the panel can point at the hull it is
    * painting. See the turntable note in ShipMenu's constructor: the
    * customiser used to open while the player stood at the ship's stern
@@ -576,7 +580,13 @@ const flightHUD = new FlightHUD({ root: uiRoot, bus, piloting, combat: spaceComb
 /* The consumer `world.mineralNodes` has been waiting for. Ore goes into the
  * SHIP, not the bag, and pays nothing until it is sold at the yard - which is
  * what makes the flight home part of the loop rather than optional. */
-const mining = new Mining({ bus, player, input, worldManager, piloting });
+/* `inventory`, so a node the hold refuses can still be pocketed. The bag is
+ * OVERFLOW ONLY — the hold is always asked first, because a vendor pays
+ * SELL_RATE 0.4 against the hold's face value and routing a full hold's worth
+ * through the bag would be a 60% pay cut. What reaches the bag is ore that
+ * would otherwise have been left in the ground, which is also why a Pike
+ * (hold: 0) can now mine at all. */
+const mining = new Mining({ bus, player, input, worldManager, piloting, inventory });
 
 // Ammunition now comes out of the bag rather than a private per-weapon counter.
 loadout.setInventory?.(inventory);
@@ -799,6 +809,11 @@ const charters = new Charters({
   mining,
   objectives,
   cosmetics,
+  /* Without this handle the Consignments column stays off — deliberately, so
+   * an unwired build reads byte-identical to the old one rather than painting
+   * every world 0/6. `caches` is constructed at :587 and already passed to
+   * Retention below. */
+  caches,
   trials: { read: () => save.trialLedger() },
   races: { read: () => save.raceLedger() },
 });
@@ -826,6 +841,12 @@ telemetry.start();
  * reads same-origin the way `refreshLore` does, and never fakes: the refused
  * boards render as the server's own refusal reasons. */
 const recordsPanel = new RecordsPanel({ root: uiRoot, bus, input, charters, retention });
+/* The server channel, in-world. It talks plain HTTP to the same route the
+ * site panel uses — there is no socket and no shared instance; see the
+ * roster note in ChatPanel. It exists because the site panel's own comment
+ * names the cost it could not fix: a player in pointer lock has to release
+ * it to type. */
+const chatPanel = new ChatPanel({ root: uiRoot, bus, input });
 /* The cache restock ledger, so the 210-second timer survives a gateway. */
 save.caches = caches;
 const onboarding = new Onboarding({ bus, inventory });
@@ -1155,6 +1176,7 @@ hud.setPauseMenuItems([
        * HUD's charter face stays the here-and-now summary; this is the board
        * behind it. */
       { id: 'records', label: 'Records', hint: 'N', run: () => recordsPanel.open() },
+      { id: 'channel', label: 'Server channel', hint: 'Y', run: () => chatPanel.open() },
       /* Fast travel to the viewpoints already synchronised.
        *
        * A fixed block of `visible()`-gated rows rather than a submenu: the hub
@@ -1535,7 +1557,15 @@ async function boot() {
      * itself (LOOKUP_ABORT_MS, 10 s) aborts the prefetch before the build
      * asks - said the same way - and the build issues a second GET under
      * its own 8 s fuse: never worse than no prefetch, one GET wasted. */
-    accountStatePromise.then((account) => { if (account) mapOverlay.prefetch(startWorld); });
+    accountStatePromise.then((account) => {
+      if (account) mapOverlay.prefetch(startWorld);
+      /* Today's shared labyrinth. `adoptDailySeed` validates and refuses
+       * anything that is not a whole uint32, so a signed-out boot, a failed
+       * session call and an older deploy all leave the maze re-rolling exactly
+       * as it does today. Here rather than in `hydrateAccountSession`, which
+       * runs AFTER the entry world is built. */
+      MazeWorld.adoptDailySeed(account);
+    });
 
     loader.setStatus('Baking surfaces', 0.04);
     await materials.warmup((p, label) =>
@@ -3149,6 +3179,19 @@ bus.on('mount:power:buy', ({ mount, power, tier }) => {
   schedulePersist('mount-power');
   scheduleRemotePersist('mount-power');
 });
+/* Ship and weapon fittings. Both grants have already happened at the emitter
+ * (inside Marketplace.buy, whose registries are module singletons), so these
+ * handlers are persist-only — unlike mount:power:buy above, which still has to
+ * perform the grant itself. */
+bus.on('ship:power:buy', () => {
+  schedulePersist('ship-power');
+  scheduleRemotePersist('ship-power');
+});
+bus.on('weapon:power:buy', () => {
+  schedulePersist('weapon-power');
+  scheduleRemotePersist('weapon-power');
+});
+
 // A livery change repaints the mount and persists the choice.
 bus.on('mount:livery', () => {
   schedulePersist('mount-livery');
@@ -3186,6 +3229,7 @@ bus.on('bug-report:close', () => setGameplayBlocked('bug-report', false));
  * its records with the world stopped, like every other sheet. */
 bus.on('ui:modal', ({ id, open }) => {
   if (id === 'records') setGameplayBlocked('records', !!open);
+  if (id === 'chat-panel') setGameplayBlocked('chat-panel', !!open);
 });
 
 bus.on('input:lockchange', ({ locked }) => {

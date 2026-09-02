@@ -329,7 +329,18 @@ test("main.js sets the provider on the manager's ctx, gated on the session, befo
   const src = await readCode('src/main.js');
   const boot = src.slice(src.indexOf('async function boot()'));
   const provider = boot.indexOf('worldManager.ctx.overlayProvider = (id) => accountStatePromise.then((account) => (account ? mapOverlay.lookup(id) : null));');
-  const prefetch = boot.indexOf('accountStatePromise.then((account) => { if (account) mapOverlay.prefetch(startWorld); });');
+  /* The PROPERTY, not the punctuation. This used to `indexOf` the whole
+   * statement as one line of text, so it broke the moment a second thing
+   * joined that `.then` — `MazeWorld.adoptDailySeed(account)`, which needs the
+   * same account and the same "before the entry build" position — even though
+   * the prefetch still happens, still inside the session promise, and still
+   * ahead of the build. A test that fails when a line is reformatted is
+   * measuring the source's shape rather than the program's behaviour, and this
+   * file already knows the better spelling: it compares INDICES three lines
+   * down. So match the call, then let the ordering assertions below carry the
+   * claim the name of this test actually makes. */
+  const prefetchCall = /accountStatePromise\.then\(\([^)]*\)\s*=>\s*\{[\s\S]{0,600}?mapOverlay\.prefetch\(startWorld\)/.exec(boot);
+  const prefetch = prefetchCall ? prefetchCall.index : -1;
   const build = boot.indexOf('await worldManager.build(startWorld');
   assert.ok(provider > 0, "the provider is not set on worldManager.ctx inside boot(), or is not gated on accountStatePromise - an anonymous boot would wait on a 401");
   assert.ok(prefetch > 0, 'the entry world is not prefetched, so its fetch no longer overlaps the loading gate');

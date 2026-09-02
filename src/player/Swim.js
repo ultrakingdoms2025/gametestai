@@ -43,7 +43,26 @@ import { CONFIG } from '../core/Config.js';
  * A player who leaps a shore wall into Cinder's crater lake is dead in 0.42 s
  * whether or not they were ever "swimming".
  *
- * ## 4. The body has to look like it is swimming
+ * ## 4. Not everything that harms you is a liquid either
+ *
+ * `PlanetWorld` publishes a SECOND field of the same shape as `liquidField` -
+ * `hazardField`, built by `planets/PlanetHazard.js` - for the weather: three of
+ * the ten planets carry a live one (Cinder's radiant heat, Sirocco's blown
+ * sand, Cathedra's thin air). The world drew the tells, the tests measured the
+ * escape, and nothing read it, so nothing took a point of damage from any of
+ * them. `_weather` is the reader, and it is a deliberate sibling of `_burn`:
+ * the WORLD answers for its own hazard and this module - which already runs
+ * every fixed step with the player's feet - asks.
+ *
+ * It is called from `Player.fixedUpdate` rather than from `fixedUpdate` below,
+ * and that is not tidiness. This module's step is skipped outright while a
+ * mount, a mantle or a free climb owns movement, and thin air is the one
+ * hazard `PlanetHazard` explicitly says "a flying, falling or climbing body is
+ * in as much as a walking one" - so wiring it into the swim step would have
+ * left the summit of the only planet worth climbing draining nothing while you
+ * climbed it.
+ *
+ * ## 5. The body has to look like it is swimming
  *
  * `PlayerAvatar` is owned by another agent and cannot be edited, but it drives
  * the shared `NPCAnimator`, whose bone locals are identity at rest. So the pose
@@ -177,6 +196,21 @@ export class Swim {
     this._hazardCarry = 0;
     this._hazardName = null;
 
+    /* --- weather state --------------------------------------------- *
+     * One reusable sample record, for the reason `PlanetHazard.makeHazardSample`
+     * exists: `at()` runs at 60 Hz and a fresh object there is sixty
+     * allocations a second. Not imported from there - a player module has no
+     * business importing a world module for an object literal.
+     *
+     * `_weatherCarry` is the same fractional-damage accumulator `_burn` and
+     * `_breathe` both keep, and it is load-bearing at these rates: 5 dps at
+     * 60 Hz is 0.083 of a point a step, and `applyDamage` takes whole points,
+     * so without the carry Cinder's heat band truncates to zero forever. */
+    this._haz = { intensity: 0, dps: 0, pushX: 0, pushZ: 0, stamina: 0 };
+    this._weatherCarry = 0;
+    /** Id of the hazard currently being stood in, or null. An EDGE, like `_hazardName`. */
+    this._weatherId = null;
+
     /* --- pose state ------------------------------------------------ */
     this._poseWeight = 0;
     this._strokePhase = 0;
@@ -223,6 +257,16 @@ export class Swim {
   /** True while the body is in a liquid that is doing it harm. */
   get burning() {
     return this._hazardName !== null;
+  }
+
+  /** Id of the planetary hazard the body is standing in, or null. */
+  get weather() {
+    return this._weatherId;
+  }
+
+  /** Last hazard sample taken at the body. Read-only; the record is reused. */
+  get weatherSample() {
+    return this._haz;
   }
 
   /** @param {import('../systems/WaterVolumes.js').WaterVolumes|null} volumes */
@@ -489,6 +533,126 @@ export class Swim {
     this._hazardName = null;
     this._hazardCarry = 0;
     this.bus?.emit('player:liquid', { in: false, name });
+  }
+
+  /* ================================================================ */
+  /* The weather                                                       */
+  /* ================================================================ */
+
+  /**
+   * PLANETARY HAZARDS, CHARGED. The reader `PlanetWorld._buildHazardField`
+   * said out loud it was missing.
+   *
+   * Called once per fixed step by `Player.fixedUpdate`, ABOVE every movement
+   * branch - see the note there for why, and the class doc block above for
+   * why this method lives in this file at all.
+   *
+   * ── The three channels, and which of the three primitives each uses ─────
+   *   dps      `Player.applyDamage`, one WHOLE point at a time out of a
+   *            fractional carry. `applyDamage` floors nothing for you and
+   *            takes integers by convention, and Cinder's band is 5 dps -
+   *            0.083 of a point per step at 60 Hz - so the carry is the
+   *            difference between a hazard and a hazard that truncates to
+   *            zero forever. Exactly the accumulator `_burn` keeps three
+   *            methods up, for exactly that reason.
+   *   push     `Player.setEnvironmentDrift`, NOT `applyImpulse`. That method
+   *            carries the measurement that chose between them: an impulse of
+   *            `push * dt` measures 0.0000 m/s of settled drift against this
+   *            controller's friction floor, and pins a permanent stagger
+   *            while it does nothing. Read it before changing this line.
+   *   stamina  `Stamina.drain`, which can gate a sprint and a climb and
+   *            cannot reduce a hit point by any path. That property is why
+   *            `PlanetHazard` allows a landing pad inside the thin air and
+   *            forbids one inside the heat.
+   *
+   * ── The body's own height, and it is the FEET ───────────────────────────
+   * `pos` is the feet, which is what the heat band's `y > plane + rise`
+   * ceiling should be measured from and is the conservative end of thin air's
+   * 26 m ramp. `PlanetWorld._breatheAsh` samples the CAMERA instead and says
+   * why: that call decides what the frame looks like. This one decides what
+   * happens to a body.
+   *
+   * ── Leaving is an EDGE ──────────────────────────────────────────────────
+   * `player:hazard` fires once on entry and once on exit, never per step,
+   * because its consumer is a standing alert bar and not a toast. Every exit
+   * goes through `_endWeather`, including the three that are easy to miss:
+   * the field reading zero, the player dying, and the world changing under a
+   * player who never moved.
+   *
+   * @param {number} dt fixed timestep, seconds
+   */
+  tickHazard(dt) {
+    const p = this.player;
+    const f = p.world?.hazardField ?? null;
+
+    if (!f || p.isDead) {
+      /* Dead or nowhere near a hazard. Both have to clear the drift as well as
+       * the alert: a corpse blown along the ground for the whole respawn delay
+       * is the carry outliving the body, and a world change is how a gale
+       * follows the player to a planet that has no wind. */
+      p.setEnvironmentDrift(0, 0);
+      this._endWeather();
+      return;
+    }
+
+    const pos = p.position;
+    const s = f.at(pos.x, pos.y, pos.z, this._haz);
+
+    if (!(s.intensity > 0)) {
+      p.setEnvironmentDrift(0, 0);
+      this._endWeather();
+      return;
+    }
+
+    if (this._weatherId !== f.id) {
+      /* A gateway taken from inside one planet's weather straight into
+       * another's is a CHANGE of hazard, not a continuation of the first, so
+       * the first one is left before the second is entered. Without this the
+       * bus would carry two `in: true` in a row and anything counting them
+       * would leak one. */
+      this._endWeather();
+      this._weatherId = f.id;
+      this._weatherCarry = 0;
+      this.bus?.emit('player:hazard', { in: true, id: f.id, name: f.name, cause: f.cause });
+    }
+
+    /* ---- damage ------------------------------------------------------ */
+    if (s.dps > 0) {
+      this._weatherCarry += s.dps * dt;
+      if (this._weatherCarry >= 1) {
+        const whole = Math.floor(this._weatherCarry);
+        this._weatherCarry -= whole;
+        /* `f.cause` and not the id, so the death notice reads the substance
+         * that killed you - the same argument `_burn` passes and the same one
+         * `_breathe` passes for drowning. It reaches `player:died.killerId`
+         * through `applyDamage` -> `_die` untouched. */
+        p.applyDamage(whole, null, f.cause);
+        /* `_die` runs inside that call, so the corpse is already a corpse by
+         * the time this line is reached. Blowing it along the ground and
+         * draining its stamina for the rest of the step is a frame of nonsense
+         * the next tick would clean up; this cleans it up now. */
+        if (p.isDead) {
+          p.setEnvironmentDrift(0, 0);
+          this._endWeather();
+          return;
+        }
+      }
+    }
+
+    /* ---- the carry --------------------------------------------------- */
+    p.setEnvironmentDrift(s.pushX, s.pushZ);
+
+    /* ---- stamina ----------------------------------------------------- */
+    if (s.stamina > 0) p.stamina?.drain?.(s.stamina * dt, f.cause);
+  }
+
+  /** Leave the weather, once, so `player:hazard` is an edge and not a stream. */
+  _endWeather() {
+    if (this._weatherId === null) return;
+    const id = this._weatherId;
+    this._weatherId = null;
+    this._weatherCarry = 0;
+    this.bus?.emit('player:hazard', { in: false, id });
   }
 
   _recoverOxygen(dt) {

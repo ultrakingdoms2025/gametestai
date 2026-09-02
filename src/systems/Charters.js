@@ -12,15 +12,15 @@
  *
  *   The Nexus is a gateway network of eighteen worlds whose survey records were
  *   lost. Every world holds a RECORD - its relics, its viewpoints, its trials,
- *   its circuits, its seams, its wings - and completing a world's record
- *   restores that gateway's CHARTER. Restore all eighteen and the network is
- *   whole again.
+ *   its circuits, its seams, its consignments, its wings - and completing a
+ *   world's record restores that gateway's CHARTER. Restore all eighteen and
+ *   the network is whole again.
  *
  * ── This file authors nothing ──────────────────────────────────────────────
  *
  * A charter is a NAME for the union of completion sets that already exist,
  * already persist and already merge. There is no new collectible here, no new
- * placement, no new world data. `Relics`, `Viewpoints`, `Mining`,
+ * placement, no new world data. `Relics`, `Viewpoints`, `Mining`, `Caches`,
  * `SpaceObjectives` and the trial/race ledgers keep every identity; this file
  * keeps only two things of its own - a learned ROSTER per world and the SET of
  * charters restored - and derives everything else.
@@ -119,6 +119,16 @@
  * farmed, cannot drift, and falls again if a load takes progress away.
  */
 
+/* The wardrobe's own denominator, from the file that owns the catalogues.
+ *
+ * A sibling import and not a layering inversion: this file already TAKES a
+ * `cosmetics` system, and `Cosmetics.js` imports only `ships/ShipStats.js`,
+ * which imports nothing at all. `SaveGame` is deliberately NOT imported for
+ * the medal ladder below, even though it exports one - it is the persistence
+ * layer, it already holds a reference to this file, and pulling it in here
+ * (with `three` behind it) would invert that edge to save four words. */
+import { COSMETIC_TOTAL } from './Cosmetics.js';
+
 /* ====================================================================== */
 /* 1. Columns                                                             */
 /* ====================================================================== */
@@ -138,12 +148,45 @@ export const CHARTER_COLUMNS = Object.freeze([
   Object.freeze({ key: 'trials', label: 'Trials', noun: 'contests' }),
   Object.freeze({ key: 'races', label: 'Circuits', noun: 'circuits' }),
   Object.freeze({ key: 'seams', label: 'Seams', noun: 'seams' }),
+  /* THE NINTH COLUMN, and the one that gives fourteen thin worlds a second
+   * axis. Every planet's record was ONE column (`seams`) and Medieval's was
+   * one (`relics`), so a fourteen-world stretch of the board was a single
+   * fraction each - and `Retention` draws its dailies from unfinished columns,
+   * so it was also a single kind of daily.
+   *
+   * It is here rather than authored because `Caches` already had everything
+   * needed: `cacheSiteId` is a deterministic identity, placement is a function
+   * of the world, and the sites announce themselves on `caches:changed`. What
+   * it lacked was a record that outlives the restock clock, which is the one
+   * thing that had to be built. See `Caches._found`. */
+  Object.freeze({ key: 'caches', label: 'Consignments', noun: 'consignments' }),
   Object.freeze({ key: 'wings', label: 'Wings', noun: 'wings' }),
   Object.freeze({ key: 'survey', label: 'Bodies', noun: 'bodies' }),
   Object.freeze({ key: 'deeds', label: 'Deeds', noun: 'deeds' }),
 ]);
 
 const COLUMN_LABEL = new Map(CHARTER_COLUMNS.map((c) => [c.key, c]));
+
+/**
+ * The medal ladder, weakest first.
+ *
+ * A deliberate second copy of `SaveGame.MEDAL_ORDER`, and `charters.test.mjs`
+ * asserts the two are identical. The alternative was importing the persistence
+ * layer into the objective system - see the note on the import above - and the
+ * house answer to a duplicate that must not drift is the one the deed table
+ * already uses: pin it with a test that fails the build, rather than reach for
+ * a dependency that inverts an edge.
+ *
+ * NOTE the direction. `RooftopTrial.MEDAL_FACTOR` sorts the OTHER WAY - it is a
+ * time multiplier, so gold is the smallest number in it. Anything comparing
+ * medals must pick one of the two and say which.
+ *
+ * @type {ReadonlyArray<'bronze'|'silver'|'gold'>}
+ */
+export const CHARTER_MEDALS = Object.freeze(['bronze', 'silver', 'gold']);
+
+/** How good a medal is, 1..3. 0 for anything that is not one. */
+const rankOf = (m) => (typeof m === 'string' ? CHARTER_MEDALS.indexOf(m) + 1 : 0);
 
 /* ====================================================================== */
 /* 2. Deeds - the one authored column, and why                            */
@@ -285,11 +328,11 @@ export class Charters {
    * `SaveGame` uses for its whole progress layer.
    *
    * @param {{bus?:any, worldManager?:any, relics?:any, viewpoints?:any,
-   *          mining?:any, objectives?:any, cosmetics?:any,
+   *          mining?:any, objectives?:any, cosmetics?:any, caches?:any,
    *          trials?:{read:()=>any}, races?:{read:()=>any}}} ctx
    */
   constructor({
-    bus, worldManager, relics, viewpoints, mining, objectives, cosmetics, trials, races,
+    bus, worldManager, relics, viewpoints, mining, objectives, cosmetics, caches, trials, races,
   } = {}) {
     this.bus = bus ?? null;
     this.worldManager = worldManager ?? null;
@@ -298,6 +341,19 @@ export class Charters {
     this.mining = mining ?? null;
     this.objectives = objectives ?? null;
     this.cosmetics = cosmetics ?? null;
+    /**
+     * The cache system, whose find record is the Consignments numerator.
+     *
+     * Optional like every other system here, and the column is gated on it
+     * being present rather than on the event alone. That gate is the point:
+     * `caches:changed` fires whether or not this file was handed a handle, and
+     * learning a denominator whose numerator can only ever read zero would
+     * paint every world 0/6 for ever - a column that is not a column, which is
+     * the exact defect `Charters`' header calls "a denominator that is lying
+     * about there being something left to do". A build without caches wired
+     * simply has eight columns, as it did before.
+     */
+    this.caches = caches ?? null;
     /**
      * The two best-time ledgers, as `{ read() }` pairs rather than systems.
      *
@@ -337,6 +393,16 @@ export class Charters {
       }));
       this._offs.push(bus.on('minigame:armed', (p) => {
         this._learn(p?.worldId, 'trials', Array.isArray(p?.venues) ? p.venues.length : 0);
+        this._settle();
+      }));
+      /* The cache denominator, learned exactly like the other four: off the
+       * announcement, which carries its own world id, so subscriber order
+       * cannot matter. `total` is what the world actually placed - `Caches`
+       * scales the high sites with the map and its probes may refuse a slot -
+       * and never `PER_WORLD`, because a constant here would promise a
+       * consignment the world did not put anywhere. */
+      this._offs.push(bus.on('caches:changed', (p) => {
+        this._learn(p?.worldId, 'caches', this.caches ? p?.total : 0);
         this._settle();
       }));
       /* Numerator movers. Each of these is a discrete act, never a frame, so
@@ -485,12 +551,89 @@ export class Charters {
     if (Object.keys(races).length) {
       rows.push({ key: 'races', label: 'Circuit bests', value: Object.keys(races).length });
     }
+    /* GOLDS, over the venues that have been graded at all.
+     *
+     * The denominator is deliberately "venues where a medal has been earned"
+     * and not "venues that grade" or "venues that exist". Both of those are
+     * knowable and both would be wrong here: a contest nobody has won is not a
+     * gold anyone is missing, it is a contest they have not won, and it is
+     * already counted by the Trials column on the board above. What this row
+     * answers is the question the medal ladder actually poses - of the
+     * contests you HOLD, how many do you hold at the top? - and that fraction
+     * is finite, moves only when something real happens, and reads 7/7 exactly
+     * when there is nothing left to improve.
+     *
+     * Dropped entirely when nothing is graded, on the same rule the rows above
+     * follow: an empty ledger is not a skill you have none of. */
+    const medals = this.medals();
+    if (medals.length) {
+      rows.push({
+        key: 'golds',
+        label: 'Golds',
+        value: medals.reduce((n, m) => n + (m.medal === 'gold' ? 1 : 0), 0),
+        total: medals.length,
+      });
+    }
     const o = this.objectives;
     if (o) {
       if (o.assayCount > 0) rows.push({ key: 'assay', label: 'Elements assayed', value: o.assayCount, total: o.assayTotal });
       if (o.wingCount > 0) rows.push({ key: 'wings', label: 'Wings broken', value: o.wingCount, total: o.wingTotal });
       if (o.killCount > 0) rows.push({ key: 'kills', label: 'Hostiles downed', value: o.killCount });
     }
+    return rows;
+  }
+
+  /**
+   * The medal held at every venue that has ever been graded.
+   *
+   * ── Reading a ladder out of a ledger that stores one word ─────────────────
+   *
+   * `SaveGame` keeps a single BEST medal per venue, grow-only, and that is the
+   * whole record - there is no per-tier history and there does not need to be.
+   * A medal is "this time was inside this par", and the pars nest: a gold time
+   * is also inside silver and inside bronze. So `tiers` below is not stored
+   * data, it is the arithmetic consequence of one word, and a panel drawing
+   * three cells per venue can fill them up to `medal` without this file
+   * keeping three fields where one is true.
+   *
+   * Rows are venues that have been MEDALLED, not venues that exist: this file
+   * reads ledgers and the ledger has no row for a contest nobody has won. The
+   * board's own Trials column is where "how many venues are there" is
+   * answered, learned from `minigame:armed` - which is the only place that can
+   * answer it, and the reason nothing here tries to.
+   *
+   * @returns {Array<{key:string, venueId:string, worldId:string|null,
+   *   label:string, medal:string, rank:number, time:number|null,
+   *   tiers:Array<{medal:string, held:boolean}>}>}
+   */
+  medals() {
+    const best = this._ledger(this.trials);
+    const rows = [];
+    for (const key of Object.keys(best)) {
+      const row = best[key];
+      const medal = typeof row?.medal === 'string' ? row.medal : null;
+      const rank = rankOf(medal);
+      if (rank <= 0) continue;
+      const slash = key.indexOf('/');
+      const worldId = slash > 0 ? key.slice(0, slash) : null;
+      const venueId = slash >= 0 ? key.slice(slash + 1) : key;
+      const time = Number(row?.time);
+      rows.push({
+        key,
+        venueId,
+        worldId,
+        label: typeof row?.label === 'string' && row.label ? row.label : venueId,
+        medal,
+        rank,
+        time: Number.isFinite(time) && time > 0 ? time : null,
+        tiers: CHARTER_MEDALS.map((m) => ({ medal: m, held: rankOf(m) <= rank })),
+      });
+    }
+    /* By grade first and then by name, so the golds group at the top and the
+     * order inside a grade does not change under the player between two reads
+     * of the same panel. `_ledger` hands back object keys, whose order is an
+     * insertion accident. */
+    rows.sort((a, b) => (b.rank - a.rank) || a.label.localeCompare(b.label));
     return rows;
   }
 
@@ -514,13 +657,40 @@ export class Charters {
       const v = count(roster?.viewpoints);
       if (v > 0) { viewpointTotal += v; viewpoints += Math.min(v, this._have(id, 'viewpoints', held)); }
     }
+    /* ── THE KEY THIS READ WAS LOOKING FOR DOES NOT EXIST ──────────────────
+     *
+     * This was `owned?.owned`, and `Cosmetics.serialize()` returns
+     * `{ unlocked: [...] }` - it always has. So the wardrobe count was
+     * hard zero in the shipped game for every player who had ever bought a
+     * skin, and `RecordsPanel._renderCollection` draws the row only when the
+     * count is above zero, which meant the row never appeared at all. The unit
+     * test passed because its fixture handed back a bare array, which the
+     * first branch reads.
+     *
+     * All three shapes are accepted now: the real one, the bare array the
+     * tests use, and the `owned` spelling nothing writes - because a reader
+     * that is wrong about the shape fails SILENTLY, and this is the second
+     * time that has cost this row its meaning. */
     let cosmetics = 0;
     try {
       const owned = this.cosmetics?.serialize?.();
-      cosmetics = Array.isArray(owned) ? owned.length
-        : Array.isArray(owned?.owned) ? owned.owned.length : 0;
+      const list = Array.isArray(owned) ? owned
+        : Array.isArray(owned?.unlocked) ? owned.unlocked
+          : Array.isArray(owned?.owned) ? owned.owned : null;
+      cosmetics = list ? list.length : 0;
     } catch { cosmetics = 0; }
-    return { relics, relicTotal, viewpoints, viewpointTotal, cosmetics };
+    /* ..AND IT HAD NO DENOMINATOR, against a set that is entirely enumerable.
+     *
+     * Five character colourways, twenty mount liveries and eighteen ship
+     * liveries are all authored rows in files that export them, and
+     * `Cosmetics.KNOWN_SKIN_IDS` is already the union of the three - it is the
+     * guard `unlock` checks against, so it cannot go stale without the shop
+     * breaking first. Every other row this method returns is a fraction; this
+     * one was a bare count, and a bare count cannot say whether the player is
+     * nearly finished. It can now. */
+    return {
+      relics, relicTotal, viewpoints, viewpointTotal, cosmetics, cosmeticTotal: COSMETIC_TOTAL,
+    };
   }
 
   /* ------------------------------------------------------------------ */
@@ -619,6 +789,11 @@ export class Charters {
       relics: safe(() => this.relics?.serialize?.()),
       viewpoints: safe(() => this.viewpoints?.serialize?.()),
       mining: safe(() => this.mining?.serialize?.()),
+      /* The find record, not the restock clock. `Caches.serialize` publishes
+       * both; `emptied` is a set of deadlines that expire by design, so
+       * counting it would show a player's consignments draining away three
+       * minutes after they collected them. */
+      caches: safe(() => this.caches?.serialize?.()),
       trials: this._ledger(this.trials),
       races: this._ledger(this.races),
     };
@@ -656,6 +831,11 @@ export class Charters {
           ? held.viewpoints.worlds[worldId].length : 0;
       case 'seams':
         return this._prefixCount(held.mining?.taken, `${worldId}/`);
+      case 'caches':
+        /* `cacheSiteId` is `worldId/kind/x_z`, so the slash-terminated prefix
+         * is an exact world match and 'space' cannot pick up 'space_yard'. The
+         * identical read `seams` makes one line above. */
+        return this._prefixCount(held.caches?.found, `${worldId}/`);
       case 'trials':
         return this._prefixKeys(held.trials, `${worldId}/`);
       case 'races':

@@ -878,10 +878,12 @@ export class SaveGame {
       onboarding: safe(() => this.onboarding?.serialize?.()) ?? null,
       /* Claimed days and weeks, and the season record. Two more sets of ids. */
       retention: safe(() => this.retention?.serialize?.()) ?? null,
-      /* Which caches are still on their restock clock, keyed by site identity.
-       * Not the site LIST - placement is derived from the world and rebuilds
-       * itself on entry, so a saved list of positions would be a second copy of
-       * something the world already knows. */
+      /* Which caches are still on their restock clock, and which have ever been
+       * found - both keyed by site identity. Not the site LIST: placement is
+       * derived from the world and rebuilds itself on entry, so a saved list of
+       * positions would be a second copy of something the world already knows.
+       * The two sets are separate because the clock is meant to expire and the
+       * find record is not; see `Caches._found`. */
       caches: safe(() => this.caches?.serialize?.()) ?? null,
     };
   }
@@ -900,7 +902,8 @@ export class SaveGame {
    * this ledger is bypassed entirely - the same probe-first arrangement
    * `_snapshotWeapons` and `_snapshotMounts` already use.
    *
-   * @returns {{best:Object<string,{time:number,label:string,worldId:string|null}>}|null}
+   * @returns {{best:Object<string,{time:number,label:string,worldId:string|null,
+   *            medal?:string, replay?:object}>}|null}
    */
   _trialLedger() {
     const custom = safe(() => this.trials?.serialize?.());
@@ -912,7 +915,7 @@ export class SaveGame {
   }
 
   /**
-   * Note a finished contest, keeping only the quicker of the two.
+   * Note a finished contest: the quicker TIME, and separately the better MEDAL.
    *
    * Only a WIN records. A losing run is a run the game already told the player
    * was not good enough, and a "best time" that could be set by losing is not a
@@ -920,7 +923,32 @@ export class SaveGame {
    * exception here would be swallowed by `EventBus.emit`, but the save it was
    * about to feed would silently lose the row.
    *
-   * @param {{venueId?:string, worldId?:string, label?:string, time?:number, won?:boolean}} r
+   * ── WHY THE MEDAL IS A SECOND BEST AND NOT A FIELD ON THE FIRST ──────────
+   *
+   * The guard used to be one line - `if (prev && prev.time <= time) return` -
+   * and it is the right guard for a TIME. It is the wrong guard for anything
+   * else on the row, and the difference is not academic: `RooftopTrial` grades
+   * a finish gold/silver/bronze off a par, and a par is a function of the
+   * ROUTE, so the medal a run earns is not always the medal its time implies
+   * on the next visit. Left as a field of the time row, a medal would be
+   * dropped by the MIN guard on every run that was slower than the best - and
+   * a player who took gold on Tuesday and bronze on Wednesday would have the
+   * gold quietly discarded, because Wednesday never reached the write.
+   *
+   * So the medal is GROW-ONLY and independent, exactly as `Charters._charters`
+   * and `Caches._found` are: better replaces worse, worse is ignored, and
+   * neither can take the other away. That is also what makes a repeat run at a
+   * venue you already hold worth doing, which is the whole point of grading a
+   * contest at all.
+   *
+   * ── ..and why the REPLAY follows the time rather than the medal ──────────
+   *
+   * The ghost a player races is their FASTEST run, so the replay is a property
+   * of the time and moves with it. A slower run that upgrades the medal keeps
+   * the old ghost, because the old ghost is still the harder rival.
+   *
+   * @param {{venueId?:string, worldId?:string, label?:string, time?:number,
+   *          won?:boolean, score?:any, medal?:any, replay?:any}} r
    */
   _recordTrial(r) {
     try {
@@ -932,13 +960,42 @@ export class SaveGame {
       const worldId = typeof r.worldId === 'string' ? r.worldId : null;
       const key = `${worldId ?? '?'}/${venueId}`;
       const prev = this._trials.get(key);
-      if (prev && prev.time <= time) return;
-      this._trials.set(key, {
-        time,
-        label: typeof r.label === 'string' ? r.label : venueId,
+
+      /* `score` is a bag: three contests put a clock in it, three a count, one
+       * a games string, and only `RooftopTrial` a medal. `medalRank` answers 0
+       * for every one of the others, so reading it here needs no flag on the
+       * payload and cannot mistake a tennis scoreline for a medal. `medal` is
+       * read first for a caller that names one explicitly. */
+      const earned = bestMedal(r.medal, r.score);
+      const medal = bestMedal(prev?.medal, earned);
+      const faster = !prev || time < prev.time;
+      const upgraded = medal !== (prev?.medal ?? null);
+      if (!faster && !upgraded) return;
+
+      const replay = faster ? readReplay(r.replay) : (prev?.replay ?? null);
+      const row = {
+        time: faster ? time : prev.time,
+        /* The label is kept from whichever side already had one, the same rule
+         * `mergeTrials` states: it is a display string, not progress. */
+        label: prev?.label ?? (typeof r.label === 'string' ? r.label : venueId),
+        worldId: prev?.worldId ?? worldId,
+      };
+      if (medal) row.medal = medal;
+      if (replay) row.replay = replay;
+      this._trials.set(key, row);
+      this.bus?.emit('trial:best', {
+        key,
+        venueId,
         worldId,
+        time: row.time,
+        previous: prev?.time ?? null,
+        /* Both halves, so a listener can say WHICH record moved. A run can
+         * upgrade the medal without beating the clock and the notice should be
+         * able to tell the player that rather than saying nothing. */
+        medal,
+        medalGained: upgraded ? medal : null,
+        personalBest: faster,
       });
-      this.bus?.emit('trial:best', { key, venueId, worldId, time, previous: prev?.time ?? null });
     } catch (err) {
       console.warn('[SaveGame] trial time not recorded:', err?.message ?? err);
     }
@@ -952,6 +1009,39 @@ export class SaveGame {
   bestTrialTime(venueId, worldId = null) {
     const row = this._trials.get(`${worldId ?? '?'}/${venueId}`);
     return row ? row.time : null;
+  }
+
+  /**
+   * The best medal ever taken at one venue, or null.
+   *
+   * A separate reader rather than a second return from `bestTrialTime`,
+   * because the two are separate records and a caller that wants one must not
+   * have to know the other exists. @see _recordTrial
+   *
+   * @param {string} venueId
+   * @param {string|null} [worldId]
+   * @returns {'gold'|'silver'|'bronze'|null}
+   */
+  bestTrialMedal(venueId, worldId = null) {
+    const row = this._trials.get(`${worldId ?? '?'}/${venueId}`);
+    return row?.medal ?? null;
+  }
+
+  /**
+   * The stored ghost of the fastest run at one venue, or null.
+   *
+   * Handed back RAW - the caller validates it against the course it is about
+   * to drive, through `GhostReplay.from`, which is the only place that can
+   * know whether the route still matches. This file's job is to have kept the
+   * bytes, not to have an opinion about them.
+   *
+   * @param {string} venueId
+   * @param {string|null} [worldId]
+   * @returns {object|null}
+   */
+  bestTrialReplay(venueId, worldId = null) {
+    const row = this._trials.get(`${worldId ?? '?'}/${venueId}`);
+    return row?.replay ?? null;
   }
 
   /**
@@ -976,7 +1066,25 @@ export class SaveGame {
    * thing a record is for. The label is kept from whichever side already had
    * one, since it is a display string rather than progress.
    *
-   * @param {Record<string, {time:number, label?:string, worldId?:string}>} best
+   * ── THE MEDAL MERGES SEPARATELY, AND A SILENT ROW MUST NOT ERASE IT ──────
+   *
+   * `ProgressSync` reads this ledger into ONE server column per venue - a
+   * BIGINT of milliseconds, `trial/<world>/<venue>` - so the rows that come
+   * back from a second device carry a time and NOTHING ELSE. If the merge
+   * wrote the incoming row wholesale, a sync from a phone that never took a
+   * medal would delete the gold this device holds, and the player would watch
+   * a record disappear for having opened the game somewhere else.
+   *
+   * So each half takes the better of the two INDEPENDENTLY, which is the same
+   * split `_recordTrial` makes for the same reason: absent is not worse, it is
+   * unknown. The replay follows the faster time, because that is what it is a
+   * ghost of - but a remote row has no replay at all, so a faster remote time
+   * arrives with a NULL ghost and the local one is dropped rather than left
+   * describing a run that is no longer the best. A ghost of a slower run than
+   * the record beside it would be a rival the player has already beaten.
+   *
+   * @param {Record<string, {time:number, label?:string, worldId?:string,
+   *          medal?:string, replay?:object}>} best
    * @returns {number} how many records this actually improved
    */
   mergeTrials(best) {
@@ -987,12 +1095,19 @@ export class SaveGame {
       const time = Number(row?.time);
       if (!Number.isFinite(time) || time <= 0) continue;
       const prev = this._trials.get(key);
-      if (prev && Number(prev.time) <= time) continue;
-      this._trials.set(key, {
-        time,
+      const faster = !prev || !(Number(prev.time) <= time);
+      const medal = bestMedal(prev?.medal, row.medal);
+      const upgraded = medal !== (prev?.medal ?? null);
+      if (!faster && !upgraded) continue;
+      const replay = faster ? readReplay(row.replay) : (prev?.replay ?? null);
+      const next = {
+        time: faster ? time : Number(prev.time),
         label: prev?.label ?? (typeof row.label === 'string' ? row.label : ''),
         worldId: prev?.worldId ?? (typeof row.worldId === 'string' ? row.worldId : null),
-      });
+      };
+      if (medal) next.medal = medal;
+      if (replay) next.replay = replay;
+      this._trials.set(key, next);
       improved++;
     }
     return improved;
@@ -1013,11 +1128,20 @@ export class SaveGame {
         const row = best[key];
         const time = Number(row?.time);
         if (!Number.isFinite(time) || time <= 0) continue;
-        this._trials.set(key, {
+        const restored = {
           time,
           label: typeof row.label === 'string' ? row.label : key,
           worldId: typeof row.worldId === 'string' ? row.worldId : null,
-        });
+        };
+        /* Absent, not zeroed. A save written before medals existed has neither
+         * key, and both readers already answer null for a row that lacks them -
+         * so an old save loads as "no medal recorded yet" rather than as
+         * "recorded, and it was nothing". */
+        const medal = bestMedal(row.medal, null);
+        if (medal) restored.medal = medal;
+        const replay = readReplay(row.replay);
+        if (replay) restored.replay = replay;
+        this._trials.set(key, restored);
       }
     } catch (err) {
       console.warn('[SaveGame] trial restore skipped:', err?.message ?? err);
@@ -1947,4 +2071,75 @@ function safe(fn) {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The medal ladder, weakest first, as an ORDER rather than a set.
+ *
+ * Exported because three files have to agree about which of two medals is
+ * better - this one merging a repeat run, `Charters` counting golds, and
+ * `RecordsPanel` filling a grid up to the best - and three independent
+ * `gold > silver > bronze` comparisons is three chances for one of them to
+ * sort the other way. It is deliberately NOT `MEDAL_FACTOR` from
+ * `RooftopTrial`: that table is a time multiplier and lists them in the
+ * opposite order, so borrowing it would put bronze at the top.
+ *
+ * @type {ReadonlyArray<'bronze'|'silver'|'gold'>}
+ */
+export const MEDAL_ORDER = Object.freeze(['bronze', 'silver', 'gold']);
+
+/**
+ * How good a medal is, as a number. 0 for anything that is not one.
+ *
+ * The zero branch is load-bearing rather than defensive: `minigame:finished`
+ * carries `score`, and `score` is a clock in three contests, a count in three,
+ * a games string in one and a medal in exactly one. A rank of 0 for all of
+ * those is what lets `_recordTrial` read the field without a flag saying
+ * whether it means anything this time.
+ *
+ * @param {any} m
+ * @returns {number}
+ */
+export function medalRank(m) {
+  return typeof m === 'string' ? MEDAL_ORDER.indexOf(m) + 1 : 0;
+}
+
+/** The better of two medals, or null when neither is one. */
+export function bestMedal(a, b) {
+  const ra = medalRank(a);
+  const rb = medalRank(b);
+  if (ra === 0 && rb === 0) return null;
+  return ra >= rb ? a : b;
+}
+
+/**
+ * A stored ghost, shape-checked but NOT validated against a route.
+ *
+ * This file keeps bytes; `GhostReplay.from` decides whether they describe the
+ * course about to be run, because only the caller standing on that course
+ * knows. What is checked here is the one thing a persistence layer must check
+ * on its own behalf: that the thing about to be written into the save is small
+ * and is not something else entirely. An unbounded `s` from a hand-edited
+ * localStorage entry would otherwise be copied back out on every autosave.
+ *
+ * @param {any} r
+ * @returns {{v:number,k:string,d:number,s:number[]}|null}
+ */
+function readReplay(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const v = Number(r.v);
+  const k = r.k;
+  const d = Number(r.d);
+  const s = r.s;
+  if (!Number.isFinite(v) || v <= 0) return null;
+  if (typeof k !== 'string' || !k || k.length > 128) return null;
+  if (!Number.isFinite(d) || d <= 0) return null;
+  if (!Array.isArray(s) || s.length < 4 || s.length % 2 !== 0 || s.length > 256) return null;
+  const out = new Array(s.length);
+  for (let i = 0; i < s.length; i++) {
+    const n = Number(s[i]);
+    if (!Number.isFinite(n)) return null;
+    out[i] = n;
+  }
+  return { v, k, d, s: out };
 }

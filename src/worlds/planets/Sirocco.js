@@ -944,6 +944,60 @@ export const SIROCCO = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * All three are DUNE CRESTS, and that is a decision rather than a shortage.
+   * The two mesas this descriptor authors - the 84 m table at (-150, 210) and
+   * the 76 m one at (-300, -110) - are the highest ground on the planet and
+   * they are ISLANDS: no ramp reaches either, the 38-degree walk lattice cannot
+   * touch them from any pad, and at 9.1 m/s2 a sprint jump carries 5.0 m. A
+   * viewpoint on one would be a marker on the minimap and a prize nobody can
+   * collect. They stay unmarked.
+   *
+   * A crest is also where the storm is. `ashfall.density 0.55` with a
+   * near-horizontal `drift` of [1.5, 0.4] is the fastest lateral weather in the
+   * game, and `PlanetWorld` now drives a real wind off exactly those two
+   * numbers - so the three best views on Sirocco are the three worst places to
+   * stand in it. @see PlanetWorld `_buildHazardField`. */
+  viewpoints: [
+    {
+      /* The high crest of the Crosswind field, where the two dune systems cross
+       * at 79 degrees - 50.2 m, 23 m over the interdune floor, and 523 m from
+       * the nearest pad across open sand. */
+      id: 'crosswind', name: 'Crosswind Crest', x: -130, z: 60, r: 8,
+      terrain: 'highland', place: 'the Crosswind crests',
+      climb: 'West from Rimwatch along the interdune floor, then up the slip face.',
+    },
+    {
+      /* The dune wall above Whitepan, on the north-east rim of the playa -
+       * 48.7 m, and nothing within 45 m of it is higher. */
+      id: 'whitepan_wall', name: 'Whitepan Wall', x: 280, z: 400, r: 8,
+      terrain: 'highland', place: 'the dunes above Whitepan',
+      climb: 'North-east off the Pan Head apron and straight up the back of the dune.',
+    },
+    {
+      /* The deep south-west of the dune sea, 560 m out from Windward Stack and
+       * further from a pad than anything else on the planet. */
+      id: 'far_seif', name: 'The Far Seif', x: -390, z: -370, r: 8,
+      terrain: 'highland', place: 'the south-west dune sea',
+      climb: 'South-west from Windward, four dunes over.',
+    },
+  ],
+
   landing: [
     /** Salt hardpan. The pan's crust bears a ship without any preparation,
      *  which is why the primary is here and not on a dune. */
@@ -957,10 +1011,18 @@ export const SIROCCO = definePlanet({
     { id: 'windward', name: 'Windward Stack', x: -70, z: -135, r: 32, yaw: -2.05 },
   ],
 
+
   hazards: {
     /** Blowing sand. `drift` is near-horizontal and fast, unlike Cinder's
-     *  falling ash: this stuff is being carried, not dropped. Phase 1 draws it
-     *  and nothing takes damage from it. */
+     *  falling ash: this stuff is being carried, not dropped.
+     *
+     *  IT IS NO LONGER ONLY DRAWN. `PlanetWorld._buildHazardField` reads these
+     *  same two numbers - the density and the lateral drift - and publishes a
+     *  wind that pushes a body across the ground, hardest on the crests and
+     *  calm in the interdune floors. Nothing new was added to this block to do
+     *  it; the sentence "Phase 1 draws it and nothing takes damage from it"
+     *  that used to be here was a description of the consumer, not of the
+     *  data. @see ../PlanetWorld.js `_buildHazardField` */
     ashfall: { density: 0.55, drift: [1.5, 0.4] },
     ashColor: 0xdcc49a,
   },

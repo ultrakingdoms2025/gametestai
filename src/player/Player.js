@@ -367,6 +367,17 @@ export class Player {
      * loses control for longer than they can feel.
      */
     this._impulseTime = 0;
+    /**
+     * Ambient horizontal carry, metres per second. @see setEnvironmentDrift
+     *
+     * A SEPARATE channel from `_velocity` and that separation is the whole
+     * design: the air is moving, the body is not, so this must not be fed to
+     * friction, to the accelerator or to the speed the HUD and the footsteps
+     * read. It is added to the displacement `_move` integrates and to nothing
+     * else.
+     */
+    this._driftX = 0;
+    this._driftZ = 0;
     /** Damage per second of the active bleed, and how long is left of it. */
     this._bleedRate = 0;
     this._bleedTime = 0;
@@ -590,6 +601,21 @@ export class Player {
 
   get grounded() {
     return this._grounded;
+  }
+
+  /**
+   * The active world, as resolved once on `world:changed`.
+   *
+   * Exposed so a player-side module can ask the WORLD for its own rules
+   * instead of opening a second `world:changed` subscription. The constructor
+   * already says why one handler and not two - "the capability flags and the
+   * gravity are read off the same object and must never be a world apart" -
+   * and a third subscriber reading `hazardField` would be the same trap with
+   * the same failure mode. @see ./Swim.js `_weather`
+   * @type {object|null}
+   */
+  get world() {
+    return this._world;
   }
 
   /** Downward acceleration this world integrates, m/s². Negative. */
@@ -945,6 +971,27 @@ export class Player {
     if (!this.stamina) new Stamina({ bus: this.bus, player: this });
     this.stamina.fixedUpdate(dt, elapsed);
     this._ensureWater();
+
+    /* THE WEATHER, CHARGED. Above every movement branch and above the death
+     * branch, deliberately - all three of them return, and the hazard has to
+     * be true of the body in all of them:
+     *
+     *   dead        the field must read zero and the alert must clear, or a
+     *               corpse holds a warning for the whole respawn delay;
+     *   mounted     radiant heat is the AIR, and a rider crossing the scorch
+     *               ring is in it. `applyImpulse` and `_move` are both
+     *               unreachable from that branch, so the push cannot apply -
+     *               which is right, the mount owns the capsule;
+     *   climbing    `swim.fixedUpdate` is never called from the mantle or the
+     *               free-climb branch, and thin air is precisely the hazard
+     *               `PlanetHazard` says "a flying, falling or climbing body is
+     *               in as much as a walking one". Under the old call site the
+     *               one planet with a summit worth climbing drained nothing
+     *               while you climbed it.
+     *
+     * It costs one field read and one `at()` per step on the three planets
+     * that have a hazard, and one null check on the rest. @see ./Swim.js */
+    this.swim.tickHazard(dt);
 
     if (this._dead) {
       // Corpses still fall, so the camera settles on the floor rather than
@@ -1386,8 +1433,22 @@ export class Player {
     const h = this._capsuleHeight;
 
     _prev.copy(this._position);
-    const wantX = this._velocity.x * dt;
-    const wantZ = this._velocity.z * dt;
+    /* The ambient carry rides in the DISPLACEMENT and never in `_velocity`,
+     * so it is swept, resolved, step-probed and tunnelling-guarded like any
+     * other metre - and is not fed back into friction, which would shed it.
+     * @see setEnvironmentDrift for the measurement that chose this channel.
+     *
+     * `?? 0` rather than a bare read, and not defensively for its own sake:
+     * several rigs under `scripts/tests` build a controller with
+     * `Object.create(Player.prototype)` and a hand-listed set of fields, so a
+     * new constructor field they cannot know about turns this whole step into
+     * NaN. Measured the first time this line read the fields directly -
+     * `beast-impact.test.mjs` reported "a 9 m/s shove carried the player only
+     * NaN m". `setEnvironmentDrift` is what keeps them finite in the game. */
+    const driftX = this._driftX ?? 0;
+    const driftZ = this._driftZ ?? 0;
+    const wantX = (this._velocity.x + driftX) * dt;
+    const wantZ = (this._velocity.z + driftZ) * dt;
     const expectedY = this._position.y + this._velocity.y * dt;
 
     this._position.set(_prev.x + wantX, expectedY, _prev.z + wantZ);
@@ -1928,6 +1989,60 @@ export class Player {
   }
 
   /**
+   * MOVING AIR: a carry the body is inside, not a shove delivered to it.
+   *
+   * ── Why this is not `applyImpulse`, measured rather than argued ──────────
+   * The obvious wiring for a wind is "call `applyImpulse` with `push * dt`
+   * every step, i.e. an acceleration". Driven against this very controller on
+   * flat ground with Sirocco's published 0.854 m/s of moving air, that
+   * measures **0.0000 m/s of settled drift**: the wind does nothing at all.
+   *
+   * `_applyFriction` is Source-style - below `STOP_SPEED` it is a CONSTANT
+   * deceleration of `STOP_SPEED * friction`, not a proportional one. That is
+   * 11 m/s² at rest, or 2.42 m/s² once the stagger has cut friction to 22%,
+   * against 0.854 m/s² of wind. The wind is shed in full every step and the
+   * player never leaves the origin. Nor is there a bigger number that helps:
+   * the same rig at ten times the acceleration measures 3.74 m/s, which is
+   * 81% of `walkSpeed` and breaks the one guarantee the design makes. The
+   * channel is bimodal - nothing, then nearly unwalkable - because friction's
+   * floor is a step and not a slope.
+   *
+   * There is a second defect in that wiring and it is worse than the first:
+   * `applyImpulse` sets `_impulseTime` to a full `IMPULSE_STAGGER` on every
+   * call, so a player standing in the wind holds a permanent stagger and
+   * walks the whole planet on 22% of the usual friction. Measured:
+   * `_impulseTime` pinned at 0.403 for the entire run.
+   *
+   * So the wind is what it physically is - a moving medium - and it enters
+   * where a medium enters: the DISPLACEMENT `_move` integrates, swept and
+   * resolved by the capsule solver exactly like every other metre the player
+   * travels. A wall still stops it, a step-up still probes with it, and the
+   * settled drift is then the published number exactly, with no tuning
+   * constant between the descriptor and the ground: 0.854 m/s at full
+   * exposure against a `walkSpeed` of 4.6, so walking upwind nets 3.75 m/s
+   * and the design's "you can always walk out of it" is arithmetic.
+   *
+   * Written every fixed step by the reader, zero included, so a hazard that
+   * ends - a world change, a death, a step into the lee of a dune - cannot
+   * leave a carry behind it.
+   *
+   * @param {number} x metres per second along +X
+   * @param {number} z metres per second along +Z
+   */
+  setEnvironmentDrift(x, z) {
+    this._driftX = Number.isFinite(x) ? x : 0;
+    this._driftZ = Number.isFinite(z) ? z : 0;
+  }
+
+  /**
+   * Current ambient carry, m/s. Allocates, so it is for a test or a console
+   * line and not for a per-frame reader. @see setEnvironmentDrift
+   */
+  get environmentDrift() {
+    return { x: this._driftX, z: this._driftZ };
+  }
+
+  /**
    * Kick the view.
    *
    * The primitive that makes `camera:shake` mean something. That event had
@@ -2247,6 +2362,11 @@ export class Player {
     // A wound does not follow you through a portal, and neither does a shove.
     this.clearBleed();
     this._impulseTime = 0;
+    /* Nor does the weather. `Swim.tickHazard` rewrites this every step from
+     * wherever the body now is, so this only closes the one step between a
+     * teleport out of a gale and the next fixed update. */
+    this._driftX = 0;
+    this._driftZ = 0;
     this._position.copy(position);
     this._yaw = yaw;
     this._pitch = 0;

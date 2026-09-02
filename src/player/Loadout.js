@@ -2,7 +2,7 @@ import { Weapon } from './Weapon.js';
 import { FireballWeapon } from '../weapons/Fireball.js';
 import { BowWeapon } from '../weapons/Bow.js';
 import { SwordWeapon } from '../weapons/Sword.js';
-import { WEAPON_STATS, AMMO_ITEMS } from '../systems/WeaponStats.js';
+import { WEAPON_STATS, AMMO_ITEMS, WEAPON_POWERS } from '../systems/WeaponStats.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -882,7 +882,25 @@ export class Loadout {
   /* Persistence                                                       */
   /* ================================================================ */
 
-  /** @returns {{active:string, weapons:Object<string,any>}} */
+  /**
+   * ── `powers` RIDES HERE, AND NOT IN A FIELD OF ITS OWN ───────────────────
+   *
+   * The purchased weapon tiers live in `WeaponStats.WEAPON_POWERS`, a module
+   * singleton, because the `damage` accessor has to answer the same question
+   * for `Combat`, `Sword` and `Projectiles` alike and none of them can be
+   * handed a registry (see the long note in `WeaponStats.js`). A singleton
+   * still has to survive a reload, and the save is `SaveGame`'s - a file this
+   * one does not own.
+   *
+   * `SaveGame._snapshotWeapons` already calls `loadout.serialize()` whole and
+   * `_restoreLoadout` already calls `loadout.deserialize(snap.custom)`, so the
+   * ladder round-trips by riding in the object those two already move. The
+   * alternative was a new top-level `weapons.powers` key plus the two lines in
+   * `SaveGame` that write and read it - and a purchase that persists only once
+   * somebody else's file changes is a purchase that does not persist.
+   *
+   * @returns {{active:string, weapons:Object<string,any>, powers:Object<string,number>}}
+   */
   serialize() {
     const weapons = {};
     for (const w of this._weapons) {
@@ -890,11 +908,26 @@ export class Loadout {
         ? w.serialize()
         : { ammo: w.ammo ?? 0, reserve: w.reserve ?? 0 };
     }
-    return { active: this.current?.id ?? 'machinegun', weapons };
+    return {
+      active: this.current?.id ?? 'machinegun',
+      weapons,
+      powers: WEAPON_POWERS.serialize().powers,
+    };
   }
 
   deserialize(data) {
     if (!data) return;
+    /* Restored BEFORE the ammo, and the order is not arbitrary: `_resyncBrokers`
+     * below re-reads every weapon's stat block, and a block whose `damage` is
+     * still at stock while the save says tier III is a weapon that is briefly
+     * weaker than the player paid for. `WeaponRegistry.deserialize` re-accepts
+     * every row through `grantPower`, so a hand-edited tier restores as nothing
+     * rather than as a multiplier off the end of the ladder.
+     *
+     * A save written before weapon tiers existed carries no `powers` key at
+     * all, and `deserialize(undefined)` leaves the ledger alone - which for a
+     * fresh session is an empty one, i.e. stock damage. */
+    if (data.powers) WEAPON_POWERS.deserialize({ powers: data.powers });
     const saved = data.weapons ?? {};
     for (const w of this._weapons) {
       const s = saved[w.id];

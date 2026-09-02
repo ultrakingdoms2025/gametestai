@@ -296,13 +296,60 @@ export class MazeWorld extends World {
   /**
    * Force the next build's seed, or null for the usual fresh random one.
    *
-   * NULL IN EVERY NORMAL BOOT. Only `src/dev/Harness.js` writes it, only under
-   * `?dev=1`, and it exists because a review instrument cannot compare two
-   * runs of a world that is different every time. See `build()`.
+   * Two writers, and they want it for opposite reasons.
+   *
+   *   - `src/dev/Harness.js`, under `?dev=1` only, because a review instrument
+   *     cannot compare two runs of a world that is different every time.
+   *   - `adoptDailySeed`, from `/api/game/session`'s `daily_seed`, so that
+   *     everyone signed in shares TODAY's labyrinth. See that method.
+   *
+   * Still null in a signed-out boot, and null in any boot where the session
+   * call failed — the maze re-rolls per entry exactly as it always did. See
+   * `build()`.
    *
    * @type {number|null}
    */
   static seedOverride = null;
+
+  /**
+   * Take today's shared seed from a `/api/game/session` payload.
+   *
+   * ── What this makes true, and what it very deliberately does not ────────
+   *
+   * Every signed-in player in the same server walks the SAME labyrinth today,
+   * because both clients derive nothing — they are handed one number the
+   * server computed from the server id and the UTC date (`dailySeed` in
+   * `site/lib/customServers.ts`). Tomorrow it is a different maze, so the
+   * unlearnability this world is built on survives at the granularity that
+   * matters.
+   *
+   * It does NOT make the maze a shared SPACE. Two members in today's maze are
+   * in two private copies of one layout; neither can see the other, neither
+   * moves anything the other will find, and nothing in this game delivers
+   * presence. The word for what they share is the floor plan.
+   *
+   * ── Why it is a method here rather than three lines in main.js ──────────
+   *
+   * Validation. The value arrives from an HTTP body, and `seedOverride` is
+   * consumed by `generateTopology` with no further checking: a string, a float
+   * or a NaN out of a half-deployed endpoint would produce a maze that differs
+   * between two clients that both believe they are sharing one — the exact
+   * failure the feature exists to remove, wearing a disguise. Anything that is
+   * not a whole number inside the range `build()` rolls for itself is refused,
+   * and refusing leaves the fresh-random behaviour in place rather than
+   * substituting a guess.
+   *
+   * @param {any} account the parsed `/api/game/session` body, or null
+   * @returns {boolean} true when a shared seed was adopted
+   */
+  static adoptDailySeed(account) {
+    const raw = account?.daily_seed;
+    if (typeof raw !== 'number' || !Number.isInteger(raw)) return false;
+    // The range `build()` generates for itself: an unsigned 32-bit integer.
+    if (raw < 0 || raw > 0xffffffff) return false;
+    MazeWorld.seedOverride = raw;
+    return true;
+  }
 
   /**
    * How many pollen motes ride with the player.
@@ -478,12 +525,19 @@ export class MazeWorld extends World {
      * have no lift at all - which is also why `VIEWS.maze`'s `lift-car` used to
      * abort a whole run.
      *
-     * `MazeWorld.seedOverride` is null in every normal boot, so the player's
-     * maze is untouched. `src/dev/Harness.js` sets it under `?dev=1` and
+     * `src/dev/Harness.js` sets it under `?dev=1` and
      * `scripts/world-shot.mjs --seed` passes it in; both RECORD the seed they
      * used, so a run that did not fix one still says which maze it
-     * photographed and any seed can be re-flown. That is the whole of the
-     * change to this file. */
+     * photographed and any seed can be re-flown.
+     *
+     * ── AND THE SECOND WRITER, WHICH IS A PLAYER-FACING FEATURE ──────────
+     * `MazeWorld.adoptDailySeed` sets it from `/api/game/session`'s
+     * `daily_seed`, so a signed-in player's maze is today's SHARED maze
+     * rather than a private roll. Re-entering during the same session
+     * therefore returns the same layout, which is the point: a route worth
+     * telling someone about has to still be there when they walk it. A
+     * signed-out boot, or one whose session call failed, leaves the override
+     * null and re-rolls exactly as before. See `adoptDailySeed`. */
     this.seed = MazeWorld.seedOverride ?? ((Math.random() * 0xffffffff) >>> 0);
 
     await onProgress?.(0.05, 'Growing the hedges');

@@ -225,6 +225,19 @@ export async function ensureProgressSchema(db: Db): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS player_progress_items_idx
       ON player_progress_items (player_id, kind, scope, item_key)
   `);
+  /* The index `readFirstReports` runs on.
+   *
+   * Leading with (kind, scope) because that pair is always an equality in that
+   * query, then `item_key` because the answer is grouped by it, then
+   * `created_at` because the aggregate is a MIN over it — so the plan is a range
+   * scan that finds each key's earliest row at the front of its own run rather
+   * than a sort of every relic every member has ever recorded. The existing
+   * unique index leads with `player_id`, which that query does not constrain at
+   * all, so it could not serve this. */
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS player_progress_items_first_idx
+      ON player_progress_items (kind, scope, item_key, created_at)
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS player_progress_values (
@@ -240,6 +253,25 @@ export async function ensureProgressSchema(db: Db): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS player_progress_values_idx
       ON player_progress_values (player_id, kind, scope, item_key)
   `);
+
+  /* The Phase 7 column, ensured HERE as well as in `leaderboard.ts`.
+   *
+   * `serverIdMigrations.test.ts` states the rule and the incident behind it: a
+   * module that issues SQL against one of these tables and references
+   * `server_id` must not depend on another module having run first, because
+   * that is exactly how `/api/game/quests` and `/api/marketplace/items`
+   * returned 500 to every caller in production. This module gained such a
+   * reference when `readFirstReports` joined `server_members`, so it gains the
+   * ensure with it. Idempotent, additive, and free the second time.
+   *
+   * What this ensure CANNOT cover, stated rather than assumed: `server_members`
+   * itself, which lives in `customServers.ts` — and `customServers.ts` imports
+   * `leaderboard.ts` which imports this file, so importing it back would be a
+   * cycle. `readFirstReports` therefore requires its caller to have run
+   * `ensureCustomServerSchema` on the same client, which the progress route
+   * does immediately before calling it. */
+  await db.query(`ALTER TABLE player_progress_items ADD COLUMN IF NOT EXISTS server_id TEXT`);
+  await db.query(`ALTER TABLE player_progress_values ADD COLUMN IF NOT EXISTS server_id TEXT`);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -403,6 +435,119 @@ export async function revokeProgressValues(
     [playerId, kind, scope ?? '', clean]
   );
   return r.rowCount ?? 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* First REPORTED — and the word "reported" is the whole contract           */
+/* ---------------------------------------------------------------------- */
+
+export interface FirstReport {
+  /** The relic / viewpoint / deed id. */
+  itemKey: string;
+  playerId: string;
+  handle: string | null;
+  /** When the row arrived HERE. Not when it was found. See below. */
+  reportedAt: string;
+  self: boolean;
+}
+
+/**
+ * The exact sentence a caller is allowed to build out of `readFirstReports`.
+ *
+ * Exported as a constant rather than left to each caller to phrase, because
+ * this is the claim the data supports and every UI that renders it must make
+ * the same one. A route that wants to say something else has to change this
+ * line, where the reason is written down, rather than in a template it is easy
+ * to write "first to find" into by accident.
+ */
+export const FIRST_REPORT_CLAIM = 'first to report';
+
+/**
+ * The limitation, in the response, in the source, and in the UI string.
+ *
+ * `created_at` is the moment the row reached Postgres. `ProgressSync` batches —
+ * it pushes on discovery events and on save, not on a timer, and a device with
+ * no connection pushes nothing until it has one — so the gap between finding a
+ * relic and reporting it is unbounded and entirely invisible from this side.
+ *
+ * The consequence is not hypothetical and is not a rounding error: a player who
+ * plays offline for a week and signs in on Friday will lose a claim to somebody
+ * who found the same relic on Thursday and synced immediately. That player
+ * genuinely got there first and the ledger genuinely cannot know it.
+ *
+ * There is no server-side fix available. A client-declared discovery timestamp
+ * would be a clock the player controls, and this file's own header refuses to
+ * consult a device clock anywhere for exactly that reason — "a phone a few
+ * minutes fast would otherwise silently win every conflict". A weaker claim
+ * that is true beats a stronger claim that is a lie, so the weaker claim is
+ * what ships, and it ships in the words.
+ */
+export const FIRST_REPORT_CAVEAT =
+  'This is the first player to SYNC this find, not necessarily the first to make it. '
+  + 'Progress uploads in batches, so a player who was offline can lose a claim they earned.';
+
+/**
+ * Who reported each item of one (kind, scope) first, among a server's members.
+ *
+ * ── DISTINCT ON rather than a GROUP BY and a second query ────────────────
+ *
+ * Postgres orders by `(item_key, created_at, player_id)` and keeps the first
+ * row of each `item_key` run, which is the earliest report and its owner in one
+ * pass over the index added in `ensureProgressSchema`. A `MIN(created_at)`
+ * GROUP BY would give the time and not the player, and the usual repair — join
+ * the aggregate back to the table — reintroduces the tie the ordering already
+ * settles.
+ *
+ * `player_id` is the last ordering term and it is not decoration: two rows CAN
+ * share a `created_at`, because `NOW()` in Postgres is the transaction start and
+ * a batch insert stamps every row in it identically. Without that term the
+ * winner of a tie would be whichever row the plan happened to reach first, so
+ * the same query could answer differently on two runs and nobody would be able
+ * to say which was wrong. With it, ties resolve to a fixed answer.
+ *
+ * ── Scoped to members, the same way the time boards are ──────────────────
+ *
+ * `server_members` is the FROM clause, `state = 'approved'`, so a non-member is
+ * not a candidate and there is no visibility filter to forget. `server_id` on
+ * the progress row is deliberately NOT consulted: these are platform relics
+ * recorded by `ProgressSync`, which stamps nothing, so requiring a stamp would
+ * make every answer empty.
+ */
+export async function readFirstReports(
+  db: Db,
+  opts: { serverId: string; kind: string; scope?: string; playerId: string; limit?: number }
+): Promise<FirstReport[]> {
+  const kind = typeof opts?.kind === 'string' ? opts.kind.trim() : '';
+  if (!kind || !KINDS[kind] || KINDS[kind].shape !== 'set') return [];
+  const serverId = typeof opts?.serverId === 'string' ? opts.serverId.trim() : '';
+  if (!serverId) return [];
+  const scope = cleanScope(opts?.scope);
+  if (scope === null) return [];
+  const limit = Math.max(1, Math.min(500, Math.trunc(Number(opts?.limit)) || 200));
+
+  const r = await db.query(
+    `SELECT DISTINCT ON (i.item_key)
+            i.item_key, i.player_id, i.created_at, pl.handle
+       FROM server_members m
+       JOIN player_progress_items i
+         ON i.player_id = m.player_id
+       LEFT JOIN players pl ON pl.id = i.player_id
+      WHERE m.server_id = $1
+        AND m.state = 'approved'
+        AND i.kind = $2
+        AND i.scope = $3
+      ORDER BY i.item_key, i.created_at, i.player_id
+      LIMIT $4`,
+    [serverId, kind, scope, limit]
+  );
+
+  return r.rows.map((row) => ({
+    itemKey: String(row.item_key),
+    playerId: String(row.player_id),
+    handle: row.handle ?? null,
+    reportedAt: String(row.created_at ?? ''),
+    self: String(row.player_id) === opts.playerId,
+  }));
 }
 
 /** Everything this player has, shaped for the client to adopt wholesale. */

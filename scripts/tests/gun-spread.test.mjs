@@ -754,12 +754,33 @@ test('the kind census moved by exactly one item, from ammo to consumable', () =>
    * asserted on directly two cases below - because a `shipskin` it did not
    * know would have been that same defect arriving through the UI instead.
    *
+   * ── consumable 30 -> 33, trinket 51 -> 48: THREE ORES THAT REACH A BAG ──
+   * `cryolite`, `sperrylite` and `aurichalc`, moved from `trinket` in the same
+   * change that gave `Mining.mine` a second destination. This is `laser_cell`'s
+   * own move, made three more times and for the identical reason: an ore with
+   * an `ItemUse` case and a `trinket` kind is an effect that is implemented,
+   * registered and unreachable, because `InventoryUI._hasUse` draws the ring
+   * for `consumable`, `skin`, `mountpower` and `shipskin` only.
+   *
+   * What makes the move legal rather than a rule bent to fit is that a node
+   * can now be POCKETED. `Mining.mine` asks the hold first and falls back to
+   * the bag for a node small enough to carry (`holdUnitsFor(size) === 1`), so
+   * twenty-one of the forty-seven ores genuinely arrive as items. The other
+   * forty-four stay `trinket`, which is why this is minus three and not minus
+   * forty-seven - and `planet-minerals.test.mjs` still asserts, in both
+   * directions and over every planet, that an ore has an `ItemUse` case if and
+   * only if its kind says the button exists.
+   *
+   * Their payout did not move either, and for `laser_cell`'s reason: all three
+   * carry `WORLD_MARKETS.*.itemBuy` rows at their own former `buy.trinket`
+   * rates, so the relabelling is worth exactly zero credits in every world.
+   *
    * The bucket totals are what this case protects, not any one item, so it is
    * updated by adding the nine rather than by re-deriving the whole map. */
   const census = {};
   for (const def of Object.values(ITEMS)) census[def.kind] = (census[def.kind] ?? 0) + 1;
   assert.deepEqual(census, {
-    currency: 1, ammo: 3, consumable: 30, trinket: 51, skin: 20, mountpower: 57, shipskin: 9,
+    currency: 1, ammo: 3, consumable: 33, trinket: 48, skin: 20, mountpower: 57, shipskin: 9,
   });
 
   /* And the new bucket really is the PAID half only. Asserted here rather than

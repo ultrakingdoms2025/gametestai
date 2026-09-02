@@ -1,5 +1,7 @@
 import { ITEMS, itemDef, sellValue, setMarketWorld, skinIdFromItem } from './ItemDefs.js';
 import { offlineCatalog } from './MarketplaceOffline.js';
+import { WEAPON_POWERS } from './WeaponStats.js';
+import { activeShipRegistry } from '../ships/ShipRegistry.js';
 import { allows } from '../worlds/WorldRules.js';
 
 /**
@@ -432,6 +434,67 @@ export class Marketplace {
   }
 
   /**
+   * A weapon upgrade is not a bag item either: it grants a permanent damage
+   * tier to one of the four weapons. Detected by its action effect, the way
+   * every other non-stock grant on this counter is, so the catalogue stays the
+   * single source of truth about what a row does.
+   *
+   * ── Why this one needs nothing wired in ──────────────────────────────────
+   *
+   * `_mountPowerGrant` above hands its answer to `buy`, which emits
+   * `mount:power:buy` for `main.js` to catch and apply to the mount manager it
+   * holds. There is no equivalent registry to hold for weapons: the tier has to
+   * be readable by `Combat`, `Sword` and `Projectiles` at the moment they read
+   * `WEAPON_STATS[id].damage`, so it lives in a module singleton
+   * (`WEAPON_POWERS`) that this file simply imports. The grant therefore
+   * completes here, in `buy`, with no handler anywhere else - and the event is
+   * still published, for the persist scheduler and for a HUD that may want to
+   * say so.
+   *
+   * @param {any} item
+   * @returns {{weapon:string, tier:number}|null}
+   */
+  /**
+   * The hull registry this counter sells fittings against.
+   *
+   * A getter rather than a stored field so a `ShipRegistry` built AFTER the
+   * shop - which is what `main.js` does, and it is the ordering that made the
+   * whole ship half of this counter unreachable through a constructor - is
+   * still found. An explicitly assigned `market.ships` wins, for a rig that
+   * wants an isolated one.
+   */
+  get ships() {
+    return this._ships ?? activeShipRegistry();
+  }
+
+  set ships(v) {
+    this._ships = v ?? null;
+  }
+
+  /**
+   * A ship fitting is not a bag item: it grants a permanent tier to one hull's
+   * stat. Detected by its action effect, like every other non-stock grant here.
+   * @param {any} item
+   * @returns {{ship:string, power:string, tier:number}|null}
+   */
+  _shipPowerGrant(item) {
+    const config = item?.action_config ?? {};
+    if (config?.effect !== 'grant_ship_power') return null;
+    const ship = typeof config.ship === 'string' ? config.ship : null;
+    const power = typeof config.power === 'string' ? config.power : null;
+    if (!ship || !power) return null;
+    return { ship, power, tier: Math.max(1, Math.floor(Number(config.tier) || 1)) };
+  }
+
+  _weaponPowerGrant(item) {
+    const config = item?.action_config ?? {};
+    if (config?.effect !== 'grant_weapon_power') return null;
+    const weapon = typeof config.weapon === 'string' ? config.weapon : null;
+    if (!weapon) return null;
+    return { weapon, tier: Math.max(1, Math.floor(Number(config.tier) || 1)) };
+  }
+
+  /**
    * A cosmetic unlock is not stock either: it grants a permanent skin id to the
    * wardrobe. Detected by its action effect so the catalog stays authoritative.
    * @param {any} item
@@ -475,6 +538,59 @@ export class Marketplace {
       if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, power, cost };
       if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, power, cost };
       return { ok: true, stock, grant, power, cost };
+    }
+
+    /* Ship fitting: the mount branch above, one vehicle over, and every one of
+     * its refusals restated against the hull registry.
+     *
+     * `this.ships` is `activeShipRegistry()` unless a caller handed one in -
+     * see the note over that function for why the shop reaches for a module
+     * pointer rather than a constructor argument it would never be given. A
+     * NULL registry refuses with `unsupported`, which is the only safe answer:
+     * `grantPower` would have nowhere to bank the tier, and this counter must
+     * never charge for a grant it cannot see land. */
+    const ship = this._shipPowerGrant(item);
+    if (ship) {
+      const reg = this.ships;
+      const grant = { qty: 1, kind: 'upgrade', label: 'Ship fitting' };
+      if (!reg || (reg.sellsPower && !reg.sellsPower(ship.ship, ship.power))) {
+        return { ok: false, reason: 'unsupported', stock, grant, ship, cost };
+      }
+      const ownedTier = Math.max(0, Math.floor(Number(reg.getPowers?.(ship.ship)?.[ship.power]) || 0));
+      if (ship.tier <= ownedTier || ship.tier > ownedTier + 1) {
+        return { ok: false, reason: 'owned', stock, grant, ship, cost };
+      }
+      if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, ship, cost };
+      if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, ship, cost };
+      return { ok: true, stock, grant, ship, cost };
+    }
+
+    /* Weapon upgrade: credits and stock, no bag room. The three refusals are
+     * the mount branch's, asked of the weapon ledger and IN THE SAME ORDER,
+     * because every one of them is a way to take money for nothing:
+     *
+     *  - `unsupported`  a row naming a weapon with no ladder. `sellsPower` is
+     *    public on `WeaponRegistry` for exactly this, the way `ShipRegistry`
+     *    made its own public - "the marketplace has to be able to REFUSE a
+     *    purchase rather than take the money and silently drop the grant";
+     *  - `owned`        `grantPower` keeps `max(owned, tier)`, so selling a
+     *    tier at or below what is already fitted is a full charge for nothing;
+     *  - and the ladder is climbed in order, so tier III with no tier II is
+     *    refused as `owned` too - buying it would make the two cheap rungs
+     *    permanently unsellable, which is a purchase that DESTROYS value. */
+    const weapon = this._weaponPowerGrant(item);
+    if (weapon) {
+      const grant = { qty: 1, kind: 'upgrade', label: 'Weapon upgrade' };
+      if (!WEAPON_POWERS.sellsPower(weapon.weapon)) {
+        return { ok: false, reason: 'unsupported', stock, grant, weapon, cost };
+      }
+      const ownedTier = WEAPON_POWERS.tierOf(weapon.weapon);
+      if (weapon.tier <= ownedTier || weapon.tier > ownedTier + 1) {
+        return { ok: false, reason: 'owned', stock, grant, weapon, cost };
+      }
+      if (stock <= 0) return { ok: false, reason: 'stock', stock, grant, weapon, cost };
+      if (this.credits < cost) return { ok: false, reason: 'credits', stock, grant, weapon, cost };
+      return { ok: true, stock, grant, weapon, cost };
     }
 
     // Cosmetic unlock: a one-time skin. Owned skins can't be re-bought.
@@ -544,6 +660,72 @@ export class Marketplace {
         mount: preview.power.mount,
         power: preview.power.power,
         tier: preview.power.tier,
+        catalogId: item.id,
+        cost,
+      });
+      this.bus?.emit('market:trade', {
+        itemId: item.source_key || item.id,
+        catalogId: item.id,
+        qty: 1,
+        credits: -cost,
+        kind: 'buy',
+      });
+      this.bus?.emit('hud:notify', { text: `Bought ${item.name}`, tone: 'info' });
+      this.ui?.refresh?.();
+      return { ok: true, qty: 1, cost };
+    }
+
+    /* Ship fitting: spend, grant, announce. The grant happens HERE and not in
+     * a `main.js` handler, for the reason the weapon branch below states: the
+     * registry is in hand, so an event that had to be caught elsewhere would
+     * be one more place for a purchase to go missing. `ship:power:buy` is
+     * still published - as a receipt for the persist scheduler, the way
+     * `ShipMenu` publishes it after its own grant. */
+    if (preview.ship) {
+      const reg = this.ships;
+      if (!this.economy.spend(cost, 'market', buyMeta)) return { ok: false, reason: 'credits' };
+      reg?.grantPower?.(preview.ship.ship, preview.ship.power, preview.ship.tier);
+      if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
+      this.bus?.emit('ship:power:buy', {
+        ship: preview.ship.ship,
+        power: preview.ship.power,
+        tier: preview.ship.tier,
+        catalogId: item.id,
+        cost,
+      });
+      this.bus?.emit('market:trade', {
+        itemId: item.source_key || item.id,
+        catalogId: item.id,
+        qty: 1,
+        credits: -cost,
+        kind: 'buy',
+      });
+      this.bus?.emit('hud:notify', { text: `Bought ${item.name}`, tone: 'info' });
+      this.ui?.refresh?.();
+      return { ok: true, qty: 1, cost };
+    }
+
+    /* Weapon upgrade: spend, GRANT HERE, then announce. The mount branch above
+     * announces and lets `main.js` grant, because the mount registry is built
+     * there; the weapon ledger is a module singleton this file imports, so the
+     * grant has nowhere else to happen and no handler to go missing.
+     *
+     * The order is the one this whole file is paranoid about: `spend` refuses
+     * rather than going below zero, and `grantPower` only runs after it has
+     * said yes. `grantPower` returns false for a grant that would change
+     * nothing - and `preview` has already refused those, so a false here would
+     * mean the ledger moved between the preview and the debit. That is a
+     * refund, not a shrug: the credits go back and the row reports `owned`. */
+    if (preview.weapon) {
+      if (!this.economy.spend(cost, 'market', buyMeta)) return { ok: false, reason: 'credits' };
+      if (!WEAPON_POWERS.grantPower(preview.weapon.weapon, preview.weapon.tier)) {
+        this.economy.add(cost, 'market-refund');
+        return { ok: false, reason: 'owned' };
+      }
+      if (item.quantity != null) item.quantity = Math.max(0, item.quantity - 1);
+      this.bus?.emit('weapon:power:buy', {
+        weapon: preview.weapon.weapon,
+        tier: preview.weapon.tier,
         catalogId: item.id,
         cost,
       });

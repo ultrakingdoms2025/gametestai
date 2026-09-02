@@ -318,6 +318,50 @@ body.records-open .pause {
   color: var(--rec-dim);
 }
 
+/* ── The medal grid ──────────────────────────────────────────────────────
+ *
+ * Three fixed cells to the right of every venue name, in the same flex row
+ * `.rec-line` already gives the mastery and collection lines - so the medals
+ * column lines up with the ones above it rather than being a second layout
+ * living in the same sidebar.
+ *
+ * A cell the player has NOT earned is drawn, not omitted. That is the whole
+ * point of a grid: an absent bronze and an unearned bronze look identical if
+ * the unearned one is not there, and the gap is the thing worth showing. So
+ * the base state is a hollow outline at dim, and `held` fills it. */
+.rec-medal-grid {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.rec-medal {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  font-family: var(--rec-disp);
+  font-size: 0.62rem;
+  line-height: 17px;
+  text-align: center;
+  letter-spacing: 0;
+  border: 1px solid var(--rec-soft);
+  color: var(--rec-dim);
+  background: transparent;
+}
+
+/* Held: the tier's own colour, on a wash of it. The three are far enough
+ * apart in hue to be told apart without reading the letter, which is what
+ * makes the grid scannable at sixteen rows. */
+.rec-medal.held {
+  color: #0b1119;
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.rec-medal-bronze.held { background: #c47a3d; }
+.rec-medal-silver.held { background: #c9d4dc; }
+.rec-medal-gold.held   { background: var(--rec-amber); }
+
 /* ── Leaderboards ────────────────────────────────────────────────────── */
 
 .rec-board { margin-bottom: 12px; }

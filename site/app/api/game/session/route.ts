@@ -4,7 +4,7 @@ import { getUserById } from '@/lib/db';
 import { findOrCreatePlayer, getPlayerStatus, getGameState } from '@/lib/playerDb';
 import { currentServer, openServerDb } from '@/lib/serverRoutes';
 import { serverBalance } from '@/lib/serverCredits';
-import { getServer } from '@/lib/customServers';
+import { dailySeed, getServer, utcDayKey } from '@/lib/customServers';
 
 export async function GET() {
   const session = await auth();
@@ -55,6 +55,25 @@ export async function GET() {
     }
   }
 
+  /* The shared daily seed (enhancement 1).
+   *
+   * Derived here, from the server the session is ALREADY scoped to and the
+   * server's own clock, and handed down as a plain number. The client is told
+   * the answer rather than asked for a nomination, for the same reason the
+   * chat route refuses a body-supplied scope: a seed a client could choose is a
+   * seed that is not shared.
+   *
+   * `daily_seed_day` rides along so the client can see the boundary it was
+   * computed against. That matters because a browser left running past
+   * midnight UTC keeps the seed it booted with — which is correct (a maze must
+   * not re-roll under a player mid-route) but would otherwise be indetectable.
+   *
+   * Additive, and safe when absent: every field below keeps its exact shape,
+   * and a client on an older bundle simply does not read these two. The game
+   * side treats a missing `daily_seed` as "roll your own", which is what it did
+   * before this existed. See `MazeWorld.adoptDailySeed`. */
+  const seedAt = new Date();
+
   return NextResponse.json({
     player_id: profile.playerId,
     handle: profile.handle ?? session.user.name ?? user.email.split('@')[0],
@@ -74,6 +93,13 @@ export async function GET() {
     game_state: gameState,
     server_id: serverId,
     server_credits: serverCredits,
+    /* The two new fields sit BEFORE `server`, deliberately.
+     * `serverRouteGuards.test.ts` pins `server` as the last property of this
+     * object — that is how it proves the named-server fact survives an edit to
+     * this handler — and an additive field appended after it would have moved
+     * the thing that gate is anchored on. Additive means additive. */
+    daily_seed: dailySeed(serverId, seedAt),
+    daily_seed_day: utcDayKey(seedAt),
     server,
   });
 }

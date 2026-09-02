@@ -53,6 +53,135 @@ const MOUNT_UPGRADE_ACTIONS: ReadonlyArray<{ id: MountUpgradeActionId; label: st
     effect: 'grant_mount_power' as const,
   }))));
 
+/* ---- Ship fittings and weapon tiers: sold at a counter, applied by
+       ShipRegistry.grantPower and WeaponRegistry.grantPower ----------------
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  THE GAP THESE CLOSE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `src/systems/MarketplaceOffline.js` has generated these forty-eight rows -
+ * thirty-six ship fittings and twelve weapon tiers - since the two fitting
+ * tills landed. But `Marketplace._loadCatalog` reads that bundle ONLY when
+ * `/api/marketplace/items` FAILS. So they were on the shelf in a `vite`-only
+ * build, which is how this game is developed, and MISSING on the live site,
+ * which is the normal case. A player could see every fitting in the Esc ship
+ * panel - it reads `ShipRegistry` directly and needs no catalogue - and buy
+ * none of them at a vendor.
+ *
+ * That is this project's signature defect stated in one sentence: built,
+ * visible and unreachable. `ShipStats.js` names it over `SHIP_STATS` ("banked,
+ * persisted, re-emitted and applied to nothing") and `MarketplaceOffline.js`
+ * states this particular gap in its own header as an honest limitation rather
+ * than leaving it to be discovered. These tables are that limitation closed.
+ *
+ * ── GENERATED FROM THE SAME NUMBERS, AND WATCHED ─────────────────────────
+ *
+ * The bundle derives its rows from `SHIP_STATS` / `SHIP_STAT_META` and
+ * `WEAPON_ORDER` / `weaponPowerPrice`, which are JavaScript in `src/`. This
+ * file cannot import those - the same wall `MarketplaceOffline` lives behind -
+ * so the tables are restated here, and `site/lib/shipFittingCatalogue.test.ts`
+ * imports the game's own `OFFLINE_UPGRADE_ROWS` and compares the two shelves
+ * row for row: id, name, description, category, both prices, effect, world
+ * allowlist and sort order. A price edited on one side and not the other is a
+ * red test, not two counters quoting different rates for one fitting.
+ *
+ * ── NOT LITERAL ROWS, AND THAT IS LOAD-BEARING ───────────────────────────
+ *
+ * `scripts/tests/marketplace-offline.test.mjs` scrapes `BASE_ITEMS` for
+ * `source_key: '...'` literals and demands a bundled twin for every one, in
+ * BOTH directions. The mount wall is invisible to that scrape precisely
+ * because it is a product of three tables and carries no such literal; these
+ * are invisible for the same reason, and must stay that way. Written out
+ * long-hand they would each need a hand-copied twin in `OFFLINE_BASE_ITEMS`
+ * to keep that gate green - which is the copy-of-a-product both files argue
+ * against.
+ */
+
+const SHIP_STAT_META = {
+  /* `base` is TIER I in credits and it is the game's own number, not a second
+   * opinion: `SHIP_STAT_META` in `src/ships/ShipStats.js` publishes 420 / 380 /
+   * 520 / 460 and records why they rank that way - fire is dearest because it
+   * is the only fitting that shortens a fight, hold is the one that pays for
+   * itself against ore, shield is cheapest because the Dray already starts with
+   * three points of it. `perTier` and `unit` are that file's too, and both
+   * appear verbatim in the shop line, so a tuning change there and not here
+   * shows up as a description quoting a percentage the ship does not deliver. */
+  power: { label: 'Thrust', unit: 'top speed', perTier: 12, base: 420, tag: 'THR', color: '#b6ff5a' },
+  shield: { label: 'Shields', unit: 'less hull damage', perTier: 10, base: 380, tag: 'SHLD', color: '#52e9ff' },
+  fire: { label: 'Firepower', unit: 'laser damage', perTier: 15, base: 520, tag: 'FIRE', color: '#ff6a3a' },
+  hold: { label: 'Hold', unit: 'mineral capacity', perTier: 25, base: 460, tag: 'HOLD', color: '#c9a24a' },
+} as const;
+type ShipStatId = keyof typeof SHIP_STAT_META;
+
+/**
+ * The hulls, in `SHIP_ORDER`, with the ladder each one sells.
+ *
+ * A fitting is keyed BY HULL - `ShipRegistry._powers` is, and a tier bought
+ * for a Kestrel is not on the Dray - so this is thirty-six rows, not twelve.
+ */
+const UPGRADE_SHIPS = [
+  { id: 'kestrel', label: 'Kestrel', stats: ['power', 'shield', 'fire', 'hold'] as readonly ShipStatId[] },
+  { id: 'dray', label: 'Dray', stats: ['power', 'shield', 'fire', 'hold'] as readonly ShipStatId[] },
+  { id: 'pike', label: 'Pike', stats: ['power', 'shield', 'fire', 'hold'] as readonly ShipStatId[] },
+  /* The Bastion is a frigate hulk with half her frames still open to the shed.
+   * `SHIP_STATS.bastion` in the game is an EMPTY frozen array and
+   * `ShipRegistry.sellsPower` refuses every stat on it, so it sells nothing
+   * here either - and it is PRESENT AND EMPTY rather than absent, exactly as it
+   * is in `ShipStats.js`, because absence is what caused the defect recorded
+   * there: with no row at all every stat read as "known", the till would have
+   * taken the credits and `grantPower` would have banked
+   * `{"bastion":{"power":3}}` against a hull `_ships` has no entry for. An
+   * empty list is a refusal somebody wrote down. It generates no rows and no
+   * purchasable ids. */
+  { id: 'bastion', label: 'Bastion', stats: [] as readonly ShipStatId[] },
+] as const;
+type ShipHullId = (typeof UPGRADE_SHIPS)[number]['id'];
+
+/**
+ * The four weapons, in `WEAPON_ORDER` - which is the order `sort_order` below
+ * counts in, so this array is ordered by that and NOT by price.
+ *
+ * `base` is `WEAPON_POWER_BASE` in `src/systems/WeaponStats.js`, which ranks by
+ * what a tier buys: the sword is dearest because it is the highest single-hit
+ * number in the game and the only weapon that costs nothing to fire, and the
+ * rifle cheapest because 10% of 18 is under two points and it burns a
+ * 150-credit pack of rounds getting there. `label` is `WEAPON_LABEL`:
+ * `machinegun` is sold as a rifle, because nobody buys a "machinegun damage".
+ */
+const UPGRADE_WEAPONS = [
+  { id: 'machinegun', label: 'Rifle', base: 240, tag: 'RIFLE', color: '#52e9ff' },
+  { id: 'fireball', label: 'Fireball', base: 300, tag: 'FIRE', color: '#ff9b3c' },
+  { id: 'bow', label: 'Bow', base: 260, tag: 'BOW', color: '#ffd25e' },
+  { id: 'sword', label: 'Sword', base: 340, tag: 'SWORD', color: '#d9dde2' },
+] as const;
+type WeaponUpgradeId = (typeof UPGRADE_WEAPONS)[number]['id'];
+
+/** One tier of damage is a tenth of base: the game's `WEAPON_TIER_STEP`, as a percentage. */
+const WEAPON_TIER_PERCENT = 10;
+
+// Template types over 4x4x3 and 4x3 ids. Twelve of the ship ids (every
+// ship_bastion_*) are never generated - harmless for the same reason the mount
+// union's twelve are: normalizeAction() checks the runtime array, not the type.
+export type ShipUpgradeActionId = `ship_${ShipHullId}_${ShipStatId}_${1 | 2 | 3}`;
+export type WeaponUpgradeActionId = `weapon_${WeaponUpgradeId}_damage_${1 | 2 | 3}`;
+
+const SHIP_UPGRADE_ACTIONS: ReadonlyArray<{ id: ShipUpgradeActionId; label: string; description: string; effect: 'grant_ship_power' }> =
+  UPGRADE_SHIPS.flatMap((s) => s.stats.flatMap((stat) => ([1, 2, 3] as const).map((tier) => ({
+    id: `ship_${s.id}_${stat}_${tier}` as ShipUpgradeActionId,
+    label: `${s.label} ${SHIP_STAT_META[stat].label} ${TIER_ROMAN[tier - 1]}`,
+    description: `Permanently raises this hull's ${SHIP_STAT_META[stat].unit} on a ${s.label} (tier ${tier}).`,
+    effect: 'grant_ship_power' as const,
+  }))));
+
+const WEAPON_UPGRADE_ACTIONS: ReadonlyArray<{ id: WeaponUpgradeActionId; label: string; description: string; effect: 'grant_weapon_power' }> =
+  UPGRADE_WEAPONS.flatMap((w) => ([1, 2, 3] as const).map((tier) => ({
+    id: `weapon_${w.id}_damage_${tier}` as WeaponUpgradeActionId,
+    label: `${w.label} Damage ${TIER_ROMAN[tier - 1]}`,
+    description: `Permanently raises ${w.label.toLowerCase()} damage (tier ${tier}).`,
+    effect: 'grant_weapon_power' as const,
+  })));
+
 export const MARKETPLACE_ACTIONS = [
   {
     id: 'ammo_pack_rifle',
@@ -431,6 +560,8 @@ export const MARKETPLACE_ACTIONS = [
     effect: 'grant_mount_power',
   },
   ...MOUNT_UPGRADE_ACTIONS,
+  ...SHIP_UPGRADE_ACTIONS,
+  ...WEAPON_UPGRADE_ACTIONS,
 ] as const;
 
 export type MarketplaceActionId = (typeof MARKETPLACE_ACTIONS)[number]['id'];
@@ -545,6 +676,83 @@ const MOUNT_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_MOUNTS.flatMap((m, mi
   pricing_kind: 'fixed',
   sort_order: 330 + mi * 12 + pi * 3 + (tier - 1),
 }))));
+
+/**
+ * The thirty-six ship fittings, priced `base * TIER_MUL` - the SAME ladder the
+ * mount rows above climb, and the same one `shipPowerPrice` charges in the
+ * game. `SHIP_TIER_MUL` in `src/ships/ShipStats.js` is a copy of `TIER_MUL`
+ * kept honest by `scripts/tests/fitting-tills.test.mjs`, which parses this
+ * file; a yard climbing at a different rate from every other ladder in the game
+ * would be a difference no player could ever discover.
+ *
+ * `cost_sell` rounds the ALREADY-ROUNDED buy price, which is what
+ * `shipPowerSellPrice` does, rather than rounding `base * mul * 0.4` the way
+ * `MOUNT_UPGRADE_ROWS` above does. The two orderings agree on all forty-eight
+ * of these rows - each of the eight bases times 3.15 is a whole number - so
+ * this is not a numeric difference. It is the same arithmetic in the same order
+ * as the till, which is what the agreement test compares against.
+ */
+const SHIP_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_SHIPS.flatMap((s, si) => s.stats.flatMap((stat, sti) => ([1, 2, 3] as const).map((tier) => {
+  const meta = SHIP_STAT_META[stat];
+  const name = `${s.label} ${meta.label} ${TIER_ROMAN[tier - 1]}`;
+  const costBuy = Math.round(meta.base * TIER_MUL[tier - 1]);
+  return {
+    source_key: `ship_${s.id}_${stat}_${tier}`,
+    name,
+    description: `${name}: +${meta.perTier * tier}% ${meta.unit}. Permanent, replaces the tier below.`
+      + ' Fitted in the yard; see your tiers in Esc → Customise ship.',
+    category: 'ships' as const,
+    image_label: `${meta.tag} ${TIER_ROMAN[tier - 1]}`,
+    image_color: meta.color,
+    game_action: `ship_${s.id}_${stat}_${tier}` as ShipUpgradeActionId,
+    action_config: { effect: 'grant_ship_power', ship: s.id, power: stat, tier },
+    quantity: null,
+    cost_buy: costBuy,
+    cost_sell: Math.round(costBuy * 0.4),
+    pricing_kind: 'fixed' as const,
+    /* 600 upward, clear of the hand-authored block's 10-440 and of the mount
+     * wall's 330-464. The yard's Fitting Shop is the only counter in the Nexus
+     * that stocks them, so they sort after everything a general vendor carries. */
+    sort_order: 600 + si * 20 + sti * 4 + tier,
+    /* `['dock']` is not a preference. Every `ships` row carries it and two
+     * tests hold the line: `marketplaceCatalog.test.ts` asserts it over the
+     * whole category, and `dock-economy.test.mjs` asserts against `DockWorld`
+     * itself that exactly one counter carries `ships`. A row seeded elsewhere
+     * is a catalogue entry no vendor in that world can ever show. */
+    worlds: ['dock'] as const,
+  };
+})));
+
+/**
+ * The twelve weapon tiers. `worlds` is omitted, which seeds them into all six:
+ * a weapon tier is carried on the player, not fitted to a hull, so any counter
+ * that stocks `weapons` sells it - exactly as every ammunition pack is sold
+ * everywhere. That is the one field where these and the ship rows differ, and
+ * it is the difference between gear that lives on a ship and gear that lives on
+ * the person who walks off it.
+ */
+const WEAPON_UPGRADE_ROWS: readonly BaseSeedRow[] = UPGRADE_WEAPONS.flatMap((w, wi) => ([1, 2, 3] as const).map((tier) => {
+  const costBuy = Math.round(w.base * TIER_MUL[tier - 1]);
+  return {
+    source_key: `weapon_${w.id}_damage_${tier}`,
+    name: `${w.label} Damage ${TIER_ROMAN[tier - 1]}`,
+    description: `${w.label} upgrade: +${WEAPON_TIER_PERCENT * tier}% damage, permanently.`
+      + ' Replaces the tier below it.',
+    category: 'weapons' as const,
+    image_label: `${w.tag} ${TIER_ROMAN[tier - 1]}`,
+    image_color: w.color,
+    game_action: `weapon_${w.id}_damage_${tier}` as WeaponUpgradeActionId,
+    action_config: { effect: 'grant_weapon_power', weapon: w.id, tier },
+    quantity: null,
+    cost_buy: costBuy,
+    cost_sell: Math.round(costBuy * 0.4),
+    pricing_kind: 'fixed' as const,
+    /* 700 upward, after the ship block. `wi` counts in `WEAPON_ORDER` -
+     * machinegun, fireball, bow, sword - which is why `UPGRADE_WEAPONS` is
+     * ordered by that and not by price. */
+    sort_order: 700 + wi * 4 + tier,
+  };
+}));
 
 export const BASE_ITEMS: readonly BaseSeedRow[] = [
   {
@@ -1774,6 +1982,8 @@ export const BASE_ITEMS: readonly BaseSeedRow[] = [
   },
   ...MOUNT_SKIN_ROWS,
   ...MOUNT_UPGRADE_ROWS,
+  ...SHIP_UPGRADE_ROWS,
+  ...WEAPON_UPGRADE_ROWS,
 ] as const;
 
 export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {

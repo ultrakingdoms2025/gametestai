@@ -595,15 +595,42 @@ export const ITEMS = {
    * over from `ore` to `crystal` at 100. Forty-one hand-picked pairs would be
    * forty-one chances to make the dear ore the plentiful one by accident.
    *
-   * ── Every one of these is `trinket`, and that is load-bearing ─────────
-   * A cargo ore never reaches the bag: `Mining.mine` hands the node to
+   * ── Most of these are `trinket`, and the `kind` is load-bearing ───────
+   * A CARGO ore never reaches the bag: `Mining.mine` hands the node to
    * `Piloting.stow` and `Piloting._dock` sells the hold at face value. So a
    * cargo ore must have NO `ItemUse` case (a `consumable` with no case is a
    * Use button that returns `unsupported`), NO `BASE_ITEMS` row (the shop
    * would refund the mine) and NO `WORLD_MARKETS.*.itemBuy` multiplier (a
    * price signal no price path consults). `planet-minerals.test.mjs` asserts
-   * all three, in both directions. `ferrobasalt` is the single deliberate
-   * exception and it stays the only one.
+   * all three, in both directions, and every one of those assertions is keyed
+   * on `kind === 'consumable'` rather than on an ore id - which is what makes
+   * the paragraph below legal rather than an exception carved into a gate.
+   *
+   * ── A HAND SAMPLE reaches the bag, and three of these are one ─────────
+   * `Mining.mine` now has a second destination. A node the ship cannot take -
+   * because the hold is full, or because it is a Pike and there is no hold at
+   * all - goes into the BAG instead, provided it is small enough to pocket:
+   * `holdUnitsFor(size) === 1`, which is every rare and exotic seam in the
+   * system plus Vitrine's cryolite, twenty-one of the forty-seven. Nothing is
+   * diverted away from the hold; the bag is pure overflow, so no mining run
+   * can earn less than it did before. @see systems/Mining.js
+   *
+   * Once an ore can be CARRIED, the three prohibitions above stop being facts
+   * about ore and start being facts about ore THE HOLD SELLS. `cryolite`,
+   * `sperrylite` and `aurichalc` are `consumable` and carry an `ItemUse` case
+   * each, for the reason `ferrobasalt` does one block up: the kind is what
+   * `InventoryUI` reads to draw a Use button, so an ore with an effect and a
+   * `trinket` kind is an effect that is implemented, registered and
+   * unreachable. They also carry `WORLD_MARKETS.*.itemBuy` rows, at their own
+   * former `buy.trinket` rates, for the reason `laser_cell` does: a
+   * relabelling that quietly moves an item's payout from one kind multiplier
+   * to another is a balance change nobody would find in a diff of this file.
+   *
+   * The other forty-four stay `trinket` and stay cargo. A sample of one of
+   * them is still worth carrying - `buy.trinket` runs from 0.65 at the station
+   * to 1.55 in Aldermoor Vale, so the same rock is worth 2.4x as much two
+   * gateways away - but it has nothing to do in the hand, and an effect
+   * invented for a lump of regolith would be an effect nobody wants.
    */
   /* ---- Tessera ---- */
   regolith: {
@@ -628,6 +655,21 @@ export const ITEMS = {
     colors: [0xd8d4c6, 0x77736a],
     desc: "Pale highland feldspar off a crater rim. Cheap, clean and light — the one thing on Tessera that does not stain the gloves.",
   },
+  /* SPERRYLITE, and the second of the three ores with a use in the hand.
+   *
+   * Platinum arsenide grows in HARD tin-bright cubes, and a cube packed behind
+   * a round or dragged along an edge is the oldest field expedient there is -
+   * so it routes to the `firepower` effect that already exists rather than to
+   * one invented for it. x1.15 for 20 s against the Ardent Charm's x1.25 for
+   * 30 s, weaker on both axes, for the reason written over `ferrobasalt`: a
+   * rock out of the ground must not beat the manufactured article.
+   *
+   * It is dearer than the charm it imitates - 140 cr/m3 against 44 - and that
+   * is the decision, not a mispricing. The charm is bought at a counter and
+   * every counter in the Nexus is on the far side of a gateway from the seam
+   * you are standing at. There is no shop on Tessera. What this buys is twenty
+   * seconds of harder shooting in the one place credits cannot reach.
+   */
   sperrylite: {
     id: 'sperrylite',
     name: 'Sperrylite',
@@ -635,9 +677,9 @@ export const ITEMS = {
     stack: 6,
     icon: 'crystal',
     value: 140,
-    kind: 'trinket',
+    kind: 'consumable',
     colors: [0xb6bcc4, 0x4b525c],
-    desc: "Platinum arsenide in tin-bright cubes, shocked out of the bedrock by whatever dug the crater. A find, not a seam.",
+    desc: "Platinum arsenide in tin-bright cubes, shocked out of the bedrock by whatever dug the crater. A find, not a seam — and a cube dragged along an edge is worth fifteen percent for twenty seconds.",
   },
   helion: {
     id: 'helion',
@@ -785,6 +827,19 @@ export const ITEMS = {
     colors: [0xbcdcec, 0x5d8aa4],
     desc: "Methane caged inside a lattice of water ice. It fizzes when it thaws and it burns while it melts, which never stops being unsettling.",
   },
+  /* CRYOLITE, and the first of the three ores with a use in the hand.
+   *
+   * The CHEAPEST hand sample in the game at 44 cr/m3, and the only one that is
+   * not rare or exotic - `holdUnitsFor(0.92)` rounds to 1, so a Vitrine
+   * uncommon just squeezes into a pocket. That makes it the rung the ladder
+   * needed: the ore effects are otherwise all luxuries, and a ladder whose
+   * bottom step costs 140 credits has no bottom step.
+   *
+   * A flux stone glazed over a coat is a ward, so it routes to the `ward`
+   * effect the three charms already use. x0.85 for 20 s against the Bastion
+   * Ward's x0.80 for 30 s - weaker on both axes, the `ferrobasalt` rule again,
+   * and against a charm that costs the same 44 credits at a counter.
+   */
   cryolite: {
     id: 'cryolite',
     name: 'Cryolite',
@@ -792,9 +847,9 @@ export const ITEMS = {
     stack: 12,
     icon: 'ore',
     value: 44,
-    kind: 'trinket',
+    kind: 'consumable',
     colors: [0xeaf2f6, 0xa8bcc8],
-    desc: "Sodium aluminium fluoride in colourless blocks that all but vanish in meltwater. Miners on Vitrine mark every load with dye for exactly that reason.",
+    desc: "Sodium aluminium fluoride in colourless blocks that all but vanish in meltwater. Miners on Vitrine mark every load with dye for exactly that reason — or crack one over a coat for a fifteen percent glaze that lasts twenty seconds.",
   },
   azurine: {
     id: 'azurine',
@@ -1054,6 +1109,22 @@ export const ITEMS = {
     colors: [0xa8e0d0, 0x2e6a5e],
     desc: "A carbonate that only grows where ring ice lands, melts under the pressure of its own arrival and freezes again. Lathe is the only address it has.",
   },
+  /* AURICHALC, and the third and dearest of the three ores with a use.
+   *
+   * Orichalcum beats into leaf, and a leaf scribed and read is a chart - so it
+   * routes to the `chart` effect the Cartographer's Plate already uses, with
+   * that item's own refusal copied verbatim. There is no "weaker on both axes"
+   * to apply here because a chart has no axes: it marks a district or there is
+   * nothing left to mark.
+   *
+   * So the cost is paid in the only currency left, which is the credits burnt:
+   * 700 cr/m3 against the Plate's 90, the worst trade in the game by a factor
+   * of nearly eight. It is here to be REFUSED almost every time, and to be the
+   * right answer once - the pilot who is nine hundred metres up a Vitrine
+   * ridge with a full hold, one aurichalc chip and no idea which way the last
+   * viewpoint lies. `_canApply` asks `viewpoints.canChart()` BEFORE the
+   * consume, so the seven-hundred-credit rock cannot be destroyed for nothing.
+   */
   aurichalc: {
     id: 'aurichalc',
     name: 'Aurichalc',
@@ -1061,9 +1132,9 @@ export const ITEMS = {
     stack: 4,
     icon: 'crystal',
     value: 700,
-    kind: 'trinket',
+    kind: 'consumable',
     colors: [0xf0c040, 0x8a5c08],
-    desc: "A gold-copper alloy nobody can account for, cut from the floor of the shepherd crater under a sky filled edge to edge with rings. The dearest cubic metre in the system, and the furthest.",
+    desc: "A gold-copper alloy nobody can account for, cut from the floor of the shepherd crater under a sky filled edge to edge with rings. The dearest cubic metre in the system — beat a chip into leaf and it will scribe you a chart, at a price no chandler would ask.",
   },
 
   /* ---- Lodestar Yard ------------------------------------------------
@@ -1576,7 +1647,17 @@ export const WORLD_MARKETS = {
     buy: { trinket: 0.65, ammo: 0.8, consumable: 1.0 },
     sell: { ammo: 0.8, consumable: 1.1 },
     // Relics from the other worlds are curios here, and priced like it.
-    itemBuy: { relic_coin: 1.7, nexus_shard: 1.45 },
+    /* THE THREE ORES WITH A USE, PRICED AT THEIR OLD FIGURE ON PURPOSE.
+     *
+     * `cryolite`, `sperrylite` and `aurichalc` were `trinket` until they were
+     * given `ItemUse` cases, and `InventoryUI` will not draw a Use button for
+     * a trinket - so the kind had to change. This is `laser_cell`'s note one
+     * table over: without these rows the relabelling alone would have moved
+     * three ores from `buy.trinket` to `buy.consumable`, silently, in every
+     * world at once. The number on the right IS this world's `buy.trinket`,
+     * so the flip is worth exactly zero credits and the ore keeps the
+     * regional spread that is the entire reason to carry a sample home. */
+    itemBuy: { relic_coin: 1.7, nexus_shard: 1.45, cryolite: 0.65, sperrylite: 0.65, aurichalc: 0.65 },
     note: 'Foundry port — ammunition is cheap, salvage is worthless.',
   },
   medieval: {
@@ -1584,7 +1665,17 @@ export const WORLD_MARKETS = {
     // No foundry and no cartridges: metal and manufactured goods are precious.
     buy: { trinket: 1.55, ammo: 1.15, consumable: 1.35 },
     sell: { ammo: 1.45, consumable: 1.3 },
-    itemBuy: { alloy_scrap: 1.8, relic_coin: 0.55 },
+    /* THE THREE ORES WITH A USE, PRICED AT THEIR OLD FIGURE ON PURPOSE.
+     *
+     * `cryolite`, `sperrylite` and `aurichalc` were `trinket` until they were
+     * given `ItemUse` cases, and `InventoryUI` will not draw a Use button for
+     * a trinket - so the kind had to change. This is `laser_cell`'s note one
+     * table over: without these rows the relabelling alone would have moved
+     * three ores from `buy.trinket` to `buy.consumable`, silently, in every
+     * world at once. The number on the right IS this world's `buy.trinket`,
+     * so the flip is worth exactly zero credits and the ore keeps the
+     * regional spread that is the entire reason to carry a sample home. */
+    itemBuy: { alloy_scrap: 1.8, relic_coin: 0.55, cryolite: 1.55, sperrylite: 1.55, aurichalc: 1.55 },
     // Arrows are the local product, so they are the one cheap thing.
     itemSell: { pack_arrows: 0.6 },
     note: 'No foundry — scrap and medicine fetch a premium, arrows are local.',
@@ -1595,7 +1686,17 @@ export const WORLD_MARKETS = {
     // the one thing it has in surplus is antiquity.
     buy: { trinket: 1.35, ammo: 1.3, consumable: 1.45 },
     sell: { ammo: 1.55, consumable: 1.4 },
-    itemBuy: { alloy_scrap: 1.65, nexus_shard: 1.5, relic_coin: 0.5 },
+    /* THE THREE ORES WITH A USE, PRICED AT THEIR OLD FIGURE ON PURPOSE.
+     *
+     * `cryolite`, `sperrylite` and `aurichalc` were `trinket` until they were
+     * given `ItemUse` cases, and `InventoryUI` will not draw a Use button for
+     * a trinket - so the kind had to change. This is `laser_cell`'s note one
+     * table over: without these rows the relabelling alone would have moved
+     * three ores from `buy.trinket` to `buy.consumable`, silently, in every
+     * world at once. The number on the right IS this world's `buy.trinket`,
+     * so the flip is worth exactly zero credits and the ore keeps the
+     * regional spread that is the entire reason to carry a sample home. */
+    itemBuy: { alloy_scrap: 1.65, nexus_shard: 1.5, relic_coin: 0.5, cryolite: 1.35, sperrylite: 1.35, aurichalc: 1.35 },
     note: 'Cut off on the mesa — everything manufactured is dear, relics are not.',
   },
   sports: {
@@ -1603,7 +1704,17 @@ export const WORLD_MARKETS = {
     // Civilian, well supplied, and nobody here wants your hull plating.
     buy: { trinket: 0.9, ammo: 0.9, consumable: 0.7 },
     sell: { ammo: 1.05, consumable: 0.65 },
-    itemBuy: { nexus_shard: 1.25 },
+    /* THE THREE ORES WITH A USE, PRICED AT THEIR OLD FIGURE ON PURPOSE.
+     *
+     * `cryolite`, `sperrylite` and `aurichalc` were `trinket` until they were
+     * given `ItemUse` cases, and `InventoryUI` will not draw a Use button for
+     * a trinket - so the kind had to change. This is `laser_cell`'s note one
+     * table over: without these rows the relabelling alone would have moved
+     * three ores from `buy.trinket` to `buy.consumable`, silently, in every
+     * world at once. The number on the right IS this world's `buy.trinket`,
+     * so the flip is worth exactly zero credits and the ore keeps the
+     * regional spread that is the entire reason to carry a sample home. */
+    itemBuy: { nexus_shard: 1.25, cryolite: 0.9, sperrylite: 0.9, aurichalc: 0.9 },
     note: 'Civilian grounds — medical supplies are cheap and plentiful.',
   },
   race: {
@@ -1653,6 +1764,10 @@ export const WORLD_MARKETS = {
     itemBuy: {
       alloy_scrap: 0.6, hull_plate: 0.7, thruster_coil: 0.75, laser_cell: 0.9,
       relic_coin: 1.7, nexus_shard: 1.6, ferrobasalt: 1.35,
+      /* The three ores with a use, at the yard's own `buy.trinket` of 0.85.
+       * See the identical note over the station's rows: the kind flip that
+       * gave them a Use button must not also move their payout. */
+      cryolite: 0.85, sperrylite: 0.85, aurichalc: 0.85,
     },
     itemSell: { pack_laser_cell: 0.75 },
     note: 'A yard makes hull plate and coil by the ton and cannot get a relic for love nor money.',

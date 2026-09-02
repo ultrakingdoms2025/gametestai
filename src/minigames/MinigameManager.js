@@ -192,6 +192,98 @@ export function consolationFor(venue) {
   return Math.min(ceiling, Math.max(ceiling > 0 ? 1 : 0, Math.floor(prize * MINIGAME_FLOOR_SHARE)));
 }
 
+/**
+ * What a medal is worth, as a SHARE of the venue's prize.
+ *
+ * ── The ladder this completes ────────────────────────────────────────────────
+ *
+ * The payout ladder had exactly two rungs: {@link MINIGAME_FLOOR_SHARE} for
+ * seeing a contest out, and the whole prize for winning it. `RooftopTrial`
+ * grades a win three ways off measured par times and seven citadel venues use
+ * it, and every one of those grades paid the same number - so a run 14% inside
+ * the reference pace and a run that scraped bronze with two seconds to spare
+ * were worth identically the same credits, and a repeat visit to a venue you
+ * already hold moved nothing at all.
+ *
+ * ── Why GOLD is 1.0 and not 1.5, which is the tempting shape ────────────────
+ *
+ * Two reasons, and the second one is a hard external ceiling rather than a
+ * judgement.
+ *
+ *  1. The house rule this file already states twice: the participation floor is
+ *     "a SHARE of a prize that did not move, so the ceiling of the faucet is
+ *     exactly what it was". The economy was measured at 22 credit sources
+ *     against 5 sinks with a whole-game faucet over 250,000 CR. A medal
+ *     MULTIPLIER would open a new faucet at the top of the best-rewarded
+ *     activity in the game; a medal SHARE re-uses the one that is already
+ *     there. The grade is expressed in what the other grades give up, which is
+ *     what makes gold mean something.
+ *  2. `site/lib/creditPricing.ts` refuses a reported `minigame` event over 250
+ *     credits per event. The richest venue publishes `reward: 18`, which
+ *     `venuePrize` rescales to 216. Any multiplier above 250/216 = 1.157 would
+ *     be SERVER-REFUSED on the Skyline and the Long Water - a payout that was
+ *     exactly right, logged as a rejection, with the player's client-side
+ *     balance already credited. There is no room above the prize; there is
+ *     plenty below it.
+ *
+ * Bronze is 0.70 rather than something nearer the floor because a bronze on the
+ * Souk Dash is still a contest won: at the shipped 96 CR prize it pays 67
+ * against a 24 CR participation floor, so the ladder reads 24 / 67 / 81 / 96 -
+ * every rung clearly above the last, and winning badly still comfortably better
+ * than finishing badly. That ordering is enforced rather than assumed; see
+ * {@link medalPrize}.
+ *
+ * A contest that grades nothing - which is thirteen of the sixteen venues -
+ * publishes no medal and pays the full prize exactly as it did before. This
+ * table can only ever REDUCE a payout, and only for a contest that told the
+ * player which grade they took.
+ */
+export const MEDAL_PRIZE_SHARE = Object.freeze({ gold: 1, silver: 0.85, bronze: 0.7 });
+
+/**
+ * Credits a win pays once its medal is taken into account.
+ *
+ * The clamp is the part worth reading, and it is the same shape
+ * {@link consolationFor}'s is. Winning must pay more than finishing, always:
+ * a venue that publishes a large `consolation` against a small `reward` could
+ * otherwise make a bronze win pay LESS than the loss beside it, which would
+ * teach a player to stop trying at the exact moment the contest got interesting.
+ * So the medal share is floored at one credit above the participation floor.
+ *
+ * @param {number} prize the venue's resolved reward (already `venuePrize`d)
+ * @param {string|null} medal 'gold' | 'silver' | 'bronze', or null for ungraded
+ * @param {number} [floor] this venue's participation floor
+ * @returns {number} whole credits
+ */
+export function medalPrize(prize, medal, floor = 0) {
+  const p = Number(prize);
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  const share = MEDAL_PRIZE_SHARE[medal];
+  /* An ungraded contest is the identity. Thirteen venues, and every test that
+   * asserts a win pays the venue reward, go through this branch. */
+  if (!(share > 0)) return Math.floor(p);
+  const paid = Math.floor(p * share);
+  const f = Number(floor);
+  const min = Number.isFinite(f) && f >= 0 ? Math.min(Math.floor(p), Math.floor(f) + 1) : 0;
+  return Math.min(Math.floor(p), Math.max(min, paid));
+}
+
+/**
+ * The medal in a result's `score`, or null.
+ *
+ * `score` is a bag - a clock from the swim, the ski run and the track race, a
+ * count from the delivery, the hack and the test fire, a games string from the
+ * tennis, and a medal from the rooftop trial. Only one of those is a member of
+ * {@link MEDAL_PRIZE_SHARE}, so a set lookup is a complete discriminator and
+ * no module needs a second field to say "this one means a medal".
+ *
+ * @param {any} score
+ * @returns {'gold'|'silver'|'bronze'|null}
+ */
+export function medalOf(score) {
+  return typeof score === 'string' && MEDAL_PRIZE_SHARE[score] !== undefined ? score : null;
+}
+
 /** Seconds of "on your marks" before a contest begins. */
 const COUNTDOWN_S = 4.0;
 
@@ -831,7 +923,14 @@ export class MinigameManager {
      * is `if (!Number.isInteger(d) || d === 0) return { ok:false, reason:'invalid' }`,
      * so reporting a zero would be a server-side refusal recorded against a
      * payout that was exactly right. */
-    const credits = won ? (venue?.reward ?? MINIGAME_PRIZE) : consolationFor(venue);
+    const floor = consolationFor(venue);
+    /* The GRADE, when the contest published one. Seven citadel venues do; the
+     * other nine answer null here and pay exactly what they always paid. See
+     * `medalPrize` for why a medal can only ever move a payout DOWN. */
+    const medal = medalOf(outcome.score);
+    const credits = won
+      ? medalPrize(venue?.reward ?? MINIGAME_PRIZE, medal, floor)
+      : floor;
     if (credits > 0) this.economy?.add?.(credits, 'minigame');
 
     const result = {
@@ -845,9 +944,19 @@ export class MinigameManager {
       place: Number.isFinite(Number(outcome.place)) ? Number(outcome.place) : (won ? 1 : 2),
       total: Number.isFinite(Number(outcome.total)) ? Number(outcome.total) : 2,
       score: outcome.score ?? null,
+      /* The grade, promoted out of the `score` bag onto a field of its own.
+       * `SaveGame._recordTrial` can read either, but a listener that wants to
+       * know whether a contest was GRADED should not have to know that the
+       * rooftop trial happens to put its medal where the swim puts a clock. */
+      medal,
       scoreLabel: outcome.scoreLabel ?? null,
       rivalName: outcome.rivalName ?? null,
       detail: outcome.detail ?? null,
+      /* The recorded pace of this run, when the module kept one. Carried and
+       * never inspected: this file has no opinion about what a replay is, and
+       * `SaveGame` shape-checks it before it reaches a save. See
+       * `GhostReplay.js` for why it is a progress polyline and not a track. */
+      replay: outcome.replay ?? null,
       time: this.clock,
       credits,
       worldId: this._worldId,
@@ -907,9 +1016,13 @@ export class MinigameManager {
      * a losing contest feels like. Saying "lost" and quietly adding 3 CR would
      * leave the design decision invisible to the only person it is for. */
     const took = result.rivalName ? ` — ${result.rivalName} took it` : '';
+    /* The GRADE goes in the toast, because the grade is now what the payout is
+     * a function of. "Won — +67 credits" against a 96 CR venue reads as a bug
+     * unless the line also says bronze. */
+    const grade = medal ? ` — ${medal}` : '';
     this.bus?.emit('hud:notify', {
       text: won
-        ? `${result.label} won — +${credits} credits`
+        ? `${result.label} won${grade} — +${credits} credits`
         : `${result.label} lost${took}${credits > 0 ? ` — +${credits} for finishing` : ''}`,
       tone: won ? 'good' : 'warn',
     });

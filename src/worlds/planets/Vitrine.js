@@ -1124,6 +1124,48 @@ export const VITRINE = definePlanet({
    * disc the bench actually has, and it is the reason the pad was authored at
    * 20 in the first place.
    */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * 7.8 m/s2 - apex 1.005 m, a 5.6 m sprint jump. Middle of the spread and
+   * nothing here turns on it: three walks. */
+  viewpoints: [
+    {
+      /* The north lip of Blackhorn Bench, 102 m, at the top of the cone the
+       * primary pad is notched into. Level ground - the drop is behind you. */
+      id: 'blackhorn_lip', name: 'Blackhorn Lip', x: 246.31, z: 127.31, r: 7,
+      terrain: 'outcrop', place: 'Blackhorn Bench',
+      climb: 'Straight up the bench road from the pad and out to the north edge.',
+    },
+    {
+      /* The north-west rim of the collapse over The Hyaline Vault - 66 m, with
+       * a 48 m sink immediately inside it and the vault mouth under that. */
+      id: 'vault_rim', name: 'Vault Rim', x: -320, z: 310, r: 8,
+      terrain: 'shelf', place: 'the collapse over The Hyaline Vault',
+      climb: 'Round the outside of the sink from Vaultmouth, anticlockwise.',
+    },
+    {
+      /* The south edge of The Firn Shelf, 73.1 m, 350 m clear of any pad and
+       * the far end of the rime-feather field. */
+      id: 'firn_edge', name: 'Firn Shelf Edge', x: -160, z: -410, r: 8,
+      terrain: 'shelf', place: 'The Firn Shelf',
+      climb: 'South across the sheet from Firn Flat and up onto the shelf.',
+    },
+  ],
+
   landing: [
     {
       /** Open sheet, north of the ablation front, 112 m off the shelf's edge
@@ -1145,6 +1187,7 @@ export const VITRINE = definePlanet({
       id: 'vaultmouth', name: 'Vaultmouth', x: VAULT_PAD[0], z: VAULT_PAD[1], r: 20, yaw: -2.53,
     },
   ],
+
 
   hazards: {
     /** Spindrift. The same `Points` field Cinder uses for ash, in ice: 0.34

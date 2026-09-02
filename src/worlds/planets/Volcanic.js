@@ -893,6 +893,79 @@ export const VOLCANIC = definePlanet({
    * one to trust: Tessera's Raysedge reads 300 degrees of rim and comes home
    * 98.2% of the time. See `SpaceObjectives.padIsHome`.
    */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * Three places on this planet worth standing on, and none of them is a pad.
+   * Every coordinate below was measured against the BUILT collision height
+   * field (not against this file's own landform table) by
+   * `scripts/tests/planet-viewpoints.test.mjs`, which floods the same 38-degree
+   * walk lattice `planet-reach` uses and fails if one stops being walkable.
+   *
+   * Cinder is a HEAVY world by the standards of this system - 8.44 m/s2, a jump
+   * apex of 0.98 m and 5.3 m of sprint-jump carry. Nothing here is crossed by
+   * jumping and nothing here needs to be: all three are approached by walking
+   * up something. That is the honest half of the gravity spread, and it is what
+   * makes Tessera and Lathe read as different places rather than as re-skins. */
+  viewpoints: [
+    {
+      /* The lip of the caldera where the Rimhold ramp tops out - 98.6 m, with
+       * the crater floor 37 m below on one side and the ash plain 88 m below on
+       * the other. 46 m clear of Rimhold's rim and 81 m of walking from it: the
+       * cheap one, deliberately, because a world needs somewhere to learn the
+       * verb before it charges for it. */
+      id: 'ash_throne', name: 'Ash Throne Rim', x: 37.73, z: -125.57, r: 7,
+      terrain: 'crater', place: 'the Ash Throne caldera',
+      climb: 'Up the Rimhold ramp and left along the crest.',
+    },
+    {
+      /* The west shoulder of the cone at (-320, -40) - the one the map notes
+       * above call "still alight" - 760 m from the nearest pad, which is the
+       * longest legitimate march on Cinder.
+       *
+       * The SHOULDER, and it took two corrections to get here. Both were caught
+       * by measurement rather than by reading this file:
+       *
+       *   the summit is a spike. Its synchronising disc - the radius out to
+       *   which the ground is still inside `Viewpoints.SYNC_BAND` - measures
+       *   2.5 m, because the crown falls away at 54 degrees inside six metres.
+       *   A prize you can walk over without collecting.
+       *
+       *   and the summit is ON FIRE. The vent in its pit is a 4.4 m disc of
+       *   lava, and `heatShimmer.nearLiquid` puts a live 24 m heat band round
+       *   it - so a viewpoint on the crown would have been a fast-travel anchor
+       *   that teleports the player into 1.8 dps and holds them there. That is
+       *   the descriptor being right about its own world and the first draft of
+       *   this viewpoint not having read it.
+       *
+       * 33 m of clearance from the vent's rim and a 7.0 m disc to stand on.
+       * `planet-viewpoints.test.mjs` refuses both defects now. */
+      id: 'far_cone', name: 'The Far Cone', x: -355, z: -52, r: 6,
+      terrain: 'outcrop', place: 'the western cone field',
+      climb: 'West across the ash plain and up the outer flank, keeping the vent on your right.',
+    },
+    {
+      /* The western brow of The Glass Shelf, where the obsidian table ends and
+       * drops to the plain. 441 m clear of any pad. */
+      id: 'glass_brow', name: 'Glass Shelf Brow', x: -320, z: 170, r: 7,
+      terrain: 'shelf', place: 'The Glass Shelf',
+      climb: 'Onto the shelf anywhere on its south edge and walk west.',
+    },
+  ],
+
   landing: [
     {
       id: 'ashfall', name: 'Ashfall Flat', x: 150, z: 205, r: 30, yaw: -2.2,
@@ -904,6 +977,7 @@ export const VOLCANIC = definePlanet({
       id: 'colonnade', name: 'Colonnade Deck', x: 250, z: 40, r: 22, primary: true, yaw: 1.4,
     },
   ],
+
 
   hazards: {
     /** Ash in the air. Phase 1 draws it; nothing takes damage from it. */

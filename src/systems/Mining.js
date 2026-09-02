@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { holdUnitsFor } from '../worlds/planets/PlanetDescriptor.js';
+import { isItem, sellValue } from './ItemDefs.js';
 
 /**
  * WORKING A SEAM.
@@ -25,6 +26,66 @@ import { holdUnitsFor } from '../worlds/planets/PlanetDescriptor.js';
  * 6,080-credit sweep you can take home in one trip. A mining run that paid
  * straight into the wallet would make the ore tender pointless and the flight
  * home optional.
+ *
+ * ── AND THE SECOND DESTINATION, WHICH DOES NOT BREAK THAT RULE ─────────────
+ *
+ * `ItemDefs` defines forty-seven ore ids with a stack, a value, an icon and a
+ * description, and until now not one of them could ever be held. `stow` writes
+ * a per-type `{units, credits}` row into `Piloting._cargo` and `sellCargo`
+ * calls `economy.add(value, 'ore')` - a NUMBER, never an item - so every one
+ * of those rows was a bag item nothing could put in a bag: no supply contract
+ * could name one, no regional multiplier could apply to one, and no `ItemUse`
+ * case could fire on one. `ItemDefs.js` said so about itself, in as many
+ * words: *"a regional multiplier on tephra would be a number no transaction in
+ * the game reads."*
+ *
+ * So a node the ship CANNOT take now goes into the bag instead - as one unit
+ * of the real `ITEMS` row, stackable, sellable, contract-visible, usable.
+ *
+ * The order is what keeps the loop above intact, and it is the whole design:
+ *
+ *   THE HOLD IS ASKED FIRST, ALWAYS. The bag is overflow and only overflow.
+ *
+ * Nothing is ever diverted away from the ship, so no mining run can earn less
+ * than it did before this existed - which matters more than it sounds, because
+ * a vendor pays `SELL_RATE` (0.4) for a bag item and the yard pays face value
+ * for a hold row. Route a 310-credit iridite seam to the bag while the hold
+ * had room and you have quietly cut the player's rare-ore income by 60%, in a
+ * commit whose message says "ore into the bag". The overflow rule makes that
+ * arithmetic impossible: what reaches the bag is ore that would otherwise have
+ * been LEFT IN THE GROUND, and 40% of something is the whole of nothing.
+ *
+ * ── What is small enough to pocket ────────────────────────────────────────
+ *
+ * `holdUnitsFor(node.size) <= SAMPLE_HOLD_UNITS`, i.e. a node the hold would
+ * have charged exactly one cubic metre for. Not a new threshold invented here:
+ * it is the SAME size-to-volume law `_roomFor` already borrows, asked for the
+ * smallest answer it can give. Twenty-one of the forty-seven ores qualify -
+ * every rare and every exotic seam in the system, plus Vitrine's cryolite -
+ * and the twenty-six commons and uncommons are 2 and 3 m3 boulders that a
+ * person plainly cannot put in a satchel. A rule that let a 1.9 m humic nodule
+ * into a bag slot would be the hold's whole reason for existing, deleted by a
+ * number nobody looked at.
+ *
+ * The rarest ore being the pocketable ore is not a coincidence to be smoothed
+ * out - it is `PlanetWorld`'s own `SHOW` ladder read backwards. An exotic seam
+ * IS a chip and a common seam IS a boulder, in the mesh, on screen, at the
+ * size the player walks up to.
+ *
+ * ── Where the bag comes from ──────────────────────────────────────────────
+ *
+ * `main.js` builds this as `new Mining({ bus, player, input, worldManager,
+ * piloting })` and does not pass an inventory. Rather than ship a feature that
+ * is inert until a file this module does not own changes, the bag is resolved
+ * lazily through the chain the live game already has: `main.js:379` assigns
+ * `player.loadout = loadout` and `main.js:582` calls
+ * `loadout.setInventory(inventory)`, so `player.loadout.inventory` IS the
+ * player's bag in the shipped build. An explicitly passed `inventory` always
+ * wins, which is what every test and the preferred `main.js` wiring use.
+ *
+ * With no bag reachable at all, `_bag()` answers null and every node behaves
+ * exactly as it did before this paragraph was written: hold, or refusal. That
+ * is deliberate - the absence of a wire must not invent a destination.
  *
  * ── Refuse before you consume ──────────────────────────────────────────────
  *
@@ -59,16 +120,33 @@ const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3(0, 0, 0);
 const _m = new THREE.Matrix4();
 
+/**
+ * The largest hold volume, in cubic metres, a node may occupy and still be
+ * pocketable. One - which is the smallest number `holdUnitsFor` can return.
+ *
+ * Exported because the gate reads it rather than restating it: a test that
+ * spelled `1` itself would still pass on the day this became 2 and every
+ * boulder on ten planets started going into bag slots.
+ */
+export const SAMPLE_HOLD_UNITS = 1;
+
 export class Mining {
   /**
-   * @param {{bus:any, player:any, input:any, worldManager:any, piloting:any}} ctx
+   * @param {{bus:any, player:any, input:any, worldManager:any, piloting:any,
+   *          inventory?:any}} ctx
    */
-  constructor({ bus, player, input, worldManager, piloting }) {
+  constructor({ bus, player, input, worldManager, piloting, inventory = null }) {
     this.bus = bus ?? null;
     this.player = player ?? null;
     this.input = input ?? null;
     this.worldManager = worldManager ?? null;
     this.piloting = piloting ?? null;
+    /**
+     * The player's bag, for hand samples. Null is a valid, tested state and
+     * means "hold or nothing" - see the header on where this comes from in the
+     * shipped build when `main.js` does not pass one.
+     */
+    this.inventory = inventory ?? null;
 
     /** @type {Array<object>} live nodes in the active world. */
     this._nodes = [];
@@ -180,7 +258,17 @@ export class Mining {
     this._setPrompt(
       this._hold > 0
         ? `Cutting ${node.name}… ${pct}%`
-        : `Hold to cut the ${node.name}  ·  ${node.credits} cr`
+        /* The DESTINATION is on the line whenever it is not the hold.
+         *
+         * A pilot with a full hold who reads "Hold to cut the Iridite · 233 cr"
+         * and then watches the credits NOT arrive at the yard has been told
+         * something untrue about their own ship - the same failure the `_roomFor`
+         * docblock names one method down. `233 cr` is the hold's face value and
+         * a bag sample is sold at a counter for `SELL_RATE` times a regional
+         * multiplier, so the number changes as well as the place. Both are said. */
+        : room.where === 'bag'
+          ? `Hold to pocket a ${node.name} sample  ·  ~${sellValue(node.type, 1)} cr at a counter`
+          : `Hold to cut the ${node.name}  ·  ${node.credits} cr`
     );
   }
 
@@ -211,15 +299,77 @@ export class Mining {
     const p = this.piloting;
     if (!p?.shipId) return { ok: false, text: 'No ship to load it into.' };
     const units = holdUnitsFor(node.size ?? 1);
-    if (p.cargoUnits + units > p.cargoCapacity) {
-      return { ok: false, text: `Hold full — ${p.cargoUnits}/${p.cargoCapacity} m³. Sell at the yard.` };
+    if (p.cargoUnits + units <= p.cargoCapacity) return { ok: true, where: 'hold' };
+
+    /* THE HOLD SAID NO. ASK THE OTHER STORE, AND ONLY IN THIS ORDER.
+     *
+     * The trap this arrangement exists to avoid is double-counting: two stores
+     * and one node, with a prompt that invites a cut the `mine` path will then
+     * refuse, or - far worse - a cut that lands in both. `_roomFor` and `mine`
+     * therefore ask the SAME two questions in the SAME order, and `mine` never
+     * reaches the bag except down the branch `stow` has already declined.
+     * There is exactly one `stow` call and exactly one `addToBag` call, and
+     * neither can run twice for one node.
+     *
+     * The prompt still names the hold when the bag is what will take it,
+     * because "hold full" is the fact the player has to act on eventually; the
+     * sample line below says where this one is actually going. */
+    const sample = this._sampleRoom(node, units);
+    if (sample.ok) return { ok: true, where: 'bag', units };
+    return { ok: false, text: sample.text ?? `Hold full — ${p.cargoUnits}/${p.cargoCapacity} m³. Sell at the yard.` };
+  }
+
+  /**
+   * The bag the hand samples go into, or null.
+   *
+   * An explicitly wired `inventory` wins. Failing that, the live game's own
+   * chain: `player.loadout` is assigned in `main.js` and `Loadout.setInventory`
+   * puts the bag on it, so this is the player's real inventory in the shipped
+   * build without a line of `main.js` having to change. Both probes are
+   * duck-typed on the two methods this file actually calls, so a stub that
+   * cannot accept an item is treated as no bag at all rather than throwing
+   * halfway through a mine.
+   *
+   * @returns {any|null}
+   */
+  _bag() {
+    for (const inv of [this.inventory, this.player?.loadout?.inventory]) {
+      if (inv && typeof inv.addToBag === 'function' && typeof inv.bagRoomFor === 'function') return inv;
+    }
+    return null;
+  }
+
+  /**
+   * Can this node be pocketed, and is there a slot for it?
+   *
+   * Three questions, and all three have to answer yes:
+   *
+   *  1. is it small enough - `holdUnitsFor(size) <= SAMPLE_HOLD_UNITS`;
+   *  2. is `node.type` a REAL `ITEMS` row - every `PlanetDescriptor` mineral
+   *     declares `item` and every one of the forty-seven sets it equal to its
+   *     own `id`, which is what `node.type` carries, but a descriptor that
+   *     broke that equality must not put an unknown id in a bag. `Inventory`
+   *     would silently accept nothing and the node would be gone;
+   *  3. is there a free slot or a part-filled stack.
+   *
+   * @param {object} node @param {number} units the hold volume of this node
+   * @returns {{ok:boolean, text?:string}}
+   */
+  _sampleRoom(node, units = holdUnitsFor(node?.size ?? 1)) {
+    if (units > SAMPLE_HOLD_UNITS) return { ok: false };
+    const id = node?.type;
+    if (!id || !isItem(id)) return { ok: false };
+    const bag = this._bag();
+    if (!bag) return { ok: false };
+    if (bag.bagRoomFor(id) < 1) {
+      return { ok: false, text: `Hold full, and no bag slot for a ${node.name} sample.` };
     }
     return { ok: true };
   }
 
   /**
    * Take one node. Public so a test can drive it without an input device.
-   * @returns {{ok:boolean, reason?:string, credits?:number}}
+   * @returns {{ok:boolean, reason?:string, credits?:number, where?:'hold'|'bag'}}
    */
   mine(node) {
     if (!node) return { ok: false, reason: 'no-node' };
@@ -228,12 +378,30 @@ export class Mining {
 
     // Refuse before consuming. See the header.
     const res = this.piloting?.stow?.(node) ?? { ok: false, reason: 'no-ship' };
+    let where = 'hold';
     if (!res.ok) {
-      this.bus?.emit?.('hud:notify', {
-        text: res.reason === 'hold-full' ? 'Hold is full.' : 'Nowhere to put it.',
-        tone: 'warn',
-      });
-      return res;
+      /* THE HOLD REFUSED. The only door left is the bag, and only for a node
+       * small enough to go through it.
+       *
+       * `stow` refuses without consuming anything - it checks the volume before
+       * it touches `_cargo` - so arriving here means the node is still in the
+       * world and untaken, which is the precondition the header's
+       * "refuse before you consume" rule needs. `addToBag` has the same
+       * property: it returns how many units it ACCEPTED and mutates nothing
+       * when that is zero, so a bag that fills between the prompt and the cut
+       * leaves the seam standing rather than eating it. */
+      const sample = this._sampleRoom(node);
+      const taken = sample.ok ? (this._bag()?.addToBag?.(node.type, 1) ?? 0) : 0;
+      if (taken < 1) {
+        this.bus?.emit?.('hud:notify', {
+          text: res.reason === 'hold-full'
+            ? (sample.text ? 'Hold is full, and so is your bag.' : 'Hold is full.')
+            : 'Nowhere to put it.',
+          tone: 'warn',
+        });
+        return res;
+      }
+      where = 'bag';
     }
 
     this._taken.add(key);
@@ -242,11 +410,18 @@ export class Mining {
     this.stats.credits += node.credits ?? 0;
     this._near = null;
     this._setPrompt(null);
+    /* `where` rides along for the same reason `byPlayer` rides on every
+     * `npc:killed`: a listener that cannot tell the two destinations apart
+     * would credit a bag sample against the hold's ledger. Nothing consumes it
+     * yet, and it is published anyway because the alternative is a second
+     * event later that has to be kept in step with this one. */
     this.bus?.emit?.('mining:node', {
-      id: node.id, type: node.type, name: node.name, credits: node.credits,
+      id: node.id, type: node.type, name: node.name, credits: node.credits, where,
     });
     this.bus?.emit?.('hud:notify', {
-      text: `${node.name} aboard — ${node.credits} CR when sold`,
+      text: where === 'bag'
+        ? `${node.name} sample in your bag — the hold is full`
+        : `${node.name} aboard — ${node.credits} CR when sold`,
       tone: 'info',
     });
     /* Quest and contract systems both listen on this channel for "the player
@@ -273,7 +448,7 @@ export class Mining {
       name: node.name,
       worldId: this.worldManager?.active?.id ?? null,
     });
-    return { ok: true, credits: node.credits ?? 0 };
+    return { ok: true, credits: node.credits ?? 0, where };
   }
 
   /** Collapse a node's crystals. See the header on why it is a zero scale. */

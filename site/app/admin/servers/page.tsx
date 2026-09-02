@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { ServerAdminPanel } from '@/components/ServerAdminPanel';
+import PurchaseErrorBanner from '@/components/PurchaseErrorBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,8 +36,18 @@ export default async function ServersAdminPage(props: {
   const sp = await props.searchParams;
   const justSubscribed = sp.subscribed === '1';
 
+  /* The OTHER thing both purchase paths land on. `simulatedHostingGrant`
+   * redirects here with `?error=<reason>` on three separate refusals —
+   * `stripe_configured`, `invalid`, `grant-failed` — and this page read only
+   * `subscribed`, so a hosting purchase that failed to provision rendered as an
+   * ordinary empty dashboard. The customer's next move was to buy it again. */
+  const errorCode = typeof sp.error === 'string' ? sp.error : null;
+  const errorRef = typeof sp.ref === 'string' ? sp.ref
+    : typeof sp.order === 'string' ? sp.order : null;
+
   return (
-    <main className="wrap" style={{ padding: '36px 20px 56px' }}>
+    <main id="main" tabIndex={-1} className="wrap" style={{ padding: '36px 20px 56px' }}>
+      <PurchaseErrorBanner code={errorCode} reference={errorRef} />
       <div style={{ display: 'grid', gap: 12, marginBottom: 18 }}>
         <div style={{ color: '#7fe7ff', textTransform: 'uppercase', letterSpacing: '0.18em', fontSize: 12 }}>
           Custom servers

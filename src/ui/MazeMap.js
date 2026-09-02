@@ -204,7 +204,8 @@ export class MazeMap {
           <span class="mz-map-level" data-level></span>
           <span class="mz-map-levels" data-levels></span>
           <button type="button" class="mz-map-tab mz-map-recentre" data-recentre>FIND ME</button>
-          <span class="mz-map-hint">WHEEL OR PINCH ZOOMS · DRAG PANS · CLICK A FLOOR TO ENLARGE · FIND ME RECENTRES · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE · ESC</span>
+          <span class="mz-map-hint">WHEEL OR PINCH ZOOMS · DRAG PANS · CLICK A FLOOR TO ENLARGE · FIND ME RECENTRES · 0 ALL · 1-4 FLOOR · CTRL+M ROUTE</span>
+          <button type="button" class="mz-map-tab mz-map-close" data-close title="Close [Esc]">✕</button>
         </div>
         <canvas class="mz-map-canvas"></canvas>
         <div class="mz-map-foot">
@@ -250,6 +251,24 @@ export class MazeMap {
      * too - being centred on where you are while reading a different floor
      * would centre on nothing. */
     this.el.querySelector('[data-recentre]').addEventListener('click', () => this.recentre());
+
+    /* CLOSE, as a control rather than as a word in a hint line.
+     *
+     * The header's hint ended in "ESC" and that was the entire close
+     * affordance - which on a phone is not an affordance at all. Worse here
+     * than anywhere else in the game: `open()` calls `input.exitLock()`, and
+     * `TouchControls.shown` gates the whole on-screen tray on `input.locked`,
+     * so opening this map takes away every touch control INCLUDING the `≡`
+     * pause button. A player four levels into the Verdant Coil - the one world
+     * where the map is the difference between finishing and giving up - was
+     * left with a full-screen panel, no keyboard, and no way out but reloading
+     * the page and losing the run.
+     *
+     * A `mz-map-tab` so it matches ALL and the four floor buttons it sits
+     * beside; `✕` because it is universal and needs no line of hint text of its
+     * own. The ESC token is dropped from the hint, because the control is now
+     * the thing that says it. */
+    this.el.querySelector('[data-close]').addEventListener('click', () => this.close());
 
     this._onKey = this._onKey.bind(this);
     this._onWheel = this._onWheel.bind(this);

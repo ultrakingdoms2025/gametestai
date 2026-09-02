@@ -255,18 +255,52 @@ export class DockWorld extends World {
        * starts. */
       exposure: 1.20,
       ambientColor: new THREE.Color(0x4d5b74),
-      ambientIntensity: 0.42,
-      hemiIntensity: 0.54,
+      /* 0.42 -> 0.12, into the hemisphere and the probe below.
+       *
+       * This is the third lever the exposure note above says it was looking
+       * for, and it acts exactly where that note says the problem is - the
+       * shadow end - without moving where bloom starts. A constant added
+       * regardless of normal cannot separate a plated flank from a silhouette;
+       * that is the job it was being asked to do and could not.
+       * @see World.js `ambientIntensity`.
+       *
+       * Measured, one booted session, three uniforms rewritten between shots.
+       * `crush%` is already 0 across all 24 framings - `GRADE_PRESETS.dock`'s
+       * `toeLift` sees to that - so the number that moves is p95, the top of
+       * the range:
+       *
+       *   bastion-crown  mean 33.3 -> 33.7,  p95 76 -> 83
+       *   bastion-ribs   mean 36.4 -> 36.9,  p95 76 -> 79
+       *   pike           mean 40.3 -> 44.1,  p95 118 -> 125
+       *   yard-wide      mean 39.6 -> 40.1,  p95 58 -> 61
+       *
+       * i.e. the bay did not get brighter overall, it got RANGE, on the
+       * surfaces that face the light. In `bastion-ribs` the overhead conduit
+       * goes from a flat dark shape to a legibly blue cylinder, the truss legs
+       * gain a lit side and a shaded side, and the deck seams reappear. Two
+       * framings read 1-2 luma lower after the change (`gantry-port`,
+       * `kestrel-in`); both contain moving cranes and drays, and the same
+       * candidate re-shot moves by a similar amount, so that is the world
+       * animating rather than a lighting loss.
+       *
+       * Zero shader programs: 110 across all candidates. */
+      ambientIntensity: 0.12,
+      // 0.54 -> 0.70. The smaller share; the bay's own bounce is a dark
+      // painted deck, so most of the removed energy belongs in the probe.
+      hemiIntensity: 0.70,
       /* The "sun" is the bank of high bay lamps in the truss AND the distant
        * primary the planets are lit by, so it comes from almost overhead and
        * slightly down the yard, and it is warm. */
       sunColor: new THREE.Color(0xffd8ae),
       sunIntensity: 2.9,
       sunDirection: new THREE.Vector3(-0.18, 0.94, 0.29).normalize(),
-      /* 0.85 -> 1.05. The hulls are the darkest large surfaces in the bay and
-       * they are `MeshStandardMaterial` with low roughness in places, so the
-       * environment is what separates a plated flank from a black shape. */
-      envMapIntensity: 1.05,
+      /* 0.85 -> 1.05 -> 1.50. The hulls are the darkest large surfaces in the
+       * bay and they are `MeshStandardMaterial` with low roughness in places,
+       * so the environment is what separates a plated flank from a black
+       * shape. The 1.05 already said that; the extra 0.45 is the flat ambient
+       * this world used to spend on the same job, now spent on a term that can
+       * actually do it. See `ambientIntensity` above for the measurement. */
+      envMapIntensity: 1.50,
       /* Bloom is owned by `GRADE_PRESETS.dock`, which is selected by world id
        * (`PostFX.js:1099`) and whose threshold is calibrated against this
        * world's own measured linear luminance. A value here would be in the
@@ -3694,20 +3728,28 @@ export class DockWorld extends World {
      * `environment.envMapIntensity` is 0.75 and twenty of this world's
      * materials are authored around it, up to `M.glass` at 2.0 with clearcoat
      * — which is almost entirely image-based and collapses to a flat dark
-     * sheet with no probe behind it. But `main.js` only assigns
-     * `scene.environment` when the world publishes `envMap`, so leaving it
-     * unset does not mean "no reflections": it means the yard is lit by
+     * sheet with no probe behind it. But `main.js` USED TO assign
+     * `scene.environment` only when the world published `envMap`, so leaving
+     * it unset did not mean "no reflections": it meant the yard was lit by
      * WHICHEVER WORLD RAN LAST. Booting `?world=dock` gave every metal in the
      * shed nothing at all; walking in from the concourse gave a cold shipyard
      * the station's baked cyan-and-amber probe. Neither is a look anybody
-     * authored, and which one you got depended on the route.
+     * authored, and which one you got depended on the route. (That applier is
+     * total as of 2026-09-02 and every world publishes a probe, so the trap is
+     * closed on both sides now; `world-envmap.test.mjs` holds it closed.)
      *
      * `'space'` rather than `'daylight'`: the shed has a roof and a starfield
      * past the blast door, and a blue sky probe indoors reads as a hole in the
-     * wall. Same one line as `CitadelWorld` and `RaceWorld`; `?? undefined`
-     * keeps `scene.environment` untouched in a headless build where the
-     * material library is a stub. */
-    this.environment.envMap = this.materials?.getEnvMap?.('space') ?? undefined;
+     * wall. Same one line as `CitadelWorld` and `RaceWorld`.
+     *
+     * `?? null` and not `?? undefined`. That read "keeps `scene.environment`
+     * untouched in a headless build where the material library is a stub",
+     * which was true only while the applier was partial - `undefined` is now
+     * cleared like any other absent probe, so the old spelling described a
+     * behaviour it no longer had while leaving this world the only one that
+     * declared nothing. `null` is the honest answer a stub should give: this
+     * world asked for a probe and the library had none. */
+    this.environment.envMap = this.materials?.getEnvMap?.('space') ?? null;
   }
 
   /* ---------------------------------------------------------------- */

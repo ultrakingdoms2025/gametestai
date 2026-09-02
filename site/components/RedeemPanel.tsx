@@ -126,7 +126,7 @@ export default function RedeemPanel({ signedIn }: { signedIn: boolean }) {
       <div className="auth-card">
         <Link href="/" className="auth-logo">AETHER NEXUS</Link>
         <h1 className="auth-heading">Code accepted</h1>
-        <div className="auth-success">
+        <div className="auth-success" role="status">
           {result.kind === 'play' ? (
             <>
               {result.days} days of access added
@@ -162,7 +162,7 @@ export default function RedeemPanel({ signedIn }: { signedIn: boolean }) {
         period it was issued for — no card, no trial that turns into a charge.
       </p>
 
-      {result && !result.ok ? <div className="auth-error">{result.message}</div> : null}
+      {result && !result.ok ? <div className="auth-error" role="alert">{result.message}</div> : null}
 
       <form onSubmit={handleSubmit} className="auth-form">
         <label className="auth-label" htmlFor="code">Access code</label>

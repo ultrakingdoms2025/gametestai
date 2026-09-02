@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight } from '../gfx/WorldLight.js';
@@ -17,6 +38,7 @@ import {
   liquidSurfaceAt, liquidSubstance, liquidSwimmable, liquidHazard, liquidWallMask,
   liquidGuards,
 } from './planets/PlanetLiquid.js';
+import { hazardSpec, makeHazardSampler, makeHazardSample } from './planets/PlanetHazard.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
 
 /**
@@ -327,6 +349,11 @@ const WALL_MAX = 30;
 
 /* Scratch for the per-frame submersion test. See `_underwater`. */
 const _underEye = new THREE.Vector3();
+/* Its own, not `_underEye`'s. `_breatheAsh` and `_underwater` both run inside
+ * one `update` and today they run in an order that would make sharing safe -
+ * which is exactly the kind of safety that stops being true the first time
+ * somebody reorders two lines. */
+const _hazEye = new THREE.Vector3();
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  THE FLOOR OF THE WORLD
@@ -837,6 +864,14 @@ export class PlanetWorld extends World {
     this.landingSites = [];
     /** @type {Array<{id:string,type:string,name:string,position:THREE.Vector3,credits:number,size:number}>} */
     this.mineralNodes = [];
+    /**
+     * The contract `src/systems/Viewpoints.js` reads. Filled by `_publish` from
+     * the descriptor's own list, with `y` measured off the built collision
+     * height field. Empty on a planet that authors none, which that system
+     * already treats as "this world has no viewpoints" rather than as an error.
+     * @type {Array<{id:string,name:string,x:number,y:number,z:number,r:number}>}
+     */
+    this.viewpoints = [];
     /** Build-time census, reported by the tests and the console. */
     this.census = { props: {}, minerals: {}, colliders: 0, drawCalls: 0, triangles: 0 };
 
@@ -893,11 +928,68 @@ export class PlanetWorld extends World {
       fogFar: sky.fog?.far ?? 600,
       exposure: sky.exposure ?? 1.0,
       ambientColor: new THREE.Color(sky.ambient?.color ?? 0x404040),
-      ambientIntensity: sky.ambient?.intensity ?? 0.5,
+      /* CAPPED, not replaced, because ten planets author ten different values.
+       *
+       * Every descriptor's `sky.ambient.intensity` lives in a `planets/*.js`
+       * file, and each is a considered number for that planet's air. What is
+       * NOT considered anywhere is that an `AmbientLight` adds its value to
+       * every fragment regardless of normal, so all ten were spending most of
+       * their fill on deleting their own terminators.
+       * @see World.js `ambientIntensity`.
+       *
+       * A cap rather than a multiplier: a planet that already authored a low
+       * ambient meant it and is left exactly alone, while the ones sitting at
+       * 0.46-0.55 come down to a trace. The energy is picked back up by
+       * `hemiIntensity` and `envMapIntensity` below.
+       *
+       * Measured on cinder (authored ambient 0.46), one booted session, three
+       * uniforms rewritten between shots. Frame mean luma / p05, `crush%`
+       * being 0 on all eight framings before and after:
+       *
+       *   caldera        base 38.6 / 27  ->  39.7 / 27
+       *   pad-ashfall    base 40.5 / 29  ->  42.2 / 30
+       *   lava-shore     base 39.0 / 19  ->  40.2 / 20
+       *   rimhold        base 42.8 / 28  ->  43.9 / 30
+       *   colonnade      base 40.2 / 24  ->  41.6 / 26
+       *
+       * A small, uniform gain at both ends - these worlds are sun-and-dome
+       * dominated and the fill was never a large share of the frame - but it
+       * is a gain in the right direction, and p95 rises with it (caldera 56 ->
+       * 60), so it is range rather than a wash. Zero shader programs: 104
+       * either side. */
+      ambientIntensity: Math.min(sky.ambient?.intensity ?? 0.5, 0.15),
+      /* The planets never stated one, so they were silently taking
+       * `applyEnvironment`'s `?? 0.4` fallback. 0.75 is that plus the share of
+       * the ambient cap above that belongs on a term which separates an
+       * up-facing plane from a down-facing one - which on a height-field world
+       * of craters, flanks and terraces is most of the geometry. */
+      hemiIntensity: 0.75,
       sunColor: new THREE.Color(sky.sun?.color ?? 0xffffff),
       sunIntensity: sky.sun?.intensity ?? 2.2,
       sunDirection: sunDir,
-      envMapIntensity: sky.envMapIntensity ?? 1.0,
+      /* x1.55, a multiplier rather than a value, for the same reason the
+       * ambient above is a cap: Tessera's deliberate 0.35 is a statement about
+       * Tessera's sky and must stay a fraction of the others, not be levelled
+       * with them. The probe this scales is baked from the planet's OWN dome
+       * plus its own ground bounce (`_bakeEnvMap` below), so the energy
+       * arriving here arrives in the planet's colour - which is why the bulk
+       * of the ambient cap was sent here and not to the hemisphere. */
+      envMapIntensity: (sky.envMapIntensity ?? 1.0) * 1.55,
+      /* DECLARED null, filled in by `_bakeEnvMap` once the dome exists.
+       *
+       * The intensity above was being applied to a map these ten worlds never
+       * supplied. `applyEnvironment` used to skip the assignment for a world
+       * that published none, so every planet's minerals, ship hull, ice and
+       * standing water were multiplied by `sky.envMapIntensity` of WHICHEVER
+       * WORLD RAN LAST - Tessera's deliberate 0.35 dimmed the station's cyan
+       * probe rather than its own sky - or of nothing at all on a cold
+       * `?world=planet:...` boot.
+       *
+       * Stating the field here rather than leaving it undefined is the point:
+       * `main.js` and `Portals._configurePreview` both read `env.envMap ??
+       * null`, and a descriptor-driven world that has not been built yet must
+       * answer "no probe" rather than "ask the scene what it is wearing". */
+      envMap: null,
       bloom: sky.bloom ?? null,
       grade: sky.grade ?? null,
     };
@@ -905,6 +997,9 @@ export class PlanetWorld extends World {
     /** Everything this world owns and must dispose. */
     this._owned = [];
     this._sky = null;
+    /** This planet's prefiltered probe. Owned here; see `_bakeEnvMap`.
+     *  @type {THREE.WebGLRenderTarget|null} */
+    this._envRT = null;
     this._liquidUniforms = null;
     /**
      * This world's own answer for its liquid, read by `WaterVolumes` instead of
@@ -922,6 +1017,22 @@ export class PlanetWorld extends World {
     this._underColor = new THREE.Color(0x0d3348);
     this._plumes = [];
     this._ash = null;
+    /**
+     * The published weather rule, or null on the seven planets whose descriptors
+     * do not carry the facts for one. Same shape and same contract as
+     * `liquidField`. @see `_buildHazardField`
+     * @type {{id:string,kind:string,name:string,cause:string,
+     *         peak:{dps:number,push:number,stamina:number},
+     *         at:(x:number,y:number,z:number,out:object)=>object}|null}
+     */
+    this.hazardField = null;
+    this._hazardSpec = null;
+    this._hazardSample = null;
+    this._scorch = null;
+    /** The terrain collision field, kept by `_buildTerrain`. @see `_publish` */
+    this._terrainField = null;
+    /** The ash field's authored opacity, captured before anything scales it. */
+    this._ashBase = null;
     this._t = 0;
   }
 
@@ -958,6 +1069,7 @@ export class PlanetWorld extends World {
 
     onProgress?.(0.96, 'Air');
     this._buildAtmosphere();
+    this._buildHazardField();
 
     this._publish();
     onProgress?.(1, P.name);
@@ -966,6 +1078,15 @@ export class PlanetWorld extends World {
       `[PlanetWorld] ${P.id}: ${this.census.triangles.toLocaleString()} tris in `
       + `${this.census.drawCalls} draws, ${this.census.colliders} colliders, `
       + `${this.mineralNodes.length} mineral nodes, ${this.landingSites.length} landing sites`
+      + (this.viewpoints.length
+        ? `, ${this.viewpoints.length} viewpoints (${this.viewpoints.map((v) => `${v.id}@${v.y.toFixed(1)}m`).join(', ')})`
+        : '')
+      + (this.hazardField
+        ? `, LIVE HAZARD ${this.hazardField.id} - ${this.hazardField.name}`
+          + (this.hazardField.peak.dps ? ` at ${this.hazardField.peak.dps.toFixed(2)} dps` : '')
+          + (this.hazardField.peak.push ? ` pushing ${this.hazardField.peak.push.toFixed(2)} m/s` : '')
+          + (this.hazardField.peak.stamina ? ` draining ${this.hazardField.peak.stamina.toFixed(2)} stam/s` : '')
+        : '')
       + (this.census.liquid
         ? `, ${this.census.liquid.substance} over ${this.census.liquid.wetCells}/${this.census.liquid.cells} cells `
           + (this.census.liquid.swimmable ? 'SWIMMABLE' : 'not swimmable')
@@ -1017,9 +1138,120 @@ export class PlanetWorld extends World {
     params.camera = params.camera ?? this.engine?.camera ?? null;
     const built = createSky(sky.kind ?? 'daylight', params);
     built.mesh.name = `planet:sky:${this.planet.id}`;
+    /* Before the dome joins the world group, while it is still parented
+     * nowhere and still sitting at the origin `createSky` left it at - the
+     * probe wants it centred, and `Sky.update` moves it onto the camera from
+     * the first frame onward. */
+    this._bakeEnvMap(built, params.radius);
     this.group.add(built.mesh);
     this._sky = built;
     this.census.drawCalls++;
+  }
+
+  /**
+   * Prefilter THIS planet's sky into a reflection probe.
+   *
+   * ── Why not `Materials.getEnvMap` ─────────────────────────────────────────
+   *
+   * That accessor has three moods - `space`, `daylight`, `alpine` - and the
+   * ten planets happen to name their dome with those same three words. Reusing
+   * it would have cost nothing and would have been wrong: Sallow, Shoal,
+   * Sirocco and Volcanic are all `kind: 'daylight'`, and their skies are
+   * sulphur-yellow, sea-blue, amber and ember-red. One shared blue-sky probe
+   * would have put a clear noon sky in the puddles of lava on Cinder, which is
+   * the same "a red planet reflects a blue one" failure this change exists to
+   * remove, only harder to see because it would look plausible.
+   *
+   * So the probe is baked from the dome the player is actually standing under,
+   * exactly as `SportsWorld._buildSky` and `MedievalWorld._buildEnvMap`
+   * already do. The reflection in a hull then agrees with the horizon behind
+   * it, which is the whole reason to have one.
+   *
+   * ── The cost, and why it is one target and not ten ────────────────────────
+   *
+   * `fromScene` with no `size` option bakes a 256 cube, which is a 768x1024
+   * half-float target: ~6 MB, and `envMapCubeUVHeight` 1024, THE SAME 1024 as
+   * `Materials._generateEnvMap`, sports and the vale. That number is a program
+   * cache key - see the block comment on `MedievalWorld._buildEnvMap`, where
+   * getting it wrong cost 24 of one arrival's 28 linked programs - so this
+   * must never be tuned as if it were a quality dial.
+   *
+   * One target per BUILT planet, released by `dispose` with the rest of
+   * `_owned`. Ten only exist if all ten planets are resident at once, which is
+   * the `?prefetch=all` diagnostic path; alongside a resident planet's
+   * heightfield, bed and liquid-depth buffers, 6 MB is not the term that
+   * decides whether that path fits.
+   *
+   * @param {{mesh: THREE.Mesh}} built the dome `createSky` just returned
+   * @param {number} radius its radius, in metres
+   */
+  _bakeEnvMap(built, radius) {
+    const renderer = this.engine?.renderer;
+    /* `isWebGLRenderer` rather than a truthiness check, because the headless
+     * rigs DO supply a renderer - a hand-written stub with `render`,
+     * `setRenderTarget` and `capabilities` on it, and no `xr`, which is the
+     * first field `PMREMGenerator.fromScene` touches. Without this the bake
+     * threw into the catch below and printed a warning per planet build across
+     * fifteen test files. No GL, no probe, no noise. */
+    if (!renderer?.isWebGLRenderer) return;
+
+    /* The lower hemisphere, and it is not optional: with only a dome, every
+     * metal in the scene has a black underside and reads as floating in void
+     * (the same note `Materials._generateEnvMap` carries on its ground disc).
+     * The colour is this planet's own ground - `sky.params.groundColor` is the
+     * albedo its atmosphere already scatters against, so the probe and the
+     * horizon agree - falling back to the mean of the descriptor's height
+     * bands for the airless planets, which declare no scattering ground. */
+    const ground = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 0.99, 24, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        color: this._groundBounceColor(),
+        side: THREE.BackSide,
+        toneMapped: false,
+        fog: false,
+      })
+    );
+
+    const envScene = new THREE.Scene();
+    let pmrem = null;
+    try {
+      pmrem = new THREE.PMREMGenerator(renderer);
+      envScene.add(built.mesh, ground);
+      /* 0.02 of extra blur, matching sports: the dome is already a smooth
+       * analytic sky and PMREM's own roughness chain does the rest. `far` is
+       * past the dome or the bake photographs the inside of the near plane. */
+      this._envRT = pmrem.fromScene(envScene, 0.02, 1, radius * 1.5);
+      this._envRT.texture.name = `planet.env.${this.planet.id}`;
+      this.environment.envMap = this._envRT.texture;
+      this._owned.push(this._envRT);
+    } catch (err) {
+      console.warn(`[PlanetWorld] ${this.planet.id} environment probe unavailable:`, err?.message ?? err);
+    } finally {
+      // The dome belongs to the world group, not to the bake.
+      envScene.remove(built.mesh);
+      ground.geometry.dispose();
+      ground.material.dispose();
+      pmrem?.dispose();
+    }
+  }
+
+  /**
+   * The colour the ground bounces into the probe.
+   * @returns {THREE.Color}
+   */
+  _groundBounceColor() {
+    const g = this.planet.sky?.params?.groundColor;
+    if (g !== undefined && g !== null) return new THREE.Color(g);
+    const bands = this.planet.palette?.bands ?? [];
+    if (!bands.length) return new THREE.Color(0x404040);
+    /* No boost. The band colours are the descriptor's own measured table of
+     * what LIT ground on this planet looks like, not raw albedo, so scaling
+     * them would double-count the sun - the reason `ENV_MOODS` carries a
+     * `groundBoost` and `SportsWorld` does not. */
+    const mean = new THREE.Color(0, 0, 0);
+    const c = new THREE.Color();
+    for (const b of bands) mean.add(c.set(b.color));
+    return mean.multiplyScalar(1 / bands.length);
   }
 
   /**
@@ -1087,7 +1319,16 @@ export class PlanetWorld extends World {
     /* ONE collider for the whole surface, on the same samples the mesh drew.
      * @see the header: this is the fix for "collision below mesh", made true by
      * construction rather than by rounding upward. */
-    this.track(this.physics.addHeightfield({
+    /* KEPT, and this reference is load-bearing rather than a convenience.
+     *
+     * `physics.terrainHeight` takes the MAX over every registered height field,
+     * and `_buildFloor` (three lines down) registers a second one that is wider
+     * than the playfield. Inside the map the terrain always wins, but a query a
+     * few metres outside it returns the FLOOR's depth as if it were ground -
+     * silently, as a finite number. Everything that has to stand on the terrain
+     * and only the terrain samples this collider by name instead.
+     * @see _publish, where a viewpoint's y is measured off it. */
+    this._terrainField = this.track(this.physics.addHeightfield({
       heights: t.heights,
       nx: N,
       nz: N,
@@ -2151,11 +2392,11 @@ export class PlanetWorld extends World {
      * something on a pad has to be findable at night and it is 4 m across
      * instead of 34.
      */
-    const ringMat = new THREE.MeshStandardMaterial({
+    const ringMat = microSurface(new THREE.MeshStandardMaterial({
       name: `planet.${P.id}.padmark`,
       color: 0xb9a893,
       roughness: 0.82,
-    });
+    }), 'coarse', 8);
     const innerMat = new THREE.MeshStandardMaterial({
       name: `planet.${P.id}.padmark.inner`,
       color: 0x140d09,
@@ -2600,7 +2841,250 @@ export class PlanetWorld extends World {
     this.census.drawCalls++;
   }
 
-  /** Spawn, portals and the minimap. */
+  /**
+   * THE WEATHER, MADE INTO A RULE.
+   *
+   * `planets/PlanetHazard.js` decides WHETHER this planet has a live hazard and
+   * WHAT its numbers are, purely from the descriptor - no planet is named there
+   * and none is named here. This method's whole job is to hand that module the
+   * three things only a built world knows (the collision ground, the liquid
+   * surface, the terrain's own floor and ceiling), publish the sampler, and
+   * draw the tell.
+   *
+   * ── WHAT `hazardField` IS AND WHO READS IT ──────────────────────────────
+   * The same arrangement `liquidField` has, deliberately: the WORLD answers for
+   * its own weather and a player-side system asks. The published shape is
+   *
+   *   `{ id, kind, name, cause, peak: {dps, push, stamina},
+   *      at(x, y, z, out) -> { intensity, dps, pushX, pushZ, stamina } }`
+   *
+   * `at` writes into a caller-owned record and allocates nothing, because it is
+   * a fixed-step read.
+   *
+   * ── WHO CHARGES IT AGAINST THE BODY ────────────────────────────────────
+   * `Swim.tickHazard`, called from `Player.fixedUpdate` ABOVE the death, mount
+   * and climb branches. The call site matters and was measured: `Swim`'s own
+   * `fixedUpdate` is never reached from the mantle or free-climb branch, and
+   * thin air is exactly the hazard a CLIMBING body is in — charging it from
+   * there would have left Cathedra's summit free while you climbed to it.
+   *
+   * The push does NOT go through `Player.applyImpulse`, and that is a measured
+   * result rather than a preference. `_applyFriction` is Source-style: below
+   * `STOP_SPEED` it is a CONSTANT deceleration (11 m/s², or 2.42 once the
+   * impulse stagger cuts friction to 22%) against 0.854 m/s² of wind, so an
+   * impulse per step settles at 0.0000 m/s of drift — and scaling it up is
+   * bimodal, not gradual, because friction's floor is a step and not a slope
+   * (x10 measures 3.74 m/s, 81% of walkSpeed, which breaks the guarantee that
+   * a player can always walk upwind). `applyImpulse` also re-arms
+   * `IMPULSE_STAGGER` on every call, which would have pinned Sirocco at
+   * permanently reduced friction.
+   *
+   * So wind is a MOVING MEDIUM: `Player.setEnvironmentDrift` adds it to the
+   * displacement `_move` integrates — swept, capsule-resolved, step-probed —
+   * never to `_velocity`. Measured on the built planet: 0.8538 m/s of drift,
+   * upwind walking nets 3.7462 m/s, dead upwind escape 10.7 s.
+   */
+  _buildHazardField() {
+    const P = this.planet;
+    const spec = hazardSpec(P);
+    this.hazardField = null;
+    this._hazardSpec = spec;
+    if (!spec) return;
+
+    const field = this._terrainField;
+    const sampler = makeHazardSampler(spec, {
+      /* The COLLISION field, for the same reason a viewpoint's y comes off it:
+       * a hazard that decides whether you are in the lee of a dune has to ask
+       * the dune the player is standing on, not the one the descriptor
+       * describes. Null outside the footprint, which every branch handles. */
+      groundAt: (x, z) => (field ? field.sampleHeight(x, z) : null),
+      liquidSurfaceAt: this.liquidField ? this.liquidField.surfaceAt : null,
+      minY: Number.isFinite(this._terrainMinY) ? this._terrainMinY : 0,
+      maxY: Number.isFinite(this._terrainMaxY) ? this._terrainMaxY : 1,
+    });
+    if (!sampler) return;
+
+    this.hazardField = {
+      id: spec.id,
+      kind: spec.kind,
+      name: spec.name,
+      cause: spec.cause,
+      peak: spec.peak,
+      at: sampler.at,
+    };
+    /* Scratch for this world's own per-frame read in `update`. One record for
+     * the life of the world. */
+    this._hazardSample = makeHazardSample();
+    this.census.hazard = {
+      id: spec.id,
+      peakDps: Number((spec.peak.dps ?? 0).toFixed(2)),
+      peakPush: Number((spec.peak.push ?? 0).toFixed(2)),
+      peakStamina: Number((spec.peak.stamina ?? 0).toFixed(2)),
+    };
+
+    if (spec.kind === 'heat') this._buildHeatBand(spec);
+  }
+
+  /**
+   * THE SCORCH RING: the heat band's tell, drawn at exactly its own radius.
+   *
+   * A hazard a player cannot see coming is worse than no hazard, and "the lava
+   * is orange" is not a tell for a band that starts 24 m before the lava does.
+   * So the ground inside `heatShimmer.nearLiquid` is burnt: one merged, unlit,
+   * ground-hugging mesh in the descriptor's own steam colour, darkened, running
+   * from each body's shore out to the exact radius `hazardField.at` stops
+   * charging at. Walk off the scorch and the number is zero; that is the whole
+   * contract and it is legible from thirty metres up.
+   *
+   * ONE MESH for every body on the planet, and no collider. It is paint - the
+   * same call `_buildLandingSites` makes about a pad's rim ring, and for the
+   * same reason: a marking that stopped you would be a fence, and this is a
+   * warning.
+   *
+   * Draped on the real height field rather than laid flat, because Cinder's
+   * lava sits in a trench with 3.2 m lips and a flat annulus would be buried on
+   * one side and floating on the other. 0.08 m of lift is the same bias the pad
+   * rings use.
+   */
+  _buildHeatBand(spec) {
+    const P = this.planet;
+    const bodies = spec.bodies ?? [];
+    if (!bodies.length) return;
+    const field = this._terrainField;
+    if (!field) return;
+
+    const RINGS = 4;
+    const positions = [];
+    const alphas = [];
+    const indices = [];
+    const push = (x, z, a) => {
+      const y = field.sampleHeight(x, z);
+      positions.push(x, Number.isFinite(y) ? y + 0.08 : 0, z);
+      alphas.push(a);
+      return positions.length / 3 - 1;
+    };
+
+    for (const b of bodies) {
+      if (b.shape === 'disc') {
+        const SEG = Math.max(24, Math.min(96, Math.round(b.r * 0.7)));
+        const base = positions.length / 3;
+        for (let ri = 0; ri <= RINGS; ri++) {
+          const t = ri / RINGS;
+          const rad = b.r + spec.reach * t;
+          for (let s = 0; s < SEG; s++) {
+            const a = (s / SEG) * Math.PI * 2;
+            push(b.x + Math.cos(a) * rad, b.z + Math.sin(a) * rad, 1 - t);
+          }
+        }
+        for (let ri = 0; ri < RINGS; ri++) {
+          for (let s = 0; s < SEG; s++) {
+            const s2 = (s + 1) % SEG;
+            const a0 = base + ri * SEG + s;
+            const a1 = base + ri * SEG + s2;
+            const b0 = base + (ri + 1) * SEG + s;
+            const b1 = base + (ri + 1) * SEG + s2;
+            indices.push(a0, b0, b1, a0, b1, a1);
+          }
+        }
+      } else {
+        /* A ribbon gets two strips, one down each bank. `pts` is resampled so
+         * a 110 m segment does not become one quad that misses every dip in
+         * the ground between its ends. */
+        const pts = [];
+        for (let i = 0; i + 1 < b.pts.length; i++) {
+          const [ax, az] = b.pts[i];
+          const [bx, bz] = b.pts[i + 1];
+          const len = Math.hypot(bx - ax, bz - az);
+          const n = Math.max(1, Math.round(len / 8));
+          for (let k = 0; k < n; k++) pts.push([ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n]);
+        }
+        pts.push(b.pts[b.pts.length - 1]);
+        for (const side of [1, -1]) {
+          const base = positions.length / 3;
+          for (let i = 0; i < pts.length; i++) {
+            const p = pts[i];
+            const q = pts[Math.min(pts.length - 1, i + 1)];
+            const r = pts[Math.max(0, i - 1)];
+            const tx = q[0] - r[0];
+            const tz = q[1] - r[1];
+            const tl = Math.hypot(tx, tz) || 1;
+            const nx = (-tz / tl) * side;
+            const nz = (tx / tl) * side;
+            for (let ri = 0; ri <= RINGS; ri++) {
+              const t = ri / RINGS;
+              const d = b.width * 0.5 + spec.reach * t;
+              push(p[0] + nx * d, p[1] + nz * d, 1 - t);
+            }
+          }
+          const stride = RINGS + 1;
+          for (let i = 0; i + 1 < pts.length; i++) {
+            for (let ri = 0; ri < RINGS; ri++) {
+              const a0 = base + i * stride + ri;
+              const a1 = a0 + 1;
+              const b0 = base + (i + 1) * stride + ri;
+              const b1 = b0 + 1;
+              indices.push(a0, b0, b1, a0, b1, a1);
+            }
+          }
+        }
+      }
+    }
+    if (!indices.length) return;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+    geo.setAttribute('aHeat', new THREE.BufferAttribute(new Float32Array(alphas), 1));
+    geo.setIndex(indices);
+    geo.computeBoundingSphere();
+    this._own(geo);
+
+    const mat = new THREE.ShaderMaterial({
+      name: `planet.${P.id}.scorch`,
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color(P.hazards?.steamColor ?? 0x7d6a5e) },
+        uHot: { value: new THREE.Color(P.liquid?.emissive ?? P.liquid?.color ?? 0xff6a1e) },
+      },
+      vertexShader: `
+        attribute float aHeat;
+        varying float vHeat;
+        void main() {
+          vHeat = aHeat;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uColor;
+        uniform vec3 uHot;
+        varying float vHeat;
+        void main() {
+          // Breathes, so a still frame and a moving one both read as heat
+          // rather than as a decal somebody forgot to remove.
+          float pulse = 0.86 + 0.14 * sin(uTime * 0.9 + vHeat * 5.0);
+          vec3 c = mix(uColor * 0.35, uHot, vHeat * vHeat) * pulse;
+          gl_FragColor = vec4(c, vHeat * 0.55);
+        }`,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    this._own(mat);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = `planet:${P.id}:scorch`;
+    mesh.renderOrder = 3;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    this.group.add(mesh);
+    this._scorch = mat;
+    this.census.drawCalls++;
+    this.census.triangles += indices.length / 3;
+    this.census.hazard.scorchTriangles = indices.length / 3;
+  }
+
+  /** Spawn, portals, viewpoints and the minimap. */
   _publish() {
     const P = this.planet;
     const primary = this.landingSites.find((s) => s.primary) ?? this.landingSites[0];
@@ -2610,7 +3094,89 @@ export class PlanetWorld extends World {
     this.playerSpawn.set(primary.position.x, primary.position.y + 0.4, primary.position.z + primary.radius * 0.45);
     this.playerSpawnYaw = primary.yaw;
 
+    this._publishViewpoints();
     this._publishMinimap();
+  }
+
+  /**
+   * THE VANTAGE POINTS, and the one number the descriptor is not allowed to
+   * hold.
+   *
+   * `src/systems/Viewpoints.js` asks for `{ id, name, x, y, z, r }` and does
+   * everything else itself: the reveal disc, the fast-travel anchor, the
+   * credits and coin, the set prize, the minimap marker and - through
+   * `viewpoints:changed` - a second `Charters` column for every planet, which
+   * until now could only be counted by its seam total.
+   *
+   * ── WHY `y` IS MEASURED HERE AND REFUSED IN THE DESCRIPTOR ──────────────
+   * The only y a fast-travel anchor may use is the y the PLAYER'S CAPSULE will
+   * be resolved against, and that is the collision height field - the same
+   * `t.heights` the mesh was drawn from, sampled across the same two triangles
+   * `Physics.resolveCapsule` uses. It is NOT `groundAt`.
+   *
+   * Those two are the same function evaluated at the same grid nodes and they
+   * disagree everywhere in between, because `sampleHeight` interpolates the
+   * TRIANGLE and `groundAt` re-evaluates the continuous field: on a cell whose
+   * corners span a crater rim the sag between them is the whole curvature of
+   * the rim. `_buildLandingSites` uses `groundAt` and can, because a pad
+   * landform levels its own disc flat and the two agree to the millimetre
+   * there. A crater rim is the opposite case, and it is where every viewpoint
+   * on this planet stands. Measured, not claimed - which is this repo's
+   * standing rule and the one an earlier pass broke by metres.
+   *
+   * `_terrainField` rather than `physics.terrainHeight` for the reason given
+   * where it is stored: the world floor is a second height field, and outside
+   * the map it answers.
+   */
+  _publishViewpoints() {
+    const P = this.planet;
+    const list = P.viewpoints ?? [];
+    this.viewpoints = [];
+    if (!list.length) return;
+    const field = this._terrainField;
+    for (const v of list) {
+      const y = field ? field.sampleHeight(v.x, v.z) : null;
+      /* A null is an answer, and it is "do not publish this". `normaliseViewpoint`
+       * would drop a non-finite y anyway, silently; saying so in the log is the
+       * difference between a viewpoint that is missing and a viewpoint nobody
+       * can find out is missing. */
+      if (!Number.isFinite(y)) {
+        console.warn(`[PlanetWorld] ${P.id}: viewpoint "${v.id}" at (${v.x}, ${v.z}) has no ground under it - dropped`);
+        continue;
+      }
+      /* UNDER THE WATERLINE, which `definePlanet` cannot ask and this can.
+       *
+       * The descriptor refuses a viewpoint inside a liquid RIBBON, where a
+       * column test is exact. It cannot refuse one inside a DISC: Shoal's sea
+       * is a single body containing the whole playfield with a 75 m cone
+       * standing out of it, and a horizontal test condemns the cone. Here the
+       * ground has been measured and the liquid answers for its own surface, so
+       * the question is the three-dimensional one it always was. Dropped rather
+       * than clamped: a viewpoint that has to be moved is an authoring error,
+       * and moving it silently is how the wrong place ends up on the map. */
+      const surf = this.liquidField?.surfaceAt(v.x, v.z);
+      if (Number.isFinite(surf) && y < surf) {
+        console.warn(
+          `[PlanetWorld] ${P.id}: viewpoint "${v.id}" at (${v.x}, ${v.z}) is ${(surf - y).toFixed(1)} m under `
+          + `the ${this.liquidField.name} - dropped`
+        );
+        continue;
+      }
+      this.viewpoints.push({
+        id: v.id,
+        name: v.name,
+        x: v.x,
+        y,
+        z: v.z,
+        r: v.r,
+        /* Carried through for the HUD and the log. `Viewpoints.normaliseViewpoint`
+         * ignores anything it does not know, so extra fields cost nothing. */
+        place: v.place,
+        terrain: v.terrain,
+        climb: v.climb,
+      });
+    }
+    this.census.viewpoints = this.viewpoints.map((v) => ({ id: v.id, y: Number(v.y.toFixed(2)) }));
   }
 
   /**
@@ -2818,13 +3384,57 @@ export class PlanetWorld extends World {
     if (this._sky) this._sky.update(dt);
     if (this._liquidUniforms) this._liquidUniforms.uTime.value = elapsed;
     for (let i = 0; i < this._plumes.length; i++) this._plumes[i].material.uniforms.uTime.value = elapsed;
+    if (this._scorch) this._scorch.uniforms.uTime.value = elapsed;
     if (this._ash) {
       this._ash.uniforms.uTime.value = elapsed;
       // Written into the existing uniform vector, never replaced: this runs
       // every frame and a new Vector3 here is 60 allocations a second.
       const cam = this.engine?.camera;
       if (cam) cam.getWorldPosition(this._ash.uniforms.uEye.value);
+      this._breatheAsh();
     }
+  }
+
+  /**
+   * THE HAZARD'S OWN TELL, ON THE FIELD THE DESCRIPTOR ALREADY DRAWS.
+   *
+   * The ash `Points` is camera-wrapped and global - one density for the whole
+   * planet - which is exactly wrong for two of the three hazards, because both
+   * are things you can walk out of and neither of them said so in the frame.
+   *
+   *   wind      the sand thickens as you climb into the exposure and thins the
+   *             moment a dune is between you and it. That is the only tell the
+   *             push has, and without it a player shoved sideways on a crest
+   *             learns nothing about how to stop being shoved.
+   *   thin_air  the diamond dust thins with altitude, because air that is too
+   *             thin to scatter the sun is too thin to hold much ice. It is a
+   *             second reading of the same number the stamina bar is draining
+   *             on, and it is the one you can see without looking away.
+   *
+   * `heat` is untouched - its tell is the scorch on the ground, which is where
+   * a band you have to STAND in belongs.
+   *
+   * Sampled at the CAMERA, not at the player, and that is deliberate: this
+   * changes what the frame looks like, and `_underwater` two methods down makes
+   * exactly the same call for exactly the same reason. The damage, the push and
+   * the drain are read at the body by whoever consumes `hazardField`.
+   *
+   * `_ashBase` is captured once so a re-entry cannot compound the scaling - the
+   * defect a naive `uOpacity *= x` would have every time the world reloads.
+   */
+  _breatheAsh() {
+    const f = this.hazardField;
+    if (!f || (f.kind !== 'wind' && f.kind !== 'thin_air')) return;
+    const cam = this.engine?.camera;
+    if (!cam) return;
+    if (this._ashBase === null) this._ashBase = this._ash.uniforms.uOpacity.value;
+    cam.getWorldPosition(_hazEye);
+    const s = f.at(_hazEye.x, _hazEye.y, _hazEye.z, this._hazardSample);
+    /* Wind: still air is thin air here too, so the floor is 45% rather than 0 -
+     * a dune lee with NO sand in it would read as a bug rather than as shelter.
+     * Thin air: the other way round, dense low and thin high. */
+    const k = f.kind === 'wind' ? 0.45 + 0.55 * s.intensity : 1 - 0.6 * s.intensity;
+    this._ash.uniforms.uOpacity.value = this._ashBase * k;
   }
 
   /**
@@ -2923,6 +3533,13 @@ export class PlanetWorld extends World {
     this._owned.length = 0;
     this._sky?.dispose?.();
     this._sky = null;
+    /* The probe goes with the dome it was baked from. `_owned` freed the
+     * target on the line above; these two drop the world's last references so
+     * a rebuilt planet cannot hand `applyEnvironment` a texture whose GPU
+     * storage is gone. Same pair, and the same reason, as
+     * `MedievalWorld.dispose`. */
+    this._envRT = null;
+    this.environment.envMap = null;
     this._plumes.length = 0;
     this._ash = null;
     this._propMat = null;
@@ -2934,6 +3551,16 @@ export class PlanetWorld extends World {
     this.liquidField = null;
     this.mineralNodes.length = 0;
     this.landingSites.length = 0;
+    this.viewpoints.length = 0;
+    this._terrainField = null;
+    /* All four together: the sampler closes over `_terrainField`, so a field
+     * left behind would keep the last visit's entire height buffer alive
+     * through a closure - the same leak the bed comment above is about. */
+    this.hazardField = null;
+    this._hazardSpec = null;
+    this._hazardSample = null;
+    this._scorch = null;
+    this._ashBase = null;
     super.dispose();
   }
 }

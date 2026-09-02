@@ -717,8 +717,9 @@ const PROFILES = {
  * @param {number} [radial] vertices around the section. Must be a multiple of
  *   four so that a = 90 deg lands ON a vertex and the crest is a ridge rather
  *   than a chamfer between the two rings of vertices either side of it.
- * @returns {THREE.BufferGeometry} non-indexed and flat-shaded, like every other
- *   surface in this file
+ * @returns {THREE.BufferGeometry} an INDEXED grid carrying welded, area-weighted
+ *   normals. The rest of this file is non-indexed and flat-shaded; this one is
+ *   not, and the note above the index buffer says why.
  */
 function loft(stations, radial = 24) {
   const n = stations.length;
@@ -742,44 +743,167 @@ function loft(stations, radial = 24) {
     rings.push(ring);
   }
 
-  const pos = [];
-  const uv = [];
-  const push = (v, u, w) => { pos.push(v.x, v.y, v.z); uv.push(u, w); };
-  for (let i = 0; i < n - 1; i++) {
-    const a = rings[i];
-    const b = rings[i + 1];
-    const v0 = i / (n - 1);
-    const v1 = (i + 1) / (n - 1);
-    for (let k = 0; k < radial; k++) {
-      const k2 = (k + 1) % radial;
-      const u0 = k / radial;
-      const u1 = (k + 1) / radial;
-      push(a[k], u0, v0); push(b[k2], u1, v1); push(b[k], u0, v1);
-      push(a[k], u0, v0); push(a[k2], u1, v0); push(b[k2], u1, v1);
+  /* ---- one indexed grid: n rings of radial+1 columns, plus two cap centres ----
+   *
+   * This used to push three vertices per triangle into flat arrays and finish
+   * with `computeVertexNormals()`. On a NON-INDEXED buffer that call has no
+   * choice but to hand every vertex of a face the face's own normal, so the 24
+   * radial segments the caller asks for - chosen above so that a vertex lands
+   * ON the crest of the hump - were being shaded as 24 flat facets. A camel is
+   * hide over ribs and it was reading as a cut gem. Indexing IS the fix: a
+   * vertex shared by four faces can average them and one that is not shared
+   * cannot. 2304 vertices become 402 on the sixteen-station hull.
+   *
+   * The grid carries ONE more column than there are radial segments. The extra
+   * column repeats column 0's POSITION with u = 1 rather than u = 0, which is
+   * the seam duplicate any wrapped surface needs - a single vertex cannot hold
+   * both ends of the u range, and without it the texture runs backwards across
+   * the last segment. The non-indexed code already said this by writing the far
+   * edge of the last quad as `(k + 1) / radial` and not `k2 / radial`; the
+   * duplicate column is the indexed spelling of the same sentence. The pair is
+   * summed back together before normalising, so it is two vertices in the
+   * buffer and no line at all in the shading.
+   *
+   * Both end fans index the SAME ring vertices the quads do - a centre is the
+   * only vertex either fan adds - so the cap-to-body joint is welded by
+   * construction. `computeWeldedNormals` in `Humanoid.js` reaches that by
+   * bucketing positions after the fact; here the duplicates are known in
+   * advance, so there is nothing to search for.
+   *
+   * `merge()` immediately re-expands this with `toNonIndexed()`, and it does so
+   * with the same positions and uvs in the same order the old code emitted -
+   * only the normals differ. The merged body geometry is still 2304 vertices,
+   * which is why `bodyDigest`, which hashes positions, cannot see this change.
+   * One consequence: `merge()` disposes only its own de-indexed copy, so the
+   * grid below is no longer disposed by it. It is never uploaded to the GPU, so
+   * there is nothing to free and the collector takes it. */
+  const cols = radial + 1;
+  const count = n * cols + 2;
+  const pos = new Float32Array(count * 3);
+  const uv = new Float32Array(count * 2);
+  for (let i = 0; i < n; i++) {
+    const v = i / (n - 1);
+    for (let k = 0; k < cols; k++) {
+      const p = rings[i][k % radial];
+      const o = i * cols + k;
+      pos[o * 3] = p.x;
+      pos[o * 3 + 1] = p.y;
+      pos[o * 3 + 2] = p.z;
+      uv[o * 2] = k / radial;
+      uv[o * 2 + 1] = v;
     }
   }
   /* Both ends collapse to their own waist centre. The end stations are drawn
    * small on purpose: a fan across a full-width section is a flat disc, and a
    * flat disc across the front of the chest is exactly what made the old body
    * look cut off from three-quarters front. */
-  for (const [i, dir] of [[0, -1], [n - 1, 1]]) {
+  const capStart = n * cols;
+  const capEnd = capStart + 1;
+  for (const [c, i] of [[capStart, 0], [capEnd, n - 1]]) {
     const st = stations[i];
-    const centre = new THREE.Vector3(0, st.y, st.z);
-    const r = rings[i];
-    const v = i / (n - 1);
+    pos[c * 3] = 0;
+    pos[c * 3 + 1] = st.y;
+    pos[c * 3 + 2] = st.z;
+    uv[c * 2] = 0.5;
+    uv[c * 2 + 1] = i / (n - 1);
+  }
+
+  /* Winding is carried across triangle for triangle from the non-indexed build,
+   * including the order the two fans are emitted in, so `toNonIndexed()` on
+   * this reproduces the old buffer exactly. Outward on the body is tangential-
+   * then-longitudinal, and the two fans run opposite ways round each other.
+   *
+   * Measured rather than assumed, because it is not what you would guess: the
+   * fans' geometric normals come out +Z at the front station and -Z at the
+   * rear, so BOTH of them face INTO the animal and are culled by a FrontSide
+   * material. That is what has always shipped, and it stays - a 3 cm disc
+   * buried in the chest, per the note above, and flipping it would change the
+   * buffer this function is being kept bit-compatible with. It is worth knowing
+   * because it is why the two fan centres are the only vertices on this surface
+   * whose normal points the wrong way: every other cap vertex is a ring vertex
+   * shared with the body, and takes the body's answer.
+   *
+   * Uint16 addresses 65 536 vertices and this grid is 402 of them; the guard is
+   * there so that a caller asking for an absurd station count gets a correct
+   * buffer rather than silently wrapped indices. */
+  const tris = (n - 1) * radial * 2 + radial * 2;
+  const idx = count > 65535 ? new Uint32Array(tris * 3) : new Uint16Array(tris * 3);
+  let t = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const a = i * cols;
+    const b = (i + 1) * cols;
     for (let k = 0; k < radial; k++) {
-      const k2 = (k + 1) % radial;
-      const u0 = k / radial;
-      const u1 = (k + 1) / radial;
-      if (dir < 0) { push(centre, 0.5, v); push(r[k], u0, v); push(r[k2], u1, v); }
-      else { push(centre, 0.5, v); push(r[k2], u1, v); push(r[k], u0, v); }
+      idx[t++] = a + k; idx[t++] = b + k + 1; idx[t++] = b + k;
+      idx[t++] = a + k; idx[t++] = a + k + 1; idx[t++] = b + k + 1;
     }
+  }
+  for (let k = 0; k < radial; k++) {
+    idx[t++] = capStart; idx[t++] = k; idx[t++] = k + 1;
+  }
+  const last = (n - 1) * cols;
+  for (let k = 0; k < radial; k++) {
+    idx[t++] = capEnd; idx[t++] = last + k + 1; idx[t++] = last + k;
+  }
+
+  /* Area-weighted vertex normals, written out here rather than left to
+   * `computeVertexNormals()` for one reason: three treats column 0 and column
+   * `radial` as two unrelated vertices and would leave a hard line down the
+   * animal at u = 0. On this hull that line falls on the flank, which is the
+   * one place a lit seam is unmistakable.
+   *
+   * The cross product is left UNNORMALISED so that each face contributes in
+   * proportion to twice its area - the same weighting `computeVertexNormals`
+   * and `computeWeldedNormals` (Humanoid.js:2358) use. It matters here: the
+   * stations are 0.040 m apart at the nose and 0.160 m apart over the back, so
+   * a count-weighted average would let the cramped rings at the ends outvote
+   * the quads that actually describe the surface. */
+  const nrm = new Float32Array(count * 3);
+  const ax = new THREE.Vector3();
+  const bx = new THREE.Vector3();
+  const cx = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const fn = new THREE.Vector3();
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i] * 3;
+    const b = idx[i + 1] * 3;
+    const c = idx[i + 2] * 3;
+    ax.set(pos[a], pos[a + 1], pos[a + 2]);
+    bx.set(pos[b], pos[b + 1], pos[b + 2]);
+    cx.set(pos[c], pos[c + 1], pos[c + 2]);
+    e1.subVectors(bx, ax);
+    e2.subVectors(cx, ax);
+    fn.crossVectors(e1, e2);
+    nrm[a] += fn.x; nrm[a + 1] += fn.y; nrm[a + 2] += fn.z;
+    nrm[b] += fn.x; nrm[b + 1] += fn.y; nrm[b + 2] += fn.z;
+    nrm[c] += fn.x; nrm[c + 1] += fn.y; nrm[c + 2] += fn.z;
+  }
+  /* Fold each ring's duplicate seam column onto column 0 and give both the
+   * total, so the two vertices standing at u = 0 and u = 1 shade as one point. */
+  for (let i = 0; i < n; i++) {
+    const a = i * cols * 3;
+    const b = (i * cols + radial) * 3;
+    for (let j = 0; j < 3; j++) {
+      const s = nrm[a + j] + nrm[b + j];
+      nrm[a + j] = s;
+      nrm[b + j] = s;
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const x = nrm[i * 3];
+    const y = nrm[i * 3 + 1];
+    const z = nrm[i * 3 + 2];
+    const l = Math.hypot(x, y, z) || 1;
+    nrm[i * 3] = x / l;
+    nrm[i * 3 + 1] = y / l;
+    nrm[i * 3 + 2] = z / l;
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  geo.computeVertexNormals();
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   return geo;
 }
 

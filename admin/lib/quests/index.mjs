@@ -36,7 +36,15 @@ import { DOCK_QUESTS }     from './dock.mjs';
 
 export { STATION_QUESTS, MEDIEVAL_QUESTS, SPORTS_QUESTS, CITADEL_QUESTS, RACE_QUESTS, DOCK_QUESTS };
 
-/** Every authored quest, in world order. 73 quests. */
+/**
+ * Every authored quest, in world order. 78 quests (verified 1 Sep 2026).
+ *
+ * The count above disagreed with the table above it for as long as both
+ * existed: the table summed to 78 and this line said 73. Nobody was wrong on
+ * purpose — five citadel quests (n 131-135) were added and only one of the two
+ * numbers was updated. If you add a quest, change BOTH, or change neither and
+ * delete them; a count that is only sometimes true is worse than no count.
+ */
 export const ALL_QUESTS = [
   ...STATION_QUESTS,
   ...MEDIEVAL_QUESTS,

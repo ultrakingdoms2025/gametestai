@@ -1,4 +1,5 @@
 import './keybind.css';
+import { keyLabel as keyName } from '../core/Input.js';
 
 /**
  * F6 — key rebinding.
@@ -38,32 +39,23 @@ const FIXED_KEYS = [
   { key: 'N', label: 'Records — charters, standings, leaderboards' },
   { key: 'I', label: 'Inventory & bag' },
   { key: 'B', label: 'Marketplace (near a vendor)' },
-  { key: 'K', label: 'Unstuck — teleport to safety' },
+  /* K is GONE from this list, and that is the fix rather than a tidy-up.
+   *
+   * The rescue key was documented here as unrebindable, which was true and was
+   * the defect: a player whose K is broken or claimed could not move the one
+   * control that exists for when everything else has stopped working. It is a
+   * real `BINDABLE` row now (`Input.js`, action `unstuck`) so it appears in the
+   * Actions group above, as a cap you can click. */
   { key: '1–4', label: 'Weapon slots' },
   { key: 'Wheel', label: 'Cycle weapons' },
   { key: 'F1', label: 'Help & controls' },
   { key: 'Esc', label: 'Pause menu — every panel is in it' },
 ];
 
-/** Human-readable key names. `event.code` is unreadable on its own. */
-function keyName(code) {
-  if (!code) return '—';
-  const map = {
-    Space: 'Space', ShiftLeft: 'L Shift', ShiftRight: 'R Shift',
-    ControlLeft: 'L Ctrl', ControlRight: 'R Ctrl',
-    AltLeft: 'L Alt', AltRight: 'R Alt',
-    BracketLeft: '[', BracketRight: ']', Backquote: '`',
-    Minus: '-', Equal: '=', Semicolon: ';', Quote: "'",
-    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
-    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
-    Enter: 'Enter', Backspace: 'Backspace', CapsLock: 'Caps',
-  };
-  if (map[code]) return map[code];
-  if (code.startsWith('Key')) return code.slice(3);
-  if (code.startsWith('Digit')) return code.slice(5);
-  if (code.startsWith('Numpad')) return `Num ${code.slice(6)}`;
-  return code;
-}
+/* Human-readable key names moved to `core/Input.js` as `keyLabel`, imported
+ * above under its old local name. `UnstuckSystem` needs the same formatter to
+ * name the rescue key in a sentence, and a system reaching into `ui/` for it
+ * would be the wrong direction; a second copy would be the version that drifts. */
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -108,8 +100,25 @@ export class KeybindMenu {
     const head = el('div', 'kb-head');
     const titles = el('div', 'kb-titles');
     titles.append(el('div', 'kb-kicker', 'Controls'), el('div', 'kb-title', 'KEY BINDINGS'));
-    const close = el('div', 'kb-close');
+    /* A REAL BUTTON, because Escape is not a key a phone has.
+     *
+     * This was `el('div', 'kb-close')` with no listener at all - a caption that
+     * looked exactly like a control. On a desktop that is only untidy: Escape
+     * works. On a phone it is a dead end with no way out but reloading the
+     * page, and it is a dead end with TWO doors welded shut, because `open()`
+     * calls `input.exitLock()` and `TouchControls.shown` gates the whole
+     * on-screen tray - the `≡` pause button included - on `input.locked`. So
+     * the moment this panel opens, every other control on screen disappears
+     * and the only remaining affordance is a div that does nothing.
+     *
+     * `QuestBoard` has had this right the whole time (`QuestBoard.js:185`); a
+     * `<button>` with a click handler is all it takes. The Esc hint stays as a
+     * label inside it, so nothing is lost for the keyboard. */
+    const close = el('button', 'kb-close');
+    close.type = 'button';
+    close.title = 'Close [Esc]';
     close.append(el('b', null, 'Esc'), el('span', null, 'to close'));
+    close.addEventListener('click', () => this.close());
     head.append(titles, close);
 
     const body = el('div', 'kb-body');
@@ -157,7 +166,7 @@ export class KeybindMenu {
     foot.append(reset, this._msg);
 
     const note = el('div', 'kb-note',
-      'Fixed keys (Esc, F1 and the letter keys J I B K) cannot be rebound; F2–F12 are left to the browser.');
+      'Fixed keys (Esc, F1 and the letter keys J N I B) cannot be rebound; F2–F12 are left to the browser.');
 
     card.append(head, body, foot, note);
     wrap.appendChild(card);

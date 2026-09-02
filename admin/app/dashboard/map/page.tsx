@@ -24,7 +24,7 @@ export default async function MapEditorLinkPage() {
 
   return (
     <div className="page-body">
-      <div className="page-title">Map Editor</div>
+      <h1 className="page-title">Map Editor</h1>
       <div className="card" style={{ display: 'grid', gap: 14, maxWidth: 820 }}>
         <p style={{ margin: 0, color: 'var(--txt-2)' }}>
           Move fixed objects and place marketplace items in any world. Saves a versioned placement

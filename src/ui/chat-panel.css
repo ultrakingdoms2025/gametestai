@@ -1,0 +1,345 @@
+/* ============================================================================
+   AETHER NEXUS — Server channel (in-game chat + roster)
+   z-index: 89  (above the records sheet 87 and the quest board 88, below the
+   bug report's 95, so a report can always be filed over it)
+   Same design language as records.css / quest-board.css: dark glass, clipped
+   corners, cyan / amber rules, Chakra Petch + Rajdhani type.
+
+   NO `vh` ANYWHERE THAT IS A HEIGHT. A phone's URL bar slides away and `100vh`
+   is the LARGE viewport, so the bottom of a `vh`-sized sheet sits behind the
+   browser chrome for as long as the bar is up. `dvh` throughout, including
+   inside custom properties — `scripts/hud-source-checks.mjs` refuses the unit
+   in both places for the eleven sheets that already paid for that lesson, and
+   `scripts/tests/chat-panel.test.mjs` holds this one to the same rule.
+
+   THE NOTCH is read through the four hud.css tokens (--sa-t/-r/-b/-l), never
+   env() directly, so the whole interface has one answer to where it is.
+   ========================================================================== */
+
+.chp-root {
+  --chp-cy:    var(--cy,        #52e9ff);
+  --chp-amber: var(--amber,     #ffb44a);
+  --chp-lime:  var(--lime,      #b6ff5a);
+  --chp-txt:   var(--txt,       #cfe6f2);
+  --chp-dim:   var(--txt-dim,   #7f9db0);
+  --chp-rule:  var(--rule,      rgba(82, 233, 255, 0.28));
+  --chp-soft:  var(--rule-soft, rgba(120, 180, 210, 0.16));
+  --chp-glass: var(--glass,     rgba(9, 15, 25, 0.52));
+  --chp-hi:    var(--glass-hi,  rgba(22, 38, 58, 0.42));
+  --chp-disp:  var(--f-disp, 'Chakra Petch', 'Rajdhani', sans-serif);
+  --chp-ui:    var(--f-ui, 'Rajdhani', 'Chakra Petch', sans-serif);
+
+  position: absolute;
+  inset: 0;
+  z-index: 89;
+  display: grid;
+  place-items: center;
+  padding:
+    calc(var(--sa-t, 0px) + 8px) calc(var(--sa-r, 0px) + 8px)
+    calc(var(--sa-b, 0px) + 8px) calc(var(--sa-l, 0px) + 8px);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s;
+  font-family: var(--chp-ui);
+  color: var(--chp-txt);
+  background: rgba(3, 7, 13, 0.55);
+}
+
+.chp-root.open {
+  pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+}
+
+/* The standby overlay must never paint over an open sheet. Same rule
+   quest-board.css, character.css, maze-map.css and records.css each carry. */
+body.chat-panel-open .pause {
+  display: none !important;
+}
+
+.chp-panel {
+  width: min(980px, 100%);
+  max-height: min(78dvh, 720px);
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, var(--chp-hi), transparent 120px),
+    var(--chp-glass);
+  border: 1px solid var(--chp-rule);
+  clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.chp-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--chp-soft);
+}
+
+.chp-title {
+  font-family: var(--chp-disp);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--chp-cy);
+  font-size: 15px;
+}
+
+.chp-scope {
+  flex: 1;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--chp-dim);
+  text-transform: uppercase;
+}
+
+/* A REAL BUTTON, and sized for a thumb. Escape alone is a dead end on a phone:
+   `input.exitLock()` stands the touch session down and takes the whole touch
+   tray with it, pause button included. 44 px is the WCAG target minimum. */
+.chp-close {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--chp-rule);
+  background: transparent;
+  color: var(--chp-txt);
+  font-family: var(--chp-ui);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chp-close:hover,
+.chp-close:focus-visible {
+  background: var(--chp-cy);
+  color: #04101a;
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+.chp-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 0;
+}
+
+.chp-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  gap: 10px;
+}
+
+.chp-log {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.chp-line {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.chp-line.direct { color: var(--chp-amber); }
+.chp-line.mine .chp-from { color: var(--chp-lime); }
+
+.chp-time {
+  color: var(--chp-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chp-from {
+  color: var(--chp-cy);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.chp-dm-tag {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 0 4px;
+  border: 1px solid var(--chp-amber);
+  color: var(--chp-amber);
+}
+
+.chp-body-text { min-width: 0; }
+
+.chp-empty {
+  color: var(--chp-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 0;
+}
+
+/* ── Compose ────────────────────────────────────────────────────────────── */
+
+.chp-compose {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.chp-to,
+.chp-send {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--chp-rule);
+  background: transparent;
+  color: var(--chp-txt);
+  font-family: var(--chp-ui);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chp-to.dm {
+  border-color: var(--chp-amber);
+  color: var(--chp-amber);
+}
+
+.chp-send:hover:not(:disabled),
+.chp-to:hover {
+  background: var(--chp-cy);
+  color: #04101a;
+}
+
+.chp-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chp-field {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--chp-soft);
+  background: rgba(4, 10, 18, 0.6);
+  color: var(--chp-txt);
+  font-family: var(--chp-ui);
+  font-size: 14px;
+}
+
+.chp-field:focus-visible { outline: 1px solid var(--chp-cy); }
+.chp-field:disabled { opacity: 0.45; }
+
+.chp-notice {
+  min-height: 16px;
+  color: var(--chp-amber);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ── Roster ─────────────────────────────────────────────────────────────── */
+
+.chp-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-left: 1px solid var(--chp-soft);
+}
+
+.chp-sec-title {
+  font-family: var(--chp-disp);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--chp-dim);
+}
+
+.chp-roster {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chp-who {
+  text-align: left;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--chp-txt);
+  font-family: var(--chp-ui);
+  font-size: 13px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chp-who:hover { border-color: var(--chp-soft); }
+
+.chp-who.selected {
+  border-color: var(--chp-amber);
+  color: var(--chp-amber);
+}
+
+/* The honest sentence, permanently on screen rather than in a tooltip: this
+   list is who has polled recently, and nobody is visible in the world. */
+.chp-roster-note {
+  color: var(--chp-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
+.chp-footer {
+  padding: 8px 14px;
+  border-top: 1px solid var(--chp-soft);
+  color: var(--chp-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Narrow: the roster goes under the log rather than off the side ─────── */
+
+@media (max-width: 720px) {
+  .chp-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .chp-side {
+    border-left: none;
+    border-top: 1px solid var(--chp-soft);
+    max-height: 30dvh;
+  }
+
+  .chp-roster {
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-x: hidden;
+  }
+
+  .chp-panel { max-height: min(86dvh, 720px); }
+}

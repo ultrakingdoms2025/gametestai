@@ -198,7 +198,18 @@ test('the pilot vocabulary is the world plus the pads that world publishes', () 
   const src = read('src', 'worlds', 'planets', 'Volcanic.js');
   const block = /\n  landing:\s*\[/.exec(src);
   assert.ok(block, 'Cinder no longer declares landing sites');
-  const ids = [...src.slice(block.index).matchAll(/id:\s*'([a-z_]+)',\s*name:/g)].map((m) => m[1]);
+  /* BOUNDED to the `landing:` array, not "everything after it". This scrape
+   * used to run to end of file, so ANY later block whose entries carry
+   * `id`/`name` was read as a landing pad — which is a scrape that finds
+   * whatever the file happens to contain rather than what the key declares.
+   * It fired the moment Cinder published `viewpoints`, reporting
+   * `"ash_throne" is a pad on Cinder`. The descriptors now order `viewpoints`
+   * above `landing` to dodge it, and once this bound exists that ordering is
+   * no longer load-bearing — but leave it, because a scrape nobody has to
+   * arrange the source around is the point of the fix. */
+  const end = src.indexOf('\n  ],', block.index);
+  assert.ok(end > block.index, 'the landing array is not closed the way this scrape expects');
+  const ids = [...src.slice(block.index, end).matchAll(/id:\s*'([a-z_]+)',\s*name:/g)].map((m) => m[1]);
   assert.ok(ids.length >= 2, `the descriptor scrape found ${ids.length} pads`);
   for (const id of ids) {
     assert.ok(cands.includes(id), `"${id}" is a pad on Cinder and is not a legal pilot target`);

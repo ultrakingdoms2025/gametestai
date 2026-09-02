@@ -1,5 +1,7 @@
 /**
- * CITADEL quest content — Sunspire Citadel. 10 quests, n 31-40.
+ * CITADEL quest content — Sunspire Citadel. 15 quests: n 31-40, 131-135
+ * (verified 1 Sep 2026 — this line said 10 for as long as the five 131-135
+ * quests had existed).
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  READ `QUEST-AUDIT.md` AT THE REPO ROOT BEFORE YOU EDIT THIS FILE.
@@ -12,7 +14,7 @@
  * the thing you name, the step is dead and the quest that contains it can never
  * be finished by any player, ever.
  *
- * ── THE ONLY STEP TYPES WITH A WORKING EMITTER ───────────────────────────────
+ * ── THE ONLY STEP TYPES WITH A WORKING EMITTER (13, as of 1 Sep 2026) ───────
  *
  *   visit      `world:changed` → `QuestSystem._creditVisit` (QuestSystem.js:501)
  *   collect    `loot:collected` → `_onCollect` (QuestSystem.js:419; Loot.js:605, :613)
@@ -25,6 +27,20 @@
  *   purchase   `market:trade` → `_onMarketTrade` (QuestSystem.js:493)
  *   customize  `character:changed` → `_onCharacterChanged` (QuestSystem.js:497)
  *   survive    one count per 30 damage-free seconds, credited in `update()`
+ *   minigame   `quest:activity{type:'minigame'}` (MinigameManager.js:679) — on any
+ *              FINISH, win or loss, never on an abort. USED IN THIS FILE.
+ *   mine       `quest:activity{type:'mine'}` (Mining.js) — cutting a seam, and only
+ *              on the ten planets, which are the only worlds with minerals
+ *   pilot      `pilot:landed` → `_onLanded` (Piloting.js:1636). A crash emits
+ *              `pilot:impact` instead, so it cannot complete a landing step
+ *
+ * The last three were absent from this list while quests in this very file were
+ * already using `minigame` — a comment claiming to be exhaustive that was three
+ * short, which is how the admin console's own type list came to offer five
+ * types that do not work and omit three that do. THE LIST THAT DECIDES IS
+ * `STEP_TYPE_EMITTERS` in `scripts/quest-vocab.mjs`; it is derived from the
+ * engine and the test suite fails when it and the content disagree. This block
+ * is a reader's summary of it, not a second authority.
  *
  * ── NEVER USE THESE. NO EMITTER EXISTS; THEY CAN NEVER COMPLETE ──────────────
  *
@@ -356,18 +372,18 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'The Archive of Rafiq',
     title: 'Get into the citadel archive and out again with what it holds',
-    credits: 1600,
+    credits: 1180,
     dur: 720,
     pre: ['Rope Bridge Run', 'Nexus Cartographer'],
     notes:
-      'CROSS-WORLD PREREQUISITE — requires the station line "Nexus Cartographer", the quest that verifies every gateway; this is the citadel\'s half of the same question. 7 steps. Rafiq is authored at CitadelWorld.js:2047 and the gateway lorekeeper is planted beside the single portalSpec (CitadelWorld.js:2032) by `_spawnLorekeepers` (NPCManager.js:1303), so both are guaranteed. Step 6 asks for the robe because the player arrives in the station flight suit by default, so it takes a real change in the F2 menu to produce it — and `character:changed` carries config VALUES, never a field name (PlayerAvatar.js:185 OUTFITS).',
+      'CROSS-WORLD PREREQUISITE — requires the station line "Nexus Cartographer", the quest that verifies every gateway; this is the citadel\'s half of the same question. 7 steps. Rafiq is authored at CitadelWorld.js:2047 and the gateway lorekeeper is planted beside the single portalSpec (CitadelWorld.js:2032) by `_spawnLorekeepers` (NPCManager.js:1303), so both are guaranteed. Step 6 asks for the robe because the player arrives in the station flight suit by default, so it takes a real change in the Esc menu Character panel to produce it — and `character:changed` carries config VALUES, never a field name (PlayerAvatar.js:185 OUTFITS).',
     steps: [
       { order: 1, label: 'Press E on Rafiq the Keeper at the archive door. He speaks in riddles about the old order and will not simply hand you anything', type: 'talk', target: 'Rafiq the Keeper', count: 1, world: 'citadel' },
       { order: 2, label: 'Press E on the keeper standing beside the sky-gate at the cliff edge and get the version the citadel does not tell', type: 'talk', target: 'lorekeeper', count: 1, world: 'citadel' },
       { order: 3, label: 'The archive door answers to shard-stone. Find a nexus shard — sentinels drop them rarely, the caches carry them reliably', type: 'collect', target: 'nexus_shard', count: 1, world: 'citadel' },
       { order: 4, label: 'Rafiq wants the fee in old coin. Recover 3 relic coin from the roof and terrace caches', type: 'collect', target: 'relic_coin', count: 3, world: 'citadel' },
       { order: 5, label: 'The garrison does not want the archive opened. Destroy 4 sentinels as they close on the ward', type: 'kill', target: 'Sentinel', count: 4, world: 'citadel' },
-      { order: 6, label: 'Nobody walks into that archive dressed as a gate-runner. Press F2 and put on the Robe', type: 'customize', target: 'robe', count: 1, world: 'citadel' },
+      { order: 6, label: 'Nobody walks into that archive dressed as a gate-runner. Open the Esc menu, take Character, and put on the Robe', type: 'customize', target: 'robe', count: 1, world: 'citadel' },
       { order: 7, label: 'Press E on Aldric Storne and put the archive\'s answer in front of him, whether he wanted it or not', type: 'interact', target: 'Aldric Storne', count: 1, world: 'citadel' },
     ],
   },
@@ -377,7 +393,7 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'The Sunspire Garrison',
     title: 'Break the sentinel ring outright and hold the plateau',
-    credits: 2400,
+    credits: 1420,
     dur: 1440,
     pre: ['The Archive of Rafiq', 'Station Saboteur'],
     notes:
@@ -399,7 +415,7 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'Salt, Cloth and Coin',
     title: 'Put a Sunspire trade ledger in front of the hub',
-    credits: 3300,
+    credits: 1690,
     dur: 2880,
     pre: ['The Sunspire Garrison', 'Merchant Trade'],
     notes:
@@ -422,7 +438,7 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'The Sunspire Compact',
     title: 'Bind Sunspire, Aldermoor and the hub into one compact',
-    credits: 6200,
+    credits: 2560,
     dur: 7200,
     pre: ['Salt, Cloth and Coin', 'The Aether Compact', 'Lord of the Vale'],
     notes:
@@ -505,7 +521,7 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'The Long Water',
     title: 'Run the aqueduct from the massif and find what is under it',
-    credits: 1400,
+    credits: 1120,
     dur: 360,
     pre: ['Down the Undercliff'],
     notes:
@@ -524,7 +540,7 @@ export const CITADEL_QUESTS = [
     world: 'citadel',
     line: 'The Ring of Sunspire',
     title: 'Be the runner the whole ring knows',
-    credits: 3600,
+    credits: 1780,
     dur: 1440,
     pre: ['The Long Water', 'The Quarry Adit', 'Rope Bridge Run'],
     notes:

@@ -93,9 +93,13 @@ const { LOOP_R, WALKWAY, WALKWAY_DECK_TOP, walkwayStairFlight } =
   await import('../../src/worlds/station/StationKit.js');
 const { CONFIG } = await import('../../src/core/Config.js');
 const { MinigameManager, consolationFor } = await import('../../src/minigames/MinigameManager.js');
-const { createDeliveryRun, readRound, legPlan } = await import('../../src/minigames/DeliveryRun.js');
-const { createDroneHack, readNodes } = await import('../../src/minigames/DroneHack.js');
+const { createDeliveryRun, readRound, legPlan, DEPOT_R, DEPOT_BAND } =
+  await import('../../src/minigames/DeliveryRun.js');
+const { createDroneHack, readNodes, ACCESS_R, ACCESS_BAND } =
+  await import('../../src/minigames/DroneHack.js');
 const { STAND_HEADROOM } = await import('../../src/minigames/VenueGround.js');
+const { HUD } = await import('../../src/ui/HUD.js');
+const { EventBus } = await import('../../src/core/EventBus.js');
 
 let _built = null;
 async function built() {
@@ -293,12 +297,72 @@ test('a body can walk the hub deck from the freight kiosk to every rim kiosk', a
    *
    * (-40.5, -18) is the same KIND of point, chosen from the 596 cells the
    * flood still refuses that pass every local check: outside the gateway ring,
-   * eight walkable neighbours, no headroom obstruction. */
-  const dead = idx(-40.5, -18);
+   * eight walkable neighbours, no headroom obstruction.
+   *
+   * ── RE-TAKEN 2026-09-02, AND IT HAPPENED AGAIN ───────────────────────────
+   *
+   * (-40.5, -18) went reachable. A/B'd first, as the line above demands, by
+   * building the world at both values of the one constant that moved:
+   *
+   *   GATEWAY.TRIM_PROUD = 0.06  ->  reached 4637, the point REFUSED
+   *   GATEWAY.TRIM_PROUD = 0.005 ->  reached 4939, the point REACHED
+   *
+   * and nothing else in the tree touched. So the cause is named, not guessed.
+   *
+   * THE MECHANISM, which is the thing this note owes its author. (-40.5, -18)
+   * is not "outside the gateway ring" at all - that description was wrong when
+   * it was written. Its floor is 2.40 m and it is standing ON THE TOP TREAD of
+   * the 210-degree gateway's approach flight, one cell short of the dais deck
+   * at 2.625. Walk the flood's own predecessor chain back from it and the
+   * first nine hops are the flight itself, descending 2.4, 2.0, 1.6, 1.2, 0.8,
+   * 0.4, 0.0 onto the plaza.
+   *
+   * It was unreachable because that flight could not be climbed. The station
+   * collides its DRAWN geometry, so the trim nosing capping each tread is the
+   * surface a body stands on, and at 0.06 proud those surfaces were 0.46, 0.86,
+   * 1.26, 1.66, 2.06, 2.46. The first riser off the plaza was 0.46 against this
+   * flood's STEP of 0.45 - `CONFIG.player.stepHeight`, the same figure the game
+   * uses - so the flood was refused at the foot of all six flights and the
+   * whole of every dais with it. `Player._move` refused it too, and by a
+   * hair worth recording: its probe accepts a tread at
+   * `prev.y + stepHeight + 0.01`, which is 0.46 exactly, and the float32
+   * collision mesh returned 0.460000008344650269 against 0.460000000000000020.
+   * The flight was authored precisely on the limit and lost by 8 nanometres.
+   *
+   * So this control had been resting on a defect for the second time running,
+   * and on the same shape of defect: a surface that should never have been at
+   * that height. The point becoming reachable is the fix working - the flood
+   * and the player now agree that a gateway approach can be walked up.
+   *
+   * THE REPLACEMENT, and the standard it had to meet. The obvious candidates
+   * were checked and thrown away rather than taken:
+   *
+   *   the monument plinth top (y 1.46, 60 cells at r 6-10.6) - REJECTED. The
+   *   1.5 m lattice steps over the tiers that climb it; a 0.25 m flood from the
+   *   open deck reaches 4,428 of its 4,553 cells. It is refused here only as a
+   *   sampling artefact, which is the very thing a control must not be.
+   *
+   *   the far side of a gateway dais (y 2.625, r 57-58.7) - REJECTED as
+   *   durable but gateway-coupled, and gateway coupling is what just retired
+   *   the last one.
+   *
+   * (-54, -55.5) is deck at y = 0, and it survives every flood run at it:
+   * refused at 1.5 m/span 60 (this test), at 0.75 m/span 60, at 1.5 m/span 100
+   * and at 0.5 m/span 100. It is outside the promenade ring, and the ring is a
+   * hard edge for this flood BY DESIGN rather than by accident - its deck is at
+   * 10.005 m and the `g > 3` band above deliberately excludes it, which is the
+   * clause whose comment says it is "what keeps the flood ON the deck". So this
+   * control fires if that band is widened, if STEP is loosened, or if the flood
+   * is ever allowed to leave the hub - and it is coupled to no gateway, no prop
+   * and no crowd figure. It was refused under BOTH geometries above, so it is
+   * not a point this change created. */
+  const dead = idx(-54, -55.5);
   assert.notEqual(seen[dead[1] * N + dead[0]], 2,
-    '(-40.5, -18) is now reachable — the hub flood has been loosened and proves nothing. '
-    + 'Before re-taking this point, A/B the change: the last time it moved, the cause was a collider '
-    + 'that should never have existed.');
+    '(-54, -55.5) is now reachable — the hub flood has been loosened and proves nothing. '
+    + 'Before re-taking this point, A/B the change: both times it has moved, the cause was a surface '
+    + 'that should never have been where it was — a crowd collider, then a nosing 6 mm too proud. '
+    + 'And check the replacement against a finer flood: the last candidate rejected for this slot '
+    + 'was unreachable only because a 1.5 m lattice stepped over the stairs that climb it.');
 });
 
 /* ================================================================== */
@@ -557,4 +621,291 @@ test('the quest vocabulary offers both venues and both outcomes in the station',
     assert.ok(offered.includes(want),
       `the vocabulary does not offer "${want}" in the station: ${JSON.stringify(offered)}`);
   }
+});
+
+
+/* ================================================================== */
+/* 7. The venue that took the E key off the whole concourse            */
+/* ================================================================== */
+
+/**
+ * ── THE DEFECT, REPORTED FROM REAL PLAY ──────────────────────────────────
+ *
+ * "when on concourse I can not talk to people as it is always saying press E to
+ * start concourse run".
+ *
+ * `MinigameManager._pollNear` offered a venue wherever the player was CONTAINED
+ * by its disc, and that disc is not an offer - it is the abandonment test, and
+ * it has to hold the WHOLE route or `LEAVE_GRACE_S` aborts every run nine
+ * seconds after it reaches the far end (`citadel_skyline`'s recorded lesson,
+ * repeated in `SportsWorld` over the ski slope and the 400 m). Measured on the
+ * built station: the Concourse Round's disc is r 64.8 about (5.95, 0.10, -3.66)
+ * and SEVEN of the world's friendly NPCs stand inside it. `HUD._updateInput`
+ * stands its E-to-chat branch down while a venue prompt is up - deliberately,
+ * so one E cannot both open a chat and start a match at the lido - so all seven
+ * were unreachable. And the venue could not be started from any of those places
+ * either: `createDeliveryRun` refuses beyond `DEPOT_R` = 6 m of the kiosk. The
+ * words, the key and the game all disagreed at once.
+ *
+ * The fix separates the two jobs. Containment is unchanged. The venue now also
+ * publishes an OFFER gate - `start` / `startRadius` / `startBand` - and
+ * `StationWorld` reads those numbers from `DeliveryRun` and `DroneHack`
+ * themselves, so the prompt appears exactly where a start is possible.
+ *
+ * These tests are written so that reverting either half goes red: the first
+ * three fail on the fix's absence, and the containment test fails if the disc
+ * is shrunk to "fix" the prompt instead.
+ */
+
+/** The concourse friendlies that stand inside the round's containment disc. */
+async function shadowedFriendlies() {
+  const { world } = await built();
+  const v = await venue('station_concourse_round');
+  const mgr = new MinigameManager({
+    bus: null, player: { position: new THREE.Vector3() }, economy: null, input: null, worldManager: null,
+  });
+  const out = [];
+  for (const s of world.npcSpawns ?? []) {
+    if (s.type !== 'friendly') continue;
+    mgr.player.position.set(s.position.x, s.position.y + 0.9, s.position.z);
+    if (!mgr._inVenue(v, 0)) continue;
+    out.push(s);
+  }
+  mgr.dispose();
+  return out;
+}
+
+/** An armed manager on the built station, with both games registered. */
+async function armed(bus = new EventBus()) {
+  const { world } = await built();
+  const mgr = new MinigameManager({
+    bus, player: { position: new THREE.Vector3() }, economy: null, input: null, worldManager: null,
+  });
+  mgr.registerGame('courier', createDeliveryRun);
+  mgr.registerGame('hack', createDroneHack);
+  mgr.arm(world);
+  return mgr;
+}
+
+test('the round shadows most of the concourse — the disc really is that wide', async () => {
+  /* The premise every test below rests on, asserted rather than assumed. If
+   * somebody "fixes" the report by shrinking the disc, this goes red and points
+   * at the abandonment test further down. */
+  const shadowed = await shadowedFriendlies();
+  assert.ok(shadowed.length >= 5,
+    `only ${shadowed.length} friendlies stand inside the round's disc; this file's premise `
+    + 'has moved and the tests below no longer measure the reported defect');
+  const v = await venue('station_concourse_round');
+  for (const s of shadowed) {
+    const d = Math.hypot(s.position.x - v.start.x, s.position.z - v.start.z);
+    assert.ok(d > DEPOT_R,
+      `${s.name} stands ${d.toFixed(1)} m from the kiosk, inside the start gate — pick another control`);
+  }
+});
+
+test('standing beside a concourse NPC, the venue does NOT claim the E key', async () => {
+  const mgr = await armed();
+  for (const s of await shadowedFriendlies()) {
+    mgr.player.position.set(s.position.x, s.position.y + 0.9, s.position.z);
+    mgr._pollNear();
+    mgr._pollPrompt();
+    assert.equal(mgr.nearest, null,
+      `standing at ${s.name} the venue offers "${mgr.nearest?.id}" — that NPC cannot be talked to`);
+    assert.equal(mgr._promptText, null,
+      `standing at ${s.name} the HUD is told "${mgr._promptText}", which takes E off the NPC`);
+  }
+  mgr.dispose();
+});
+
+test('the real HUD opens a chat on E beside a shadowed concourse NPC', async () => {
+  /* Driven through the REAL `HUD.prototype._updateInput`, over a REAL
+   * `EventBus`, with `_minigamePrompt` set only by the manager's own
+   * `minigame:prompt` event. A test that re-implemented the guard would keep
+   * passing after the guard changed; this one IS the guard. */
+  const bus = new EventBus();
+  const mgr = await armed(bus);
+
+  const hud = Object.create(HUD.prototype);
+  Object.assign(hud, {
+    _relock: 0, _relockCheck: 0, _chatOpen: false, _saveExpectT: 0,
+    _nearPortal: null, _minigamePrompt: null, _chatNpc: null,
+    bus,
+    _tickLock() {},
+    _openChat(npc) { this._opened = npc ?? null; },
+    input: { pressed: (code) => code === 'KeyE' },
+  });
+  bus.on('minigame:prompt', (p) => { hud._minigamePrompt = p?.text ?? null; });
+
+  const away = (await shadowedFriendlies())[0];
+  hud._chatNpc = { id: 'npc-1', name: away.name, role: 'civilian' };
+  mgr.player.position.set(away.position.x, away.position.y + 0.9, away.position.z);
+  mgr._pollNear();
+  mgr._pollPrompt();
+  hud._opened = undefined;
+  hud._updateInput(1 / 60);
+  assert.equal(hud._opened?.name, away.name,
+    `E beside ${away.name} opened no chat; the HUD holds a venue prompt of "${hud._minigamePrompt}"`);
+
+  // ...and at the kiosk the documented rule still holds: the venue wins on E.
+  const v = await venue('station_concourse_round');
+  mgr.player.position.set(v.start.x, v.start.y + 0.9, v.start.z);
+  mgr._pollNear();
+  mgr._pollPrompt();
+  hud._opened = undefined;
+  hud._updateInput(1 / 60);
+  assert.equal(hud._opened, undefined,
+    'standing at the freight kiosk, E opened a chat instead of starting the round — '
+    + 'the lido rule (arrive at a venue, be offered the contest) has been inverted');
+  mgr.dispose();
+});
+
+test('standing AT the kiosk and AT the access mast, each venue DOES claim E', async () => {
+  const mgr = await armed();
+  for (const id of ['station_concourse_round', 'station_relay_splice']) {
+    const v = await venue(id);
+    mgr.player.position.set(v.start.x, v.start.y + 0.9, v.start.z);
+    mgr._pollNear();
+    mgr._pollPrompt();
+    assert.equal(mgr.nearest?.id, id, `${id} is not offered at its own start point`);
+    assert.ok(mgr._promptText && mgr._promptText.startsWith('Start'),
+      `${id} publishes "${mgr._promptText}" at its own start point`);
+  }
+  mgr.dispose();
+});
+
+test('a quest manager still outranks a venue, gate or no gate', async () => {
+  /* The rule `MinigameManager` already carried, which the offer gate must not
+   * quietly retire: at a start point a quest manager or lorekeeper takes the
+   * key back, because the HUD puts exactly those two above the venue. */
+  const bus = new EventBus();
+  const mgr = await armed(bus);
+  const v = await venue('station_concourse_round');
+  mgr.player.position.set(v.start.x, v.start.y + 0.9, v.start.z);
+
+  for (const npc of [{ name: 'Dispatcher', isQuestManager: true }, { name: 'Wen', isLorekeeper: true }]) {
+    bus.emit('chat:available', { npc });
+    mgr._pollNear();
+    mgr._pollPrompt();
+    assert.equal(mgr._keyTaken, true, `${npc.name} no longer takes the key at the kiosk`);
+    assert.equal(mgr._promptText, null,
+      `${npc.name} is standing at the kiosk and the HUD is still told "${mgr._promptText}"`);
+  }
+  // An ordinary NPC at the kiosk does NOT: the venue wins, exactly as at the lido.
+  bus.emit('chat:available', { npc: { name: 'Bex' } });
+  mgr._pollNear();
+  mgr._pollPrompt();
+  assert.equal(mgr._keyTaken, false, 'an ordinary NPC now outranks a venue at its own start point');
+  assert.equal(mgr.nearest?.id, 'station_concourse_round');
+  mgr.dispose();
+});
+
+test('containment is UNCHANGED: the far end of the route is still inside the venue', async () => {
+  /* The half of the fix that must not move. `_inVenue` and `_atStart` answer
+   * DIFFERENTLY at a rim kiosk, and that difference is the whole point: the
+   * offer is off out there and the abandonment clock is not. Shrink the disc to
+   * fix the prompt and this goes red. */
+  const mgr = new MinigameManager({
+    bus: null, player: { position: new THREE.Vector3() }, economy: null, input: null, worldManager: null,
+  });
+  for (const id of ['station_concourse_round', 'station_relay_splice']) {
+    const v = await venue(id);
+    const pts = pointsOf(v);
+    let differed = 0;
+    for (const p of pts) {
+      mgr.player.position.set(p.x, p.y + 0.9, p.z);
+      assert.equal(mgr._inVenue(v, 0), true,
+        `${id}/${p.id}: outside the disc, so a run reaching it is abandoned 9 s later`);
+      if (!mgr._atStart(v, 0)) differed++;
+    }
+    assert.equal(differed, pts.length - 1,
+      `${id}: the offer gate says yes at ${pts.length - differed} of its ${pts.length} route points; `
+      + 'exactly one — the start — should be offered, or the gate is the disc wearing a new name');
+  }
+  mgr.dispose();
+});
+
+test('the offer gate IS the game module\'s own start gate — the two cannot drift', async () => {
+  const round = await venue('station_concourse_round');
+  assert.equal(round.startRadius, DEPOT_R,
+    `the round offers within ${round.startRadius} m and DeliveryRun starts within ${DEPOT_R} m; `
+    + 'E would be pressed where the factory then refuses it');
+  assert.equal(round.startBand, DEPOT_BAND);
+  assert.deepEqual(
+    { x: round.start.x, z: round.start.z },
+    { x: round.config.depot.x, z: round.config.depot.z },
+    'the round offers itself somewhere other than its own depot'
+  );
+
+  const splice = await venue('station_relay_splice');
+  assert.equal(splice.startRadius, ACCESS_R,
+    `the splice offers within ${splice.startRadius} m and DroneHack starts within ${ACCESS_R} m`);
+  assert.equal(splice.startBand, ACCESS_BAND);
+  assert.deepEqual(
+    { x: splice.start.x, z: splice.start.z },
+    { x: splice.config.nodes[0].x, z: splice.config.nodes[0].z },
+    'the splice offers itself somewhere other than its own access mast'
+  );
+});
+
+test('a start the venue offers is a start the module accepts, all the way round the gate', async () => {
+  /* The two gates agreeing on paper is not the same as agreeing on the ground.
+   * Sampled every 10 degrees at the release radius: wherever the venue is still
+   * offering, `createDeliveryRun` must build. This is the assertion that would
+   * have caught hysteresis applied OUTWARD - a 2.5 m ring of "Start the
+   * Concourse Round" that only ever earned a warning toast. */
+  const bus = new EventBus();
+  const mgr = await armed(bus);
+  const v = await venue('station_concourse_round');
+  let checked = 0;
+  for (let deg = 0; deg < 360; deg += 10) {
+    const a = (deg * Math.PI) / 180;
+    for (const d of [DEPOT_R - 0.05, DEPOT_R - 1.5, 1]) {
+      mgr.player.position.set(v.start.x + Math.cos(a) * d, v.start.y + 0.9, v.start.z + Math.sin(a) * d);
+      mgr._pollNear();
+      mgr._pollNear();      // second poll: hysteresis held, the widest the offer ever gets
+      if (!mgr.nearest) continue;
+      const game = createDeliveryRun(v, { player: mgr.player, bus });
+      assert.ok(game,
+        `the round is offered ${d.toFixed(2)} m out on bearing ${deg} and DeliveryRun refuses to build there`);
+      game.dispose?.();
+      checked++;
+    }
+  }
+  assert.ok(checked > 30, `only ${checked} offered positions were sampled; the ring is not being walked`);
+  mgr.dispose();
+});
+
+test('the prompt is sharp on the way in and forgiving on the way out, and NEVER beyond the module gate', async () => {
+  /* `PROMPT_HYSTERESIS` exists so a body on a boundary does not flicker the
+   * meaning of E every frame. Applied outward it would push the OFFER past the
+   * gate `createDeliveryRun` enforces. So the band lives INSIDE the published
+   * radius: armed close, released at the gate. Walked in and back out, one
+   * centimetre at a time. */
+  const mgr = await armed();
+  const v = await venue('station_concourse_round');
+  const set = (d) => mgr.player.position.set(v.start.x + d, v.start.y + 0.9, v.start.z);
+
+  let armedAt = null;
+  for (let d = 12; d >= 0; d -= 0.01) {
+    set(d);
+    mgr._pollNear();
+    if (mgr.nearest) { armedAt = d; break; }
+  }
+  assert.ok(armedAt !== null, 'walking onto the kiosk never offered the round at all');
+  assert.ok(armedAt <= DEPOT_R,
+    `the round armed ${armedAt.toFixed(2)} m out and DeliveryRun refuses beyond ${DEPOT_R} m`);
+
+  let releasedAt = null;
+  for (let d = 0; d <= 12; d += 0.01) {
+    set(d);
+    mgr._pollNear();
+    if (!mgr.nearest) { releasedAt = d; break; }
+  }
+  assert.ok(releasedAt !== null, 'the round never stopped offering, twelve metres from the kiosk');
+  assert.ok(releasedAt <= DEPOT_R + 0.02,
+    `the prompt survived to ${releasedAt.toFixed(2)} m, past the ${DEPOT_R} m the module will start at`);
+  assert.ok(releasedAt > armedAt + 1,
+    `armed at ${armedAt.toFixed(2)} m and released at ${releasedAt.toFixed(2)} m: `
+    + 'there is no hysteresis band, so the prompt will flicker on the boundary');
+  mgr.dispose();
 });

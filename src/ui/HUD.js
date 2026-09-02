@@ -8,6 +8,7 @@ import { WeaponWheel, makeIcon } from './WeaponWheel.js';
 import { PauseMenu } from './PauseMenu.js';
 import { allows } from '../worlds/WorldRules.js';
 import { ownedFittings } from '../mounts/MountFittings.js';
+import { keyLabel } from '../core/Input.js';
 
 /**
  * The whole player-facing interface: crosshair, health, ammo, weapon selector,
@@ -516,6 +517,7 @@ export class HUD {
     this._buildMount(hud);
     this._buildPrompt(hud);
     this._buildStuck(hud);
+    this._buildAlerts(hud);
     this._buildToasts(hud);
     this._buildDebug(hud);
     this._buildHelpChip(hud);
@@ -1501,10 +1503,20 @@ export class HUD {
     this.mountPanel = p;
   }
 
-  /** `[K] Unstuck` affordance, shown only while UnstuckSystem reports trouble. */
+  /**
+   * `[K] Unstuck` affordance, shown only while UnstuckSystem reports trouble.
+   *
+   * The cap reads the LIVE binding rather than the letter K, because `unstuck`
+   * is a real `BINDABLE` row now (it was hard-coded in `UnstuckSystem`, which
+   * is why it never appeared in the rebind panel at all). A player who moved
+   * the rescue key off a broken K would otherwise be shown the key that does
+   * not work, at the exact moment they are stuck - and `input:binds-changed`
+   * keeps it current if they move it again mid-session.
+   */
   _buildStuck(hud) {
     const s = el('div', 'stuck');
-    s.append(el('div', 'stuck-key', 'K'), el('div', 'stuck-text', 'Unstuck'));
+    this.stuckKey = el('div', 'stuck-key', keyLabel(this.input?.codeFor?.('unstuck') ?? 'KeyK'));
+    s.append(this.stuckKey, el('div', 'stuck-text', 'Unstuck'));
     hud.appendChild(s);
     this.stuckEl = s;
 
@@ -1512,6 +1524,143 @@ export class HUD {
     ring.appendChild(el('b', null, 'POSITION RESET'));
     hud.appendChild(ring);
     this.unstuckFx = ring;
+  }
+
+  /**
+   * THE STANDING ALERT BAR: the failures a toast is the wrong shape for.
+   *
+   * A toast fades in five seconds. That is right for "picked up 30 credits"
+   * and wrong for every condition on this bar, because all of them are
+   * STATES rather than events - they persist, the player needs to be able to
+   * find out about them at any point after they began, and each one changes
+   * what the player should reasonably expect the game to be doing:
+   *
+   *  1. `engine:context-lost` - the GPU has gone away. `Engine._onContextLost`
+   *     sets `_paused = true`, so the game freezes on its last drawn frame.
+   *     That event has been emitted since the driver-hang recovery landed and
+   *     NOTHING HAS EVER SUBSCRIBED TO IT: the game simply stopped, silently,
+   *     on a still image, with no way for the player to tell a driver hiccup
+   *     from a hang of their own machine. If the browser never restores the
+   *     context that is permanent - and it says so here.
+   *  2. `save:partial` - a load stopped part way. The autosave has been
+   *     switched off to protect the stored copy, so the player is looking at a
+   *     half-restored game and needs to know THAT before they wonder where
+   *     their credits went. @see systems/SaveGame.js `_partial`
+   *  3. `session:offline` - `/api/game/session` failed for a reason that is
+   *     not "signed out". Earnings are queued locally and the account will not
+   *     see them; an hour of play silently not reaching the account is a
+   *     failure the player has to be able to see while it is happening.
+   *
+   *  4. `player:hazard` - the planet's weather is charging the body: Cinder's
+   *     radiant heat, Sirocco's blown sand, Cathedra's thin air. The world
+   *     publishes the field and `Swim.tickHazard` charges it; until that
+   *     wiring landed all three were drawn, measured and completely inert. A
+   *     player losing health with no idea why is worse than a hazard that does
+   *     nothing, so the bar names the weather AND the way out of it.
+   *
+   * One bar, one message at a time, most recent wins. Four separate banners
+   * would be four ways to cover the crosshair.
+   */
+  _buildAlerts(hud) {
+    const bar = el('div', 'hud-alert');
+    bar.hidden = true;
+    this.alertText = el('span', 'hud-alert-text', '');
+    bar.append(el('i', 'hud-alert-dot'), this.alertText);
+    hud.appendChild(bar);
+    this.alertEl = bar;
+    /**
+     * Every condition currently true, by id, in the order they arrived.
+     *
+     * A Map rather than one slot, and that is not over-engineering: the
+     * conditions are independent and overlap easily - a driver hiccup during a
+     * session that is already offline is exactly the sort of bad afternoon that
+     * produces both at once, and standing in a heat band is a fourth thing
+     * that can be true at the same time as any of them. With a single slot,
+     * clearing the newer one would blank the bar and silently take down a
+     * warning that is still true.
+     * Insertion order is what makes "newest wins", and what makes the bar fall
+     * back to whatever is still wrong instead of to nothing.
+     * @type {Map<string, string>}
+     */
+    this._alerts = new Map();
+  }
+
+  /**
+   * Raise or clear one standing condition.
+   *
+   * Keyed by `id`, so a condition can only ever clear ITSELF: the GPU coming
+   * back must not wipe a partial-load warning that nobody has fixed. The newest
+   * live condition is the one shown, because it is the one to act on.
+   *
+   * @param {string} id
+   * @param {string|null} text null clears this condition; a string raises it
+   */
+  setAlert(id, text) {
+    if (!this.alertEl) return;
+    /* Delete in BOTH branches: re-inserting is what moves a re-raised condition
+     * to the end of the Map, and the end of the Map is what "newest" means. */
+    this._alerts.delete(id);
+    if (text != null) this._alerts.set(id, String(text));
+    const live = [...this._alerts.values()];
+    const top = live.length ? live[live.length - 1] : null;
+    this.alertText.textContent = top ?? '';
+    this.alertEl.hidden = top === null;
+  }
+
+  /**
+   * The standing conditions, subscribed in one place.
+   *
+   * A prototype method called from `_wire` for the same reason `_wireSession`
+   * is one: a headless rig can register the REAL wiring over a real bus and a
+   * shim DOM, instead of re-implementing the payload handling and then quietly
+   * agreeing with itself.
+   */
+  _wireAlerts() {
+    this._on('engine:context-lost', () => this.setAlert('gpu',
+      'Graphics device lost — the game is paused while the browser tries to restore it. '
+      + 'If nothing happens in a few seconds, reload the page.'));
+    this._on('engine:context-restored', () => {
+      this.setAlert('gpu', null);
+      this.notify('Graphics restored', 'info');
+    });
+    this._on('save:partial', () => this.setAlert('save',
+      'Your save only partly loaded. Autosave is OFF so nothing overwrites it — reload to try '
+      + 'again, or use Save in the pause menu to keep what you have.'));
+    /* No clear channel for this one, deliberately. `hydrateAccountSession` runs
+     * ONCE at boot and there is no retry, so a session that failed stays failed
+     * for the life of the tab - and a `session:online` subscription with no
+     * emitter would be a channel that reads as done and can never fire, which
+     * is the exact defect five deleted quest verbs were made of. When a retry
+     * is built, it emits and this gains one line. */
+    this._on('session:offline', ({ reason } = {}) => this.setAlert('offline',
+      `Offline${reason ? ` (${reason})` : ''} — progress is local only and will not reach your account.`));
+
+    /* 4. `player:hazard` - the planet's own weather, being charged against the
+     * body right now. A STATE and not an event, exactly like the three above:
+     * it persists, it starts costing the moment it begins, and a player whose
+     * health bar is falling with no idea why is the worst version of this
+     * feature there is. `Swim.tickHazard` emits it once on entry and once on
+     * exit, so this raises and clears rather than repeating.
+     *
+     * The text is `name` (the world's own words for its weather) plus the way
+     * OUT, keyed on `cause`. The way out is the important half - `PlanetHazard`
+     * guarantees one exists within 40 m and this is the only place the player
+     * is ever told what it is. An unrecognised cause still gets the name and
+     * the bar, because a fourth hazard should be visible on the day it lands
+     * and not on the day somebody remembers this switch. */
+    this._on('player:hazard', ({ in: inside, name, cause } = {}) => {
+      if (!inside) {
+        this.setAlert('hazard', null);
+        return;
+      }
+      const escape = {
+        heat: 'walk off the scorched ground.',
+        wind: 'get into the lee of a dune.',
+        altitude: 'sprint and climb are rationed up here. Descend to get your breath back.',
+      }[cause] ?? 'move clear of it.';
+      const what = name ? String(name) : 'A hazard';
+      this.setAlert('hazard', `${what.charAt(0).toUpperCase()}${what.slice(1)} — ${escape}`);
+    });
   }
 
   _buildMinimap(hud) {
@@ -2364,6 +2513,28 @@ export class HUD {
     this._on('keybinds:close',   ()              => c('keybinds'));
     this._on('mount:menu:open',  ()              => o('mount-menu'));
     this._on('mount:menu:close', ()              => c('mount-menu'));
+    /* THE PANEL THAT WAS SHOUTING INTO AN EMPTY ROOM.
+     *
+     * `ShipMenu` has emitted `ship:menu:open` / `ship:menu:close` since it
+     * shipped and this Set never listened for either, while listening for the
+     * mount menu's identical pair one line above. Everything that follows from
+     * membership therefore did not happen for the ship drawer:
+     *
+     *   - the pause card stayed UNDER it, because `_overlayOpen`'s hub-launch
+     *     arm is what takes the card down when a panel opens over it;
+     *   - the HUD kept drawing over a panel that owns the cursor, because
+     *     `.hud.overlaid` is set from the size of this Set;
+     *   - and `_schedRelock()` never ran on close, so a drawer opened from the
+     *     hub gave the pointer back to nobody.
+     *
+     * Two CSS workarounds existed to paper over the first two - `body.sm-open
+     * .pause` in `ship-menu.css` and `body.sm-open .mount-pow` / `.wstrip` in
+     * `hud.css`, each with a comment explaining that `HUD.js` belonged to
+     * another agent. They are deleted with this line: the flag they were
+     * standing in for is now genuinely set, and the third symptom was never
+     * reachable from a stylesheet at all. */
+    this._on('ship:menu:open',   ()              => o('ship-menu'));
+    this._on('ship:menu:close',  ()              => c('ship-menu'));
     /* The market is a cursor-owning sheet like the rest: `MarketplaceUI` opens
      * with `menuFocusIn` (`:489`), which exits pointer lock and captures text.
      * It has no hub row - B near a vendor is the only way in - so it reaches
@@ -2451,6 +2622,15 @@ export class HUD {
      * 401, a network error and a slow response all mean general play, which
      * is the built state of the chip. See `_wireSession`. */
     this._wireSession();
+    /* The three STANDING conditions - a lost GPU, a half-restored save, an
+     * account that cannot be reached. See `_buildAlerts`. */
+    this._wireAlerts();
+    /* The rescue key's cap follows a rebind. See `_buildStuck`. */
+    this._on('input:binds-changed', () => {
+      if (this.stuckKey) {
+        this.stuckKey.textContent = keyLabel(this.input?.codeFor?.('unstuck') ?? 'KeyK');
+      }
+    });
 
     /* --- mounts -------------------------------------------------------- */
     this._on('mount:summoned', ({ id }) => {

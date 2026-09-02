@@ -384,9 +384,23 @@ test('swimming the two lengths cleanly wins and pays exactly 10 credits', () => 
   assert.ok(fin, 'a finish must be announced');
   assert.equal(fin.won, true, 'a 2.2 m/s cruise should beat the pace swimmer');
   assert.equal(fin.place, 1);
+  /* 120, and no longer the 10 the user first asked for.
+   *
+   * The request ("if I win I get 10 credits") predates the shop, and the shop
+   * is what made it wrong: the cheapest row on any shelf is a medkit at 67-138
+   * CR, so a whole contest paid a ninth of the cheapest thing in the game while
+   * one raider paid 5 CR of bounty PLUS a guaranteed credit drop off the body.
+   * The Sep-2026 economy audit measured that and moved the prize onto shelf
+   * scale. `MINIGAME_PRIZE` carries the arithmetic, including why 120 is not a
+   * guess: it is what `BUTTS_REWARD` - the one venue authored after the shop
+   * existed - has always paid.
+   *
+   * The literal is kept beside the constant on purpose. Asserting only
+   * `MINIGAME_PRIZE` would let the number move silently; asserting both means
+   * moving it stays a deliberate act with a reason attached. */
   assert.equal(fin.credits, MINIGAME_PRIZE);
-  assert.equal(fin.credits, 10, 'the user asked for ten credits, in those words');
-  assert.equal(rig.economy.credits, 10, 'and the wallet has to actually contain them');
+  assert.equal(fin.credits, 120, 'a contest win must buy one shelf item — see MINIGAME_PRIZE');
+  assert.equal(rig.economy.credits, MINIGAME_PRIZE, 'and the wallet has to actually contain them');
   assert.equal(fin.detail.splits.length, 2, 'both lengths should be split');
   assert.ok(fin.time > 0);
 });
@@ -580,7 +594,7 @@ test('with no factory or scene there is no body, and the contest is untouched', 
   swimTo(rig, 58);
   swimTo(rig, 34);
   assert.equal(rig.mg.state, MINIGAME_STATE.FINISHED);
-  assert.equal(rig.economy.credits, 10, 'and the race still pays as always');
+  assert.equal(rig.economy.credits, MINIGAME_PRIZE, 'and the race still pays as always');
 });
 
 /* ------------------------------------------------------------------ */

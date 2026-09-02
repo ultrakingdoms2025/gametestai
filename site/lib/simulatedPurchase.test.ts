@@ -69,17 +69,35 @@ const suite = URL_ ? describe : describe.skip;
 /* ---------------------------------------------------------------------- */
 
 describe('the simulated hosting checkout', () => {
-  it('no longer refuses the SKU when Stripe is unconfigured', () => {
+  it('no longer refuses the SKU merely because Stripe is unconfigured', () => {
     const fn = functionBody(
       source('app', 'api', 'checkout', 'route.ts'),
       'async function startServerHostingCheckout'
     );
-    /* The 503 this replaced. Its argument was real — a simulated subscription
-     * exercises none of Stripe — and it is recorded in the comment that took
-     * its place rather than deleted, so the assertion is on the STATUS and not
-     * on the number appearing anywhere in the function. */
-    expect(fn).not.toMatch(/status:\s*503/);
-    expect(fn).toContain("url.searchParams.set('simulated', '1')");
+    /* This used to assert `not.toMatch(/status:\s*503/)` — that no 503 appeared
+     * anywhere in the function — standing in for "the SKU is not refused just
+     * because there is no Stripe key".
+     *
+     * A 503 is back, for a DIFFERENT reason: the deployment has not set
+     * `ALLOW_SIMULATED_PURCHASE=1`. "No Stripe key" describes production too,
+     * and reading it as permission to hand out a free subscription is the hole
+     * that was being closed. So the blanket assertion now measures the wrong
+     * thing, and it is replaced by one that says what was actually meant: the
+     * only refusal in here is the opt-in's, and the simulated mint follows it.
+     *
+     * The ORIGINAL 503 — "refuse to pretend at all" — is still gone, which is
+     * what this test was protecting; its argument lives in the comment that
+     * replaced it. */
+    const optInAt = fn.indexOf('if (!simulatedPurchasesAllowed())');
+    const refusalAt = fn.search(/status:\s*503/);
+    const simulateAt = fn.indexOf("url.searchParams.set('simulated', '1')");
+
+    expect(optInAt, 'the opt-in guard has been renamed or removed').toBeGreaterThan(-1);
+    // Exactly one 503, and it belongs to the opt-in guard rather than standing
+    // in front of the whole simulated path.
+    expect(fn.match(/status:\s*503/g)?.length ?? 0).toBe(1);
+    expect(refusalAt).toBeGreaterThan(optInAt);
+    expect(simulateAt).toBeGreaterThan(refusalAt);
     expect(fn).toContain('SERVER_HOSTING_SKU');
   });
 
@@ -216,6 +234,7 @@ const PAYING = '00000000-0000-4000-8000-000000000014';
 suite('a simulated purchase (integration)', () => {
   let db: Client;
   let savedKey: string | undefined;
+  let savedAllow: string | undefined;
 
   beforeAll(async () => {
     /* Every happy path here depends on there being no Stripe key. Saved and
@@ -224,6 +243,18 @@ suite('a simulated purchase (integration)', () => {
      * reason at the wrong time. */
     savedKey = process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_SECRET_KEY;
+
+    /* And on the opt-in, which is NEW and which is the point.
+     *
+     * `!stripeConfigured()` used to be the whole permission to grant a
+     * subscription nobody paid for -- and that describes every deployment
+     * without keys, production included. It is now an explicit
+     * `ALLOW_SIMULATED_PURCHASE=1` that production cannot set. These tests
+     * exercise the granting path, so they have to opt in like any other
+     * caller; `refuses to grant without the explicit opt-in` below is the test
+     * that this flag is load-bearing rather than decorative. */
+    savedAllow = process.env.ALLOW_SIMULATED_PURCHASE;
+    process.env.ALLOW_SIMULATED_PURCHASE = '1';
 
     db = new Client({ connectionString: URL_!, ssl: { rejectUnauthorized: false } });
     await db.connect();
@@ -256,6 +287,8 @@ suite('a simulated purchase (integration)', () => {
   afterAll(async () => {
     if (savedKey === undefined) delete process.env.STRIPE_SECRET_KEY;
     else process.env.STRIPE_SECRET_KEY = savedKey;
+    if (savedAllow === undefined) delete process.env.ALLOW_SIMULATED_PURCHASE;
+    else process.env.ALLOW_SIMULATED_PURCHASE = savedAllow;
     if (!db) return;
     await reset();
     await db.end();
@@ -377,6 +410,29 @@ suite('a simulated purchase (integration)', () => {
     const over = await createServer(db, BUYER, { name: 'Simulated Slot Three' });
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.reason).toBe('quota');
+  });
+
+  it('refuses to grant without the explicit opt-in, even with no Stripe key', async () => {
+    /* The hole this closes. `stripeConfigured()` returning false was being read
+     * as permission to hand out a working entitlement, and that is the state of
+     * every deployment that has not been given keys -- INCLUDING PRODUCTION. So
+     * "no key" must not be sufficient on its own. */
+    delete process.env.ALLOW_SIMULATED_PURCHASE;
+    try {
+      const order = `sim_${Date.now()}_optin`;
+      const out = await grantSimulatedHosting(db, { playerId: BUYER, orderId: order });
+      expect(out.granted).toBe(false);
+      if (!out.granted) expect(out.reason).toBe('not_permitted');
+      /* And no allowance was written, which is the part that would actually
+       * hurt. `readEntitlement` synthesises an inactive record for a player
+       * with no row rather than returning null, so the assertion is on what it
+       * says, not on its absence. */
+      const ent = await readEntitlement(db, BUYER);
+      expect(ent?.status).not.toBe('active');
+      expect(ent?.maxServers ?? 0).toBe(0);
+    } finally {
+      process.env.ALLOW_SIMULATED_PURCHASE = '1';
+    }
   });
 
   it('is refused the moment STRIPE_SECRET_KEY exists, without a flag to remember', async () => {

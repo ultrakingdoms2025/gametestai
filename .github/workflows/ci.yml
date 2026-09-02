@@ -2,9 +2,16 @@
 #
 # Until this file existed there was no CI at all: 190 test files, ~2,570 tests,
 # a vitest suite and a 114-file contract checker, none of which ran on a push.
-# The deployed game is a hand-committed bundle, and `bundle-game.mjs` runs with
-# `--if-available`, so a broken build exits zero and ships the previous bundle.
-# The commit history records that happening.
+# The deployed game is a hand-committed bundle, and `bundle-game.mjs` ran with
+# `--if-available`, so a broken build exited zero and shipped the previous
+# bundle. The commit history records that happening.
+#
+# That flag is gone as of the September 2026 audit remediation: every failure
+# mode in `site/scripts/bundle-game.mjs` is now fatal, the site's `build` script
+# passes no flag, and the one remaining soft case (no game project at `..` at
+# all) is refused outright whenever `VERCEL` is set. The site is a SEPARATE
+# Vercel project from the game, so nothing in this file was ever going to catch
+# its deploy shipping stale — the script had to be the one to fail.
 #
 # Nothing here deploys — Vercel's git integration owns that. These jobs only
 # decide whether a push should have been allowed to reach it.
@@ -44,7 +51,8 @@ jobs:
 
       - run: npm ci
 
-      # ~2,570 tests across 190 files. Takes roughly three minutes.
+      # 3,893 tests across ~190 files as of 2026-09-01 (it was ~2,570 when this
+      # job was written). Takes roughly six minutes on this runner.
       - name: Unit tests
         run: npm test
 
@@ -221,6 +229,13 @@ jobs:
           path: .probe/ci-frame-gaps
           if-no-files-found: warn
 
+  # ── THE STOREFRONT ─────────────────────────────────────────────────────
+  #
+  # The site is a SEPARATE Vercel project from the game and from the admin app,
+  # with its own lockfile, its own build and its own deploy trigger. Nothing in
+  # the `game` job above touches a line of it. This job is the only thing that
+  # looks at the code holding the account system, the paywall and the Stripe
+  # integration before it ships.
   site:
     name: Site — types and tests
     runs-on: ubuntu-latest
@@ -237,15 +252,50 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
 
+      # NOT `--omit=dev`: vitest, jsdom and Testing Library are devDependencies,
+      # and the step below is the whole reason this job exists.
       - run: npm ci
 
       - name: Typecheck
         run: npx tsc --noEmit
 
-      # lib/**/*.test.ts and components/**/*.test.ts — pure logic, no database.
+      # TWO PROJECTS, both of which must find files — see `vitest.config.mts`
+      # for why the environment follows the file rather than the config.
+      #
+      #   * `server` — `lib/**`, `components/**/*.test.ts` and `app/**/*.test.ts`
+      #     under Node, which is where route handlers and library code actually
+      #     run. `app/**` was outside the include list entirely until the
+      #     September 2026 audit, so checkout, webhook, confirm, restore,
+      #     redeem, register, reset-password and setup-2fa had no reachable
+      #     test between them.
+      #   * `dom` — `**/*.test.tsx` under jsdom with Testing Library. There was
+      #     not one `.test.tsx` in the repository before that audit, which is
+      #     precisely how a React batching bug survived in
+      #     `MarketplaceAdminPanel`: it set a success message and clobbered it
+      #     in the same tick, and no test that never renders a component can
+      #     see that.
+      #
+      # `passWithNoTests` is set on NEITHER, so a typo in either glob is a red
+      # build rather than a green run over zero files.
+      #
+      # WHAT THIS DELIBERATELY DOES NOT COVER, so nobody reads it as more than
+      # it is: there is no database here. The route-handler tests exercise
+      # handlers as functions against fakes, not over HTTP against Postgres, so
+      # a schema drift, a migration that never ran, or an `initSchema()` the
+      # admin app owns and the site assumes will not be caught by this job — it
+      # will be caught in production. There is also no browser: `next build` is
+      # not run here (Vercel runs it on the deploy) and no page is rendered for
+      # real, so a client/server boundary error that only Next's compiler sees
+      # reaches the deploy before it reaches anyone.
       - name: Unit tests
         run: npx vitest run
 
+  # ── THE ADMIN APP ──────────────────────────────────────────────────────
+  #
+  # Third separate Vercel project, third separate lockfile. It owns the
+  # `players` table both other projects read, the audit chain, and the
+  # marketplace and quest content the game serves — so a break here is not
+  # confined to an internal tool.
   admin:
     name: Admin — types
     runs-on: ubuntu-latest
@@ -264,7 +314,22 @@ jobs:
 
       - run: npm ci
 
-      # The admin app has no test suite yet. Typecheck is the gate that exists,
-      # and it is the one guarding the session work done in this phase.
+      # THERE IS STILL NO ADMIN TEST SUITE, and this step is not pretending to
+      # be one. `find admin -name '*.test.ts*'` returns nothing and there is no
+      # `test` script and no test runner in `admin/package.json`, so there is
+      # nothing here for a step to run. A `run: npm test --if-present` would go
+      # green having executed nothing at all, which is the exact shape this
+      # repository has been burned by and is worse than the honest gap.
+      #
+      # What the typecheck does buy, given `strict: true`: session handling,
+      # the zod-validated route inputs, and the generated quest vocabulary all
+      # fail the build on a shape change. What it does not buy is any statement
+      # about behaviour — an authorisation check inverted, a throttle that
+      # never throttles, or an audit row written with the wrong chain hash all
+      # typecheck perfectly.
+      #
+      # Closing that needs a runner and a first test in `admin/package.json`,
+      # which is a change to a file this remediation did not own. When one
+      # lands, add the step here next to the typecheck, not instead of it.
       - name: Typecheck
         run: npx tsc --noEmit

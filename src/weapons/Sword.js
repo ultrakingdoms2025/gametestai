@@ -67,6 +67,10 @@ const _po3 = new THREE.Vector3();
 /* trail sampling */
 const _tr1 = new THREE.Vector3();
 const _tr2 = new THREE.Vector3();
+const _bladeMat = new THREE.Matrix4();
+/* wrist joint */
+const _handE = new THREE.Euler();
+const _handQ = new THREE.Quaternion();
 /* melee sweep */
 const _sw1 = new THREE.Vector3();
 const _sw2 = new THREE.Vector3();
@@ -132,8 +136,15 @@ const GUARD_POS = new THREE.Vector3(0.15, -0.15, -0.44);
 const GUARD_ROT = new THREE.Vector3(0.94, 0.12, 0.26);
 const LOW_POS = new THREE.Vector3(0.32, -0.42, -0.46);
 const LOW_ROT = new THREE.Vector3(0.2, 0.78, -0.36);
-/** Base pose the swing lerps onto: the sword comes up in front of the face. */
-const SWING_POS = new THREE.Vector3(0.1, -0.1, -0.45);
+/**
+ * Base pose the swing lerps onto: the sword comes up in front of the face.
+ *
+ * Pushed 5 cm further out than it was. The swing now pivots at the shoulder and
+ * the pivot's pitch brings the hand ~7 cm toward the eye at the top of the
+ * wind-up; at the old -0.45 that put the fist 0.36 m from the camera, close
+ * enough for the arm's near-plane guard to start shortening the forearm.
+ */
+const SWING_POS = new THREE.Vector3(0.1, -0.12, -0.5);
 const SWING_ROT = new THREE.Vector3(0.16, 0, 0.08);
 
 /**
@@ -146,17 +157,282 @@ const SWING_ROT = new THREE.Vector3(0.16, 0, 0.08);
  */
 const SHOULDER = new THREE.Vector3(0.27, -0.42, 0.14);
 
-/* Arc extremes, radians. `dir` (+1 / -1) mirrors them so consecutive swings
- * alternate hand, which is what stops a held attack reading as a loop. */
-const COCK_YAW = -1.02;
-const END_YAW = 1.24;
-const COCK_PITCH = 0.62;
-const END_PITCH = -0.66;
-const COCK_ROLL = -0.5;
-const END_ROLL = 0.72;
+/* ==================================================================== */
+/* The arc                                                              */
+/* ==================================================================== */
 
-/** Samples in the edge trail ribbon. 18 covers ~0.3 s of arc at 60 fps. */
+/**
+ * ── One arc, two joints, and one function that owns both ──────────────────
+ *
+ * The swing used to be two unrelated descriptions of the same motion. The pose
+ * rotated the model from -1.02 to +1.24 rad of yaw - 129 degrees, right to left
+ * - and `_bearingAt` independently returned `dir * (half - 2*half*s)`, which is
+ * +50 to -50 degrees: the same `dir`, the opposite sense, and a different
+ * magnitude from a nominally 100-degree arc. Every target on the blade's
+ * leading side was therefore cut LAST, and the declared arc in `WEAPON_STATS`
+ * described nothing that happened on screen. Two derivations of one number is
+ * how that ships, so there is now one: `swingArcAt` is the only place the arc
+ * exists, the pose writes what it returns, and the sweep measures the blade
+ * direction those same values produce.
+ *
+ * ── The timeline is pinned to the damage window ───────────────────────────
+ * `LOAD_END`/`STRIKE_END` are `SPEC.strikeStart`/`SPEC.strikeEnd`, not numbers
+ * of their own: the arc *is* the damage window, so the two cannot drift apart
+ * again even if the stats are retuned. At the current stats that buys
+ * 0.17 s of wind-up, 0.20 s of arc and 0.35 s of recovery out of a 0.72 s
+ * swing. The wind-up wanted to be longer and the strike shorter than that, and
+ * the honest way to get there is to move `strikeStart`/`strikeEnd` - which live
+ * in `WeaponStats.js` and are out of scope for this change. So the snap is
+ * bought from the easing instead: `STRIKE_EASE` puts half the arc in the first
+ * quarter of the window and 80% of it in the first 0.09 s, then decelerates
+ * into the follow-through. Perceived, that is a slow load and a hard strike;
+ * measured, the damage window is untouched.
+ */
+const ARC_HALF = SPEC.arc * 0.5 * DEG;
+const LOAD_END = SPEC.strikeStart;
+const STRIKE_END = SPEC.strikeEnd;
+
+/**
+ * How far past the cock the wind-up travels, in arc units.
+ *
+ * The old wind-up did not move. `u` was clamped at 0 for t < 0.2, so the sword
+ * was *already* cocked on frame one and only the blend weight changed - an
+ * anticipation made entirely of cross-fade. A negative pre-cock gives it actual
+ * travel: 0.22 of an arc is 18 degrees of yaw and a matching lift, backwards
+ * and up, before the direction reverses.
+ */
+const PRECOCK = 0.22;
+const S0 = -PRECOCK;
+/** Exponent on the strike's ease-out. See the note above on where the snap comes from. */
+const STRIKE_EASE = 2.6;
+
+/**
+ * Share of the arc's yaw and pitch carried by the shoulder rather than the wrist.
+ *
+ * The swing used to rotate `_model` about its own origin, ~4 cm inside the
+ * palm: the hand travelled 12 cm while the point swept a metre, which is a
+ * windscreen wiper, not a cut. `_swingPivot` sits at `SHOULDER`, 0.70 m from
+ * the hand, so the share below moves the hand 0.4-0.5 m along a real radius and
+ * the blade-to-forearm angle changes for free. It also makes the arm's stretch
+ * structurally impossible: a rotation about the anchor cannot change the
+ * hand-to-anchor distance.
+ */
+const PIVOT_YAW_SHARE = 0.46;
+const PIVOT_PITCH_SHARE = 0.3;
+
+/** Total pitch and roll swept across the damage window, radians. */
+const ARC_PITCH = 1.06;
+const ARC_ROLL = 1.22;
+/** Extra pitch loaded during the wind-up and spent through the first half of the cut. */
+const WINDUP_LIFT = 0.26;
+
+/** Ring-down on the recovery: the blade settles instead of parking. */
+const RING_HZ = 3.2;
+const RING_DECAY = 7.5;
+const RING_ROLL = 0.10;
+const RING_PITCH = 0.05;
+
+/**
+ * How much of the blade's own yaw and roll the hand gives back to the wrist.
+ *
+ * The hand and the blade used to be one merged mesh sharing one transform, so
+ * the fist rotated 129 deg of yaw and 70 deg of roll with the blade while the
+ * forearm - derived only from where the wrist *is* - reoriented by 17-20 deg
+ * with no roll at all. That left ~110 deg unaccounted at the joint every swing,
+ * and it is why the fist visibly screws round on the end of the arm. The hand
+ * is now its own group and counter-rotates by this share, so the blade leads
+ * into the cut and the hand catches up.
+ */
+const HAND_LAG_SHARE = 0.4;
+/** 1/seconds on the hand's catch-up. 16 is a ~62 ms lag - a follow, not a snap. */
+const HAND_LAG_RATE = 16;
+
+/**
+ * The swing arc at timeline position `t`, decomposed into the joints that carry
+ * it. THE one description of the motion; both the pose and the sweep read it.
+ *
+ * @param {number} t 0..1 through `SPEC.swingTime`
+ * @param {number} dir +1 / -1, the alternating hand
+ * @param {object} [out] reused result object
+ */
+export function swingArcAt(t, dir, out = {}) {
+  let s;
+  let lift;
+  if (t <= 0) {
+    s = 0;
+    lift = 0;
+  } else if (t < LOAD_END) {
+    // Smoothstepped into the cock, so the wind-up starts from rest and settles
+    // at the top with zero velocity. The strike then fires from a dead stop,
+    // and that discontinuity in velocity is exactly what a strike is.
+    const k = t / LOAD_END;
+    const e = k * k * (3 - 2 * k);
+    s = S0 * e;
+    lift = WINDUP_LIFT * e;
+  } else {
+    const u = clamp((t - LOAD_END) / (STRIKE_END - LOAD_END), 0, 1);
+    const e = 1 - Math.pow(1 - u, STRIKE_EASE);
+    s = S0 + (1 - S0) * e;
+    // The loaded lift is spent through the cut rather than dropped at the
+    // window edge, which would be a step in the pose.
+    lift = WINDUP_LIFT * (1 - e);
+  }
+
+  // Pitch and roll are antisymmetric about the middle of the damage window, so
+  // the cut is centred: point up and edge rolled back at the cock, point down
+  // and edge rolled through at the end.
+  const mid = (S0 + 1) * 0.5;
+  const half = (s - mid) / (1 - S0);
+  const yaw = YAW_BIAS + YAW_GAIN * s;
+
+  out.s = s;
+  out.yawPivot = dir * yaw * PIVOT_YAW_SHARE;
+  out.yaw = dir * yaw * (1 - PIVOT_YAW_SHARE);
+  const pitch = -ARC_PITCH * half + lift;
+  out.pitchPivot = pitch * PIVOT_PITCH_SHARE;
+  out.pitch = pitch * (1 - PIVOT_PITCH_SHARE);
+  out.roll = dir * ARC_ROLL * half;
+
+  // Recovery ring-down. Outside the damage window by construction, so it can
+  // never widen the sweep; it is here so the blade stops ringing rather than
+  // stopping dead. 3.2 Hz over a 0.35 s recovery is a little over one cycle.
+  if (t > STRIKE_END) {
+    const tau = (t - STRIKE_END) * SPEC.swingTime;
+    const ring = Math.exp(-tau * RING_DECAY) * Math.sin(tau * Math.PI * 2 * RING_HZ);
+    out.roll += dir * RING_ROLL * ring;
+    out.pitch += RING_PITCH * ring;
+  }
+  return out;
+}
+
+/**
+ * How much of the swing pose is live at timeline `t`, 0..1.
+ *
+ * Pure and exported so the test can pin the one property the rest of this file
+ * depends on: that the damage window sits strictly inside the full-weight hold,
+ * which is what makes `swingBladeDirection` the blade's actual direction there.
+ */
+export function swingBlend(t) {
+  if (t < 0) return 0;
+  if (t < 0.12) return sstep(0, 0.12, t);
+  if (t < 0.72) return 1;
+  return 1 - sstep(0.72, 1, t);
+}
+
+/* Scratch for the pure arc helpers below - module level, never handed out. */
+const _arc = {};
+/* Separate from `_arc`: the pose and the sweep can evaluate in the same frame. */
+const _arcPose = {};
+const _arcE = new THREE.Euler();
+const _arcQ = new THREE.Quaternion();
+const _arcQ2 = new THREE.Quaternion();
+const _arcV = new THREE.Vector3();
+
+/**
+ * Where the blade points at timeline `t`, in the viewmodel root's space.
+ *
+ * Composed from the *same* Eulers `_updatePose` writes onto `_swingPivot` and
+ * `_model`, in the same orders, so this is the blade's actual direction and not
+ * a second derivation of it. Two things are deliberately left out: the root's
+ * FOV compensation, which scales x and y and is a cosmetic for the drawn image
+ * only; and sway, bob and recoil, which are a few degrees of noise that should
+ * not make the damage arc jitter with the player's mouse.
+ *
+ * Valid where the swing pose is fully blended in, which the damage window is -
+ * see `swingBlend`, and see the test that pins that.
+ */
+export function swingBladeDirection(t, dir, out = new THREE.Vector3()) {
+  const a = swingArcAt(t, dir, _arc);
+  // YXZ on the pivot: with yaw outermost, the pivot's yaw and the model's add
+  // exactly when the pitch between them is zero, which keeps the arc's
+  // shoulder/wrist split from skewing where the blade points.
+  _arcE.set(a.pitchPivot, a.yawPivot, 0, 'YXZ');
+  _arcQ.setFromEuler(_arcE);
+  _arcE.set(SWING_ROT.x + a.pitch, SWING_ROT.y + a.yaw, SWING_ROT.z + a.roll, 'XYZ');
+  _arcQ2.setFromEuler(_arcE);
+  _arcQ.multiply(_arcQ2);
+  return out.set(0, 0, -1).applyQuaternion(_arcQ);
+}
+
+/**
+ * Blade bearing relative to the aim direction, radians, positive to the
+ * player's left - the same convention `_sweep` measures targets in.
+ *
+ * The viewmodel root is parented to the camera and carries no rotation, so its
+ * -Z is the aim direction and its +X is the player's right. That is what makes
+ * a camera-space direction directly comparable with a world-space bearing.
+ */
+export function swingBearing(t, dir) {
+  const d = swingBladeDirection(t, dir, _arcV);
+  return Math.atan2(-d.x, -d.z);
+}
+
+/**
+ * Yaw calibration, solved once at load.
+ *
+ * `SPEC.arc` is documented as "total sweep in degrees, centred on the aim
+ * direction", and until now nothing enforced that. The blade's bearing is not
+ * its yaw: the arc's pitch tips the blade out of the horizontal, which
+ * foreshortens the horizontal component, and the base pose adds a fixed 9 deg
+ * of pitch that is not mirrored between the two hands. Feeding the nominal yaw
+ * straight in overshoots by ~7% at one end and undershoots at the other.
+ *
+ * So the yaw is solved for instead of assumed: two unknowns (a bias and a gain
+ * over `s`), two conditions (the measured bearing is exactly -/+ half the arc
+ * at the two edges of the damage window), Newton on the 2x2 whose Jacobian is
+ * [[1, S0], [1, 1]] in the small-angle limit. It converges in a handful of
+ * steps and costs microseconds once. The test asserts the result.
+ */
+let YAW_BIAS = 0;
+let YAW_GAIN = 2 * ARC_HALF / (1 - S0);
+{
+  YAW_BIAS = -ARC_HALF - YAW_GAIN * S0;
+  const inv = 1 / (1 - S0);
+  for (let i = 0; i < 40; i++) {
+    const b0 = swingBearing(LOAD_END, 1) + ARC_HALF;
+    const b1 = swingBearing(STRIKE_END, 1) - ARC_HALF;
+    if (Math.abs(b0) < 1e-12 && Math.abs(b1) < 1e-12) break;
+    YAW_BIAS -= (b0 - S0 * b1) * inv;
+    YAW_GAIN += (b0 - b1) * inv;
+  }
+}
+
+/* ==================================================================== */
+
+/**
+ * Samples in the edge trail ribbon, and the wall-clock window they cover.
+ *
+ * The ribbon used to take one sample per frame, which made its length a
+ * function of the display: 18 frames is 0.30 s at 60 Hz, 0.125 s at 144 Hz -
+ * under half the arc, so the trail on a fast monitor was a stub - and 0.60 s at
+ * 30 Hz, where it outlived the swing. Samples are now due on a clock, and
+ * `_sampleTrail` interpolates along the frame to place them, so the ribbon
+ * covers `TRAIL_WINDOW` seconds of arc at every frame rate.
+ */
 const TRAIL_SAMPLES = 18;
+/** Seconds of arc held in the ribbon: a little over the 0.20 s of the cut itself. */
+const TRAIL_WINDOW = 0.24;
+const TRAIL_STEP = TRAIL_WINDOW / (TRAIL_SAMPLES - 1);
+
+/**
+ * How many samples a frame of `dt` owes the ribbon, and the leftover to carry.
+ *
+ * Exported for the frame-rate independence test: the whole point of this
+ * routine is a property no single call can show.
+ */
+export function trailSchedule(dt, accum) {
+  let a = accum + dt;
+  let count = 0;
+  while (a >= TRAIL_STEP && count < TRAIL_SAMPLES) {
+    a -= TRAIL_STEP;
+    count++;
+  }
+  // A hitch longer than the whole ribbon has already overwritten every slot;
+  // carrying its remainder would only burn the next frames catching up on arc
+  // nobody can see.
+  if (count >= TRAIL_SAMPLES) a = 0;
+  return { count, accum: a };
+}
 /** Impact spark budget. Two overlapping hits never exhaust it. */
 const SPARK_COUNT = 72;
 /** Cap on distinct targets a single swing may cut. */
@@ -462,6 +738,11 @@ export class SwordWeapon {
     this._recoilRotVel = new THREE.Vector3();
     this._camKick = { x: 0, y: 0 };
     this._camKickVel = { x: 0, y: 0 };
+    /** The arc's split, written by `_applySwingPose` and read by `_updatePose`. */
+    this._pivotYaw = 0;
+    this._pivotPitch = 0;
+    this._armYaw = 0;
+    this._armRoll = 0;
 
     this._disposables = [];
     this._offs = [];
@@ -601,25 +882,56 @@ export class SwordWeapon {
     this.root = new THREE.Group();
     this.root.name = 'viewmodel:sword';
 
-    /** Child of root; carries the model scale, sway, bob and swing. */
+    /**
+     * The shoulder. `_model` hangs off this, `SHOULDER` away, so the arc's yaw
+     * and pitch swing the whole assembly about a joint the player actually has
+     * instead of about a point 4 cm inside their own palm.
+     *
+     * YXZ, so the pivot's yaw is outermost and adds cleanly to the wrist's -
+     * see `swingBladeDirection` for why that matters to where the blade points.
+     */
+    this._swingPivot = new THREE.Group();
+    this._swingPivot.name = 'viewmodel:sword:shoulder';
+    this._swingPivot.position.copy(SHOULDER);
+    this._swingPivot.rotation.order = 'YXZ';
+    this.root.add(this._swingPivot);
+
+    /** Child of the pivot; carries the model scale, sway, bob and the wrist's share of the swing. */
     this._model = new THREE.Group();
     this._model.name = 'viewmodel:sword:model';
     this._model.scale.setScalar(SWORD_SCALE);
-    this.root.add(this._model);
+    this._swingPivot.add(this._model);
+
+    /**
+     * The wrist joint, and everything distal to it.
+     *
+     * The hand used to be merged into the same mesh as the blade, which welded
+     * them into one rigid object: whatever the sword did, the fist did exactly,
+     * to the degree. A wrist that cannot rotate is not a wrist, and the marker
+     * that was called `_wrist` only ever had its position read. So the hand now
+     * hangs off its own group placed AT the wrist, which is the one point that
+     * does not move when a wrist bends - rotating this group turns the fist
+     * about the forearm without dragging the joint out of the sleeve.
+     */
+    this._hand = new THREE.Group();
+    this._hand.name = 'viewmodel:sword:hand';
+    this._hand.position.set(0.004, -0.03, 0.104);
+    this._model.add(this._hand);
 
     const fitting = [];
     const leather = [];
     const cord = [];
     const inlay = [];
     const glove = [];
+    const knuckle = [];
 
     this._buildBlade(inlay);
     this._buildGuard(fitting, inlay);
     this._buildGrip(leather, cord, fitting);
     this._buildPommel(fitting, inlay);
-    this._buildHand(glove, fitting);
+    this._buildHand(glove, knuckle);
 
-    const addMerged = (bucket, material, name) => {
+    const addMerged = (bucket, material, name, parent = this._model) => {
       const geo = mergeBucket(bucket);
       if (!geo) return null;
       const mesh = new THREE.Mesh(geo, material);
@@ -628,7 +940,7 @@ export class SwordWeapon {
       mesh.receiveShadow = false;
       mesh.frustumCulled = false;
       mesh.renderOrder = 100;
-      this._model.add(mesh);
+      parent.add(mesh);
       this._disposables.push(geo);
       return mesh;
     };
@@ -637,16 +949,21 @@ export class SwordWeapon {
     addMerged(leather, this.matLeather, 'grip');
     addMerged(cord, this.matCord, 'wire');
     addMerged(inlay, this.matInlay, 'inlay');
-    addMerged(glove, this.matGlove, 'hand');
+    // The hand's two meshes reuse `matGlove` and `matFitting`, so splitting the
+    // fist off the sword costs two draw calls and no new shader program - the
+    // station's boot-warm budget is at 144 against a pin of 142 +/- 4 and this
+    // must not spend any of what is left.
+    addMerged(glove, this.matGlove, 'hand', this._hand);
+    addMerged(knuckle, this.matFitting, 'knuckles', this._hand);
 
-    // Wrist: just under the pommel, which is where a real hand's is - the
-    // pommel rests against the wrist bone rather than the forearm running
-    // through it. Child of `_model`, so it inherits the sword's whole pose and
-    // the arm follows the hand for free.
+    // Wrist: the origin of the hand group, which is just under the pommel -
+    // where a real one is, with the pommel resting against the wrist bone
+    // rather than the forearm running through it. The arm reads its position
+    // from here and its twist from `_hand`, and because the joint sits at the
+    // group's own origin the two agree by construction however the hand turns.
     this._wrist = new THREE.Object3D();
     this._wrist.name = 'viewmodel:sword:wrist';
-    this._wrist.position.set(0.004, -0.03, 0.104);
-    this._model.add(this._wrist);
+    this._hand.add(this._wrist);
 
     this._arm = new ViewArm({
       parent: this.root,
@@ -656,7 +973,16 @@ export class SwordWeapon {
       band: this.matFitting,
       wristRadius: 0.018,
       taper: 1.55,
+      // The joint ball is 35 mm across and the hand-heel it sits in is 20 mm
+      // deep. That never showed while the fist and the arm shared a transform.
+      plugScale: 0.8,
       minEyeDistance: 0.34,
+      // A forearm, not a pole. `upper` is a tuning number for how bent the arm
+      // reads - the bone it names is behind the near plane - and 0.50 puts the
+      // resting bend near 40 deg and the range across the swing at 0-58 deg.
+      elbow: { fore: 0.26, upper: 0.5, pole: new THREE.Vector3(0.45, -1, 0.2) },
+      roll: { source: this._hand, share: 0.55 },
+      damping: 22,
       name: 'viewmodel:sword:arm',
     });
   }
@@ -773,6 +1099,14 @@ export class SwordWeapon {
    * deformed realistic hand looks far worse than a stylised gauntlet.
    */
   _buildHand(glove, plate) {
+    // Everything here is authored in the sword's own model space - the grip
+    // runs along +Z from the origin, and these numbers were tuned against it -
+    // but it is built into `_hand`, whose origin is the wrist. So each piece is
+    // placed through the offset rather than by retyping the tuning.
+    const o = this._hand.position;
+    const ph = (bucket, geo, x, y, z, rx, ry, rz) =>
+      place(bucket, geo, x - o.x, y - o.y, z - o.z, rx, ry, rz);
+
     const zc = 0.042; // hand centres on the grip, clear of the pommel
 
     // ── Size ────────────────────────────────────────────────────────────────
@@ -783,7 +1117,7 @@ export class SwordWeapon {
     // rather than as a hand - which is why the sword looked like it was
     // floating. A hand closed around a grip this size is about twice the grip's
     // diameter, and that ratio is what makes it legible.
-    place(glove, chamfer(0.082, 0.092, 0.108, 0.026, 3), 0.004, -0.006, zc);
+    ph(glove, chamfer(0.082, 0.092, 0.108, 0.026, 3), 0.004, -0.006, zc);
 
     // Four fingers wrapping the underside: a proximal segment across the -Y
     // face and a distal segment curling up the -X face, so the fist visibly
@@ -792,22 +1126,28 @@ export class SwordWeapon {
       const z = zc - 0.039 + i * 0.027;
       const rad = 0.0152 - i * 0.0012;
       const a = new THREE.CylinderGeometry(rad, rad * 0.96, 0.07, 8).rotateZ(Math.PI / 2);
-      place(glove, a, 0.008, -0.04, z);
+      ph(glove, a, 0.008, -0.04, z);
       const b = new THREE.CylinderGeometry(rad * 0.93, rad * 0.84, 0.044, 8).rotateZ(Math.PI / 2);
-      place(glove, b, -0.04, -0.027, z, 0, 0, 0.85);
+      ph(glove, b, -0.04, -0.027, z, 0, 0, 0.85);
       // Knuckle, in the fitting steel: at this size a hard specular is what
-      // makes a knuckle read at all, and leather gives none.
-      place(plate, chamfer(0.017, 0.021, 0.023, 0.006), 0.043, -0.016, z);
+      // makes a knuckle read at all, and leather gives none. It goes in the
+      // hand's own steel bucket, not the sword's: merged with the guard and the
+      // pommel it would be welded back to the blade, which is the bug.
+      ph(plate, chamfer(0.017, 0.021, 0.023, 0.006), 0.043, -0.016, z);
     }
 
     // Thumb laid along the grip toward the guard, closing onto the index.
     const thumb = new THREE.CylinderGeometry(0.0152, 0.0134, 0.068, 8).rotateX(Math.PI / 2);
-    place(glove, thumb, 0.03, 0.026, zc - 0.052, 0, 0.34, 0);
-    place(glove, new THREE.SphereGeometry(0.015, 10, 8), 0.014, 0.014, zc - 0.082);
+    ph(glove, thumb, 0.03, 0.026, zc - 0.052, 0, 0.34, 0);
+    ph(glove, new THREE.SphereGeometry(0.015, 10, 8), 0.014, 0.014, zc - 0.082);
 
     // Heel of the hand, carrying the mass out to the wrist. Without it the fist
-    // stops in mid-air and the forearm appears to start from nothing.
-    place(glove, chamfer(0.07, 0.078, 0.04, 0.018, 2), 0.002, -0.012, zc + 0.062);
+    // stops in mid-air and the forearm appears to start from nothing. Deepened
+    // from 0.04 to 0.056 and pushed past the wrist: the arm's joint ball is
+    // 35 mm across in root units, which is 70 mm in this space, and the old
+    // heel was a 20 mm pocket for it. That only mattered once the fist stopped
+    // turning with the ball.
+    ph(glove, chamfer(0.072, 0.08, 0.056, 0.018, 2), 0.002, -0.014, zc + 0.07);
 
     // The forearm is *not* built here. It is solved every frame from a fixed
     // shoulder anchor - see `ViewArm` and `_wrist` in `_buildModel`. A baked arm
@@ -934,16 +1274,33 @@ export class SwordWeapon {
     this._trailSeeded = false;
     this._trailTip = new Float32Array(S * 3);
     this._trailInner = new Float32Array(S * 3);
+    /** Seconds owed toward the next sample, and the edge at the last frame. */
+    this._trailAccum = 0;
+    this._trailPrevTip = new THREE.Vector3();
+    this._trailPrevInner = new THREE.Vector3();
     this._disposables.push(geo, this._trailMat, tex);
   }
 
-  /** Push the current edge position into the ring buffer. */
-  _sampleTrail() {
-    // The model matrix was written this frame but three only refreshes matrices
-    // at render time, so compose it here rather than trusting matrixWorld.
+  /**
+   * Push however many edge positions this frame owes into the ring buffer.
+   *
+   * Samples are due on a wall clock, not once per frame - see `TRAIL_WINDOW` -
+   * so a frame may owe none, one, or several. The ones it owes fall at known
+   * instants *inside* the frame, so each is placed by interpolating between the
+   * previous frame's edge and this one's rather than all being stamped at the
+   * frame boundary; over a 0.01 s step on an arc this fast that is the
+   * difference between a smooth ribbon and a visible stair.
+   */
+  _sampleTrail(dt) {
+    // The pose was written this frame but three only refreshes matrices at
+    // render time, so compose it here rather than trusting matrixWorld. Both
+    // links: the arc now lives partly on the shoulder pivot, and a ribbon
+    // sampled through the model alone would miss half the sweep.
+    this._swingPivot.updateMatrix();
     this._model.updateMatrix();
-    _tr1.copy(TIP_LOCAL).applyMatrix4(this._model.matrix);
-    _tr2.copy(TRAIL_INNER_LOCAL).applyMatrix4(this._model.matrix);
+    _bladeMat.multiplyMatrices(this._swingPivot.matrix, this._model.matrix);
+    _tr1.copy(TIP_LOCAL).applyMatrix4(_bladeMat);
+    _tr2.copy(TRAIL_INNER_LOCAL).applyMatrix4(_bladeMat);
 
     // First sample after a reset: stamp *every* slot with the current edge. An
     // unwritten ribbon vertex sits at the root's origin - the player's own eye -
@@ -962,17 +1319,30 @@ export class SwordWeapon {
       this._trailSeeded = true;
       this._trailHead = 0;
       this._trailFilled = 0;
+      this._trailAccum = TRAIL_STEP; // the seed frame owes its own first sample
+      this._trailPrevTip.copy(_tr1);
+      this._trailPrevInner.copy(_tr2);
     }
 
-    const h = this._trailHead;
-    this._trailTip[h * 3] = _tr1.x;
-    this._trailTip[h * 3 + 1] = _tr1.y;
-    this._trailTip[h * 3 + 2] = _tr1.z;
-    this._trailInner[h * 3] = _tr2.x;
-    this._trailInner[h * 3 + 1] = _tr2.y;
-    this._trailInner[h * 3 + 2] = _tr2.z;
-    this._trailHead = (h + 1) % TRAIL_SAMPLES;
-    if (this._trailFilled < TRAIL_SAMPLES) this._trailFilled++;
+    const { count, accum } = trailSchedule(dt, this._trailAccum);
+    this._trailAccum = accum;
+    for (let n = 0; n < count; n++) {
+      // This sample fell `accum + (count-1-n)*TRAIL_STEP` seconds before now.
+      const back = accum + (count - 1 - n) * TRAIL_STEP;
+      const f = dt > 1e-6 ? clamp(1 - back / dt, 0, 1) : 1;
+      const h = this._trailHead;
+      const t3 = h * 3;
+      this._trailTip[t3] = this._trailPrevTip.x + (_tr1.x - this._trailPrevTip.x) * f;
+      this._trailTip[t3 + 1] = this._trailPrevTip.y + (_tr1.y - this._trailPrevTip.y) * f;
+      this._trailTip[t3 + 2] = this._trailPrevTip.z + (_tr1.z - this._trailPrevTip.z) * f;
+      this._trailInner[t3] = this._trailPrevInner.x + (_tr2.x - this._trailPrevInner.x) * f;
+      this._trailInner[t3 + 1] = this._trailPrevInner.y + (_tr2.y - this._trailPrevInner.y) * f;
+      this._trailInner[t3 + 2] = this._trailPrevInner.z + (_tr2.z - this._trailPrevInner.z) * f;
+      this._trailHead = (h + 1) % TRAIL_SAMPLES;
+      if (this._trailFilled < TRAIL_SAMPLES) this._trailFilled++;
+    }
+    this._trailPrevTip.copy(_tr1);
+    this._trailPrevInner.copy(_tr2);
   }
 
   /**
@@ -1043,6 +1413,7 @@ export class SwordWeapon {
     this._trailHead = 0;
     this._trailFade = 0;
     this._trailSeeded = false;
+    this._trailAccum = 0;
     this._trailDraw = 0;
     this._trailGeo?.setDrawRange(0, 0);
     this._trail.visible = false;
@@ -1271,12 +1642,12 @@ export class SwordWeapon {
 
     this._advanceSwing(dt, elapsed);
     this._integrateSprings(dt);
-    this._updatePose(elapsed);
+    this._updatePose(dt, elapsed);
 
     // Trail sampling must follow the pose write: it reads the model matrix the
     // pose just produced.
     if (this._swingT >= 0) {
-      this._sampleTrail();
+      this._sampleTrail(dt);
       this._trailFade = Math.min(1, this._trailFade + dt * 12);
     } else if (this._trailFade > 0) {
       // Deliberately *not* sampling here. The blade is settling back to guard,
@@ -1309,7 +1680,7 @@ export class SwordWeapon {
   /* Pose                                                              */
   /* ================================================================ */
 
-  _updatePose(elapsed) {
+  _updatePose(dt, elapsed) {
     const aim = this._aim;
     const low = this._lowered * (1 - aim);
     const swing = this._swingBlend();
@@ -1322,8 +1693,12 @@ export class SwordWeapon {
     _po1.lerp(SWING_POS, swing);
     _po2.lerp(SWING_ROT, swing);
 
-    // Idle motion is suppressed while aiming or swinging.
-    const anim = (1 - aim * 0.7) * (1 - swing);
+    // Idle motion is damped while aiming or swinging, never switched off. The
+    // old gate was `(1 - swing)`, which is EXACTLY ZERO at full blend: for the
+    // 0.4 s a swing owns the pose there was no breathing, no bob and no sway at
+    // all, so a weapon that lives or dies on feeling hand-held became a rigid
+    // object playing a canned clip at the one moment anyone was looking at it.
+    const anim = (1 - aim * 0.7) * (1 - swing * 0.35);
     _po3.set(0, 0, 0);
 
     // Idle breathing: two out-of-phase sines so the loop never reads as a loop.
@@ -1352,7 +1727,17 @@ export class SwordWeapon {
     _po2.x += this._swayPos.y * 0.8 * anim;
     _po2.z += this._swayPos.x * 0.6 * anim;
 
-    if (swing > 0) this._applySwingPose(_po1, _po2, swing);
+    if (swing > 0) {
+      this._applySwingPose(_po1, _po2, swing);
+    } else {
+      // Idle: the shoulder is square and the wrist is neutral. Cleared here
+      // rather than left stale, or a cancelled swing would park the pivot at
+      // whatever angle it died on and the sword would sit off to one side.
+      this._pivotYaw = 0;
+      this._pivotPitch = 0;
+      this._armYaw = 0;
+      this._armRoll = 0;
+    }
 
     _po3.add(this._recoilPos);
     _po2.x += this._recoilRot.x;
@@ -1369,8 +1754,23 @@ export class SwordWeapon {
     }
 
     _po1.addScaledVector(_po3, SWORD_SCALE);
-    this._model.position.copy(_po1);
+    // `_model` hangs off the shoulder pivot now, so the pose - which is
+    // authored in the root's space, as every other weapon's is - is written
+    // relative to the anchor. With the pivot unrotated this is the identical
+    // placement it always was.
+    this._model.position.copy(_po1).sub(SHOULDER);
     this._model.rotation.set(_po2.x, _po2.y, _po2.z, 'XYZ');
+    this._swingPivot.rotation.set(this._pivotPitch, this._pivotYaw, 0, 'YXZ');
+
+    // ── The wrist ───────────────────────────────────────────────────────────
+    // Counter-rotate the fist against the blade's own yaw and roll, damped, so
+    // the blade leads into the cut and the hand catches up ~60 ms later. Both
+    // components are the MODEL's share of the arc - the shoulder's share moves
+    // the whole arm and needs no give at the wrist.
+    const hk = swing * HAND_LAG_SHARE;
+    _handE.set(0, -hk * this._armYaw, -hk * this._armRoll, 'XYZ');
+    _handQ.setFromEuler(_handE);
+    this._hand.quaternion.slerp(_handQ, 1 - Math.exp(-dt * HAND_LAG_RATE));
 
     // Viewmodel FOV compensation, as in Weapon.js: scaling only X and Y by
     // tan(cur)/tan(ref) reproduces the reference FOV while the camera keeps its own.
@@ -1380,35 +1780,7 @@ export class SwordWeapon {
     // Last, because it reads the matrices everything above just wrote - and it
     // must see the final `root` scale, or the arm would be solved in one space
     // and drawn in another.
-    this._solveArm(swing);
-  }
-
-  /**
-   * Aim the forearm at the shoulder, and lean the shoulder into a swing.
-   *
-   * The lean is what separates "the hand moved" from "the player swung". A cut
-   * made with the arm alone leaves the shoulder pinned while the wrist travels
-   * half a metre, and the forearm visibly stretches to cover the difference.
-   * Driving the anchor with `sin(pi*s)` puts the shoulder at its furthest
-   * through the middle of the cut and brings it back to rest by the end, so the
-   * arm retracts under its own animation rather than snapping back when the
-   * swing pose stops being applied.
-   *
-   * @param {number} swing swing blend weight, 0..1
-   */
-  _solveArm(swing) {
-    const arm = this._arm;
-    if (!arm) return;
-
-    arm.anchor.copy(SHOULDER);
-    if (swing > 0) {
-      const s = clamp((this._swingT - 0.2) / 0.36, 0, 1);
-      const drive = Math.sin(s * Math.PI) * swing;
-      arm.anchor.x -= this._swingDir * 0.05 * drive;
-      arm.anchor.y += 0.045 * drive;
-      arm.anchor.z -= 0.06 * drive;
-    }
-    arm.solve();
+    this._arm?.solve(dt);
   }
 
   /**
@@ -1416,50 +1788,70 @@ export class SwordWeapon {
    *
    * Ramped in over the wind-up and out over the recovery so the swing can be
    * cancelled on any frame without a pop.
+   *
+   * The ramp-in is 0.12, down from 0.18. The wind-up runs to `LOAD_END`
+   * (0.24), so the old ramp spent three-quarters of the anticipation still
+   * cross-fading - which is most of why the wind-up read as a fade rather than
+   * a movement. At 0.12 the pose commits in the first sixth of the swing and
+   * everything after it is travel.
+   *
+   * The hold to 0.72 is load-bearing for more than the pose: the damage window
+   * ends at `SPEC.strikeEnd` (0.52), and `swingBladeDirection` is only the
+   * blade's real direction where this returns exactly 1. `sword.test.mjs` pins
+   * that the window sits strictly inside the hold.
    */
   _swingBlend() {
-    const t = this._swingT;
-    if (t < 0) return 0;
-    if (t < 0.18) return sstep(0, 0.18, t);
-    if (t < 0.72) return 1;
-    return 1 - sstep(0.72, 1, t);
+    return swingBlend(this._swingT);
   }
 
   /**
-   * Add the arc itself on top of the blended base pose.
+   * Add the arc itself on top of the blended base pose, and split it between
+   * the two joints that carry it.
    *
-   * `s` runs 0 (fully cocked) to 1 (follow-through complete) over the middle of
-   * the timeline. Smoothstep gives the acceleration into the cut and the
-   * deceleration out of it that make the blade feel like it has mass.
+   * Everything angular comes from `swingArcAt` - the one description of the
+   * motion, which the sweep also reads. This method only decides how much of it
+   * survives the blend weight and what the hand does in translation.
    */
   _applySwingPose(pos, rot, w) {
     const t = this._swingT;
-    const u = clamp((t - 0.2) / 0.36, 0, 1);
-    const s = u * u * (3 - 2 * u);
     const dir = this._swingDir;
+    const a = swingArcAt(t, dir, _arcPose);
+    const s = a.s;
 
-    rot.y += dir * (COCK_YAW + (END_YAW - COCK_YAW) * s) * w;
-    rot.x += (COCK_PITCH + (END_PITCH - COCK_PITCH) * s) * w;
-    rot.z += dir * (COCK_ROLL + (END_ROLL - COCK_ROLL) * s) * w;
+    this._pivotYaw = a.yawPivot * w;
+    this._pivotPitch = a.pitchPivot * w;
+    this._armYaw = a.yaw * w;
+    this._armRoll = a.roll * w;
+
+    rot.y += this._armYaw;
+    rot.x += a.pitch * w;
+    rot.z += this._armRoll;
 
     // The hand travels with the blade: back and out on the wind-up, then across
-    // and down through the cut. Without this the sword pivots on a fixed point
-    // and reads as a windscreen wiper.
+    // and down through the cut.
     //
-    // The travel is half what it was. The old figures threw the hilt far enough
-    // that the fist appeared to detach and jump out into the frame ahead of the
-    // arm. A shoulder does not translate during a cut - what changes is the
-    // *direction* the forearm leaves the wrist in, and that now falls out of
-    // the solve for nothing.
-    pos.x += dir * (0.07 - 0.15 * s) * w * SWORD_SCALE;
-    pos.y += (0.055 - 0.12 * s) * w * SWORD_SCALE;
-    pos.z += (0.07 - 0.15 * s) * w * SWORD_SCALE;
+    // X and Y are ~2.2x what they were. They were halved because the fist
+    // appeared to detach and jump out ahead of the arm - a symptom of the arm
+    // not being a limb, treated by shrinking the motion. With a shoulder pivot
+    // supplying 0.4-0.5 m of real radius and an elbow that flexes to absorb the
+    // rest, the fist stays attached and the travel can be a cut again.
+    //
+    // Z did NOT come back up with them, and that is deliberate: the pivot's
+    // pitch already brings the hand ~7 cm toward the eye at the top of the
+    // wind-up, and stacking the old Z travel on that put the fist inside 0.30 m
+    // of the camera, where the arm's near-plane guard starts eating the forearm.
+    pos.x += dir * (0.13 - 0.28 * s) * w * SWORD_SCALE;
+    pos.y += (0.08 - 0.19 * s) * w * SWORD_SCALE;
+    pos.z += (0.03 - 0.07 * s) * w * SWORD_SCALE;
 
     // Recovery: once the cut is spent the hand is drawn back in toward the
     // chest before the blend hands the pose back to guard, so the sword returns
-    // along a path instead of teleporting to rest. Weighted by `w` so it dies
-    // out exactly as the swing pose does and cannot pop on the last frame.
-    const rec = sstep(0.62, 0.95, t) * w;
+    // along a path instead of teleporting to rest. It starts at `STRIKE_END`,
+    // where the arc finishes, and not at 0.62: the old pair left 0.115 s of
+    // dead air between the end of the arc (0.56) and the start of the recovery
+    // in which absolutely nothing moved. Weighted by `w` so it dies out exactly
+    // as the swing pose does and cannot pop on the last frame.
+    const rec = sstep(STRIKE_END, 0.95, t) * w;
     pos.x -= dir * 0.05 * rec * SWORD_SCALE;
     pos.y -= 0.045 * rec * SWORD_SCALE;
     pos.z += 0.1 * rec * SWORD_SCALE;
@@ -1598,12 +1990,20 @@ export class SwordWeapon {
   /**
    * Blade bearing relative to the aim direction at timeline position `t`.
    * Positive is to the player's left, matching the model's +Y rotation.
+   *
+   * ── This used to run backwards ────────────────────────────────────────────
+   * It returned `dir * (half - 2*half*s)`: +50 to -50 degrees. The visible yaw
+   * over the same `s` and the same `dir` ran -58 to +71, so the sweep crossed
+   * the arc in the opposite direction to the blade and every target on the
+   * blade's LEADING side was cut last - late enough that a target could die to
+   * a swing whose edge had already passed it, and a target the edge reached
+   * first waited out the whole window. Two independent derivations of one
+   * motion is what made that possible and what kept it invisible, so there is
+   * only one now: `swingBladeDirection` composes the exact Eulers the pose
+   * writes and this reads the direction off them.
    */
   _bearingAt(t) {
-    const u = clamp((t - 0.2) / 0.36, 0, 1);
-    const s = u * u * (3 - 2 * u);
-    const half = SPEC.arc * 0.5 * DEG;
-    return this._swingDir * (half - 2 * half * s);
+    return swingBearing(t, this._swingDir);
   }
 
   /**

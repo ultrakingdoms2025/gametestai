@@ -1412,6 +1412,50 @@ async function runOnce(args, pageUrl, runIndex) {
     await sleep(3000);
     out.events.idleBaseline = await closePhase('idle-baseline');
 
+    /* ── A SLOW rAF IS NOT A SLOW GAME, AND IT REPORTS GREEN ─────────────
+     *
+     * The occlusion guard above catches a window delivering ZERO animation
+     * frames. It does not catch one delivering them at 10 Hz, because rAF is
+     * still firing and the starvation detector stays silent.
+     *
+     * That regime was observed on 2026-09-02: five consecutive runs came back
+     * with `idleBaseline` at 101-201 ms instead of the usual 25-30, every
+     * event collapsed onto multiples of ~101 ms, and the gate printed
+     * `repeat:0/1/2  101.x  pass` for all three. Those rows are green because
+     * the INSTRUMENT can no longer resolve anything under ~101 ms, not
+     * because the game got faster - and one of those three had genuinely
+     * crossed the budget an hour earlier. A summary.json from such a run is
+     * indistinguishable from a healthy pass and is worth strictly less than
+     * no run at all, which is this project's most expensive recurring lesson:
+     * a gate that measures something the game does not do is worse than
+     * no gate.
+     *
+     * `idleBaseline` is the tell, it costs nothing, and it was already being
+     * recorded three lines up - it was simply never read. An idle page with
+     * nothing to draw should sit at the vsync interval; anything past twice
+     * `--floor` means the frames are not arriving on their own account and
+     * every number after this point is about the machine, not the build.
+     *
+     * This REFUSES rather than warning. A warning at the top of 200 lines of
+     * table is a warning nobody reads. */
+    const idleWorst = out.events.idleBaseline?.worst ?? 0;
+    const IDLE_CEILING = args.floor * 2;
+    if (idleWorst > IDLE_CEILING) {
+      out.instrumentFault = { idleWorst, ceiling: IDLE_CEILING };
+      throw new Error(
+        `frame-gaps REFUSES to report: the page is not being animated at a usable rate.\n`
+        + `  idle baseline worst gap ${idleWorst.toFixed(1)} ms, ceiling ${IDLE_CEILING} ms (2 x --floor).\n`
+        + `An idle page should sit at the vsync interval (~16-30 ms here). At ${idleWorst.toFixed(0)} ms the\n`
+        + `harness cannot resolve anything below that, so EVERY gate row would read green regardless of\n`
+        + `what the build does - including rows that are genuinely over budget.\n`
+        + `This is a property of the machine or the display, not of the code under test. Common causes:\n`
+        + `a locked or sleeping display, an RDP/headless session with no compositor, heavy GPU contention\n`
+        + `from another process, or a laptop dropped into a power-saving refresh rate.\n`
+        + `Re-run on an awake, unoccluded display. Raise the ceiling with --floor only if you have a\n`
+        + `reason to believe a ${idleWorst.toFixed(0)} ms idle page is legitimate here.`
+      );
+    }
+
     const wants = new Set(args.events.split(',').map((s) => s.trim()));
     const worlds = args.worlds
       ?? await evalIn('JSON.stringify(window.GAME.worldManager.ids)').then((s) => JSON.parse(s));
@@ -1593,7 +1637,17 @@ async function runOnce(args, pageUrl, runIndex) {
             if (w._fog) sc.fog = w._fog;
             else if (env.fogFar > 0) sc.fog = new G.THREE.Fog(env.fogColor.getHex(), env.fogNear, env.fogFar);
             else sc.fog = null;
-            if (env.envMap !== undefined) sc.environment = env.envMap;
+            /* TOTAL, exactly as \`applyEnvironment\` is. This mirrored the old
+             * partial \`if (env.envMap !== undefined)\` until 2026-09-02, and a
+             * harness that models the applier has to move when the applier
+             * does: under the partial form a world publishing no probe was
+             * warmed against whatever map the DEPARTURE world left on the
+             * scene, while the arrival cleared it - so this experiment would
+             * have compiled the wrong key set and still reported a saving.
+             * All eighteen worlds publish a probe today, so the two forms
+             * agree in practice and no number here moves; it is written this
+             * way so it stays true the day one stops. */
+            sc.environment = env.envMap ?? null;
             const p0 = r.info.programs.length;
             const t0 = performance.now();
             try {

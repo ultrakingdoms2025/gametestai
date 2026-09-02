@@ -1079,6 +1079,94 @@ export async function listActivePlayers(db: Db, serverId: string): Promise<Activ
 }
 
 /* ---------------------------------------------------------------------- */
+/* The shared daily seed                                                   */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The one piece of WORLD that members of a server genuinely share.
+ *
+ * ── What this is, and the much larger thing it is not ─────────────────────
+ *
+ * There is no shared live world instance and there is not going to be one in
+ * this pass — see this file's header. Two members standing in the same world do
+ * not see each other, and nothing below changes that by a single byte. What
+ * they can share is the CONTENT SELECTOR: a number both clients derive
+ * independently, from facts both already hold, that makes their two separate
+ * private worlds identical.
+ *
+ * `MazeWorld` re-rolls its labyrinth on every entry by design ("the maze that
+ * cannot be learned is the entire point"), which also means no two players have
+ * ever walked the same one. A seed fixed per (server, UTC day) keeps the maze
+ * unlearnable across days while making it the SAME maze for everybody in a
+ * server today — which is the precondition for a maze time being comparable at
+ * all, and for the tale of a route being worth telling in chat.
+ *
+ * ── Why the day boundary is UTC, and not the player's ─────────────────────
+ *
+ * The whole value of the number is that two clients agree on it without talking
+ * to each other. A local-midnight boundary means a player in Auckland and one
+ * in Los Angeles are on different seeds for twenty-one hours of every day, and
+ * neither can tell. UTC is arbitrary for any single player and identical for
+ * all of them, which is the only property that matters here. The DAY is
+ * computed on the server and put on the wire beside the seed, so a client with
+ * a wrong clock cannot disagree about which day it is either.
+ *
+ * ── Why platform play gets one too ────────────────────────────────────────
+ *
+ * `serverId: null` salts with the literal `'platform'` rather than returning
+ * null. A signed-in player in default mode then shares today's maze with every
+ * other signed-in player in default mode, which is the same feature with a
+ * bigger room — and it means the client has ONE code path, not a
+ * seed-or-no-seed branch that is only exercised by half the players.
+ */
+
+/** The salt used where there is no server. Never a valid server id (a UUID). */
+export const PLATFORM_SEED_SALT = 'platform';
+
+/**
+ * `YYYY-MM-DD` in UTC.
+ *
+ * Built from the explicit getters rather than by slicing `toISOString()`,
+ * because that slice is only correct for dates the JS spec formats with a
+ * four-digit year — a negative or six-digit year silently produces a different
+ * field width, and a day key that changes width changes the hash below.
+ */
+export function utcDayKey(at: Date = new Date()): string {
+  const y = String(at.getUTCFullYear()).padStart(4, '0');
+  const m = String(at.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(at.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * The seed for one (server, day), as an unsigned 32-bit integer.
+ *
+ * FNV-1a, not a cryptographic hash. Nothing here is a secret: the inputs are a
+ * server id the member already knows and today's date, and a player who
+ * computed the seed early would learn the maze one day sooner than a player who
+ * waited — which is a difference of hours, in a world that re-rolls tomorrow.
+ * What IS required is that the function be pure, stable across deploys, and
+ * identical in every language it is ever written in a second time. FNV-1a is
+ * eight lines and has no options to get wrong.
+ *
+ * The output is `>>> 0` so it lands in exactly the range `MazeWorld.build()`
+ * generates for itself (`(Math.random() * 0xffffffff) >>> 0`). A seed outside
+ * that range is not wrong for the topology generator, but it would be a value
+ * the game never produces on its own, and "the shared maze is the one you could
+ * have rolled" is worth keeping true.
+ */
+export function dailySeed(serverId: string | null | undefined, at: Date = new Date()): number {
+  const salt = serverId && String(serverId).trim() ? String(serverId).trim() : PLATFORM_SEED_SALT;
+  const input = `${salt}:${utcDayKey(at)}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/* ---------------------------------------------------------------------- */
 /* The launch directory                                                    */
 /* ---------------------------------------------------------------------- */
 

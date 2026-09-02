@@ -303,11 +303,16 @@ export class TestFire {
     void dt;
     this.clock = clock;
 
+    /* A FIELD OF ONE - `total: 1`, and `place: 1` whichever way it ends.
+     *
+     * The butts are the player, the plates and a clock. There is no rival, so
+     * the card drops the PLACE stat rather than reporting a position nobody
+     * competed for. Same note as `DroneHack._win`. */
     if (this.down >= this.targets.length) {
       return {
         won: true,
         place: 1,
-        total: 2,
+        total: 1,
         score: this.down,
         scoreLabel: `${this.down}/${this.targets.length} plates in ${clockText(this.clock)}`,
         detail: `all ${this.ranks} ranks`,
@@ -316,8 +321,8 @@ export class TestFire {
     if (this.clock >= this.limit) {
       return {
         won: false,
-        place: 2,
-        total: 2,
+        place: 1,
+        total: 1,
         score: this.down,
         scoreLabel: `${this.down}/${this.targets.length} plates`,
         detail: `time out on rank ${Math.min(this.rank + 1, this.ranks)}`,

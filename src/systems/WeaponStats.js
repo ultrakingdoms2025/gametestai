@@ -151,6 +151,286 @@ export const WEAPON_STATS = {
 /** Selection order: also the `1/2/3/4` key order and the HUD strip order. */
 export const WEAPON_ORDER = ['machinegun', 'fireball', 'bow', 'sword'];
 
+/* ====================================================================== */
+/* Weapon tiers                                                           */
+/* ====================================================================== */
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  THE ONE GEAR CLASS WITH NO GROWTH AXIS, AND WHY THE TIER GOES ON THE ROW
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A mount sells four fittings at three tiers across six mounts - 57 catalogue
+ * rows. A hull sells four at three tiers. A weapon sold nothing at all: the
+ * four numbers above are flat, permanent and identical on the first minute of
+ * a save and the last. Combat is also NET-NEGATIVE on credits at those numbers
+ * - six rifle rounds out of a 150-credit pack of 60 against a bounty that pays
+ * a handful - so the one system with no way to get better was also the one
+ * losing money.
+ *
+ * ── THE TIER MULTIPLIES AT THE PROPERTY, NOT AT ONE CALL SITE ─────────────
+ *
+ * `weaponDamage()` below is documented as the single choke point and it is
+ * NOT one: `grep weaponDamage` over `src/` returns this file and nothing else.
+ * What actually happens to a point of damage is three different things.
+ *
+ *   machinegun  `Combat._resolveNPCHit` computes `stats.damage * falloff *
+ *               headshotMul` inline and passes `statsApplied: true`
+ *   sword       `Sword.js` holds `const SPEC = WEAPON_STATS.sword` at module
+ *               scope and reads `SPEC.damage` on every cut, `statsApplied` too
+ *   fireball    `Projectiles.js` hands its own charge-curve figure to
+ *   bow         `applyNPCDamage`, which rescales it through `normaliseDamage`
+ *
+ * Multiplying inside `weaponDamage()` alone would have shipped a purchase that
+ * changes nothing for three weapons out of four - and `Combat.js`,
+ * `Sword.js` and `Projectiles.js` are not this module's to edit. So the tier
+ * is applied where all four paths already meet: the `damage` PROPERTY itself.
+ * `WEAPON_STATS[id].damage` is an accessor over a private base, and every
+ * reader above - inline arithmetic, module-scoped alias, `normaliseDamage`'s
+ * `s.damage / ref` ratio and `weaponDamage` - gets the tiered number without
+ * one line changing outside this file.
+ *
+ * This is not a new pattern in the codebase. `ItemDefs.js` holds an
+ * `activeMarket` at module scope, set by `setMarketWorld`, and `buyMultiplier`
+ * reads it - a price that changes under every caller when the player walks
+ * through a gateway. This is that arrangement for damage.
+ *
+ * ── Why it cannot double-apply ────────────────────────────────────────────
+ *
+ * Exactly one read of `damage` happens per hit on every one of the four paths,
+ * and `normaliseDamage`'s `reference` is a CONSTANT (the untiered figure the
+ * source module produces), so `s.damage / ref` is `base * tier / ref` - the
+ * tier appears once, in the numerator. The gate drives all four weapons at
+ * every tier and asserts the ratio.
+ *
+ * ── The step, and what it is allowed to break ─────────────────────────────
+ *
+ * 10% a tier, compounding with nothing: x1.10, x1.20, x1.30. MULTIPLICATIVE on
+ * top of the four authored numbers and never a re-tune of them, because the
+ * header above records that those four were tuned against charge curves in
+ * three other modules and `reference` exists to preserve them to the decimal.
+ *
+ * 10% is the ship's `shield` rung and half the mount ladder's usual step, and
+ * it is deliberately the smallest number in either table. Damage is the one
+ * stat that can delete content: `CONFIG.npc.maxHealth` is 100 and the beasts
+ * carry 220. At tier III -
+ *
+ *   sword   65 -> 84.5   still two swings for a 100 HP NPC (it was two)
+ *   fireball 55 -> 71.5  still two hits (it was two)
+ *   machinegun 18 -> 23.4  six body shots become five; a headshot goes 45 ->
+ *                          58.5, so two headshots kill where three did
+ *   bow     42 -> 54.6   a full-draw headshot goes 84 -> 109, which is a
+ *                        one-shot kill on a 100 HP NPC
+ *
+ * The bow crossing 100 is the only threshold the ladder actually moves, and it
+ * is one the game ALREADY sells for 44 credits: `firepower_boost_25` is x1.25
+ * for thirty seconds and has always put a full-draw bow headshot at 105. A
+ * permanent x1.30 that costs 1,599 credits to reach is not a new capability,
+ * it is the consumable's ceiling made permanent - and it still asks for a
+ * full draw and a head.
+ */
+export const WEAPON_POWER_TIERS = 3;
+
+/** Fraction of base damage one tier adds. See the ladder note above. */
+export const WEAPON_TIER_STEP = 0.10;
+
+/** Roman numerals, the spelling every fitting ladder in the game uses. */
+export const WEAPON_TIER_ROMAN = Object.freeze(['I', 'II', 'III']);
+
+/**
+ * Damage multiplier for an owned tier. `1` at tier 0, and at every number that
+ * is not a tier - a save with `tier: 99` multiplies by 1, not by 10.9.
+ * @param {number} tier
+ * @returns {number}
+ */
+export function weaponTierMul(tier) {
+  const t = Math.floor(Number(tier) || 0);
+  if (t < 1 || t > WEAPON_POWER_TIERS) return 1;
+  return 1 + WEAPON_TIER_STEP * t;
+}
+
+/**
+ * Counter price of one weapon tier, in credits.
+ *
+ * `base * TIER_MUL[tier - 1]` with the server's own `[1, 2, 3.15]`, the shape
+ * every mount row and every ship fitting is priced by - see
+ * `SHIP_TIER_MUL` in `ships/ShipStats.js` for the note on why that copy is
+ * scraped against the TypeScript rather than trusted.
+ *
+ * The four bases rank by what a tier BUYS. The sword is dearest because it is
+ * the highest single-hit number in the game AND the only weapon that costs
+ * nothing to fire; the machine gun is cheapest because 10% of 18 is under two
+ * points and it burns a 150-credit pack of rounds getting there.
+ */
+const WEAPON_POWER_BASE = Object.freeze({
+  machinegun: 240, bow: 260, fireball: 300, sword: 340,
+});
+
+/** @see SHIP_TIER_MUL - the same server constant, and the same reason for the copy. */
+const WEAPON_TIER_MUL = Object.freeze([1, 2, 3.15]);
+
+/**
+ * @param {string} weaponId @param {number} tier
+ * @returns {number} 0 for anything that is not a real weapon at a real tier
+ */
+export function weaponPowerPrice(weaponId, tier) {
+  const base = WEAPON_POWER_BASE[weaponId];
+  const t = Math.floor(Number(tier) || 0);
+  if (!base || t < 1 || t > WEAPON_POWER_TIERS) return 0;
+  return Math.round(base * WEAPON_TIER_MUL[t - 1]);
+}
+
+/** What a vendor pays to take one back. 0.4, the rate every mount upgrade uses. */
+export function weaponPowerSellPrice(weaponId, tier) {
+  return Math.round(weaponPowerPrice(weaponId, tier) * 0.4);
+}
+
+/** `Rifle Damage II`. The single speller, for a shop row and a toast alike. */
+export function weaponPowerName(weaponId, tier) {
+  const label = WEAPON_LABEL[weaponId] ?? weaponId;
+  return `${label} Damage ${WEAPON_TIER_ROMAN[tier - 1] ?? tier}`;
+}
+
+/** Shop-facing weapon names. `machinegun` is sold as a rifle; nobody buys a "machinegun damage". */
+export const WEAPON_LABEL = Object.freeze({
+  machinegun: 'Rifle', fireball: 'Fireball', bow: 'Bow', sword: 'Sword',
+});
+
+/**
+ * Who owns which weapon's tiers.
+ *
+ * Shaped after `ShipRegistry`'s powers half, deliberately and down to the
+ * method names, because every behaviour in that half is a bug somebody already
+ * found in play:
+ *
+ * - **`sellsPower` is public.** A till has to be able to REFUSE rather than
+ *   take the money and drop the grant on the floor.
+ * - **a higher tier replaces a lower one.** `max(owned, tier)`, so a save that
+ *   restores out of order cannot downgrade a weapon.
+ * - **an unknown weapon is dropped silently**, never stored and never emitted,
+ *   exactly as an unknown livery slot is - so a stale catalogue row naming a
+ *   weapon that no longer exists cannot poison the save.
+ *
+ * ── Why there is a module singleton and not only a class ──────────────────
+ *
+ * `main.js` builds every other registry and hands it round, and this module
+ * cannot be handed anything: it is imported by `Combat`, `Sword`, `HUD` and
+ * `Loadout`, and the accessor on `damage` has to answer the same question for
+ * all of them. A registry that had to be wired would be a feature inert until
+ * a file this module does not own changed. So `WEAPON_POWERS` is the live one,
+ * the class is exported for a test that wants an isolated ledger, and
+ * `Loadout.serialize` round-trips the singleton - which is how a purchase
+ * survives a reload without `SaveGame` growing a new field.
+ */
+export class WeaponRegistry {
+  constructor({ bus = null } = {}) {
+    this.bus = bus;
+    /** @type {Object<string, number>} weapon id -> owned tier */
+    this._powers = {};
+  }
+
+  /** True when this weapon has a tier ladder to sell at all. */
+  sellsPower(weaponId) {
+    return WEAPON_ORDER.includes(weaponId);
+  }
+
+  /** Owned tier for one weapon, 0 when none. */
+  tierOf(weaponId) {
+    return Math.max(0, Math.floor(Number(this._powers[weaponId]) || 0));
+  }
+
+  /** Damage multiplier in force for one weapon right now. */
+  multiplier(weaponId) {
+    return weaponTierMul(this.tierOf(weaponId));
+  }
+
+  /** A copy of the whole ledger. Copy, so a caller cannot write the tier bag. */
+  getPowers() {
+    return { ...this._powers };
+  }
+
+  /**
+   * Grant a tier. A weapon with no ladder, or a tier off the ladder, is
+   * dropped silently - never stored, never emitted.
+   * @returns {boolean} true when the ledger actually moved
+   */
+  grantPower(weaponId, tier = 1) {
+    if (!this.sellsPower(weaponId)) return false;
+    const t = Math.floor(Number(tier) || 0);
+    if (t < 1 || t > WEAPON_POWER_TIERS) return false;
+    const now = this.tierOf(weaponId);
+    if (t <= now) return false;
+    this._powers[weaponId] = t;
+    this.bus?.emit?.('weapon:powers', { weaponId, tier: t, powers: this.getPowers() });
+    return true;
+  }
+
+  /** @returns {{powers:Object<string,number>}} */
+  serialize() {
+    return { powers: this.getPowers() };
+  }
+
+  /**
+   * Restore from a save. Every row is re-accepted through `grantPower`, so a
+   * hand-edited `{"sword": 99}` restores as nothing rather than as a x10.9
+   * sword - the same discipline `Inventory.deserialize` applies to capacity.
+   */
+  deserialize(data) {
+    const rows = data?.powers ?? data ?? null;
+    if (!rows || typeof rows !== 'object') return;
+    this._powers = {};
+    for (const [id, tier] of Object.entries(rows)) this.grantPower(id, tier);
+  }
+
+  /** Back to stock. For a test, and for a fresh-run reset. */
+  clear() {
+    this._powers = {};
+  }
+}
+
+/**
+ * The ledger the `damage` accessor reads. See the note on the class.
+ *
+ * Constructed with no bus: `main.js` may assign `WEAPON_POWERS.bus = bus` to
+ * get the `weapon:powers` event, and nothing depends on it having done so.
+ */
+export const WEAPON_POWERS = new WeaponRegistry();
+
+/*
+ * Turn every row's `damage` into an accessor over its authored base.
+ *
+ * Done in a loop over `WEAPON_ORDER` rather than by hand-writing four getters,
+ * so a fifth weapon added to the table above gets its ladder for free rather
+ * than being the one weapon the shop cannot upgrade - the failure mode this
+ * whole block exists to end, one weapon smaller.
+ *
+ * The SETTER is not decoration. `damage` was a plain writable data property
+ * for the life of this file; making it read-only would turn any existing
+ * `stats.damage = n` into a silent no-op in sloppy mode and a throw in strict.
+ * Nothing in `src/` does that today, and "nothing does it today" is not a
+ * reason to remove the ability - so a write lands on the BASE, which is what
+ * the writer meant, and the owned tier keeps multiplying it afterwards. A
+ * setter that replaced the accessor with a plain value would have quietly
+ * turned that weapon's whole ladder off, permanently, for the rest of the
+ * session - a purchase that stops working because of an unrelated re-tune.
+ *
+ * `baseDamage` is a getter over the same closure and not a snapshot, for the
+ * same reason: two copies of one number and the second one goes stale.
+ */
+for (const id of WEAPON_ORDER) {
+  const row = WEAPON_STATS[id];
+  if (!row) continue;
+  let base = row.damage;
+  Object.defineProperty(row, 'damage', {
+    get() { return base * WEAPON_POWERS.multiplier(id); },
+    set(v) { const n = Number(v); if (Number.isFinite(n)) base = n; },
+    enumerable: true,
+    configurable: true,
+  });
+  /** The authored, untiered figure. Read by the gate; not part of the row's JSON. */
+  Object.defineProperty(row, 'baseDamage', { get() { return base; }, enumerable: false, configurable: true });
+}
+
 /**
  * Inventory item id each weapon draws from, keyed by weapon id. `null` means
  * the weapon needs no ammunition.

@@ -34,13 +34,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The HUD's pause overlay would otherwise sit on top of a panel we deliberately
-   released the pointer for. hud.css belongs to another agent, so this hides it
-   from the outside rather than editing that file. */
-body.sm-open .pause {
-  opacity: 0 !important;
-  visibility: hidden !important;
-}
+/* GONE: `body.sm-open .pause { opacity: 0 !important; visibility: hidden
+   !important }`.
+
+   It existed because the HUD's overlay tracker did not listen for
+   `ship:menu:open`, so the pause card stayed on top of a panel that had just
+   taken the cursor - and the note here said it hid the card "from the outside"
+   because `hud.css` belonged to another agent. The event pair is wired in
+   `HUD._wireOverlayEvents` now, so `showPauseOverlay` refuses to raise the card
+   over this panel and `_overlayOpen` takes it down if it was already up. Two
+   `!important`s fighting a flag that is now simply set correctly. */
 
 /* A whisper of vignette on the drawer side only, so the panel has something to
    sit against without dimming the character. */

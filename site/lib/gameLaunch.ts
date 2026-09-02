@@ -1,11 +1,24 @@
+import { appSecret } from './appSecret';
+
 const COOKIE = 'an_game_launch';
 const MAX_AGE_S = 60 * 60 * 8;
-const DEV_SECRET = 'aether-nexus-launch-development-key-do-not-ship';
 
+/**
+ * The key the launch cookie is signed with.
+ *
+ * This used to fall through to a constant published in this repository, which
+ * meant a deployment without the variable could have its launch cookie forged
+ * by anyone -- and the launch cookie is the ONLY thing `proxy.ts` checks before
+ * serving `/game/*`, so forging one is the paywall.
+ *
+ * It also read `APP_SECRET` before `NEXTAUTH_SECRET`, the opposite order to
+ * `lib/auth.ts` and `lib/telemetry.ts`. A deployment that set both signed its
+ * launch cookies with one key and its sessions with another -- harmless in
+ * itself, and exactly the sort of quiet disagreement that makes a later
+ * key rotation half-work. One order, in one place: see `lib/appSecret.ts`.
+ */
 function secret(): string {
-  return process.env.APP_SECRET
-    || process.env.NEXTAUTH_SECRET
-    || DEV_SECRET;
+  return appSecret();
 }
 
 function encodeBody(body: string): string {

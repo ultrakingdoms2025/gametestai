@@ -9,7 +9,8 @@ import {
   quoteEntryWithCredits,
   type Quote,
 } from '@/lib/pricing';
-import { getStripe, siteOrigin, stripeConfigured } from '@/lib/stripe';
+import { getStripe, siteOrigin, simulatedPurchasesAllowed, stripeConfigured } from '@/lib/stripe';
+import { SIMULATED_SIGNATURE_PARAM, signSimulatedOrder } from '@/lib/simulatedOrder';
 import { auth } from '@/lib/auth';
 import { getUserById } from '@/lib/db';
 import { findOrCreatePlayer } from '@/lib/playerDb';
@@ -44,6 +45,11 @@ export async function POST(req: Request) {
   }
 
   const { hasAccess } = await getCurrentAccessState();
+
+  /* Read once and used twice: to bind a live Stripe session to its buyer, and
+   * to bind a simulated order's signature to the same person. Null for a
+   * signed-out checkout, which is still allowed for the one-off SKUs. */
+  const buyerId = (await auth())?.user?.id ?? null;
 
   const requested = String(body.intent ?? 'entry');
 
@@ -83,6 +89,18 @@ export async function POST(req: Request) {
 
   /* ---- simulated ------------------------------------------------------- */
   if (!stripeConfigured()) {
+    /* `!stripeConfigured()` says payments are impossible. It does NOT say free
+     * grants are permitted, and treating the first as the second is what left
+     * production with an open credit faucet — see the docblock on
+     * `simulatedPurchasesAllowed` and the one on `/api/confirm`. A deployment
+     * that has not opted in gets an honest refusal rather than a link that will
+     * be refused at the far end anyway. */
+    if (!simulatedPurchasesAllowed()) {
+      return NextResponse.json(
+        { error: 'Payments are not configured on this deployment.' },
+        { status: 503 }
+      );
+    }
     const url = new URL('/api/confirm', origin);
     url.searchParams.set('simulated', '1');
     url.searchParams.set('intent', intent);
@@ -95,7 +113,17 @@ export async function POST(req: Request) {
      * simulated flow is not a rehearsal of anything and the first time anyone
      * exercises idempotency is in production. Pressing Pay again starts a new
      * order and gets a new id, which is also what Stripe does. */
-    url.searchParams.set('order', `sim_${randomUUID()}`);
+    const orderId = `sim_${randomUUID()}`;
+    url.searchParams.set('order', orderId);
+    /* And a signature over all of it, bound to the buyer. Minting the id here
+     * only bounds a replay if the id is OURS: while the whole query string was
+     * the caller's to write, "settle this under an order id I just invented"
+     * was a URL anyone could type, and typing a fresh one defeated the guard
+     * entirely. See `lib/simulatedOrder.ts`. */
+    url.searchParams.set(
+      SIMULATED_SIGNATURE_PARAM,
+      signSimulatedOrder({ intent, credits, orderId, userId: buyerId ?? '' })
+    );
     return NextResponse.json({ url: url.toString(), simulated: true });
   }
 
@@ -142,6 +170,13 @@ export async function POST(req: Request) {
         intent,
         credits: String(credits),
         grantsAccess: String(grantsAccess),
+        /* WHOSE order this is. A Stripe session id is otherwise a bearer token
+         * for the purchase it names: `/api/confirm` would settle it onto
+         * whichever account happened to be signed in when the URL was opened.
+         * Only set when the buyer was signed in — a signed-out checkout has no
+         * account to bind to, and `/api/confirm` deliberately still accepts
+         * those rather than turning an in-flight order into a lost one. */
+        ...(buyerId ? { userId: buyerId } : {}),
       },
       success_url: `${origin}/api/confirm?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${origin}/${intent === 'credits' ? 'store' : ''}`,
@@ -218,10 +253,34 @@ async function startServerHostingCheckout(req: Request) {
      * and carried on the URL, so replaying the confirm link settles nothing
      * twice — and it dies on the same switch: `/api/confirm` refuses
      * `simulated=1` outright once `stripeConfigured()` is true. */
+    if (!simulatedPurchasesAllowed()) {
+      /* The opt-in the `stripeConfigured()` switch never was. What this branch
+       * hands out is a WORKING SUBSCRIPTION to somebody who paid nothing, and
+       * "Stripe has no key yet" describes production too. */
+      return NextResponse.json(
+        { error: 'Payments are not configured on this deployment.' },
+        { status: 503 }
+      );
+    }
     const url = new URL('/api/confirm', origin);
     url.searchParams.set('simulated', '1');
     url.searchParams.set('intent', SERVER_HOSTING_SKU);
-    url.searchParams.set('order', `sim_${randomUUID()}`);
+    const orderId = `sim_${randomUUID()}`;
+    url.searchParams.set('order', orderId);
+    /* Signed like every other simulated order, and bound to this player: this
+     * SKU is the most valuable thing the branch grants, so it is the last one
+     * that should be settleable from a hand-typed link. `credits` is 0 because
+     * hosting buys none, and the confirm side computes the same 0 for a
+     * non-'credits' intent. */
+    url.searchParams.set(
+      SIMULATED_SIGNATURE_PARAM,
+      signSimulatedOrder({
+        intent: SERVER_HOSTING_SKU,
+        credits: 0,
+        orderId,
+        userId: session.user.id,
+      })
+    );
     return NextResponse.json({ url: url.toString(), simulated: true });
   }
 

@@ -114,6 +114,16 @@ export class RecordsPanel {
        * only listened would open stale). */
       this._offs.push(this.bus.on('charter:changed', () => { if (this._open) this._renderProgress(); }));
       this._offs.push(this.bus.on('retention:changed', () => { if (this._open) this._renderJourney(); }));
+      /* The medal grid needs its own channel, and the reason is worth writing
+       * down: `Charters._announce` dedupes on a signature of every world's
+       * `have/need`, and a medal UPGRADE at a venue already counted on the
+       * Trials column moves neither number. So the board is unchanged, the
+       * announcement is correctly suppressed, and the one record that DID
+       * move would never reach the sheet. `trial:best` is the event that says
+       * a contest record moved, and it is the right thing to listen to. */
+      this._offs.push(this.bus.on('trial:best', () => {
+        if (this._open) { this._renderMedals(); this._renderMastery(); }
+      }));
     }
   }
 
@@ -232,6 +242,16 @@ export class RecordsPanel {
     masterySec.appendChild(this.masteryEl);
     side.appendChild(masterySec);
 
+    /* MEDALS. A grid and not a list, because the interesting question is not
+     * "which venues have you medalled" - the Trials column on the left already
+     * answers that - but "how far up each one did you get", and three cells
+     * per venue is the only shape that shows sixteen answers at once. */
+    const medalsSec = el('div', 'rec-sec');
+    medalsSec.appendChild(el('div', 'rec-sec-title', 'MEDALS'));
+    this.medalsEl = el('div', 'rec-rows rec-medals');
+    medalsSec.appendChild(this.medalsEl);
+    side.appendChild(medalsSec);
+
     const collectionSec = el('div', 'rec-sec');
     collectionSec.appendChild(el('div', 'rec-sec-title', 'COLLECTION'));
     this.collectionEl = el('div', 'rec-rows rec-collection');
@@ -280,6 +300,7 @@ export class RecordsPanel {
 
     this._renderWorlds(Array.isArray(p.worlds) ? p.worlds : []);
     this._renderMastery();
+    this._renderMedals();
     this._renderCollection();
   }
 
@@ -361,6 +382,52 @@ export class RecordsPanel {
     }
   }
 
+  /**
+   * `Charters.medals()` — the per-venue medal grid.
+   *
+   * ── What this makes visible ───────────────────────────────────────────────
+   *
+   * `RooftopTrial` grades seven citadel venues gold/silver/bronze off measured
+   * par times, and until the medal was persisted as a record of its own the
+   * game forgot it the moment the result card closed: `SaveGame` kept the
+   * TIME, the medal rode in a template string, and a repeat win at a venue
+   * already held moved nothing anywhere. Three cells a venue is what turns
+   * sixteen contests into a board with something left on it.
+   *
+   * The tiers are filled from `medal` because the pars NEST — a gold time is
+   * inside silver and inside bronze — so a held gold lights all three. That
+   * arithmetic lives in `Charters.medals()`, not here: this method draws
+   * `tiers` and has no opinion about which ones are on.
+   */
+  _renderMedals() {
+    const host = this.medalsEl;
+    if (!host) return;
+    host.textContent = '';
+    let rows = [];
+    try { rows = this.charters?.medals?.() ?? []; } catch { rows = []; }
+    if (!rows.length) {
+      host.appendChild(el('div', 'rec-empty',
+        'No graded runs yet — the rooftop trials award gold, silver and bronze against measured par times.'));
+      return;
+    }
+    for (const r of rows) {
+      const row = el('div', 'rec-line rec-medal-row');
+      row.appendChild(el('div', 'rec-line-name', r.label));
+      const grid = el('div', 'rec-medal-grid');
+      for (const t of r.tiers ?? []) {
+        const cell = el('div', 'rec-medal', t.medal.charAt(0).toUpperCase());
+        cell.classList.add(`rec-medal-${t.medal}`);
+        cell.classList.toggle('held', !!t.held);
+        /* The word, not just the letter: a three-letter grid is unreadable to
+         * a screen reader and to anybody who has not learnt the code. */
+        cell.title = `${t.medal}${t.held ? '' : ' — not yet'}`;
+        grid.appendChild(cell);
+      }
+      row.appendChild(grid);
+      host.appendChild(row);
+    }
+  }
+
   /** `Charters.collection()` — the finite things, across every world at once. */
   _renderCollection() {
     const host = this.collectionEl;
@@ -380,7 +447,16 @@ export class RecordsPanel {
     };
     if (c.relicTotal > 0) line('Relics recovered', `${c.relics}/${c.relicTotal}`);
     if (c.viewpointTotal > 0) line('Viewpoints synced', `${c.viewpoints}/${c.viewpointTotal}`);
-    if (c.cosmetics > 0) line('Skins owned', `${c.cosmetics}`);
+    /* A FRACTION, and drawn on the denominator rather than on the count.
+     *
+     * It was `if (c.cosmetics > 0)` against a count that was structurally
+     * always zero — `Charters.collection()` read a key `Cosmetics.serialize()`
+     * does not write — so this row had never once appeared in the shipped
+     * game. Keyed on the total now: the wardrobe has forty-three skins in it
+     * whether or not the player owns any, and "0/43" is the row's whole job.
+     * The empty-state check above still reads the COUNT, so a player with no
+     * rosters and no skins still gets the sentence rather than a lone zero. */
+    if (c.cosmeticTotal > 0) line('Skins owned', `${c.cosmetics}/${c.cosmeticTotal}`);
   }
 
   /* ------------------------------------------------------------------ */

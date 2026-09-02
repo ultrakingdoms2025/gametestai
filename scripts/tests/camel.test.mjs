@@ -63,6 +63,38 @@ import {
  * that a live comparison cannot notice a change that moves both. These are the
  * bytes as they were, and nothing in this repository can regenerate them: a
  * mismatch means the wolf or the bear moved, whatever the diff says it touched.
+ *
+ * ── The 2026-09-01 repin, and what was proved before it ────────────────────
+ *
+ * Art-quality phase 1 moved both families of digest at once. Because a repin
+ * is only ever as good as the evidence behind it, the two were separated and
+ * checked independently against a pristine export of the previous commit,
+ * rather than repinned from one run of a dirty tree:
+ *
+ *  - `body` moved ONLY because of `Organic.sweep()` and `BeastBody.loft()`,
+ *    which now return an INDEXED grid with analytic smooth normals instead of
+ *    flat-shaded triangle soup. `bodyDigest` hashes `position.count` and the
+ *    raw position array, so re-indexing moves it by construction. What did NOT
+ *    change: for all three species x all three seeds, every mesh's winding-
+ *    insensitive TRIANGLE SET, its set of vertex positions, its material
+ *    colour and its world matrix are identical to the previous commit's, and
+ *    the mesh count is still 22. It is the same surface, differently stored.
+ *  - `anim` moved ONLY because of the `BeastGait.legPose` stance curve, which
+ *    stopped skating (a monotone ramp from +reach to -reach, replacing a sine
+ *    hump that returned a planted foot to where it started and therefore never
+ *    handed the ground back). Swapping that one file alone reproduces the new
+ *    `anim` digests and leaves `body` untouched; swapping the geometry files
+ *    alone does the exact reverse. Nothing moved that neither change explains.
+ *
+ * The winding of every swept part also flipped, deliberately: measured on the
+ * previous commit, every swept mesh had NEGATIVE signed volume - the bodies
+ * faced inward while their own end caps faced outward, so a FrontSide material
+ * was drawing the inside of each part's far wall. All are positive now.
+ *
+ * Note what is doing the real work after this repin: a digest can only say
+ * "something moved", and both of these were SUPPOSED to move. The assertion
+ * that the legs stopped skating lives in `foot-slide.test.mjs`, which measures
+ * the contact point in world space and fails against the old curve.
  */
 const PINNED = {
   wolf: {
@@ -71,16 +103,21 @@ const PINNED = {
     /* REPINNED 2026-08-23 (Phase 9, `art-medieval`). The wolf's jaw and its
      * four lower legs moved from `coat` to `belly`; `bodyDigest` hashes every
      * material colour, so a deliberate countershading pass moves it. Geometry
-     * is untouched - see the note above the test. */
-    body: { 1: '86997d24638c59964d700ed85dbbe340', 7: 'c7f890d316d2053c6b2d077a00786e86', 4242: 'eec637532f9f6daca5e41509f09a4907' },
-    anim: { 1: '10b0759be46383734426d614f95fb12c', 7: '8142fd094bff6d2106f54065254771e1' },
+     * is untouched - see the note above the test.
+     *
+     * REPINNED AGAIN 2026-09-01 (art-quality phase 1). Both halves moved, for
+     * two independent and separately verified reasons - see the block comment
+     * above `PINNED` for how that was established. */
+    body: { 1: 'e5ec0b08c81982395e44d5b7510494c7', 7: '60e01953b94f992c0e6dce92a5c17b7c', 4242: '37b29178aef387bfeda6e0151eb01278' },
+    anim: { 1: '5935498377e6822f871eda8d3ee64448', 7: '36675919d68eef1007c27eb915b34eef' },
   },
   bear: {
     spec: '8db41314a609b060fee60f65f099107a',
     gaits: 'a6d0ede7a9398ce9b56fb7a6ce9e2e4a',
-    /* REPINNED 2026-08-23, same change and same reason as the wolf's. */
-    body: { 1: 'c8b74347b107b83354d81ad0d0eeb4de', 7: '6ecc824b52c51d4cc39358fc3614c043', 4242: '508d3034f2a5f7bc2ffed30a93065e27' },
-    anim: { 1: '12491f5c24ae1c358555926e6837403a', 7: 'a5682a8464b4ba6ecdf774c964131662' },
+    /* REPINNED 2026-08-23, same change and same reason as the wolf's.
+     * REPINNED AGAIN 2026-09-01, same changes and same reasons as the wolf's. */
+    body: { 1: 'd8e360b395ef855ea2fa995f614b5450', 7: '5714f844ab7786c2a1f99030849d2b26', 4242: '35ebad22353addfbbdedf407f9c23a09' },
+    anim: { 1: '5a7aeb0b59eee92f414c928eb570117c', 7: '8746772e28588ba7616d82acba9bc084' },
   },
 };
 
@@ -826,10 +863,27 @@ test('the rebuilt camel is still cheap enough to put seven of on screen', () => 
    * which is where the numbers actually landed with room to breathe; the point
    * of it is that the next person to add detail has to notice they are doing it.
    */
+  /* Counts TRIANGLES, which on an indexed geometry is `index.count / 3` and not
+   * `position.count / 3` - those are the same number only while every part is
+   * triangle soup. They stopped being the same on 2026-09-01, when `sweep()`
+   * and `loft()` began returning an indexed grid (one vertex per grid point
+   * instead of six per quad), so nine of the twenty-two meshes on every beast
+   * now carry an index. Reading `position.count / 3` through that returns
+   * 2538.67 for a wolf - a THIRD of a triangle, which is the tell that the
+   * quantity being divided was never a triangle count in the first place.
+   *
+   * The triangle counts themselves did not move: wolf 3016, bear 2956, camel
+   * 3672, measured identical against the pre-change tree. Only the vertex
+   * buffers shrank (~5.3x on a raw sweep), which is the point of the change
+   * and is deliberately NOT what this budget is guarding. */
   const trisOf = (species) => {
     const b = build(species, 7);
     let t = 0;
-    b.root.traverse((o) => { if (o.isMesh) t += o.geometry.getAttribute('position').count / 3; });
+    b.root.traverse((o) => {
+      if (!o.isMesh) return;
+      const g = o.geometry;
+      t += g.index ? g.index.count / 3 : g.getAttribute('position').count / 3;
+    });
     b.dispose();
     return t;
   };

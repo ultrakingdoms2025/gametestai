@@ -2,6 +2,10 @@ import * as THREE from 'three';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight, dirLight } from '../gfx/WorldLight.js';
+/* The radial-segment multiplier for the tier in force. `gfx/QualityTier.js`
+ * imports nothing, so this is a leaf import and not a cycle; it reads 1 - the
+ * counts authored below, unchanged - unless a real boot has latched a tier. */
+import { tessSegments } from '../gfx/QualityTier.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { InteriorKit } from './InteriorKit.js';
@@ -63,7 +67,14 @@ import {
 } from './medieval/TerrainTiles.js';
 import { GrassResidency } from './medieval/GrassResidency.js';
 import { loadBeastAssets } from './medieval/BeastAssets.js';
+import { medievalObjectives } from './medieval/Objectives.js';
 import { loadFrameAssets, framePart, FRAME_WELDABLE } from './medieval/FrameAssets.js';
+/* Authored PBR for the five surfaces the square framing puts within touching
+ * distance. An OVERRIDE, not a dependency: it swaps texture objects in slots
+ * `_std` has already bound, so a missing file leaves the world exactly as the
+ * procedural bake made it and costs no shader program. See the header of
+ * `medieval/MedievalSurfaces.js` for why that last clause is true. */
+import { loadMedievalSurfaces, dressMedievalSurfaces } from './medieval/MedievalSurfaces.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -873,7 +884,15 @@ function shadeHex(hex, k) {
   return (r << 16) | (g << 8) | b;
 }
 
-function cylGeo(rTop, rBot, h, seg, tile = 0.5, open = false) {
+/**
+ * `seg` is the count this world was AUTHORED at; `tessSegments` is the tier's
+ * multiplier on it, and it only ever raises. It has to be resolved once and
+ * used for both the geometry and the UV split below - `sideCount` is derived
+ * from the radial count, so passing the authored number to one and the scaled
+ * number to the other would stretch every cap in the vale.
+ */
+function cylGeo(rTop, rBot, h, segAuthored, tile = 0.5, open = false) {
+  const seg = tessSegments(segAuthored);
   const g = new THREE.CylinderGeometry(rTop, rBot, h, seg, 1, open);
   const uv = g.attributes.uv;
   const sideCount = (seg + 1) * 2;
@@ -886,7 +905,9 @@ function cylGeo(rTop, rBot, h, seg, tile = 0.5, open = false) {
   return g;
 }
 
-function coneGeo(r, h, seg, tile = 0.5) {
+/** Spire and roof cones. Same authored-vs-built split as `cylGeo` above. */
+function coneGeo(r, h, segAuthored, tile = 0.5) {
+  const seg = tessSegments(segAuthored);
   const g = new THREE.ConeGeometry(r, h, seg, 1, false);
   const uv = g.attributes.uv;
   const sideCount = (seg + 1) * 2;
@@ -1286,11 +1307,47 @@ export class MedievalWorld extends World {
      * is exactly why three separate reviews described the keep as a black
      * cut-out. 0.62/0.82 still leaves a ~6:1 ratio - firmly golden hour - but
      * keeps albedo in the shadow instead of a hole.
+     *
+     * ── Round 5: 0.62 -> 0.14, AND THIS DOES NOT REPEAT ROUND 4 ──────────
+     *
+     * Round 4 cut the TOTAL fill and got holes. This keeps the total and
+     * changes its SHAPE: 0.48 comes off ambient and lands on `hemiIntensity`
+     * (0.82 -> 0.95) and `envMapIntensity` (1.00 -> 1.60). The paragraph above
+     * already states the job the surviving fill is meant to do - "keeping
+     * shadow-side detail off the floor rather than competing with the sun" -
+     * and a term that adds the same value to every normal cannot do that job
+     * without also flattening the plane it lifts. A probe can, and this
+     * world's probe is not a shared mood: `_bakeEnvMap` bakes it from this
+     * world's OWN dusk dome, so the energy arrives in the right colour.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / median / % of pixels under 12:
+     *
+     *   castle-approach  base 94.6 / 81 / 0.1%  ->  98.4 / 96 / 0.0%
+     *   village-street   base 52.0 / 29 / 2.4%  ->  56.2 / 33 / 1.3%
+     *   village-square   base 53.9 / 41 / 0.6%  ->  58.1 / 48 / 0.5%
+     *   castle-gate      base 72.9 / 43 / 0.0%  ->  75.8 / 48 / 0.0%
+     *   portal           base 84.1 / 55 / 0.2%  ->  88.8 / 63 / 0.1%
+     *   ramparts-vista   base 87.5 / 45 / 0.4%  ->  88.9 / 48 / 0.3%
+     *
+     * The median rises by up to 15 while p95 does not move at all (castle-
+     * approach 177 -> 177, ramparts 213 -> 213). That is the definition of
+     * "reopened the shadows without competing with the sun": the key end of
+     * the histogram is untouched and the ~6:1 ratio survives. On the picture,
+     * the curtain wall's lower courses come back out of a flat brown mass and
+     * the round tower gains a terminator that wraps it - the thing three
+     * reviews said was missing, fixed by giving the fill a direction rather
+     * than by giving the scene more of it.
+     *
+     * Zero shader programs: 137 either side.
      */
-    env.ambientIntensity = 0.62;
+    env.ambientIntensity = 0.14;
     env.skyColor = new THREE.Color(0x7295cc);
     env.groundColor = new THREE.Color(0x7d6543);
-    env.hemiIntensity = 0.82;
+    // 0.82 -> 0.95, the smaller share of the round-5 ambient collapse. Most of
+    // it went to the probe: this world's fill problem is on VERTICAL masonry,
+    // which a hemisphere (a dot(N, up) mix) barely distinguishes.
+    env.hemiIntensity = 0.95;
     env.sunColor = new THREE.Color(0xffbf72);
     env.sunIntensity = 3.70;
     /* ~18 degrees of elevation, and swung to rake the hero axes.
@@ -1325,8 +1382,14 @@ export class MedievalWorld extends World {
     env.sunDirection = new THREE.Vector3(0.876, 0.305, 0.418).normalize();
     /* Sky-side fill. Not a hack: at dusk the ~180 degrees of sky opposite the
      * sun is still a large, bright, cool source, and it is the only thing that
-     * separates two shadow-side masonry planes from each other. */
-    env.envMapIntensity = 1.00;
+     * separates two shadow-side masonry planes from each other.
+     *
+     * 1.00 -> 1.60 in round 5. That sentence is the argument for putting the
+     * bulk of the collapsed ambient here rather than in the hemisphere: it is
+     * already the only term in the rig that tells two shadow-side vertical
+     * planes apart, and it was carrying a third less energy than the constant
+     * that was flattening them. */
+    env.envMapIntensity = 1.60;
     env.bloom = { strength: 0.30, radius: 0.62, threshold: 1.15 };
     env.ao = 1.05;
     env.grade = {
@@ -1458,8 +1521,27 @@ export class MedievalWorld extends World {
      * bytes, and what a player on a bad connection gets. */
     const frameAssets = loadFrameAssets();
 
+    /* The authored surface sets, started here and awaited immediately after
+     * the materials exist - which is the earliest moment they can be bound
+     * and the latest one before anything is drawn with them.
+     *
+     * Started rather than awaited because the texture bake below is the
+     * second-longest phase in this build and a manifest fetch has no business
+     * sitting in front of it. `loadMedievalSurfaces` never rejects: a 404 -
+     * which is what every session gets until the KTX2 files are produced -
+     * resolves to an empty map, `dressMedievalSurfaces` then dresses nothing
+     * and the vale renders exactly as it did before this pass. That is also
+     * what `node --test` builds, which has no `fetch` and no renderer. */
+    const surfaceAssets = loadMedievalSurfaces(this.engine?.renderer);
+
     await step(0.02, 'Mixing pigments', this._buildTextures);
     await step(0.18, 'Tempering materials', this._buildMaterials);
+    /* Not a `step`: dressing is a handful of property writes on materials
+     * that already exist, so it needs no progress tick and no frame yield.
+     * It is deliberately AFTER `_buildMaterials` rather than inside it -
+     * `_std` stays the one place a material is configured, and this stays a
+     * pure override of four texture slots on top of whatever it produced. */
+    dressMedievalSurfaces(this._mats, await surfaceAssets);
     await step(0.26, 'Raising the vale', this._buildTerrain);
     await step(0.4, 'Kindling the evening sky', this._buildSky);
     await step(0.47, 'Letting the river run', this._buildWater);
@@ -6017,14 +6099,139 @@ export class MedievalWorld extends World {
      * accent, so the silhouette gains a flat-top/spire contrast rather than
      * losing anything. */
     const DECK = TOP + 0.34;
-    B.add('flagstone', boxGeo((HW + WALL) * 2, 0.34, (HD + WALL) * 2, 0.62),
-      place(KX, DECK - 0.17, KZ), 0x9aa2a8);
-    this._box(KX, DECK - 0.6, KZ, HW + WALL, 0.6, HD + WALL);
-    // Shallow lead rolls across the deck: a dead-flat 26x20m plane at the top
-    // of the build reads as a placeholder, and the rolls catch the low sun.
+
+    /* ---- The vice: the stair this deck never had --------------------- *
+     *
+     * ── THE DEFECT ────────────────────────────────────────────────────────
+     * The deck's own comment calls it "the thing that turns the top of the
+     * castle into a place you can stand, look out from and photograph", and
+     * for as long as it has existed there has been NO WAY UP. The whole world
+     * contains two `_stairs()` calls, both on the curtain 29 m away across
+     * open bailey, and the stair turret at the keep's north-east corner is
+     * `cylGeo` plus `_ringWall` - eight wall boxes with no tread and no floor
+     * inside them. A player reached the deck by free-climbing 19.7 m of
+     * ashlar, or not at all.
+     *
+     * ── WHY THE VICE IS NOT IN THE TURRET, measured ───────────────────────
+     * The obvious home is the turret bore, and it is not available. The
+     * turret stands at `(eX - 1, nZ + 1)` with a 3.4 m ring, and the keep's
+     * OWN wall solids pass straight through it: the north wall occupies
+     * z in [KZ-10, KZ-7] across the full width and the east wall occupies
+     * x in [KX+11.5, KX+14.5], which between them fill all but a ~2.5 m
+     * crescent of a 6.2 m bore. Emptying that crescent would mean cutting
+     * holes in two drawn ashlar boxes and leaving a player standing inside
+     * geometry whose back faces are culled - a passage through apparently
+     * solid stone. So the vice is built where there is room for it, against
+     * the hall's north wall in the bay between the second and third trusses,
+     * and the turret keeps the job it is actually doing: the silhouette.
+     *
+     * ── EVERY NUMBER HERE IS DERIVED ──────────────────────────────────────
+     * `VX` sits midway between the trusses at `KX + 5` and `KX + 10` (0.45 m
+     * members, so 4.55 m of clear bay against a 3.4 m shaft); `VZ` puts the
+     * shaft's north face on the north wall's inner face at `KZ - 7` exactly.
+     * The rise is `DECK` minus the hall floor collider's top face at
+     * `G + 0.25` = 19.69 m; 48 treads makes the riser 0.410208 m, inside
+     * `CONFIG.player.stepHeight` = 0.45 with 0.04 m in hand, and each tread is
+     * exactly one riser thick so the helix is a solid stair rather than a
+     * ladder of floating slabs. Twelve to a turn is 4.92 m of headroom over
+     * the tread below - a 1.75 m player never meets the underside of anything
+     * - and 2*pi*0.66/12 = 0.346 m of going at the capsule's own radius.
+     */
+    const VX = KX + 7.5, VZ = KZ - 5.3;
+    const VICE = {
+      /** Half the clear bore, and the wall around it. */
+      inner: 1.4, wall: 0.3,
+      /** Half the openings: the hall door and the deck exit. */
+      gap: 0.85,
+      /** Height of the hall doorway, and of the parapet above the deck. */
+      doorH: 2.2, parapet: 1.1,
+      /** Outer radius the treads reach, and their tangential half-width. */
+      treadR: 1.32, treadHalf: 0.36,
+      steps: 48, perTurn: 12, startDeg: 60,
+    };
+    const viceOuter = VICE.inner + VICE.wall;
+    const floorTop = G + 0.25;
+    const viceRise = (DECK - floorTop) / VICE.steps;
+
+    /* The deck, in four boxes around the vice's well.
+     *
+     * The slab used to be one box the size of the keep's plan, which sealed
+     * the top of any shaft driven up through it - so opening the well is part
+     * of the same change as building the stair, not a decoration on it. The
+     * four pieces tile the original exactly: the hole is the bore, `x` in
+     * [VX-1.4, VX+1.4] and `z` in [VZ-1.4, VZ+1.4], and every edge below is
+     * the original edge or a face of that hole. */
+    const hx0 = VX - VICE.inner, hx1 = VX + VICE.inner;
+    const hz0 = VZ - VICE.inner, hz1 = VZ + VICE.inner;
+    const dx0 = KX - (HW + WALL), dx1 = KX + (HW + WALL);
+    const dz0 = KZ - (HD + WALL), dz1 = KZ + (HD + WALL);
+    /** [x0, z0, x1, z1] of the four surviving pieces of deck. */
+    const deckParts = [
+      [dx0, dz0, hx0, dz1],
+      [hx1, dz0, dx1, dz1],
+      [hx0, dz0, hx1, hz0],
+      [hx0, hz1, hx1, dz1],
+    ];
+    for (const [x0, z0, x1, z1] of deckParts) {
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      const px = (x1 - x0) / 2, pz = (z1 - z0) / 2;
+      B.add('flagstone', boxGeo(px * 2, 0.34, pz * 2, 0.62), place(cx, DECK - 0.17, cz), 0x9aa2a8);
+      this._box(cx, DECK - 0.6, cz, px, 0.6, pz);
+    }
+    /* Shallow lead rolls across the deck: a dead-flat 26x20m plane at the top
+     * of the build reads as a placeholder, and the rolls catch the low sun.
+     * The roll at `i = 2` runs through the well and is laid in two lengths -
+     * a 0.28 m strip floating over an open stair well is exactly the kind of
+     * detail that only reads as broken. */
     for (let i = -3; i <= 3; i++) {
-      B.add('slate', boxGeo(0.28, 0.12, (HD + WALL) * 2 - 0.4, 1.1),
-        place(KX + i * 3.6, DECK + 0.05, KZ), 0x8e969d);
+      const rx = KX + i * 3.6;
+      const spans = (rx > hx0 && rx < hx1)
+        ? [[dz0 + 0.2, hz0], [hz1, dz1 - 0.2]]
+        : [[dz0 + 0.2, dz1 - 0.2]];
+      for (const [z0, z1] of spans) {
+        B.add('slate', boxGeo(0.28, 0.12, z1 - z0, 1.1),
+          place(rx, DECK + 0.05, (z0 + z1) / 2), 0x8e969d);
+      }
+    }
+
+    /* The shaft: four walls in three height bands, drawn and solid together.
+     *
+     * The south side is the only one with openings - a doorway off the hall
+     * floor and, above the deck, a gap in the parapet the top tread arrives
+     * beside - so it is built as two piers with a spanning course between
+     * them, which is what leaves both. */
+    {
+      const sHi = DECK + VICE.parapet;
+      const band = (cx, cz, hx, hz, y0, y1, tint) => {
+        B.add('ashlar', boxGeo(hx * 2, y1 - y0, hz * 2, 0.45),
+          place(cx, (y0 + y1) / 2, cz), tint);
+        this._box(cx, (y0 + y1) / 2, cz, hx, (y1 - y0) / 2, hz);
+      };
+      const wallMid = VICE.inner + VICE.wall / 2;
+      // North, east and west run the full height in one piece each.
+      band(VX, VZ - wallMid, viceOuter, VICE.wall / 2, floorTop, sHi, stone);
+      band(VX + wallMid, VZ, VICE.wall / 2, VICE.inner, floorTop, sHi, stone);
+      band(VX - wallMid, VZ, VICE.wall / 2, VICE.inner, floorTop, sHi, stone);
+      // South: two piers full height, and the stone between them stops short
+      // of the doorway below and of the deck exit above.
+      const pierHalf = (viceOuter - VICE.gap) / 2;
+      for (const s of [-1, 1]) {
+        band(VX + s * (VICE.gap + pierHalf), VZ + wallMid, pierHalf, VICE.wall / 2,
+          floorTop, sHi, stone);
+      }
+      band(VX, VZ + wallMid, VICE.gap, VICE.wall / 2, floorTop + VICE.doorH, DECK, stoneAlt);
+      // Newel and treads. Each tread reaches the axis, so the inner ends are
+      // the newel: that is how a solid newel stair is cut, and it leaves the
+      // capsule a 0.35-1.0 m band to walk in rather than a 0.38 m one.
+      for (let k = 1; k <= VICE.steps; k++) {
+        const a = (VICE.startDeg * Math.PI) / 180 + (k * TAU) / VICE.perTurn;
+        const top = floorTop + k * viceRise;
+        const cx = VX + Math.cos(a) * (VICE.treadR / 2);
+        const cz = VZ + Math.sin(a) * (VICE.treadR / 2);
+        B.add('ashlar', boxGeo(VICE.treadR, viceRise, VICE.treadHalf * 2, 0.5),
+          place(cx, top - viceRise / 2, cz, -a), k % 2 ? stoneAlt : stone);
+        this._rbox(cx, top - viceRise / 2, cz, VICE.treadR / 2, viceRise / 2, VICE.treadHalf, -a);
+      }
     }
     // A gutter and two spouts, so the deck has drainage logic.
     for (const s of [-1, 1]) {
@@ -6126,8 +6333,17 @@ export class MedievalWorld extends World {
     };
     table(KX - 3, KZ - 4.0, 12, 0);
     table(KX - 3, KZ + 4.0, 12, 0);
-    table(KX + 8.5, KZ, 9, Math.PI / 2);
-    for (let i = 0; i < 5; i++) {
+    /* The high table is 6 m, not 9. Nine reached from `KZ - 4.5` to `KZ + 4.5`
+     * and its benches from -4.14, which is through the north-east bay the vice
+     * now stands in; six clears the shaft's south face at `KZ - 3.6` by 0.6 m
+     * and still seats a lord's table across the dais end of the hall. */
+    table(KX + 8.5, KZ, 6, Math.PI / 2);
+    /* THREE candlesticks, not five, and the two that went were floating.
+     * They are laid out at `KX - 8 + i * 4` on tables that run `KX - 9` to
+     * `KX + 3`, so `i = 3` at `KX + 4` and `i = 4` at `KX + 8` stood on air
+     * a metre and five metres past the end of the board - and the second of
+     * those is inside the vice's bore. */
+    for (let i = 0; i < 3; i++) {
       B.add('iron', cylGeo(0.13, 0.16, 0.5, 8, 1.2),
         place(KX - 8 + i * 4, G + 1.3, KZ + (i % 2 ? 4 : -4)), 0x38322b);
       B.add('ember', cylGeo(0.06, 0.06, 0.34, 6, 1.4),
@@ -8767,7 +8983,32 @@ export class MedievalWorld extends World {
       B.add('beam', boxGeo(len, 0.08, 0.08, 1.2), place(wx, wy + 1.05, wz, yaw), 0x7a6144);
       this._footprints.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, hx: len / 2 + 1, hz: 2.4, r: -yaw });
     }
-    // Ladders up to the walk.
+    /* Ladders up to the walk.
+     *
+     * ── The plinth is SEATED 0.2 m, and that is what makes the walk reachable
+     * The stiles and rungs are `B.add` batch geometry with no collider of
+     * their own; the only solid here is this one 1 x 1 m post, and its top
+     * face used to be exactly `walkY` = 2.550 m. `Climb.MAX_RISE` is 2.4, so
+     * the mantle was REFUSED by 0.15 m and the fighting walk could only be
+     * reached by free-climbing the post's own face. Three ladders, all three
+     * the same.
+     *
+     * Of the three repairs available - drop `walkY`, give the stiles rung
+     * colliders, or seat the plinth - seating it is the only one that costs
+     * nothing else. `walkY` is read five times in this builder (the deck, its
+     * collider, the rail posts, the handrail and the stiles' own length), so
+     * moving it moves the whole palisade walk; and rung colliders would sit
+     * wholly INSIDE this post's own footprint (the rungs are 0.7 m wide at
+     * `lx` and the post is 1.0 m square about `lx`), which is to say they
+     * would do nothing at all.
+     *
+     * Seated: the box spans `y - 0.2` to `y + 2.35`, so the mantle from the
+     * ground reads 2.35 m - inside `MIN_RISE_GROUND` 1.0 to `MAX_RISE` 2.4
+     * with 0.05 m of margin - and the last 0.23 m up to the walk collider's
+     * top face at `y + 2.58` is a step, well under `stepHeight` 0.45. The
+     * drawn top rung is at `y + 2.40`, so the arrival is also where the ladder
+     * looks like it ends. */
+    const LADDER_SEAT = 0.2;
     for (const [lx, lz] of [[330, -226], [330, -178], [366, -226]]) {
       const y = H(lx, lz);
       for (const s of [-0.3, 0.3]) {
@@ -8776,7 +9017,7 @@ export class MedievalWorld extends World {
       for (let i = 0; i < 6; i++) {
         B.add('beam', boxGeo(0.7, 0.07, 0.07, 1.2), place(lx, y + 0.3 + i * 0.42, lz), 0x8a6c4a);
       }
-      this._box(lx, y + P.walkY / 2, lz, 0.5, P.walkY / 2, 0.5);
+      this._box(lx, y + P.walkY / 2 - LADDER_SEAT, lz, 0.5, P.walkY / 2, 0.5);
     }
     /* ---- Towers ------------------------------------------------------ */
     for (const t of P.towers) {
@@ -12545,7 +12786,17 @@ export class MedievalWorld extends World {
         const slope = this._slope(x, z);
         if (variant === 1 && slope < 0.3) continue;
         if (variant === 1 && this._inHeroClear(x, z, 3)) continue;
-        if (this._roadDist(x, z) < 2.2) continue;
+        /* Clearance from the cobble EDGE, sized to what each variant builds.
+         *
+         * 2.2 m was one number for both, and it is only right for the field
+         * stones. A variant-1 outcrop scales to `1.4 + rnd() * 2.6` = up to
+         * 4.0 and takes an axis-aligned collider of `sc * 0.7` = up to 2.8 m
+         * of half-extent, so a centre accepted at 2.2 m from the edge put
+         * 0.6 m of solid rock ON the road. 3.2 covers the largest collider
+         * this loop can make with 0.4 m to spare, whatever `rnd` rolls, and
+         * that matters because `sc` is drawn AFTER this test - a scale-aware
+         * threshold would have to move the draw and re-roll every rock. */
+        if (this._roadDist(x, z) < (variant === 0 ? 2.2 : 3.2)) continue;
         /* Round 6, diagnosed off the composed street framing: its whole
          * foreground was stippled with hard black ellipses, and three systems
          * were accused before ablation and a position probe convicted THIS
@@ -13173,6 +13424,17 @@ export class MedievalWorld extends World {
 
     this._buildInhabitants();
     this._buildMinimap();
+    /* Viewpoints, trials and the circuit.
+     *
+     * LAST, and after the minimap, because it reads the finished world and
+     * writes nothing back into it: the descriptors are plain data hung on the
+     * world object for `Viewpoints`, `MinigameManager` and `RaceManager` to
+     * find, and none of the three is even constructed yet. It draws no RNG, so
+     * every seeded placement in the vale - the twelve beast sites, the 88
+     * residents, the treasure, the woodland - is bit-identical to the build
+     * before it existed. @see ./medieval/Objectives.js
+     */
+    medievalObjectives(this);
   }
 
   _buildInhabitants() {

@@ -19,6 +19,29 @@ Anything else - Sketchfab's per-model terms especially - is not accepted. If a
 model is worth an exception, the exception goes through the allow-list in the
 test, deliberately, in its own commit.
 
+## Texture sets
+
+External surface textures are made by `scripts/make-world-tex.mjs`. It fetches
+a CC0 set from ambientCG or Poly Haven into a cache, packs ORM to the glTF
+convention (R=AO, G=roughness, B=metalness), compresses to KTX2 with the wasm
+Basis encoder - no native toolchain, so it runs wherever node runs - and
+PRINTS both the manifest entries and the ledger row for what it made. The line
+below therefore lands in the same run as the file it describes, which is the
+only arrangement under which a ledger stays complete.
+
+The maze's five surfaces predate that script: they were made by hand on
+2026-08-10 with toktx v4.4.2, on a machine whose toolchain is not in this
+repository and is not on any machine that has built the game since. Nothing
+was lost, because a KTX2 file records the command line that wrote it.
+`KTXwriterScParams` in all fifteen recovers the pass exactly - `--encode etc1s
+--qlevel 192 --clevel 2` for albedo, `--qlevel 160` for ORM, and `--encode
+uastc --uastc_quality 2 --zcmp 19` for the normal maps, UASTC there because
+ETC1S bands on the shallow gradients a normal map is mostly made of. That
+recipe is now `ENCODE_PROFILE` in the script, pinned against those committed
+bytes by `scripts/tests/world-tex-pipeline.test.mjs`. Re-running the pipeline
+over the same sources reproduces the set to within +2.7% of its 17.55 MB, and
+the difference is one lossless zstd setting the wasm encoder does not expose.
+
 ## Ledger
 
 | id | file | licence | source | fetched/made |

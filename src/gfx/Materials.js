@@ -17,7 +17,12 @@ import {
  *   map drives the real values (glTF workflow). Multiplying by 1 keeps the map
  *   authoritative and makes every surface tunable from one texture.
  * - `map`, `normalMap` and the ORM map are non-negotiable. A material with a
- *   flat colour and no normal is a bug, not a style.
+ *   flat colour and no normal is a bug, not a style. Worlds that build their
+ *   own props outside this library cannot always afford a full authored
+ *   surface each; `microSurface()` in gfx/Textures.js is the floor those sites
+ *   are held to - one shared 512^2 detail normal, one map slot, so a hundred
+ *   flat props cost one texture and a program-bucket move rather than a
+ *   permutation apiece.
  * - UV tiling is left at `repeat = 1` on the base material and each material
  *   publishes `userData.tileMeters` - the world-space size one UV tile is
  *   authored for. Worlds call {@link MaterialLibrary#scaled} (or use the
@@ -1719,6 +1724,50 @@ export class MaterialLibrary {
   /**
    * Generate every material and environment map, yielding between bakes so the
    * loading bar keeps animating instead of the tab locking up.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  WORLD-SCOPING THIS WAS SPECIFIED, INVESTIGATED AND REFUSED (1 Sep 2026)
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The cost is real and is stated so nobody has to re-derive it: 44 recipes,
+   * 18 at HERO (512²) and the rest at SMALL (256²), three maps each, is about
+   * 96 MB of texture memory resident from the first frame - and it is paid in
+   * full whichever world the player enters. The obvious move is to give
+   * `warmup` a world scope and leave the rest to `get`, which is already lazy
+   * and would bake on demand.
+   *
+   * Three things kill it, and the third on its own is enough:
+   *
+   * 1. THE CONSUMERS ARE NOT WORLD-SCOPED. Counted across the tree, the
+   *    library's callers are six mount classes, `RacerAI`, `Combat`,
+   *    `BeastBody`, and three worlds (`PlanetWorld` 3, `CitadelWorld` 2,
+   *    `RaceWorld` 1). The mounts and combat are session state - a player
+   *    summons a dragon in whatever world they are standing in - so "what does
+   *    this world need" is the wrong question for most of the set.
+   *
+   * 2. THE SCOPE WOULD HAVE TO BE A HAND-WRITTEN MANIFEST. There is no
+   *    declaration anywhere of which keys a world uses; `get(key)` is called
+   *    from inside builders, often through the `'key:repeat'` shorthand. A
+   *    per-world key list is exactly the hand-typed list that goes stale, and
+   *    this repository has now paid for that shape at least three times in
+   *    the harness's own framing tables.
+   *
+   * 3. A LATE BAKE IS A LATE PROGRAM LINK, AND THAT IS THE WORST THING IN
+   *    THIS GAME. `get` does not merely bake textures - it constructs a new
+   *    `THREE.Material`. The boot warm (`prewarm` -> `rehearse` ->
+   *    `gfx/PreviewWarm.js`) draws the materials that exist AT THAT MOMENT to
+   *    force their programs to link. A material created afterwards has no
+   *    program, so its first draw links one on a gameplay frame - and this
+   *    project's own measurement is that ONE `linkProgram` costs up to
+   *    5,433 ms, 5,314 ms of it inside `renderBufferDirect`. Trading ~96 MB of
+   *    VRAM for a chance of a five-second freeze is the wrong way round.
+   *
+   * If this is ever revisited, the order is: make the scope DERIVED (a world
+   * declares its keys, or the library records what each build asked for and
+   * that recording is the manifest), and only then scope the bake - and the
+   * boot warm has to be scoped with it, in the same commit, or 3 above lands
+   * anyway.
+   *
    * @param {(progress:number, label:string)=>void} [onProgress]
    */
   async warmup(onProgress) {
@@ -2092,6 +2141,60 @@ export class MaterialLibrary {
       temp.push(geo, mat);
     }
 
+    /* ═══════════════════════════════════════════════════════════════════════
+     *  256 IS THE RIGHT SIZE. RAISING IT WAS SPECIFIED, MEASURED AND REFUSED
+     *  (2 Sep 2026, RTX 5080, three 0.185.1)
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * The standing complaint about this line is that the station's near-mirror
+     * (`StationWorld` `M.mirror`: metalness 1, roughness 0.09, envMapIntensity
+     * 3) is nearly sharp and can only read as coloured fog off a 256 px
+     * source. Both halves are wrong, and acting on them is expensive.
+     *
+     * 1. 256 IS THE SIZE THREE'S OWN ROUGHNESS FLOOR IS DEFINED AGAINST.
+     *    `lights_physical_fragment` runs `material.roughness = max(rough,
+     *    0.0525)` under the comment "0.0525 corresponds to the base mip of a
+     *    256 cubemap". A material samples cubeUV mip `-2*log2(1.16*roughness)`
+     *    clamped to `CUBEUV_MAX_MIP = log2(size)`; the floored roughness asks
+     *    for mip 8.07 and 256 supplies mip 8. 512 adds a mip only a 7% blend
+     *    weight can reach, 1024 one that no material can express at all.
+     *
+     * 2. ROUGHNESS 0.09 IS NOWHERE NEAR THE TOP MIP ANYWAY. That mip index is
+     *    absolute - mip N is a 2^N-texel cube face, not "N down from the top"
+     *    - so 0.09 samples mip 6.52, a ~92 px face, at 256, 512 and 1024
+     *    alike. Rendering that exact material against all three probes with
+     *    the pre-blur removed gave mean luminance gradients of 1.014 / 0.979 /
+     *    0.931: bigger is fractionally BLURRIER, because three's GGX prefilter
+     *    hands tile k the roughness k/(lods-1) and the lod count grows with
+     *    the size. 256 vs 512 differed by 0.14 of one 0-255 level per channel.
+     *
+     * 3. THE ONE THING A RAISE WOULD CHANGE IS A TRUNCATION, NOT DETAIL. The
+     *    0.22 rad pre-blur below is not being applied: three caps the kernel
+     *    at MAX_SAMPLES = 20 and warns, on every bake we already ship, that
+     *    0.22 asked for 108. What lands is samples * PI/(2*(size-1)) = 0.123
+     *    rad here, 0.062 at 512, 0.031 at 1024 - so doubling the size silently
+     *    halves an authored softening. That does read as sharper (gradient
+     *    0.670 -> 0.790 -> 0.861 at roughness 0.09, the only difference the
+     *    sphere test could see) but it is a clipped Gaussian, and it is free
+     *    at 256 by lowering sigma. Above ~0.039 rad here, sigma is a wish.
+     *
+     * 4. AND THE PROBE IS FOUR OBJECTS. A sky, a ground disc, a sun and, in
+     *    `space`, four accent bars. A perfect mirror of that still reflects a
+     *    sky, a ground, a sun and four bars. The fog is the CONTENT. Making
+     *    the mirror reflect the station needs a probe containing the station.
+     *
+     * The bill for going anyway, since `_pmrem` is held for the session and
+     * all three moods stay resident: colour is RGBA16F over 3*size x 4*size
+     * and `fromScene` attaches a DEPTH_COMPONENT24 buffer to each target, so
+     * 12 B/px - 34.6 MB today, 138 MB at 512, 554 MB at 1024, against the
+     * ~96 MB that every baked surface in the game costs put together.
+     *
+     * Time is NOT the objection, recorded so nobody re-times it: all three
+     * moods cost 19.1 ms at 256, 19.7 ms at 512, 20.0 ms at 1024, and the
+     * one-off blur/GGX program link that dominates the first bake (410-480 ms,
+     * behind the loading bar) is size-independent. It is cheap and it buys
+     * nothing.
+     */
     const rt = this._pmrem.fromScene(scene, 0.22, 1, 500, { size: 256 });
     this._envTargets.push(rt);
     rt.texture.name = `env.${mood}`;

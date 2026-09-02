@@ -49,11 +49,77 @@ export const MINIGAME_STATE = {
 /**
  * Credits a win pays.
  *
- * One number for every sport, because the user asked for one number: "if I win
- * I get 10 credits". A venue may override it with `reward`, which is how a
- * harder contest would be worth more later without this constant moving.
+ * ── The number this replaces, and the measurement that moved it ──────────────
+ *
+ * It was 10, from the user's own sentence: "if I win I get 10 credits". That
+ * was written before there was a shop to spend it in, and the shop is what
+ * makes it wrong. The cheapest row on the shelf is a medkit at 95 CR at the
+ * station (67 at the sports grounds, 138 in the citadel), so a whole contest
+ * paid a ninth of the cheapest thing in the game - while one raider paid 5 CR
+ * of bounty PLUS a guaranteed credit drop off the body. Standing in the outer
+ * ring shooting out-earned every authored contest in the game, per run and per
+ * minute, which is the exact opposite of what the content is for.
+ *
+ * 120 is not a guess. It is the number the ONE venue authored after the shop
+ * existed already pays: `BUTTS_REWARD` in `worlds/dock/YardPlan.js` is 120 for
+ * a 45-second clear of the archery butts, and it shipped. Every other venue
+ * still sits on the pre-shop 8-18 ladder, so the butts is not an outlier to be
+ * trimmed - it is the calibration the other fifteen never got. One contest,
+ * one shelf item.
+ *
+ * A venue may still override it with `reward`; see {@link venuePrize} for what
+ * happens to the fifteen venues that publish a number from the old ladder.
  */
-export const MINIGAME_PRIZE = 10;
+export const MINIGAME_PRIZE = 120;
+
+/**
+ * The prize this file used to pay, and the middle rung of the legacy ladder.
+ *
+ * Kept as a named constant rather than inlined because it is the divisor in
+ * {@link MINIGAME_REWARD_SCALE}, and the relationship - "the old ladder's
+ * middle rung becomes the new standing prize" - is the whole justification for
+ * the scale factor being 12 and not some other number.
+ */
+export const MINIGAME_LEGACY_PRIZE = 10;
+
+/**
+ * Top of the pre-shop reward band, exclusive of anything authored since.
+ *
+ * Every venue in the repo publishes either a number in 8-18 (the fourteen that
+ * predate the shop) or 120 (the yard butts). Nothing sits between 19 and 119,
+ * so a threshold here separates "a rung on the old ladder" from "credits,
+ * meant literally" without needing a flag on the descriptor.
+ */
+export const MINIGAME_LEGACY_BAND_MAX = 20;
+
+/** Multiplier that lifts a legacy rung onto the shelf. 120 / 10. */
+export const MINIGAME_REWARD_SCALE = MINIGAME_PRIZE / MINIGAME_LEGACY_PRIZE;
+
+/**
+ * Credits a venue's published `reward` is actually worth.
+ *
+ * ── Why the manager rescales instead of the worlds being edited ──────────────
+ *
+ * The fifteen legacy numbers are a DIFFICULTY LADDER and a good one: the Souk
+ * Rooftop Dash is an 8, the Long Ascent a 14, the Skyline an 18, and those
+ * rungs were chosen by whoever built the routes. A flat floor would flatten
+ * them all to one number and throw that judgement away; multiplying the ladder
+ * keeps it and moves it onto the shelf, 96-216 CR, straddling the butts' 120.
+ *
+ * The threshold is a MIGRATION RAMP and is meant to become inert: once the
+ * world files carry real credit figures (every one of them is a one-line
+ * change), every published reward is >= MINIGAME_LEGACY_BAND_MAX and this
+ * function is the identity. It is written so that day costs nothing.
+ *
+ * @param {number} raw the venue's published `reward`
+ * @returns {number} whole credits
+ */
+export function venuePrize(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return MINIGAME_PRIZE;
+  if (n >= MINIGAME_LEGACY_BAND_MAX) return Math.floor(n);
+  return Math.floor(n * MINIGAME_REWARD_SCALE);
+}
 
 /**
  * Share of the prize a COMPLETED loss pays.
@@ -81,8 +147,12 @@ export const MINIGAME_PRIZE = 10;
  *    contests and leaving them - you have to see one out, which at 45-180 s a
  *    run pays worse per minute than anything else in the game.
  *
- * A quarter puts the shipped 8-18 band at 2-4 CR: enough that finishing is not
- * nothing, far too little to be a strategy.
+ * A quarter put the shipped 8-18 band at 2-4 CR: enough that finishing is not
+ * nothing, far too little to be a strategy. The share has NOT moved with the
+ * prize rescale (see {@link venuePrize}), so the same quarter now puts the same
+ * fifteen venues at 24-54 CR - a quarter of a shelf item for seeing a contest
+ * out, against a whole one for winning it. The relationship the share encodes
+ * is the point, and it is scale-free.
  */
 export const MINIGAME_FLOOR_SHARE = 0.25;
 
@@ -122,6 +192,98 @@ export function consolationFor(venue) {
   return Math.min(ceiling, Math.max(ceiling > 0 ? 1 : 0, Math.floor(prize * MINIGAME_FLOOR_SHARE)));
 }
 
+/**
+ * What a medal is worth, as a SHARE of the venue's prize.
+ *
+ * ── The ladder this completes ────────────────────────────────────────────────
+ *
+ * The payout ladder had exactly two rungs: {@link MINIGAME_FLOOR_SHARE} for
+ * seeing a contest out, and the whole prize for winning it. `RooftopTrial`
+ * grades a win three ways off measured par times and seven citadel venues use
+ * it, and every one of those grades paid the same number - so a run 14% inside
+ * the reference pace and a run that scraped bronze with two seconds to spare
+ * were worth identically the same credits, and a repeat visit to a venue you
+ * already hold moved nothing at all.
+ *
+ * ── Why GOLD is 1.0 and not 1.5, which is the tempting shape ────────────────
+ *
+ * Two reasons, and the second one is a hard external ceiling rather than a
+ * judgement.
+ *
+ *  1. The house rule this file already states twice: the participation floor is
+ *     "a SHARE of a prize that did not move, so the ceiling of the faucet is
+ *     exactly what it was". The economy was measured at 22 credit sources
+ *     against 5 sinks with a whole-game faucet over 250,000 CR. A medal
+ *     MULTIPLIER would open a new faucet at the top of the best-rewarded
+ *     activity in the game; a medal SHARE re-uses the one that is already
+ *     there. The grade is expressed in what the other grades give up, which is
+ *     what makes gold mean something.
+ *  2. `site/lib/creditPricing.ts` refuses a reported `minigame` event over 250
+ *     credits per event. The richest venue publishes `reward: 18`, which
+ *     `venuePrize` rescales to 216. Any multiplier above 250/216 = 1.157 would
+ *     be SERVER-REFUSED on the Skyline and the Long Water - a payout that was
+ *     exactly right, logged as a rejection, with the player's client-side
+ *     balance already credited. There is no room above the prize; there is
+ *     plenty below it.
+ *
+ * Bronze is 0.70 rather than something nearer the floor because a bronze on the
+ * Souk Dash is still a contest won: at the shipped 96 CR prize it pays 67
+ * against a 24 CR participation floor, so the ladder reads 24 / 67 / 81 / 96 -
+ * every rung clearly above the last, and winning badly still comfortably better
+ * than finishing badly. That ordering is enforced rather than assumed; see
+ * {@link medalPrize}.
+ *
+ * A contest that grades nothing - which is thirteen of the sixteen venues -
+ * publishes no medal and pays the full prize exactly as it did before. This
+ * table can only ever REDUCE a payout, and only for a contest that told the
+ * player which grade they took.
+ */
+export const MEDAL_PRIZE_SHARE = Object.freeze({ gold: 1, silver: 0.85, bronze: 0.7 });
+
+/**
+ * Credits a win pays once its medal is taken into account.
+ *
+ * The clamp is the part worth reading, and it is the same shape
+ * {@link consolationFor}'s is. Winning must pay more than finishing, always:
+ * a venue that publishes a large `consolation` against a small `reward` could
+ * otherwise make a bronze win pay LESS than the loss beside it, which would
+ * teach a player to stop trying at the exact moment the contest got interesting.
+ * So the medal share is floored at one credit above the participation floor.
+ *
+ * @param {number} prize the venue's resolved reward (already `venuePrize`d)
+ * @param {string|null} medal 'gold' | 'silver' | 'bronze', or null for ungraded
+ * @param {number} [floor] this venue's participation floor
+ * @returns {number} whole credits
+ */
+export function medalPrize(prize, medal, floor = 0) {
+  const p = Number(prize);
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  const share = MEDAL_PRIZE_SHARE[medal];
+  /* An ungraded contest is the identity. Thirteen venues, and every test that
+   * asserts a win pays the venue reward, go through this branch. */
+  if (!(share > 0)) return Math.floor(p);
+  const paid = Math.floor(p * share);
+  const f = Number(floor);
+  const min = Number.isFinite(f) && f >= 0 ? Math.min(Math.floor(p), Math.floor(f) + 1) : 0;
+  return Math.min(Math.floor(p), Math.max(min, paid));
+}
+
+/**
+ * The medal in a result's `score`, or null.
+ *
+ * `score` is a bag - a clock from the swim, the ski run and the track race, a
+ * count from the delivery, the hack and the test fire, a games string from the
+ * tennis, and a medal from the rooftop trial. Only one of those is a member of
+ * {@link MEDAL_PRIZE_SHARE}, so a set lookup is a complete discriminator and
+ * no module needs a second field to say "this one means a medal".
+ *
+ * @param {any} score
+ * @returns {'gold'|'silver'|'bronze'|null}
+ */
+export function medalOf(score) {
+  return typeof score === 'string' && MEDAL_PRIZE_SHARE[score] !== undefined ? score : null;
+}
+
 /** Seconds of "on your marks" before a contest begins. */
 const COUNTDOWN_S = 4.0;
 
@@ -146,6 +308,79 @@ const RESULT_HOLD_S = 14;
  * leaving.
  */
 const LEAVE_GRACE_S = 9;
+
+/**
+ * The OFFER gate a venue may publish, and why it is not the containment disc.
+ *
+ * ── THE TWO JOBS ONE RADIUS WAS DOING ─────────────────────────────────────
+ *
+ * `centre`/`radius`/`yTolerance` are CONTAINMENT: `fixedUpdate` abandons a
+ * running contest `LEAVE_GRACE_S` after the player leaves that disc, so it has
+ * to hold the WHOLE route. `CitadelWorld._fillVenue`, `RooftopTrial.venueBounds`
+ * and `SportsWorld`'s ski and track venues all record the same requirement, and
+ * `citadel_skyline` is the recorded failure of getting it wrong: a start-line
+ * disc self-aborts every run nine seconds after it reaches the far end.
+ *
+ * `_pollNear` then used that same disc to decide where the venue OFFERS itself,
+ * and those are not the same question. Measured on the station hub deck: the
+ * Concourse Round's disc spans the concourse, so the prompt read "E - Start the
+ * Concourse Round" everywhere on it, E belonged to the venue everywhere on it
+ * (`HUD._updateInput` stands its chat branch down while a venue prompt is up),
+ * and the seven ordinary NPCs standing inside it could not be talked to at all.
+ * Worse, E did not even start anything: `createDeliveryRun` refuses beyond
+ * `DEPOT_R` = 6 m with "loads at the depot, 47 m away". The words, the key and
+ * the game all disagreed.
+ *
+ * ── WHAT A GATE IS ────────────────────────────────────────────────────────
+ *
+ * A venue MAY publish `start` (a point), `startRadius` and `startBand`. When it
+ * does, the venue only claims the prompt and the key within that gate;
+ * containment is untouched and still governs abandonment. When it does not -
+ * every venue in sports, the dock, the race world, the medieval charter and the
+ * citadel - the disc remains the offer, exactly as before. That default is
+ * deliberate rather than lazy: the ski slope and the 400 m are WIDE offers with
+ * module-enforced start gates (`SportsWorld` records both), and shrinking them
+ * would break contests that work.
+ *
+ * ── WHY THE HYSTERESIS LIVES INSIDE THE GATE ──────────────────────────────
+ *
+ * `PROMPT_HYSTERESIS` exists so a player on a boundary does not make the prompt
+ * - and the meaning of E - flicker every frame. Applied the usual way it would
+ * push the OFFER 2.5 m past the gate the game module enforces, which is the
+ * same words-and-key disagreement in miniature: a prompt that appears where E
+ * only earns a warning toast. So the published radius is a HARD CEILING and the
+ * hysteresis band sits inside it - armed at `startArm`, released at
+ * `startRadius`. Sharp on the way in, forgiving on the way out, and never a
+ * frame of "Start" outside the place a start is possible.
+ *
+ * @param {any} raw the world's venue descriptor
+ * @param {number} yTolerance the containment band, used when no `startBand` is
+ *   published
+ * @returns {object} the gate fields, or `{ start: null }` for no gate
+ */
+function readStartGate(raw, yTolerance) {
+  const s = raw?.start ?? null;
+  const x = Number(s?.x);
+  const y = Number(s?.y);
+  const z = Number(s?.z);
+  const r = Number(raw?.startRadius);
+  // A half-published gate is a bug in the world, and a bug in the world must
+  // degrade to the behaviour every other venue has - never to a venue that can
+  // be seen and never entered.
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return { start: null };
+  if (!Number.isFinite(r) || r <= 0) return { start: null };
+  const rawBand = Number(raw?.startBand);
+  const band = Number.isFinite(rawBand) && rawBand > 0 ? rawBand : yTolerance;
+  return { start: { x, y, z }, startRadius: r, startBand: band };
+}
+
+/**
+ * The radius a gate ARMS at, given the radius it releases at.
+ *
+ * Never below half the gate: a gate narrower than the hysteresis band would
+ * otherwise arm at zero and never show at all.
+ */
+const armRadius = (r) => Math.max(r * 0.5, r - PROMPT_HYSTERESIS);
 
 export class MinigameManager {
   /**
@@ -606,17 +841,22 @@ export class MinigameManager {
     if (!Number.isFinite(radius) || radius <= 0) return null;
 
     const reward = Number(raw.reward);
+    /* The pool basin floor is 3 m below its deck and the ski slope will be
+     * 50 m above its lodge, so a planar radius alone would either miss the
+     * swimmer or offer a race to somebody on a gantry overhead. */
+    const yTolerance = Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8;
     return {
       id,
       kind,
       label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : id,
       centre: { x: cx, y: Number.isFinite(cy) ? cy : 0, z: cz },
       radius,
-      /* The pool basin floor is 3 m below its deck and the ski slope will be
-       * 50 m above its lodge, so a planar radius alone would either miss the
-       * swimmer or offer a race to somebody on a gantry overhead. */
-      yTolerance: Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8,
-      reward: Number.isFinite(reward) && reward > 0 ? Math.floor(reward) : MINIGAME_PRIZE,
+      yTolerance,
+      ...readStartGate(raw, yTolerance),
+      /* Resolved HERE and not at payout, so `consolationFor` - which derives
+       * the participation floor as a share of the prize - sees the credits the
+       * win actually pays rather than the legacy rung. See `venuePrize`. */
+      reward: venuePrize(reward),
       /* A venue's own participation floor, kept RAW and resolved by
        * `consolationFor` at payout. Normalising it here would have to know the
        * reward, and a venue is allowed to publish the two in either order. */
@@ -639,6 +879,34 @@ export class MinigameManager {
     return Math.hypot(dx, dz) < v.radius + slack;
   }
 
+  /**
+   * Is the player AT the venue - close enough that starting it would work?
+   *
+   * True for every venue that publishes no gate, which keeps the disc as the
+   * offer for the four worlds that were built that way. See `readStartGate`
+   * for why the hysteresis band sits INSIDE the published radius rather than
+   * outside it.
+   *
+   * @param {object} v
+   * @param {number} slack 0 while approaching, `PROMPT_HYSTERESIS` once armed
+   */
+  _atStart(v, slack = 0) {
+    if (!v) return false;
+    /* Derived here rather than cached on the venue, so this answers the same
+     * for a world's RAW descriptor as for a normalised one. The tests reach for
+     * both, and a gate that silently reads `undefined` off the raw object would
+     * refuse everywhere while looking like it worked. */
+    if (!v.start || !(Number(v.startRadius) > 0)) return true;
+    const p = this.player?.position;
+    if (!p) return false;
+    const held = slack > 0;
+    const band = Number(v.startBand) > 0 ? Number(v.startBand) : v.yTolerance;
+    if (Math.abs(p.y - v.start.y) > (held ? band : armRadius(band))) return false;
+    const dx = p.x - v.start.x;
+    const dz = p.z - v.start.z;
+    return Math.hypot(dx, dz) < (held ? v.startRadius : armRadius(v.startRadius));
+  }
+
   _pollNear() {
     if (!this._venues.length) {
       this._near = null;
@@ -653,6 +921,11 @@ export class MinigameManager {
       // on the way in and forgiving on the way out.
       const slack = this._near?.id === v.id ? PROMPT_HYSTERESIS : 0;
       if (!this._inVenue(v, slack)) continue;
+      /* Being INSIDE a venue is not being AT one. Containment is the
+       * abandonment test and has to hold the whole route; the offer is a
+       * separate, smaller question, and conflating them made every NPC on the
+       * station concourse unreachable. `readStartGate` has the measurements. */
+      if (!this._atStart(v, slack)) continue;
       const d = Math.hypot(p.x - v.centre.x, p.z - v.centre.z);
       if (d < bestD) {
         bestD = d;
@@ -758,7 +1031,14 @@ export class MinigameManager {
      * is `if (!Number.isInteger(d) || d === 0) return { ok:false, reason:'invalid' }`,
      * so reporting a zero would be a server-side refusal recorded against a
      * payout that was exactly right. */
-    const credits = won ? (venue?.reward ?? MINIGAME_PRIZE) : consolationFor(venue);
+    const floor = consolationFor(venue);
+    /* The GRADE, when the contest published one. Seven citadel venues do; the
+     * other nine answer null here and pay exactly what they always paid. See
+     * `medalPrize` for why a medal can only ever move a payout DOWN. */
+    const medal = medalOf(outcome.score);
+    const credits = won
+      ? medalPrize(venue?.reward ?? MINIGAME_PRIZE, medal, floor)
+      : floor;
     if (credits > 0) this.economy?.add?.(credits, 'minigame');
 
     const result = {
@@ -772,9 +1052,19 @@ export class MinigameManager {
       place: Number.isFinite(Number(outcome.place)) ? Number(outcome.place) : (won ? 1 : 2),
       total: Number.isFinite(Number(outcome.total)) ? Number(outcome.total) : 2,
       score: outcome.score ?? null,
+      /* The grade, promoted out of the `score` bag onto a field of its own.
+       * `SaveGame._recordTrial` can read either, but a listener that wants to
+       * know whether a contest was GRADED should not have to know that the
+       * rooftop trial happens to put its medal where the swim puts a clock. */
+      medal,
       scoreLabel: outcome.scoreLabel ?? null,
       rivalName: outcome.rivalName ?? null,
       detail: outcome.detail ?? null,
+      /* The recorded pace of this run, when the module kept one. Carried and
+       * never inspected: this file has no opinion about what a replay is, and
+       * `SaveGame` shape-checks it before it reaches a save. See
+       * `GhostReplay.js` for why it is a progress polyline and not a track. */
+      replay: outcome.replay ?? null,
       time: this.clock,
       credits,
       worldId: this._worldId,
@@ -789,19 +1079,31 @@ export class MinigameManager {
 
     /* Quest credit.
      *
-     * Shaped for `QuestSystem._eventTargetCandidates`' DEFAULT branch, which is
-     * what an unknown `type` falls through to: it reads `target`, `id`, `name`,
-     * `role`, `itemId`, `npc.*`, `portal.*`, `worldId` and `world` off the
-     * event and nothing else. So the three handles a quest author can name are
-     * `target`/`id` (the game id, e.g. `swim_challenge`) and `name` (the venue
-     * label, e.g. "Lido Swim Challenge"). `_matchesStepTarget` matches whole
-     * token runs, so a step written `{type:'minigame', target:'swim_challenge'}`
-     * matches both.
+     * Shaped for `QuestSystem._eventTargetCandidates`' DEDICATED `minigame`
+     * branch. This comment used to say the DEFAULT branch and that `won` and
+     * `place` rode along "for a future step type that wants them - today's
+     * matcher does not read either". Both statements stopped being true when
+     * that branch landed, and the second one is the dangerous half: `won` is
+     * now LOAD-BEARING. The branch composes `${gameId}_won` / `${gameId}_lost`
+     * out of it, and eight authored steps target one of those spellings, so
+     * dropping `won` from this payload would quietly make "win the match"
+     * complete on a loss - which is exactly the failure the composite exists
+     * to prevent.
+     *
+     * What the branch reads, and therefore what a quest author can name:
+     *   `name`     the venue label, e.g. "Lido Swim Challenge"
+     *   `venueId`  the venue id, e.g. `meridian_court`
+     *   `won` + `target`/`id`  composed into `<gameId>_won` / `<gameId>_lost`,
+     *             which is also what a bare `<gameId>` or the kind matches
+     *             THROUGH, by token run. See the branch for why the game id is
+     *             never offered bare.
+     * `place` and `score` are still carried and still unread by the matcher;
+     * they are on the payload for a listener that wants the shape of the
+     * result rather than its identity.
      *
      * Emitted on any FINISH, win or lose, and never on an abort: completing a
      * contest is the thing a step counts, and walking out of one is not
-     * completing it. `won` and `place` ride along for a future step type that
-     * wants them - today's matcher does not read either. */
+     * completing it. */
     this.bus?.emit('quest:activity', {
       type: 'minigame',
       target: result.gameId,
@@ -822,9 +1124,13 @@ export class MinigameManager {
      * a losing contest feels like. Saying "lost" and quietly adding 3 CR would
      * leave the design decision invisible to the only person it is for. */
     const took = result.rivalName ? ` — ${result.rivalName} took it` : '';
+    /* The GRADE goes in the toast, because the grade is now what the payout is
+     * a function of. "Won — +67 credits" against a 96 CR venue reads as a bug
+     * unless the line also says bronze. */
+    const grade = medal ? ` — ${medal}` : '';
     this.bus?.emit('hud:notify', {
       text: won
-        ? `${result.label} won — +${credits} credits`
+        ? `${result.label} won${grade} — +${credits} credits`
         : `${result.label} lost${took}${credits > 0 ? ` — +${credits} for finishing` : ''}`,
       tone: won ? 'good' : 'warn',
     });

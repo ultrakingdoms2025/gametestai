@@ -339,6 +339,75 @@
  *   assertion is how "built but not reachable" gets shipped.
  *
  * ==========================================================================
+ *  VIEWPOINTS - the reason to walk AWAY from the pad
+ * ==========================================================================
+ *
+ * `src/systems/Viewpoints.js` states the whole contract in one line:
+ *
+ *   `world.viewpoints = [{ id, name, x, y, z, r, ... }]`
+ *
+ * Reaching one reveals the local map, registers a fast-travel anchor, pays
+ * credits and coin, and completes into a cosmetic plus a mount power. Two
+ * worlds published the array; the ten planets published nothing, so a planet
+ * offered walk, swim, mine, leave, and the only thing `Charters` could count on
+ * one was its seam total.
+ *
+ * viewpoints    array      Optional. Each:
+ *   id            string   lower_snake, unique within the planet. NOT a private
+ *                          label: `Viewpoints._synced` persists this string
+ *                          against the world id, so RENAMING ONE
+ *                          UN-SYNCHRONISES IT for every existing save.
+ *   name          string   display name. It is what the HUD, the minimap
+ *                          marker and the pause hub's travel row all say.
+ *   x, z          number   world metres.
+ *   y             number   DERIVED, and authoring it is REFUSED - the same rule
+ *                          `minerals[].credits` lives under and for the same
+ *                          reason. The height comes from the COLLISION
+ *                          heightfield the world actually built
+ *                          (`PlanetWorld._publish`), never from the descriptor
+ *                          and never from `groundAt`: this repo has already
+ *                          shipped authored geometry that disagreed with its
+ *                          drawn form by metres, and a viewpoint whose `y` is a
+ *                          claim rather than a measurement is a fast-travel
+ *                          anchor that puts the player inside a hill.
+ *   r             number   platform radius, metres. Default {@link VIEWPOINT_R}.
+ *                          `Viewpoints` syncs inside `r + SYNC_PAD` and within
+ *                          `SYNC_BAND` vertically, so this is "how big is the
+ *                          spot", not "how big is the landmark".
+ *   terrain       string   one of `MINERAL_TERRAINS`. The same vocabulary the
+ *                          seams use, so "the outcrop" means one thing on a
+ *                          planet whether you are mining it or standing on it.
+ *   place         string   the feature's own name on THIS planet. Free text.
+ *   climb         string   one line on how a body gets up there, for the log
+ *                          and for whoever re-derives the route later.
+ *
+ * Four rules throw, and each is a defect this project has shipped in another
+ * shape:
+ *
+ *   - **Not on a pad.** Every viewpoint must clear every landing site by
+ *     {@link VIEWPOINT_PAD_CLEARANCE} metres beyond that pad's own radius. A
+ *     vantage point you arrive on is a prize for landing, not for climbing, and
+ *     it would pay `SYNC_CREDITS` plus three coins for stepping off a ramp.
+ *   - **Not on top of each other.** Pairwise separation of at least
+ *     {@link VIEWPOINT_MIN_SEPARATION}. `Viewpoints.REVEAL_R` is 70 m, so two
+ *     of them 20 m apart are one district revealed twice and two prizes paid
+ *     for one walk.
+ *   - **Not in a liquid RIBBON.** A flow or a river is a narrow band whose
+ *     surface is over the ground along its whole length, so the column test is
+ *     exact. A DISC is not checked here and cannot be: Shoal's sea is a 2,700 m
+ *     body containing the whole playfield with a 75 m cone standing out of it,
+ *     and this module has no ground height to tell the cone from the sea bed.
+ *     That half of the question is answered by `PlanetWorld._publishViewpoints`
+ *     against the measured ground, and by the test.
+ *   - **Inside the playfield**, with the terrain's own margin, because the
+ *     height field returns `null` outside its footprint and a `null` becomes a
+ *     `NaN` y.
+ *
+ * There is no `launch`/`hay` pair here and there deliberately never will be:
+ * the leap of faith needs a haystack under it, `normaliseViewpoint` drops an
+ * unpaired launch on the floor, and a wilderness has nothing to break a fall.
+ *
+ * ==========================================================================
  *  REGIONS - the placement language
  * ==========================================================================
  *
@@ -366,6 +435,7 @@
  */
 
 import { LANDFORM_KINDS } from '../terrain/PlanetHeight.js';
+import { polyDist } from './Placement.js';
 
 const REGION_SHAPES = new Set(['disc', 'annulus', 'corridor', 'rect', 'field']);
 const PROP_KINDS = new Set(['columns', 'shards', 'boulders', 'vents', 'spires', 'growth', 'slabs']);
@@ -419,6 +489,58 @@ export const HOLD_UNITS_PER_SIZE = 1.6;
 export function holdUnitsFor(size) {
   return Math.max(1, Math.round(size * HOLD_UNITS_PER_SIZE));
 }
+
+/* ---- viewpoints ------------------------------------------------------- */
+
+/**
+ * Default platform radius for a viewpoint, metres.
+ *
+ * The same 6 m `Viewpoints.DEFAULT_R` uses, written here rather than imported
+ * because this module may not reach into a game system (see the header) - and
+ * scraped by `scripts/tests/planet-viewpoints.test.mjs`, which fails if the two
+ * part company. The same arrangement `HOLD_UNITS_PER_SIZE` lives under.
+ */
+export const VIEWPOINT_R = 6;
+
+/**
+ * How far a viewpoint must clear a landing pad's own rim, metres.
+ *
+ * `Viewpoints` syncs inside `r + SYNC_PAD` (2.5 m) of the published point, and
+ * pays credits, three coins, a travel anchor and a place in the set for it.
+ * Land on Cinder's Colonnade and the plateau you are standing on is 62 m
+ * across: without this rule a "viewpoint" on its brow would pay that prize for
+ * walking 40 m off a ramp on the frame the world finished loading.
+ *
+ * 25 m is measured against the thing it has to beat rather than chosen: it is
+ * over five seconds of walking at `CONFIG.player.walkSpeed` (4.6 m/s) BEYOND
+ * the pad's edge, on ground the pad landform does not level - so the shortest
+ * legal approach still leaves the flat and climbs something.
+ */
+export const VIEWPOINT_PAD_CLEARANCE = 25;
+
+/**
+ * Minimum distance between two viewpoints on the same planet, metres.
+ *
+ * `Viewpoints.REVEAL_R` is 70 m and every synchronisation opens a disc of that
+ * radius. Two centres 90 m apart cover 1.62 discs' worth of ground between them
+ * (the lens is 38% of one disc), so each one still buys most of a district of
+ * its own; at 40 m they would be 1.24 discs and the second climb would be
+ * paying full price for a quarter of a map. Pinned against `REVEAL_R` by
+ * `scripts/tests/planet-viewpoints.test.mjs`.
+ */
+export const VIEWPOINT_MIN_SEPARATION = 90;
+
+/**
+ * The hard ceiling on how many viewpoints one world may publish.
+ *
+ * `Viewpoints.MAX_TRAVEL_ROWS` is 12 and `main.js` splices `hubItems()` into
+ * the pause hub ONCE at boot, so a thirteenth viewpoint would synchronise, pay
+ * its prize, reveal its district and then have nowhere in the menu to be
+ * travelled to - a reward that is invisible at exactly the moment it is used.
+ * Refused here so the planet cannot be authored into that state; the number is
+ * scraped from `Viewpoints.js` by the test rather than trusted twice.
+ */
+export const VIEWPOINT_MAX = 12;
 
 function need(cond, msg) {
   if (!cond) throw new Error(`[PlanetDescriptor] ${msg}`);
@@ -727,6 +849,94 @@ export function definePlanet(d) {
   }
   need(primaries === 1, `exactly one landing site must be primary, found ${primaries}`);
 
+  /* ---- viewpoints, and the four ways one can be a lie ------------------ *
+   * Validated the way `minerals` is - everything throws, and every rule is a
+   * defect this project has shipped somewhere else. @see the schema block. */
+  const viewpoints = [];
+  const rawVps = d.viewpoints ?? [];
+  need(Array.isArray(rawVps), 'viewpoints must be an array of { id, name, x, z, ... }');
+  need(rawVps.length <= VIEWPOINT_MAX,
+    `${rawVps.length} viewpoints - the pause hub reserves ${VIEWPOINT_MAX} travel rows, so the rest would `
+    + 'synchronise, pay their prize and then be untravellable');
+  const vIds = new Set();
+  for (let i = 0; i < rawVps.length; i++) {
+    const v = rawVps[i];
+    const at = `viewpoints[${i}]`;
+    need(v && typeof v === 'object', `${at} is missing`);
+    need(typeof v.id === 'string' && /^[a-z][a-z0-9_]*$/.test(v.id), `${at}.id "${v.id}" must be lower_snake`);
+    need(!vIds.has(v.id), `${at}.id "${v.id}" is not unique`);
+    vIds.add(v.id);
+    need(typeof v.name === 'string' && v.name.length > 0, `${at}.name is required - it is what the travel row says`);
+    need(typeof v.place === 'string' && v.place.length > 0,
+      `${at}.place must name the feature this stands on - "somewhere high" is not a destination`);
+    need(MINERAL_TERRAINS.includes(v.terrain),
+      `${at}.terrain "${v.terrain}" unknown - one of ${MINERAL_TERRAINS.join(', ')}`);
+    num(v.x, `${at}.x`); num(v.z, `${at}.z`);
+    /* The margin is the terrain's own: `sampleHeight` returns null outside the
+     * footprint and a null y is a NaN in a fast-travel teleport. */
+    need(Math.abs(v.x) <= half - 8 && Math.abs(v.z) <= half - 8,
+      `${at} at (${v.x}, ${v.z}) is within 8 m of the playfield edge - the height field has no answer there`);
+    need(v.y === undefined,
+      `${at}.y is DERIVED from the built collision heightfield and must not be authored - delete it`);
+    const r = v.r ?? VIEWPOINT_R;
+    num(r, `${at}.r`);
+    need(r >= 3, `${at}.r is ${r} - a platform smaller than the sync pad is a platform nobody can land on`);
+
+    for (const s of landing) {
+      const gap = Math.hypot(s.x - v.x, s.z - v.z) - s.r;
+      need(gap >= VIEWPOINT_PAD_CLEARANCE,
+        `${at} "${v.id}" stands ${gap.toFixed(1)} m off the rim of landing site "${s.id}" - a viewpoint you `
+        + `arrive on pays a climb's prize for stepping off a ramp (needs ${VIEWPOINT_PAD_CLEARANCE} m)`);
+    }
+    for (const other of viewpoints) {
+      const d2 = Math.hypot(other.x - v.x, other.z - v.z);
+      need(d2 >= VIEWPOINT_MIN_SEPARATION,
+        `${at} "${v.id}" is ${d2.toFixed(1)} m from "${other.id}" - two viewpoints inside `
+        + `${VIEWPOINT_MIN_SEPARATION} m reveal one district twice and pay for it twice`);
+    }
+    /* NOT drowned - and this test cannot be made here, which is worth writing
+     * down rather than approximating.
+     *
+     * The first draft refused any viewpoint whose column fell inside a declared
+     * liquid body, and it was WRONG on the first planet that has a sea: Shoal's
+     * single water body is a 2,700 m disc that contains the whole playfield, so
+     * a horizontal-only test condemns Kelphold Peak - 75.2 m of dry rock, the
+     * highest standable point on the planet - for standing "in" an ocean whose
+     * surface is at 0. The question is three-dimensional and this module has no
+     * ground height: `terrain` is a parameter block, not a field, and evaluating
+     * one here would mean importing the height function into a file whose whole
+     * contract is that it holds plain data.
+     *
+     * So the check lives where the answer exists. `PlanetWorld._publishViewpoints`
+     * compares the MEASURED ground against `liquidField.surfaceAt` and drops -
+     * loudly - any viewpoint that is under it, and `planet-viewpoints.test.mjs`
+     * fails on the same condition rather than waiting for a console line nobody
+     * reads. What this file can still say is the shape below.
+     * What this file CAN say without a height is that a viewpoint must not sit
+     * inside a RIBBON - a lava flow or a river is a narrow band whose surface
+     * is above the ground everywhere along it by construction, so the column
+     * test is exact there and only there. A disc is a lake or a sea and may
+     * have an island, a stack or a cone standing out of it; that is the case
+     * this cannot answer and does not pretend to.
+     * @see ../PlanetWorld.js `_publishViewpoints` */
+    for (const b of liquid?.bodies ?? []) {
+      if (b.shape !== 'ribbon') continue;
+      need(polyDist(v.x, v.z, b.pts) > b.width * 0.5,
+        `${at} "${v.id}" stands in a liquid ribbon - that is a synchronisation you reach by drowning`);
+    }
+
+    viewpoints.push(Object.freeze({
+      id: v.id,
+      name: v.name,
+      place: v.place,
+      terrain: v.terrain,
+      x: v.x,
+      z: v.z,
+      r,
+      climb: typeof v.climb === 'string' ? v.climb : '',
+    }));
+  }
+
   const spawnSite = landing.find((s) => s.primary);
 
   return Object.freeze({
@@ -743,6 +953,7 @@ export function definePlanet(d) {
     props: Object.freeze(props),
     minerals: Object.freeze(minerals),
     landing: Object.freeze(landing),
+    viewpoints: Object.freeze(viewpoints),
     spawn: Object.freeze({ site: spawnSite.id, x: spawnSite.x, z: spawnSite.z, yaw: spawnSite.yaw ?? 0 }),
     hazards: Object.freeze(d.hazards ?? {}),
   });

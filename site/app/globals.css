@@ -29,6 +29,10 @@
   --txt-dim: #7f9db0;
   --rule: rgba(82, 233, 255, 0.24);
   --rule-soft: rgba(120, 180, 210, 0.14);
+  /* The one rule weight that has to survive a contrast check: the resting edge
+     of an interactive control. 3.44:1 over `--glass` on `--ink-0`. Decorative
+     rules keep `--rule`, which has no such obligation. */
+  --rule-strong: rgba(82, 233, 255, 0.45);
 
   --clip: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
   --clip-sm: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
@@ -412,10 +416,50 @@ a { color: var(--cy); }
   color: var(--txt-dim);
 }
 
-:where(a, button, input, select):focus-visible {
+/* WCAG 2.4.7. `:is()` rather than `:where()`: `:where()` contributes ZERO
+   specificity, so this rule computed to (0,1,0) — the same as `.auth-input`,
+   which is declared later in the file and therefore won every tie. It set
+   `outline: none` (now removed below) and the focus ring simply did not exist
+   on any authentication field. `:is()` takes the specificity of its most
+   specific argument (`[tabindex]`, an attribute selector) and this rule
+   computes to (0,2,0), which beats a single class wherever it is declared.
+
+   `textarea`, `summary` and `[tabindex]` join the list because all three are
+   focusable and none of them was covered: the marketplace admin's action-config
+   textarea, the feature page's disclosure summaries, and every `<main>` the
+   skip link lands on. */
+:is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--cy);
   outline-offset: 3px;
 }
+
+/* The skip link's target is the whole page, so its ring is drawn INSIDE the
+   element — an outline offset outward from `<main>` is a rectangle nobody can
+   see the far side of. */
+main:focus-visible { outline-offset: -3px; }
+
+/* WCAG 2.4.1. Off screen until it takes focus, then the first thing on the
+   page, over everything (the site header sits at z-index 200). */
+.skip-link {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  transform: translateY(-120%);
+  padding: 12px 20px;
+  background: var(--ink-1);
+  border: 1px solid var(--cy);
+  border-top: 0;
+  color: var(--cy);
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-decoration: none;
+  transition: transform 0.14s ease-out;
+}
+.skip-link:focus { transform: translateY(0); }
 
 /* Visually hidden but present to assistive tech — standard clip-based
    sr-only utility. Takes no space in flow, so it's always safe to drop
@@ -438,6 +482,7 @@ section { padding: 84px 0; border-bottom: 1px solid var(--rule-soft); }
 
 .head { margin-bottom: 36px; }
 
+.head h1,
 .head h2 {
   font-size: clamp(1.7rem, 3.4vw, 2.3rem);
   font-weight: 700;
@@ -596,6 +641,9 @@ section { padding: 84px 0; border-bottom: 1px solid var(--rule-soft); }
   padding: 28px 30px 30px;
 }
 
+/* `h2` joined `h3` here when the page headings were promoted: these panel
+   headings sit directly under the page's `h1`, so `h3` skipped a level. */
+.panel h2,
 .panel h3 {
   font-size: 1.15rem;
   letter-spacing: 0.1em;
@@ -2032,16 +2080,26 @@ body.in-game .site-header { display: none; }
   margin-bottom: -6px;
 }
 
+/* WCAG 1.4.11. `var(--rule)` is `rgba(82,233,255,0.24)`, which composites over
+   the card to about #194149 and measures 1.72:1 against it — a form field whose
+   edge is, in effect, invisible. `--rule-strong` measures 3.44:1 against the
+   card and 3.31:1 against the field's own fill, clearing the 3:1 the criterion
+   asks of a user-interface component.
+
+   `outline: none` is GONE from this rule and not replaced. It was overriding
+   the global `:focus-visible` ring on every field on every auth screen (see the
+   note at that rule), so keyboard focus was invisible across sign-in, sign-up,
+   password reset and the whole account page. The border-colour change on
+   `:focus` below is a supplement to that ring, never a substitute for it. */
 .auth-input {
   width: 100%;
   background: rgba(12, 20, 32, 0.8);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   border-radius: 6px;
   padding: 10px 12px;
   color: var(--txt);
   font-size: 0.95rem;
   font-family: inherit;
-  outline: none;
   transition: border-color 0.15s;
 }
 .auth-input:focus { border-color: var(--cy-deep); }
@@ -2592,4 +2650,240 @@ body.in-game .site-header { display: none; }
   .fx-body { padding: 0 16px 20px; }
   .fx-title { font-size: 0.78rem; letter-spacing: 0.14em; }
   .fx-items { grid-template-columns: 1fr; }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FAILURE SURFACES
+   The screens a customer only ever sees when something has gone wrong: a
+   refused payment, a payment that succeeded and provisioned nothing, a game
+   build still arriving, a machine that cannot run WebGL. They were the least
+   designed part of the site because they are the least often looked at, which
+   is precisely backwards — this is the one moment the reader is anxious and
+   reading every word.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* The red sibling of `.banner`. Same geometry, different weather. */
+.banner-error {
+  border-color: rgba(255, 85, 102, 0.55);
+  background: rgba(52, 12, 18, 0.55);
+  color: #ffc9cf;
+}
+.banner-error b { color: var(--red); }
+
+.banner-body { display: grid; gap: 8px; }
+.banner-headline {
+  font-family: var(--font-display), system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  color: #ffd2d8;
+  font-size: 0.98rem;
+}
+.banner-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.banner-ref { font-size: 0.82rem; color: #ffdca6; }
+.banner-ref code, .ref-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.banner-fine { font-size: 0.78rem; opacity: 0.85; }
+
+/* ---- /order/failed ---------------------------------------------------- */
+
+.ref-block {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--rule-strong);
+  background: rgba(4, 10, 18, 0.7);
+  clip-path: var(--clip-sm);
+}
+.ref-label {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--cy);
+}
+.ref-value {
+  font-size: 1.05rem;
+  color: var(--txt);
+  word-break: break-all;      /* a session id must never widen the page */
+  user-select: all;           /* one click selects the whole thing */
+}
+.ref-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.ref-status { font-size: 0.8rem; color: var(--lime); min-height: 1.2em; }
+
+/* ---- /play: the requirements panel ------------------------------------ */
+
+.play-requirements {
+  max-width: 680px;
+  padding: 48px 0 64px;
+  display: grid;
+  gap: 14px;
+}
+.play-requirements h1 {
+  font-size: clamp(1.5rem, 3.2vw, 2rem);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.play-requirements-h2 {
+  font-size: 1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cy);
+  margin-top: 10px;
+}
+.play-requirements p { color: var(--txt-2); margin: 0; }
+.play-requirements ul { color: var(--txt-2); margin: 0; padding-left: 20px; display: grid; gap: 10px; }
+.play-requirements code {
+  background: rgba(82, 233, 255, 0.1);
+  padding: 1px 6px;
+  color: var(--cy);
+}
+
+/* ---- /play: the loading panel ----------------------------------------- */
+
+/* Behind the iframe, which is transparent until its document has painted, so
+   this is what fills the screen while a 24 MB build arrives. Before it existed
+   the same black rectangle meant "loading" and "your GPU cannot do this". */
+.play-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 18px;
+  padding: 32px;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(35, 105, 135, 0.28), transparent 55%),
+    #000;
+}
+.play-loading-lockup {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: clamp(1.6rem, 5vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--txt);
+}
+.play-loading-lockup span { color: var(--cy); }
+
+/* Indeterminate on purpose: there is no honest percentage to show. The bundle
+   arrives through the iframe and this side of the boundary cannot measure it,
+   and a progress bar that guesses is a progress bar that lies. */
+.play-loading-bar {
+  width: min(320px, 70vw);
+  height: 2px;
+  background: rgba(82, 233, 255, 0.16);
+  overflow: hidden;
+}
+.play-loading-bar span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  background: var(--cy);
+  box-shadow: 0 0 12px var(--cy-glow);
+  animation: play-sweep 1.5s ease-in-out infinite;
+}
+@keyframes play-sweep {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(300%); }
+}
+/* The global reduced-motion rule already kills the animation; this gives the
+   bar something to be instead of a stationary stub. */
+@media (prefers-reduced-motion: reduce) {
+  .play-loading-bar span { width: 100%; opacity: 0.55; }
+}
+
+.play-loading-line {
+  margin: 0;
+  color: var(--txt-2);
+  font-family: var(--font-display), system-ui, sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+}
+.play-loading-slow {
+  margin: 0;
+  max-width: 46ch;
+  color: var(--txt-dim);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+
+/* The frame sits above the loading panel and fades in on `load`, so the panel
+   is genuinely behind it rather than covering it — nothing here can ever
+   swallow a click meant for the game. */
+.play-frame {
+  position: relative;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.25s ease-out;
+}
+.play-frame.is-loaded { opacity: 1; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   2FA RECOVERY CODES  —  /account
+   The one screen on this site that shows something which cannot be shown
+   again. The server stores only HMACs of these codes, so a user who closes
+   this panel without copying them has not lost a convenience, they have lost
+   the only route back into their own account when the phone goes. It is
+   therefore louder than anything else on the page, and it has a gate on it.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.rc-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(255, 180, 74, 0.55);
+  background: rgba(48, 32, 8, 0.55);
+  border-radius: 6px;
+}
+.rc-title {
+  margin: 0;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+.rc-warn { margin: 0; color: #ffdca6; font-size: 0.9rem; line-height: 1.6; }
+.rc-note { margin: 0; color: var(--txt-2); font-size: 0.82rem; line-height: 1.6; }
+
+/* Two columns of four on anything wider than a phone; one column below, where
+   a wrapped code is far worse than a longer list. */
+.rc-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 14px;
+}
+.rc-grid code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  color: var(--txt);
+  user-select: all;           /* one click selects a whole code */
+  white-space: nowrap;
+}
+
+.rc-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--txt-2);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.rc-ack input { margin-top: 3px; flex: none; }
+
+/* Used by the login page and the disable-2FA form. It has been in the markup
+   since the login form shipped and had no rule at all, so the parenthetical it
+   marks up rendered at full weight — indistinguishable from the label. */
+.auth-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--txt-dim);
+  font-size: 0.82em;
 }

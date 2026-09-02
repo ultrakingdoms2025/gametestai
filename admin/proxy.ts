@@ -26,18 +26,22 @@ function sessionOptions() {
   return { cookieName: SESSION_COOKIE, password, cookieOptions: COOKIE_OPTIONS };
 }
 
-// In-memory rate limiter: IP → [timestamps]
-const loginAttempts = new Map<string, number[]>();
-const MAX_ATTEMPTS  = 5;
-const WINDOW_MS     = 60_000; // 1 minute
-
-function checkRateLimit(ip: string): boolean {
-  const now  = Date.now();
-  const hits = (loginAttempts.get(ip) ?? []).filter(t => now - t < WINDOW_MS);
-  if (hits.length >= MAX_ATTEMPTS) return false;
-  loginAttempts.set(ip, [...hits, now]);
-  return true;
-}
+/*
+ * There used to be a login rate limiter here: a module-level
+ * `Map<string, number[]>` keyed on `x-forwarded-for`.split(',')[0]. It was the
+ * only control in front of admin password + TOTP guessing, and it stopped
+ * nobody. The Map lives in ONE serverless instance's memory, and Vercel runs
+ * many instances concurrently and recycles them at will, so "five per minute"
+ * was five per minute per lambda. Worse, the leftmost element of
+ * `x-forwarded-for` is whatever the CLIENT wrote there, so varying one header
+ * bought an unlimited supply of fresh buckets.
+ *
+ * The limit now lives in Postgres, where every instance sees the same counter,
+ * and is keyed on the submitted USERNAME as well as on an address the caller
+ * does not choose. That has to be in the route handler rather than here,
+ * because the proxy cannot read the username without consuming the body — see
+ * `lib/loginThrottle.ts` and `app/api/auth/login/route.ts`.
+ */
 
 const securityHeaders: Record<string, string> = {
   'X-Frame-Options':           'DENY',
@@ -56,17 +60,8 @@ export async function proxy(req: NextRequest) {
   // Apply security headers to all responses
   for (const [k, v] of Object.entries(securityHeaders)) res.headers.set(k, v);
 
-  // Rate-limit the login endpoint
-  if (pathname === '/api/auth/login' && req.method === 'POST') {
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
-    if (!checkRateLimit(ip)) {
-      return new NextResponse(JSON.stringify({ error: 'Too many login attempts' }), {
-        status: 429,
-        headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
-      });
-    }
-    return res;
-  }
+  // The login endpoint throttles itself, in shared storage. See above.
+  if (pathname === '/api/auth/login' && req.method === 'POST') return res;
 
   // Public routes — no auth needed
   if (pathname.startsWith('/login') || pathname === '/') return res;
@@ -78,8 +73,13 @@ export async function proxy(req: NextRequest) {
   // would have been public the moment it landed. It is gone, and /api/service/*
   // now falls through to the session check below like any other API path.
   //
-  // A genuine service-to-service route must verify SERVICE_API_KEY *here*, in a
-  // constant-time comparison, before any handler runs — not by being skipped.
+  // A genuine service-to-service route must verify its own shared secret *here*,
+  // in a constant-time comparison, before any handler runs — not by being
+  // skipped. There is deliberately no such secret configured: `SERVICE_API_KEY`
+  // used to be named here and in `.env.local.example`, was read by nothing, and
+  // was byte-identical to the site's copy. An unused credential that three
+  // environments share is a liability with no upside, so it is gone. Mint one
+  // WITH the route that needs it, per environment.
 
   // Dashboard + admin API — require valid session.
   //

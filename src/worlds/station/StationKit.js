@@ -3,6 +3,11 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 /* The editor's opt-out flag, imported rather than restated: `markRampProxy`
  * below is the only place these three properties are set together. */
 import { NOT_EDITABLE } from '../../systems/mapEditable.js';
+/* The radial-segment multiplier for the tier in force, for `cylGeo`.
+ * `gfx/QualityTier.js` imports nothing at all - no three, no DOM at module
+ * scope - so this stays a leaf import and keeps this file as portable as its
+ * header claims. It reads 1 unless a real boot has latched a tier. */
+import { tessSegments } from '../../gfx/QualityTier.js';
 
 /**
  * Shared vocabulary for the Aether Nexus Station and everything bolted onto it.
@@ -396,6 +401,174 @@ export function walkwayRailRuns(th, rr, chord, cut) {
     d = Math.atan2(Math.sin(d), Math.cos(d));
     const a = rr * d - WALKWAY.STAIR_GAP_HALF;
     const b = rr * d + WALKWAY.STAIR_GAP_HALF;
+    const next = [];
+    for (const [s, e] of runs) {
+      if (b <= s || a >= e) { next.push([s, e]); continue; }
+      if (a - s > 0.05) next.push([s, a]);
+      if (e - b > 0.05) next.push([b, e]);
+    }
+    runs = next;
+  }
+  return runs;
+}
+
+/* ------------------------------------------------------------------ */
+/* The observation promenade against the hero window                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The promenade's two flights, and the openings they need in the balustrade.
+ *
+ * ── The defect these constants exist for ──────────────────────────────────
+ * Both flights onto the deck dead-ended against the promenade's own
+ * balustrade. Arithmetic, from the authored numbers alone: a segment is
+ * `174 * (96 deg in rad) / 26 + 0.6` = 11.813 m of chord laid at a spacing of
+ * `158 * (96 deg / 25 rad)` = 10.589 m, so every one of the twenty-six
+ * OVERLAPS its neighbour by 1.22 m across the whole +-48 degrees and the loop
+ * that draws them has no skip condition anywhere. The rail collider spans
+ * y 1.40 to 3.80 and a flight's head arrives at 2.00, so the last thing on the
+ * way up was a 1.8 m wall - and the deck behind it (the hero-window viewpoint,
+ * nine telescopes, the benches) was reachable only by mantling it.
+ *
+ * `walkwayRailRuns` had already solved exactly this for the walkway loop's
+ * four stair openings, so this is that solution applied a second time rather
+ * than a second solution: cut the opening OUT OF the piece along its own axis,
+ * never skip the piece. A promenade segment is 11.8 m of arc and an opening is
+ * 6.8 m, so "skip the segment" would leave a hole nearly twice the width of
+ * the flight standing in it.
+ *
+ * `RAIL_GAP_HALF` clears the 6 m flight at +-3.0 with 0.4 m either side, the
+ * same hand's breadth `WALKWAY.STAIR_GAP_HALF` leaves its 4.6 m flight.
+ */
+export const PROMENADE = Object.freeze({
+  /** Inner (balustrade) and outer radius of the raised deck. */
+  R0: 158,
+  R1: 190,
+  /** Bearings of the two flights, degrees. */
+  RAMP_DEG: Object.freeze([-18, 18]),
+  /** Clear width, horizontal run and rise of one flight. */
+  RAMP_W: 6,
+  RAMP_RUN: 6,
+  RAMP_RISE: 2.0,
+  /** Half the opening cut in the balustrade at each flight head. */
+  RAIL_GAP_HALF: 3.4,
+  /** Top face of the raised deck - what a flight has to arrive AT. */
+  DECK_TOP: 2.0,
+  /** Top of the drawn handrail cap: `3.28 + 0.09 / 2`. */
+  RAIL_TOP: 3.325,
+  /** Half the arc the deck spans, degrees. The builder's own extent. */
+  HALF_ARC_DEG: 48,
+});
+
+/**
+ * Is (x, z) standing on the promenade - its deck, or one of its two flights?
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ * The promenade is 32 m of raised deck across 96 degrees at the far end of the
+ * +Z commercial approach, and it was authored after the things standing where
+ * it now is. Nothing on the map knew it was there. Measured on the built world:
+ * the lit shopfront band that lines the approach ran four panels straight
+ * THROUGH it - one across the +18 degree flight with its soffit 0.10 m over
+ * the promenade's own deck height, and three standing on the deck itself.
+ *
+ * So this is the promenade's footprint, published once, for anything that has
+ * to keep out of it. Same shape of answer `StationPlan.roleUnder` gives for a
+ * carriageway; this one is geometric because the promenade is not a plan
+ * region.
+ *
+ * The flights are included because a flight is the only walkable thing inside
+ * `R0`, and a soffit over a flight is exactly as impassable as one over the
+ * deck - more so, because the flight climbs INTO it.
+ *
+ * @param {number} x
+ * @param {number} z
+ * @returns {boolean}
+ */
+export function onPromenadeFootprint(x, z) {
+  const r = Math.hypot(x, z);
+  const half = PROMENADE.HALF_ARC_DEG * DEG;
+  if (r >= PROMENADE.R0 && r <= PROMENADE.R1 && Math.abs(Math.atan2(z, x)) <= half) return true;
+  for (const deg of PROMENADE.RAMP_DEG) {
+    const th = deg * DEG;
+    // Radial and tangential offsets in the flight's own frame.
+    const u = x * Math.cos(th) + z * Math.sin(th);
+    const v = -x * Math.sin(th) + z * Math.cos(th);
+    if (u >= PROMENADE.R0 - PROMENADE.RAMP_RUN && u <= PROMENADE.R0
+      && Math.abs(v) <= PROMENADE.RAMP_W / 2) return true;
+  }
+  return false;
+}
+
+/**
+ * Does an axis-aligned footprint reach the promenade anywhere?
+ *
+ * The four corners are the whole test and that is exact enough to say out
+ * loud: the deck is an annulus sector, and the deepest a straight 8 m chord
+ * bows inside a 152 m arc is `8^2 / (8 * 152)` = 0.053 m. A rectangle whose
+ * corners all miss the promenade by more than a 5 cm sagitta misses it.
+ *
+ * @param {number} cx   footprint centre
+ * @param {number} cz
+ * @param {number} hx   half-extents, world axes (the callers are yaw 0)
+ * @param {number} hz
+ */
+export function boxOnPromenade(cx, cz, hx, hz) {
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      if (onPromenadeFootprint(cx + sx * hx, cz + sz * hz)) return true;
+    }
+  }
+  return onPromenadeFootprint(cx, cz);
+}
+
+/**
+ * Pitch of a promenade flight, and where its `_ramp` proxy centre belongs.
+ *
+ * Same relationship `walkwayStairFlight().rampSeat` pins: the proxy box is
+ * 0.5 m thick and pitched, so its centre has to sit `0.25 / cos(pitch)` below
+ * the walking line for its TOP FACE to lie on that line. Authored flat, the
+ * seat was 0.85 against a drawn grate whose top face is at 1.205, so feet sank
+ * 0.092 m into the visible ramp - the same defect, nearly twice the size, as
+ * the 0.051 m one `rampSeat` was written for.
+ *
+ * `grateSeat` is the matching centre for the 0.2 m drawn pad, so the drawing
+ * and the collider are two expressions of one walking line rather than two
+ * numbers that happen to be close.
+ */
+export function promenadeFlight() {
+  const pitch = Math.atan2(PROMENADE.RAMP_RISE, PROMENADE.RAMP_RUN);
+  const mid = PROMENADE.RAMP_RISE / 2;
+  return {
+    pitch,
+    pitchDeg: pitch / DEG,
+    /** Y of the `_ramp` proxy centre. */
+    rampSeat: mid - 0.25 / Math.cos(pitch),
+    /** Y of the drawn 0.2 m grate pad's centre. */
+    grateSeat: mid - 0.1 / Math.cos(pitch),
+  };
+}
+
+/**
+ * The stretches of one balustrade piece that survive the two flight openings.
+ *
+ * Identical in shape to `walkwayRailRuns`: a run is an interval along the
+ * piece's own long axis and cutting it returns fewer, shorter intervals. The
+ * balustrade is drawn with `ry = -th`, which puts local +Z on the +theta
+ * tangent, so a flight at bearing `sdeg` sits `rr * dtheta` along the piece
+ * from its centre.
+ *
+ * @param {number} th     bearing of this piece's centre, radians
+ * @param {number} rr     radius the piece is drawn at
+ * @param {number} chord  its full length
+ * @returns {Array<[number, number]>} surviving [from, to] offsets from centre
+ */
+export function promenadeRailRuns(th, rr, chord) {
+  let runs = [[-chord / 2, chord / 2]];
+  for (const sdeg of PROMENADE.RAMP_DEG) {
+    let d = sdeg * DEG - th;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const a = rr * d - PROMENADE.RAIL_GAP_HALF;
+    const b = rr * d + PROMENADE.RAIL_GAP_HALF;
     const next = [];
     for (const [s, e] of runs) {
       if (b <= s || a >= e) { next.push([s, e]); continue; }
@@ -834,16 +1007,31 @@ export function tfbm(x, y, period, seed, octaves = 4) {
  */
 const _BOX_SU = [0, 0, 0, 0, 0, 0];
 const _BOX_SV = [0, 0, 0, 0, 0, 0];
-export function boxUV(geo, w, h, d, tile) {
+export function boxUV(geo, w, h, d, tile, r = 0) {
   const uv = geo.attributes.uv;
-  if (!uv || uv.count !== 24) return geo;
-  _BOX_SU[0] = _BOX_SU[1] = d; _BOX_SU[2] = _BOX_SU[3] = w; _BOX_SU[4] = _BOX_SU[5] = w;
-  _BOX_SV[0] = _BOX_SV[1] = h; _BOX_SV[2] = _BOX_SV[3] = d; _BOX_SV[4] = _BOX_SV[5] = h;
+  /* 24 is a plain box (4 vertices a face), 96 a chamfered one (16). Both lay
+   * their vertices out face by face in the same order, so the only thing that
+   * changes is the stride. Anything else is not a box and is returned
+   * untouched, which is what the old `!== 24` guard was for. */
+  if (!uv || (uv.count !== 24 && uv.count !== 96)) return geo;
+  const per = uv.count / 6;
+  /* The chamfer's own share of the UV span, in metres of face.
+   *
+   * `chamferBox` inherits three's RoundedBoxGeometry parameterisation, which
+   * divides each face's 0..1 into a flat centre of `s - 2r` and two chamfer
+   * bands that together take `pi*r/2` - the arc length of ONE quarter round,
+   * not two. So the span a face's UV actually covers is `s - 2r + pi*r/2`,
+   * and scaling by plain `s` would run the texture 5% dense on a 55 cm box
+   * against the unbevelled box next to it. Zero for a plain box, where the
+   * span is exactly `s`. */
+  const pad = r * (Math.PI / 2 - 2);
+  _BOX_SU[0] = _BOX_SU[1] = d + pad; _BOX_SU[2] = _BOX_SU[3] = w + pad; _BOX_SU[4] = _BOX_SU[5] = w + pad;
+  _BOX_SV[0] = _BOX_SV[1] = h + pad; _BOX_SV[2] = _BOX_SV[3] = d + pad; _BOX_SV[4] = _BOX_SV[5] = h + pad;
   for (let f = 0; f < 6; f++) {
     const su = _BOX_SU[f] / tile;
     const sv = _BOX_SV[f] / tile;
-    for (let i = 0; i < 4; i++) {
-      const k = f * 4 + i;
+    for (let i = 0; i < per; i++) {
+      const k = f * per + i;
       uv.setXY(k, uv.getX(k) * su, uv.getY(k) * sv);
     }
   }
@@ -886,10 +1074,23 @@ export function cylUV(geo, rTop, rBottom, height, radialSegs, tile, heightSegs =
   return geo;
 }
 
-/** CylinderGeometry with world-correct texel density in one call. */
+/**
+ * CylinderGeometry with world-correct texel density in one call.
+ *
+ * `radialSegs` is the count the station was AUTHORED at; `tessSegments` is the
+ * quality tier's multiplier on it, and it only ever raises (1 on `low` and
+ * `medium`, and in any headless build). Resolved ONCE and handed to both calls
+ * below, because `cylUV` derives its side/cap split from the radial count -
+ * building at one number and UV-ing at another stretches every cap.
+ *
+ * `cylUV` itself takes the count it is given and is left alone: it is also
+ * reachable with a geometry a caller built by hand, and a helper that silently
+ * disagreed with the geometry handed to it would be the worse trap.
+ */
 export function cylGeo(rTop, rBottom, height, radialSegs, tile, openEnded = false) {
-  const g = new THREE.CylinderGeometry(rTop, rBottom, height, radialSegs, 1, openEnded);
-  return cylUV(g, rTop, rBottom, height, radialSegs, tile ?? 2);
+  const segs = tessSegments(radialSegs);
+  const g = new THREE.CylinderGeometry(rTop, rBottom, height, segs, 1, openEnded);
+  return cylUV(g, rTop, rBottom, height, segs, tile ?? 2);
 }
 
 /** Remap a quad's UVs onto one cell of a cols x rows atlas. */
@@ -910,9 +1111,358 @@ export function signUV(geo, cell) {
   return atlasUV(geo, c % SIGN_COLS, Math.floor(c / SIGN_COLS), SIGN_COLS, SIGN_ROWS);
 }
 
-/** A textured box, UV-corrected, ready to be pushed into a batch. */
-export function boxGeo(w, h, d, tile) {
-  return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
+/* ------------------------------------------------------------------ */
+/* The chamfer                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE EDGE ROUND, AND WHY MOST BOXES DO NOT GET ONE.
+ *
+ * A hard 90-degree edge returns exactly one shade to the camera, so a prop
+ * built from plain boxes has no edges in it at all - just flat panels meeting
+ * at invisible seams, which is what reads as "CG" long before polygon count
+ * does. A few centimetres of chamfer gives every edge a highlight on the lit
+ * side and a dark line away from it, and the silhouette stops being a cut-out.
+ *
+ * `CitadelWorld`'s `Batch.box` has done this since the citadel shipped and the
+ * numbers here are the same shape as its: a chamfered box is 108 triangles
+ * against a plain one's 12. What is different is the scale it is applied at.
+ * The citadel emits ~12,000 boxes; this kit is the funnel for the station
+ * (30,041 `boxGeo` calls in a headless build, median smallest-dimension 16 cm),
+ * the dock (10,274) and every ship interior, and the station is already the
+ * heaviest world in the game at 3.47M triangles of world geometry. So the
+ * threshold is not a taste decision here, it is a budget one, and it was
+ * measured on a built world rather than copied - see `BEVEL_MIN`.
+ *
+ * `BEVEL` is the radius itself. 6 cm rather than the citadel's 7.5: station
+ * props are smaller than desert architecture, and the round has to read as an
+ * eased edge rather than as a soft corner.
+ */
+const BEVEL = 0.06;
+
+/**
+ * Smallest dimension a box must have before it is worth chamfering, in metres.
+ *
+ * MEASURED END TO END, on a headless `buildStationFresh()`, because the
+ * obvious way to pick this number is wrong. Counting `boxGeo` calls that pass
+ * a threshold and multiplying by 96 says 0.55 m costs the station +452k
+ * triangles. It costs +675k. The difference is `instanced()`: a chamfered
+ * prototype is authored once and drawn 1,875 times, so a threshold that catches
+ * one scatter prototype charges for the whole scatter. Everything below is the
+ * built world, walked mesh by mesh.
+ *
+ *                    world tris        collision kept      chunks    soup
+ *   square           3,468,968              202,307         8,763   6.9 MB
+ *   >= 0.55 m   +675,456  (+19.5%)  +86,172  (+42.6%)      12,411   9.9 MB
+ *   >= 0.80 m   +448,224  (+12.9%)  +61,345  (+30.3%)      11,359   9.1 MB
+ *   >= 1.00 m   +330,624   (+9.5%)  +54,773  (+27.1%)      11,203   8.8 MB
+ *   >= 1.20 m   +262,944   (+7.6%)  +44,943  (+22.2%)      10,804   8.5 MB
+ *   >= 1.60 m   +146,112   (+4.2%)  +26,788  (+13.2%)       9,819   7.9 MB
+ *
+ * THE THREE RIGHT-HAND COLUMNS ARE NO LONGER PAID, AT ANY THRESHOLD. They were
+ * for one day, and they are left here because they are what the number was
+ * chosen against and because they are the measurement that motivated the fix.
+ * `_solidifyStructure` derives the station's collision from the DRAWN geometry,
+ * so a chamfer was charged twice - to the soup, to the enclosure drop that
+ * filters it, to the chunk count and to every raycast against them. It is now
+ * charged once: a chamfer only ever cuts material AWAY from a box's corners, so
+ * `_collisionSoup` substitutes the square box the piece was cut from for its
+ * 108 triangles, and the whole row reads `202,307 / 8,763 / 6.9 MB` again with
+ * the chamfer still drawn. See `squareBoxCorners` below.
+ *
+ * So the choice now stands on the left-hand column alone. There is no knee in
+ * that curve - it is close to linear in pieces chamfered - so this is a budget
+ * call and not an optimum. The station is already the heaviest world in the
+ * game (framings measure 2.12M-3.41M drawn), and 1.0 m holds the geometry under
+ * +10% while still chamfering 3,469 pieces. A metre in EVERY axis is also a
+ * readable line: it is a mass a body could stand on - crate, kiosk body,
+ * planter, pillar base, machine housing - rather than trim, sills, rails and
+ * treads, which sit a hand's width from a surface that already carries the
+ * highlight and would have been 1,225 more pieces at 0.8.
+ *
+ * 0.55 - the number `CitadelWorld` uses - is still refused, but on +19.5% of
+ * the heaviest world in the game rather than on the collision column that used
+ * to be the decisive argument. If that budget is ever re-opened with a GPU
+ * measurement in hand, this is a one-line dial and nothing downstream of it
+ * moves except drawn triangles.
+ *
+ * The frame-time consequence of +9.5% is NOT measured here; there is no
+ * headless GPU. What is measured is the geometry, the collision and the build.
+ * The build gained +2.0 s when the chamfer landed, of which the collision pass
+ * was +199 ms; taking the chamfer back out of the soup returns 191 ms of that
+ * (965 -> 774 ms median over ten interleaved headless builds) and the rest is
+ * the cost of building 9x the vertices, which is the chamfer itself.
+ *
+ * -- WHAT THIS MOVES ON THE EDITOR SIDE ------------------------------------
+ * Nothing, now. It moved `station-move-colliders`' table for 207 names while
+ * the chamfer was in the soup, and three of them crossed `_moveColliders`' cap
+ * of 200 into refuse-with-span - `plaza-props:glassWindow` 200,
+ * `commercial:emAmber` 195, `commercial:panel` 184. All 207 came back with the
+ * collision, and that fixture is byte-for-byte its pre-chamfer self. Worth
+ * knowing anyway: raising THIS threshold never rescued those three (measured at
+ * 1.6 m, which halves the churn to 104 names and loses half the chamfer, all
+ * three still crossed), so the cap is what they sit against and they sit at
+ * 92-100% of it on a world nobody chamfered.
+ *
+ * The catalogue anchors DO still move, by 2 to 26 mm across 33 names with none
+ * minted or retired, because an anchor is the centre of a batch's BOUNDS and
+ * that is a fact about what is drawn: a chamfer trims the corner off a box,
+ * which is the extreme point of a box the batch placed at an angle. No
+ * axis-aligned box changes its bounds at all - the flat centre of every face
+ * still reaches `w/2`, which is also what makes `squareBoxCorners` able to read
+ * the square box straight off the bounds.
+ *
+ * So the fixtures this obliges a re-take of are the two that measure drawn
+ * bounds - `station-catalogue.json` and `dock-catalogue.json` (one name,
+ * `yard:tarp`) - and not `station-move-colliders.json` or the collision line
+ * pinned inline in `station-catalogue.test.mjs`.
+ *
+ * The rule is on the SMALLEST dimension on purpose, and that is why the tiling
+ * problem mostly takes care of itself in this kit: a floor slab, a wall panel
+ * and a hull plate are all thin in one axis, so none of them is ever a
+ * candidate and none of them grows a groove where it meets its neighbour.
+ * `bevel: false` is for pieces that are chunky AND laid end to end.
+ * `InteriorKit`, whose walls are 50 cm of stone, does not get that for free -
+ * see the note on its `vbox`.
+ */
+const BEVEL_MIN = 1.0;
+
+/**
+ * The chamfer radius for a box, or 0 when it should stay square.
+ *
+ * Clamped against the smallest dimension whatever the threshold said, because
+ * a round wider than the piece it is rounding turns the piece inside out.
+ * Under 2 cm there is nothing there to catch a highlight and the 9x is waste.
+ */
+function bevelRadius(w, h, d, min) {
+  if (Math.min(w, h, d) < min) return 0;
+  const r = Math.min(BEVEL, w * 0.22, h * 0.22, d * 0.22);
+  return r > 0.02 ? r : 0;
+}
+
+/* Scratch for the chamfer loop; one box is built per call and never escapes. */
+const _cbP = new THREE.Vector3();
+const _cbN = new THREE.Vector3();
+const _cbF = new THREE.Vector3();
+const _cbT = new THREE.Vector3();
+
+/**
+ * `getUv` from three's RoundedBoxGeometry, unchanged.
+ *
+ * Copied rather than imported because the addon exposes only the finished
+ * geometry, and the finished geometry is the one thing this kit cannot use -
+ * see `chamferBox`.
+ */
+function chamferUV(faceDir, normal, uvAxis, projectionAxis, radius, sideLength) {
+  const totArcLength = 2 * Math.PI * radius / 4;
+  const centerLength = Math.max(sideLength - 2 * radius, 0);
+  const halfArc = Math.PI / 4;
+  _cbT.copy(normal);
+  _cbT[projectionAxis] = 0;
+  _cbT.normalize();
+  const arcUvRatio = 0.5 * totArcLength / (totArcLength + centerLength);
+  const arcAngleRatio = 1.0 - (_cbT.angleTo(faceDir) / halfArc);
+  if (Math.sign(_cbT[uvAxis]) === 1) return arcAngleRatio * arcUvRatio;
+  const lenUv = centerLength / (totArcLength + centerLength);
+  return lenUv + arcUvRatio + arcUvRatio * (1.0 - arcAngleRatio);
+}
+
+/**
+ * A chamfered box, INDEXED - three's `RoundedBoxGeometry` maths on a geometry
+ * this kit can actually merge.
+ *
+ * -- Why not just call `new RoundedBoxGeometry(w, h, d, 1, r)` --------------
+ * Two reasons, both fatal, both measured.
+ *
+ * It is NOT INDEXED. `RoundedBoxGeometry` builds an indexed 3x3x3 box, calls
+ * `toNonIndexed()` and throws the index away. `mergeGeometries` returns null
+ * the moment two of its inputs disagree about whether they have one, so one
+ * rounded box in a bucket of plain ones silently drops the whole bucket - and
+ * `InteriorKit.finish` merges with no normalisation at all. Where `GeoBatch`
+ * does normalise, it does it by handing the geometry a trivial 0..n-1 index,
+ * which keeps all 324 duplicated vertices: 11 KB a box against a plain box's
+ * 840 bytes, or 52 MB across the station's candidates.
+ *
+ * Welding it back with `mergeVertices` reaches 92 vertices and costs 0.43 ms
+ * PER BOX - 2 seconds of build time across the station, on a project that has
+ * spent two rounds deleting exactly that kind of hitch.
+ *
+ * Building it indexed in the first place costs neither. The rounding is a pure
+ * function of a vertex's position on the unit box, so the 96 vertices of an
+ * INDEXED `BoxGeometry(1, 1, 1, 3, 3, 3)` transform into exactly the same 108
+ * triangles the addon emits from 324 - verified vertex for vertex against
+ * `new RoundedBoxGeometry(...)` rather than assumed.
+ *
+ * 3 segments is the fewest that leaves a flat panel between the rounds. With
+ * one segment of round per edge the "arc" is a single flat facet, which is a
+ * chamfer, which is what was wanted.
+ */
+function chamferBox(w, h, d, radius) {
+  const geo = new THREE.BoxGeometry(1, 1, 1, 3, 3, 3);
+  const r = Math.min(w / 2, h / 2, d / 2, radius);
+  const pos = geo.attributes.position.array;
+  const nrm = geo.attributes.normal.array;
+  const uv = geo.attributes.uv.array;
+  const perFace = pos.length / 6;
+  const bx = w / 2 - r, by = h / 2 - r, bz = d / 2 - r;
+  const halfSeg = 0.5 / 3;
+  for (let i = 0, j = 0; i < pos.length; i += 3, j += 2) {
+    _cbP.fromArray(pos, i);
+    _cbN.copy(_cbP);
+    _cbN.x -= Math.sign(_cbN.x) * halfSeg;
+    _cbN.y -= Math.sign(_cbN.y) * halfSeg;
+    _cbN.z -= Math.sign(_cbN.z) * halfSeg;
+    _cbN.normalize();
+    pos[i] = bx * Math.sign(_cbP.x) + _cbN.x * r;
+    pos[i + 1] = by * Math.sign(_cbP.y) + _cbN.y * r;
+    pos[i + 2] = bz * Math.sign(_cbP.z) + _cbN.z * r;
+    nrm[i] = _cbN.x; nrm[i + 1] = _cbN.y; nrm[i + 2] = _cbN.z;
+    switch (Math.floor(i / perFace)) {
+      case 0: // +x
+        _cbF.set(1, 0, 0);
+        uv[j] = chamferUV(_cbF, _cbN, 'z', 'y', r, d);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'z', r, h);
+        break;
+      case 1: // -x
+        _cbF.set(-1, 0, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'z', 'y', r, d);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'z', r, h);
+        break;
+      case 2: // +y
+        _cbF.set(0, 1, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'z', r, w);
+        uv[j + 1] = chamferUV(_cbF, _cbN, 'z', 'x', r, d);
+        break;
+      case 3: // -y
+        _cbF.set(0, -1, 0);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'z', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'z', 'x', r, d);
+        break;
+      case 4: // +z
+        _cbF.set(0, 0, 1);
+        uv[j] = 1 - chamferUV(_cbF, _cbN, 'x', 'y', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'x', r, h);
+        break;
+      default: // -z
+        _cbF.set(0, 0, -1);
+        uv[j] = chamferUV(_cbF, _cbN, 'x', 'y', r, w);
+        uv[j + 1] = 1 - chamferUV(_cbF, _cbN, 'y', 'x', r, h);
+        break;
+    }
+  }
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.normal.needsUpdate = true;
+  geo.attributes.uv.needsUpdate = true;
+  /* THE BOX THIS WAS CUT FROM, KEPT FOR THE COLLISION PATH.
+   *
+   * A chamfer only ever REMOVES material from a box's corners, so the square
+   * box it started as is a conservative collider for it - very slightly larger
+   * than the mesh, which is the safe direction and is exactly what the player
+   * already walked into before the kit learned to chamfer. `ShipKit` gets this
+   * for free because it authors its colliders (`cbox` draws through `box` and
+   * collides the FULL box); `StationWorld._solidifyStructure` does not, it
+   * derives collision FROM THE DRAWN GEOMETRY, so it has to be told. See
+   * `squareBoxCorners` and `GeoBatch.add`. */
+  geo.userData.squareBox = { w, h, d };
+  return geo;
+}
+
+/* Two triangles a face, over the eight corners `squareBoxCorners` emits. Bit 0
+ * of a corner index is +x, bit 1 is +y, bit 2 is +z.
+ *
+ * READ OFF `new THREE.BoxGeometry(2, 2, 2)` rather than authored, and that is
+ * the whole point of the table: this is what the collision pass would have
+ * extracted from the plain box before the kit learned to chamfer, so the
+ * substitution has to agree with three's SPLIT and not merely with its corners.
+ * It does not, quite, if you pick the diagonals yourself - a quad cut the other
+ * way has the same four corners but two different triples, and
+ * `_dropEnclosedTriangles` asks about triples. Measured with a hand-authored
+ * table: 3 triangles of 202,307 changed sides. Three triangles is nothing to a
+ * player and everything to a pin, which has to be able to say "unchanged".
+ */
+export const SQUARE_BOX_TRIS = [
+  7, 5, 3, 5, 1, 3,  // +x
+  2, 0, 6, 0, 4, 6,  // -x
+  2, 6, 3, 6, 7, 3,  // +y
+  4, 0, 5, 0, 1, 5,  // -y
+  6, 4, 7, 4, 5, 7,  // +z
+  3, 1, 2, 1, 0, 2,  // -z
+];
+
+/**
+ * The eight corners of the plain box a chamfered geometry was cut from, in the
+ * geometry's own frame - or null when this is not one, or is no longer one.
+ *
+ * Read off the BOUNDS rather than off the recorded `w/h/d` at the origin,
+ * because 48 call sites in this kit chain `.translate()` onto a `boxGeo` before
+ * handing it over and the bounds move with the box where a remembered centre
+ * would not. The bounds ARE the plain box while the piece is still axis-
+ * aligned: `chamferBox` leaves the flat centre of every face at exactly w/2,
+ * so a chamfered box measures w x h x d to the float.
+ *
+ * That identity is also the check. A geometry that has been rotated or scaled
+ * since it was chamfered measures something else, and is refused rather than
+ * given a box that would be an axis-aligned crate around a yawed piece - a
+ * collider LARGER than the mesh in the one direction that is not safe. Nothing
+ * in the kit rotates a `boxGeo` today (the batch does that with its own
+ * matrix); the check is what makes that a fact rather than an assumption.
+ */
+export function squareBoxCorners(geo) {
+  const box = geo.userData?.squareBox;
+  if (!box) return null;
+  geo.computeBoundingBox();
+  const b = geo.boundingBox;
+  if (
+    Math.abs(b.max.x - b.min.x - box.w) > 1e-4 ||
+    Math.abs(b.max.y - b.min.y - box.h) > 1e-4 ||
+    Math.abs(b.max.z - b.min.z - box.d) > 1e-4
+  ) return null;
+  const out = new Float32Array(24);
+  for (let i = 0; i < 8; i++) {
+    out[i * 3] = (i & 1) ? b.max.x : b.min.x;
+    out[i * 3 + 1] = (i & 2) ? b.max.y : b.min.y;
+    out[i * 3 + 2] = (i & 4) ? b.max.z : b.min.z;
+  }
+  return out;
+}
+
+/**
+ * A box, chamfered when it is big enough, with three's plain 0..1 face UVs.
+ *
+ * `boxGeo`'s world-scaled UVs are right for a kit whose materials tile across
+ * whatever they are painted on. `InteriorKit` is the other case: it either
+ * draws with an unmapped flat palette, or reprojects every UV it has after the
+ * merge (`_prepGeoForWorldMat`), so `boxUV` there is work thrown away twice
+ * over. Same chamfer, same 108 triangles, same index.
+ */
+export function bevelBox(w, h, d, min = BEVEL_MIN) {
+  const r = bevelRadius(w, h, d, min);
+  return r > 0 ? chamferBox(w, h, d, r) : new THREE.BoxGeometry(w, h, d);
+}
+
+/**
+ * A textured box, UV-corrected, ready to be pushed into a batch.
+ *
+ * Chamfered when it is big enough to be worth it - see `BEVEL_MIN`.
+ *
+ * @param {number|boolean} [bevel] `true` for the kit default, `false` to
+ *   decline the chamfer, or a threshold in metres for a kit read from a
+ *   different distance (`ShipKit.ibox` passes one: a ship's interior fittings
+ *   are looked at from 1 m and its hull plating from 30).
+ *
+ *   DECLINE IT FOR ANYTHING THAT TILES. Two chamfered boxes butted together
+ *   leave a groove the width of both rounds at the joint, and a run of them
+ *   turns a continuous surface into a ladder of dark lines. The smallest-
+ *   dimension rule already excludes every slab, panel and plate in the kit
+ *   because those are thin in one axis; `false` is for pieces that are chunky
+ *   AND laid end to end.
+ */
+export function boxGeo(w, h, d, tile, bevel = true) {
+  if (bevel === false) return boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
+  const r = bevelRadius(w, h, d, bevel === true ? BEVEL_MIN : bevel);
+  return r > 0
+    ? boxUV(chamferBox(w, h, d, r), w, h, d, tile ?? 2, r)
+    : boxUV(new THREE.BoxGeometry(w, h, d), w, h, d, tile ?? 2);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1125,9 +1675,19 @@ function packParts(recs) {
   const siteIx = new Map([[null, 0]]);
   const ownerOf = new Uint16Array(n), pieceOf = new Uint16Array(n), siteOf = new Uint16Array(n);
   const start = new Uint32Array(n), count = new Uint32Array(n);
+  /* The square-collider side table. Only the chamfered parts carry one - 2,724
+   * of the station's ~30,000 - so it is a sparse index rather than a flag: -1
+   * for "collide my triangles", otherwise the row of `squares` holding my
+   * plain box's eight corners. See `squareBoxCorners`. */
+  let nsq = 0;
+  for (let i = 0; i < n; i++) if (recs[i].square) nsq++;
+  const squares = nsq ? new Float32Array(nsq * 24) : null;
+  const squareAt = nsq ? new Int32Array(n).fill(-1) : null;
+  let sq = 0;
   let at = 0;
   for (let i = 0; i < n; i++) {
     const r = recs[i];
+    if (r.square) { squares.set(r.square, sq * 24); squareAt[i] = sq++; }
     let oi = ownerIx.get(r.owner);
     if (oi === undefined) { oi = owners.push(r.owner) - 1; ownerIx.set(r.owner, oi); }
     let pi = pieceIx.get(r.piece);
@@ -1141,7 +1701,7 @@ function packParts(recs) {
     count[i] = r.n;
     at += r.n;
   }
-  return { owners, pieces, sites, ownerOf, pieceOf, siteOf, start, count, indices: at };
+  return { owners, pieces, sites, ownerOf, pieceOf, siteOf, start, count, squares, squareAt, indices: at };
 }
 
 export class GeoBatch {
@@ -1167,6 +1727,27 @@ export class GeoBatch {
 
   /** @param {string} key material key @param {THREE.BufferGeometry} geo owned by the batch */
   add(key, geo, matrix) {
+    /* ── THE SQUARE-COLLIDER HALF ───────────────────────────────────────
+     * Read BEFORE the matrix goes on, because the check that makes it safe
+     * is that the piece is still axis-aligned in its own frame, and the
+     * batch's matrix is exactly what stops being true of.
+     *
+     * `StationWorld._solidifyStructure` derives the station's collision from
+     * the DRAWN geometry, so a chamfer - which exists only to catch a
+     * highlight on an edge - was being charged twice, once as triangles and
+     * again as collision: 372,792 -> 551,953 triangles extracted and 26,757
+     * -> 29,197 colliders for a 9.5% rise in what is drawn. A chamfer only
+     * ever cuts material AWAY from a box's corners, so the square box is a
+     * conservative collider for it and is what the player already walked
+     * into. Recorded here, in the batch's frame, and substituted for the
+     * part's 108 triangles by `_collisionSoup`. */
+    const square = squareBoxCorners(geo);
+    if (square && matrix) {
+      for (let i = 0; i < 24; i += 3) {
+        _v1.set(square[i], square[i + 1], square[i + 2]).applyMatrix4(matrix);
+        square[i] = _v1.x; square[i + 1] = _v1.y; square[i + 2] = _v1.z;
+      }
+    }
     if (matrix) geo.applyMatrix4(matrix);
     // mergeGeometries refuses to mix indexed and non-indexed sources, and the
     // polyhedra (Octahedron/Icosahedron) arrive unindexed. Normalise here so
@@ -1198,6 +1779,7 @@ export class GeoBatch {
       piece: this._piece,
       site: TRACE_CALL_SITES ? callSite() : null,
       n: geo.getIndex().count,
+      square,
     });
     return geo;
   }
@@ -1232,6 +1814,12 @@ export class GeoBatch {
    *   parts.start[i] / parts.count[i]   range into `geometry.index`
    *   parts.owners[parts.ownerOf[i]]    the build step, zone or link
    *   parts.pieces[parts.pieceOf[i]]    a finer label, or null
+   *   parts.squareAt[i]                 -1, or the row of `parts.squares`
+   *                                     holding the eight corners of the plain
+   *                                     box this chamfered piece was cut from
+   *
+   * `squares`/`squareAt` are null on a batch that chamfered nothing, which is
+   * every batch outside the station's own scale.
    *
    * Entry 0 of both string tables is `null`, so an unlabelled piece costs no
    * table row. `start` is a running sum of source index counts, which is
@@ -1556,11 +2144,120 @@ export const GATEWAY = {
   TREAD_Z0: 11,
   TREAD_W0: 14,
   TREAD_TAPER: 0.75,
-  /** Service ramp on the far side: centre at local z = +12, 8.4 m long. */
-  RAMP_Z: 12,
+  /**
+   * The decorative nosing plate that caps each tread, and how far its top
+   * stands PROUD of the tread it caps.
+   *
+   * ── WHY THIS IS A CONSTANT AND NOT A LITERAL IN THE DRAWING CODE ────────
+   * The station is the only world that turns its drawn geometry into colliders
+   * (`_solidifyStructure`), so the nosing is not decoration to a walking body -
+   * it is the surface the body steps onto. It shipped centred at `rise + 0.02`,
+   * 0.08 thick, so its top was `rise + 0.06`, and the FIRST riser off the plaza
+   * was 0.46 against `CONFIG.player.stepHeight` 0.45. Measured on the running
+   * page: KeyW held from the plaza stops dead at the tread face and never
+   * moves, on all six bearings, in the centre lane - the exact lane a player
+   * aiming at the gateway walks up. Only the first riser fails, because every
+   * tread after it is climbed FROM a plate, so the plate cancels.
+   *
+   * The tread heights above were already chosen against `stepHeight` (six of
+   * 0.40, not five of 0.48) and the note saying so is beside them. That fix
+   * landed on the tread box; the plate carried the flight back over the limit
+   * on top of it. 5 mm proud, not 0, so the plate does not z-fight with the
+   * tread top it completely covers.
+   */
+  TRIM_T: 0.08,
+  TRIM_PROUD: 0.005,
+  /** Guide-light pad on each tread: size, and how far it sinks into the plate. */
+  GUIDE_T: 0.14,
+  GUIDE_SINK: 0.04,
+  /**
+   * Service ramp on the far side: 8 m of run over the dais's 2.4 m.
+   *
+   * ── 14.6 and not 12, because at 12 the ramp climbed INSIDE the dais ─────
+   * `_ramp` is 8 m long about this centre, so at 12 its head was at local
+   * z = 8 and the dais collider reaches local z = `COLLIDER_HALF` = 10.6. The
+   * last 5.4 m of every one of the six ramps was therefore under the dais: a
+   * body climbing met the rim at 5.4 m up, where the ramp surface is
+   * `2.4 * 5.4 / 8` = 1.62 m and the deck is 2.40 - a 0.78 m rise, over
+   * `CONFIG.player.stepHeight` 0.45 and under `Climb.MIN_RISE_GROUND` 1.0, so
+   * neither a step nor a mantle. It is worse for the thing the ramp exists
+   * for: `Horse`'s own STEP_UP is 0.75 and a mount cannot mantle at all, and
+   * the note on the ramp says in as many words that this is how a mount
+   * reaches the dais.
+   *
+   * `COLLIDER_HALF + 8 / 2` puts the head exactly on the dais edge, so the
+   * ramp arrives at 2.40 where the deck is 2.40. The drawn pad is 8.4 long
+   * and so overlaps the dais by 0.2 m, which is the direction that leaves no
+   * seam. Found by `ramp-landing-clearance.test.mjs` once it started walking
+   * flights instead of only walking off their heads.
+   */
+  RAMP_Z: 14.6,
   RAMP_LEN: 8.4,
   RAMP_HALF_W: 4.2,
 };
+
+/**
+ * The approach flight, tread by tread, in the gateway's local frame.
+ *
+ * ── WHY THE GEOMETRY CALLS THIS RATHER THAN RE-DERIVING IT ──────────────
+ * Same reason `Portals.portalAperture` is exported: a checker that re-derives
+ * the arithmetic is a second copy that can be wrong on its own, and this
+ * particular arithmetic already shipped wrong once (see `GATEWAY.TRIM_PROUD`).
+ * `StationWorld._buildGatewayRing` places its treads, nosings and guide pads
+ * from these rows, and `scripts/tests/portal-walkthrough.test.mjs` walks the
+ * same rows, so a flight that a player cannot climb cannot be built without the
+ * test seeing it.
+ *
+ * `i` counts OUTWARD from the dais, so `i = 0` is the tallest tread, against
+ * the dais rim, and `i = TREADS - 1` is the one a body meets first walking in
+ * from the plaza.
+ *
+ * @returns {Array<{i:number, w:number, z:number, rise:number, trimY:number,
+ *   trimTop:number, guideY:number}>} `trimY`/`guideY` are box CENTRES, ready to
+ *   place; `trimTop` is the surface a body actually stands on.
+ */
+export function gatewayApproachFlight() {
+  const out = [];
+  for (let i = 0; i < GATEWAY.TREADS; i++) {
+    const rise = GATEWAY.TREAD_RISE * (GATEWAY.TREADS - i);
+    const trimTop = rise + GATEWAY.TRIM_PROUD;
+    out.push({
+      i,
+      w: GATEWAY.TREAD_W0 - i * GATEWAY.TREAD_TAPER,
+      z: -(GATEWAY.TREAD_Z0 + i * GATEWAY.TREAD_PITCH),
+      rise,
+      trimY: trimTop - GATEWAY.TRIM_T / 2,
+      trimTop,
+      guideY: trimTop + GATEWAY.GUIDE_T / 2 - GATEWAY.GUIDE_SINK,
+    });
+  }
+  return out;
+}
+
+/**
+ * Every step a body climbing in from the plaza actually has to make, in order.
+ *
+ * The heights are the COLLIDABLE tops - the nosing plate, not the tread box -
+ * because that is what the capsule meets, and measuring the box alone is what
+ * let a 6 mm error in the plate close all six gateways to a walking player
+ * while every number a test looked at stayed correct.
+ *
+ * @returns {Array<{from:number, to:number, riser:number, what:string}>}
+ */
+export function gatewayApproachRisers() {
+  const flight = gatewayApproachFlight();
+  const steps = [];
+  let from = 0;                       // plaza deck
+  let what = 'plaza';
+  for (let k = flight.length - 1; k >= 0; k--) {
+    const t = flight[k];
+    steps.push({ from, to: t.trimTop, riser: t.trimTop - from, what: `${what} -> tread ${t.i}` });
+    from = t.trimTop;
+    what = `tread ${t.i}`;
+  }
+  steps.push({ from, to: GATEWAY_DECK_Y, riser: GATEWAY_DECK_Y - from, what: `${what} -> dais deck` });
+  return steps;
+}
 
 /** Yaw that maps the gateway's local frame onto the world at bearing `deg`. */
 export function gatewayFrameYaw(deg) {

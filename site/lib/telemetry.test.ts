@@ -1,4 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+
+/* `hashIp` needs a real app secret and no longer invents one.
+ *
+ * It used to fall back to `'dev-secret-change-me'` — a string published in this
+ * repository — which makes a "keyed" hash unkeyed: anyone could hash the address
+ * they were interested in and look for it in the column, which is the exact
+ * rainbow-table attack the keying exists to prevent. `lib/appSecret.ts` refuses
+ * to produce a key at all now, and `hashIp` returns null rather than a
+ * forgeable one.
+ *
+ * So the test environment has to supply one, the same way `totp.test.ts`
+ * supplies `ENCRYPTION_KEY` for `secretBox`. Set before the module under test is
+ * imported, because the value is read per call but the requirement is the
+ * point: these assertions are about a CONFIGURED deployment. */
+process.env.NEXTAUTH_SECRET ||= 'test-only-app-secret-at-least-32-chars-long';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

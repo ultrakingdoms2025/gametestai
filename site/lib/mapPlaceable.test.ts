@@ -163,7 +163,21 @@ describe('partitionPlaceable and hiddenItemsText', () => {
   it('on the real seed, every cosmetic and heal is hidden and every ammo pack, part, skin, spell and mount upgrade is offered', () => {
     const { placeable, hidden } = partitionPlaceable(seed.map((s) => ({ ...s, id: s.source_key })));
     const effectsOf = (rows: Array<{ action_config: Record<string, unknown> }>) => new Set(rows.map((r) => String(r.action_config.effect)));
-    expect(effectsOf(hidden.map((h) => h.item))).toEqual(new Set(['unlock_cosmetic', 'restore_health']));
+    expect(effectsOf(hidden.map((h) => h.item))).toEqual(
+      new Set(['unlock_cosmetic', 'restore_health', 'grant_ship_power', 'grant_weapon_power'])
+    );
+    // `grant_ship_power` and `grant_weapon_power` joined this set when the
+    // yard's thirty-six fittings and the twelve weapon tiers reached the live
+    // catalogue, and they are HIDDEN for the reason `restore_health` is, not
+    // for want of support: `grantForPlacement` in src/systems/MapOverlay.js has
+    // no route for either effect and no `ITEMS` row answers to a key like
+    // `ship_kestrel_power_1`, so it returns null and `_applyPlace` refuses the
+    // placement with `reason: 'item'`. A fitting is banked in `ShipRegistry`
+    // and a weapon tier in `WEAPON_POWERS`; neither has a pickup form, so
+    // offering one would put a row in the Place list that the game refuses at
+    // the moment the world is entered - the exact nine-mount-upgrade failure
+    // this module was written to end.
+    //
     // `modify_damage_taken` (wards) and `modify_stamina_drain` (draughts) join
     // the list the day those families are sold. Both are placeable for the same
     // reason `modify_firepower` is: the key resolves to a bag item the game can

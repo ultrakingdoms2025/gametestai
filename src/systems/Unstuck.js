@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config.js';
+import { keyLabel } from '../core/Input.js';
 
 /**
  * Stuck detection and recovery.
@@ -84,6 +85,17 @@ const _spawn = new THREE.Vector3();
 const _lift = new THREE.Vector3();
 
 const P = CONFIG.player;
+
+/**
+ * The key the rescue ships on, and the identity of the `unstuck` action.
+ *
+ * Exported so nothing has to type `'KeyK'` a second time. It is the DEFAULT
+ * only: `Input.BINDABLE` carries the matching row, so the player can move it,
+ * and {@link UnstuckSystem#keyCode} asks `Input` what it is now rather than
+ * assuming. `unstuck-marooned.test.mjs` pins this literal against that row, so
+ * the two cannot drift apart.
+ */
+export const UNSTUCK_DEFAULT_CODE = 'KeyK';
 
 /** Metres of travel that proves the player is not wedged. */
 const MOVE_EPSILON = 0.15;
@@ -232,13 +244,28 @@ export class UnstuckSystem {
     on('pilot:launched', () => { this._shipWorld = null; this._shipSite = null; });
 
     /**
-     * K is bound at the window, not polled from `Input`, because it has to work
-     * in states where gameplay input is deliberately dead: pointer unlocked,
-     * pause overlay up, `input.setEnabled(false)`. The polled path in
+     * The rescue key is bound at the window, not polled from `Input`, because it
+     * has to work in states where gameplay input is deliberately dead: pointer
+     * unlocked, pause overlay up, `input.setEnabled(false)`. The polled path in
      * `fixedUpdate` stays as a redundant second route and shares the debounce.
+     *
+     * ── It is READ, not hard-coded ────────────────────────────────────────
+     *
+     * This was `if (e.code !== 'KeyK') return`, and the literal was the whole
+     * reason `unstuck` was absent from `Input.BINDABLE` and therefore from the
+     * rebind panel. A player who had to work around a broken K could not, and a
+     * player who learns a game's controls from the rebind panel never found out
+     * the escape hatch existed. Both are fixed by the row now in `BINDABLE`;
+     * this reads it, per event, so a rebind takes effect immediately and
+     * without a listener to re-register.
+     *
+     * `UNSTUCK_DEFAULT_CODE` is the fallback for the case where no `Input` was
+     * handed over at all (the harness constructs this system bare), and it is
+     * deliberately the same literal the `BINDABLE` row ships with - one key,
+     * named twice, pinned together by `unstuck-marooned.test.mjs`.
      */
     this._onKeyDown = (e) => {
-      if (e.code !== 'KeyK') return;
+      if (e.code !== this.keyCode) return;
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
       if (this._typing()) return;
       e.preventDefault();
@@ -250,6 +277,20 @@ export class UnstuckSystem {
   /* ================================================================ */
   /* Contract surface                                                  */
   /* ================================================================ */
+
+  /**
+   * The key the rescue is on RIGHT NOW, as an `event.code`.
+   *
+   * Read from `Input` on every use rather than cached, because a rebind is a
+   * thing that happens mid-session from the F6 panel and a cached answer would
+   * leave the window listener watching the old key with nothing to tell it. The
+   * fallback covers the harness, which constructs this system with no `Input`.
+   *
+   * @returns {string}
+   */
+  get keyCode() {
+    return this.input?.codeFor?.('unstuck') ?? UNSTUCK_DEFAULT_CODE;
+  }
 
   /** True while the detectors believe the player cannot free themselves. */
   get isStuck() {
@@ -279,9 +320,11 @@ export class UnstuckSystem {
     const player = this.player;
     if (!player || !this.physics) return;
 
-    // Redundant manual path; the window handler normally gets there first and
-    // the debounce swallows this one.
-    if (this.input?.pressed?.('KeyK') && !this._typing()) this._keyUnstuck('manual');
+    /* Redundant manual path; the window handler normally gets there first and
+     * the debounce swallows this one. The literal is the ACTION'S IDENTITY here
+     * rather than a key: `Input.pressed` resolves the shipped code through the
+     * rebind table, so this follows a rebind without knowing one happened. */
+    if (this.input?.pressed?.(UNSTUCK_DEFAULT_CODE) && !this._typing()) this._keyUnstuck('manual');
 
     const pos = player.position;
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) {
@@ -1070,8 +1113,12 @@ export class UnstuckSystem {
         ? 'There IS a walking route from here.'
         : 'Cannot tell from here whether a walk would get you out.';
     this.bus?.emit('hud:notify', {
+      /* The key by NAME, read live. This said "Press K again" with the letter
+       * written into the sentence, which was true only until the player moved
+       * the binding - and this is the one message in the game whose entire
+       * purpose is to tell somebody which key to press next. */
       text: `Nothing is holding you - a nudge would do nothing.  ${verdict}`
-        + `  Press K again to be ${where}.`,
+        + `  Press ${keyLabel(this.keyCode)} again to be ${where}.`,
       tone: 'warn',
     });
     this.bus?.emit('player:unstuck-offer', {

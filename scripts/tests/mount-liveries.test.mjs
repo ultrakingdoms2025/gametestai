@@ -229,9 +229,50 @@ test('a legacy flat car livery migrates into liveries.car', () => {
   assert.deepEqual(mgr.getLivery('car'), { paint: { color: 0xc21f2f }, wheel: { color: 0xe0b23a } });
 });
 
-test('deserialize still returns undefined (SaveGame relies on the falsy fall-through)', () => {
+/**
+ * CONTRACT CHANGE, DELIBERATE: `deserialize` returns a boolean now.
+ *
+ * This test used to pin the opposite - "deserialize still returns undefined
+ * (SaveGame relies on the falsy fall-through)" - and the belief it recorded was
+ * wrong. `SaveGame._restoreMounts` reads:
+ *
+ *     if (snap.custom && mounts.deserialize?.(snap.custom)) return true;
+ *
+ * `undefined` does not "fall through" to anything useful there. It falls
+ * through to `snap.active`, which is `undefined` for every save this build
+ * writes - `serialize()` puts `active` INSIDE the custom blob - and then to an
+ * `else` branch that DISMOUNTS the player. Quit mid-flight on the dragon,
+ * reload, and you were standing on the concourse. The old assertion was
+ * protecting the bug.
+ *
+ * So: true when a payload was read, false when there was nothing to read. The
+ * return value is the contract every other probe-first `deserialize` in this
+ * codebase already keeps, and `SaveGame` now also calls `restorePending()` on
+ * the true branch - the deferred summon that had no caller anywhere.
+ */
+test('deserialize reports whether it read anything, so SaveGame can act on it', () => {
   const { mgr } = manager();
-  assert.equal(mgr.deserialize({ unlocked: ['car'] }), undefined);
+  assert.equal(mgr.deserialize({ unlocked: ['car'] }), true);
+  assert.equal(mgr.deserialize(null), false);
+  assert.equal(mgr.deserialize(undefined), false);
+  assert.equal(mgr.deserialize('not an object'), false);
+});
+
+test('the mount that was out is parked by deserialize and summoned by restorePending', () => {
+  /* The deferral is real and load-bearing - a mount cannot be placed until the
+   * world it goes in is live - but nothing in the entire codebase called the
+   * second half, so the id was parked and dropped. */
+  const { mgr } = manager();
+  const summoned = [];
+  mgr.summon = (id) => { summoned.push(id); return true; };
+
+  mgr.deserialize({ unlocked: ['dragon'], active: 'dragon' });
+  assert.deepEqual(summoned, [], 'deserialize summoned before the world was up');
+  mgr.restorePending();
+  assert.deepEqual(summoned, ['dragon'], 'the parked mount was never summoned');
+  // Idempotent: it clears its own pending id, so a second call does nothing.
+  mgr.restorePending();
+  assert.deepEqual(summoned, ['dragon'], 'restorePending summoned twice');
 });
 
 test('setLivery hands the mount its livery in the nested shape, and no-op patches do not emit', () => {

@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { boxGeo, markRampProxy } from '../station/StationKit.js';
 
+/** Chamfer threshold for interior fittings; see `ShipBuild#ibox`. */
+const IBOX_BEVEL_MIN = 0.12;
+
 /**
  * LODESTAR YARD — the ship builder.
  *
@@ -622,9 +625,34 @@ export class ShipBuild {
     this.put(key, boxGeo(w, h, d, ShipBuild._tile(tile, 'rbox')), lx, ly, lz, ry, rx, rz);
   }
 
-  /** A drawn box, interior. */
+  /**
+   * A drawn box, interior.
+   *
+   * Chamfered from 12 cm rather than the kit default of a metre.
+   *
+   * `boxGeo`'s threshold is set for the station, where a box is read across a
+   * concourse. Everything `ibox` places is read from arm's length inside a
+   * compartment - a console lip, a locker face, a grab rail, a bunk board -
+   * and a metre would chamfer EIGHT of the 1,175 boxes a full yard build emits
+   * through here (the distribution's median smallest-dimension is 3 cm).
+   *
+   * 12 cm is where the radius rule stops refusing anyway: `bevelRadius` clamps
+   * to 22% of the smallest dimension, so under about 9 cm there is no round
+   * left to catch a highlight and the 9x buys nothing. Measured on a headless
+   * `buildDockFresh()`, it chamfers 123 fittings for +13,248 triangles - the
+   * yard's whole chamfer bill is +18,720 on 266,770, and the exterior `box`
+   * at the kit default accounts for only 5,472 of it.
+   *
+   * The exterior `box`/`rbox` deliberately keep the kit default. Hull plating
+   * is laid plate against plate and a chamfered run of it is a ladder of dark
+   * seams - but plating is thin, so the smallest-dimension rule has already
+   * excluded it, and what is left above 80 cm is the chunky masses (cargo
+   * blocks, nacelles, cradle timbers) that should be eased. `cbox` draws
+   * through `box` and collides the FULL box, so the chamfer only ever cuts
+   * geometry away from inside the collider, never the other way round.
+   */
   ibox(key, w, h, d, lx, ly, lz, ry = 0, tile = 2) {
-    this.iput(key, boxGeo(w, h, d, ShipBuild._tile(tile, 'ibox')), lx, ly, lz, ry);
+    this.iput(key, boxGeo(w, h, d, ShipBuild._tile(tile, 'ibox'), IBOX_BEVEL_MIN), lx, ly, lz, ry);
   }
 
   /* ---------------------------------------------------------------- */

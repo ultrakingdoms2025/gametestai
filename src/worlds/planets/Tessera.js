@@ -1304,6 +1304,69 @@ export const TESSERA = definePlanet({
    * Past r 24 the disc starts eating the inner wall. 20 m is the disc, and the
    * four spare metres of `pad` are the notch it sits in.
    */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS, AND THE ONE PLACE GRAVITY IS THE MECHANIC ────────────
+   * Tessera is the LIGHTEST body a player can stand on: 1.62 m/s2, a sixth of
+   * Earth and a sixth of Verdigris. Through `worldGravityRatio` that is a jump
+   * apex of 1.697 m against the game's own 0.931, a hang time of 1.93 s against
+   * 0.58, and - because horizontal speed does not scale - a standing broad jump
+   * of 8.9 m at a walk and 15.9 m at a sprint, against 4.7 m on Verdigris.
+   *
+   * That 3.4x is the ONLY part of the gravity spread the terrain can express,
+   * and these three are chosen so it is felt rather than read: all three stand
+   * on crater rims, and a crater rim on this planet is a chain of blocks with
+   * notches between them. `planet-viewpoints.test.mjs` measures the route to
+   * each one twice - walking only, and with jump edges at THIS planet's own
+   * carry - and reports the difference. On Tessera the leap is worth hundreds of
+   * metres of rim-walking; on Verdigris the same instrument at 4.7 m finds
+   * nothing at all, which is exactly the point.
+   *
+   * Every one of the three is ALSO reachable on foot with no jump at all, and
+   * that is not an accident. This repo's signature defect is content that was
+   * built and could not be reached, and a prize whose only proof of
+   * reachability is a ballistic model I wrote myself is that defect with better
+   * arithmetic. The leap is the shortcut, never the key. */
+  viewpoints: [
+    {
+      /* The east rim of the Cold Well, 37.2 m up with the 52 m shaft of the
+       * well itself immediately west - the deepest hole on the planet and the
+       * one the third pad sits at the bottom of. 579 m of rim-walking from
+       * Raysedge; 83 m clear of the Cold Well pad, which is straight down. */
+      id: 'cold_well', name: 'Cold Well Rim', x: 297.1, z: 166, r: 7,
+      terrain: 'crater', place: 'The Cold Well',
+      climb: 'Around the well clockwise from the Slump Road, or straight over the rim notches.',
+    },
+    {
+      /* The far side of Crown of Rays - 157 m out from the axis of a 296 m
+       * bowl, looking back across the melt sheet at Raysedge on the opposite
+       * crest. The only viewpoint on the planet you can see another one from. */
+      id: 'crown_of_rays', name: 'Crown of Rays, West Rim', x: -277, z: -60, r: 7,
+      terrain: 'crater', place: 'Crown of Rays',
+      climb: 'West off the Slump Road and round the outside of the rim.',
+    },
+    {
+      /* The Pale Bench: the one flat table on a planet made of holes, 48 m up
+       * and dead level, 156 m clear of Mosaic Flat. */
+      id: 'pale_bench', name: 'The Pale Bench', x: -59.85, z: 230.15, r: 8,
+      terrain: 'outcrop', place: 'The Pale Bench',
+      climb: 'The bench ramp from Mosaic Flat, then east to the lip.',
+    },
+  ],
+
   landing: [
     {
       /* Out on the open regolith, 143 m from Crown of Rays' rim crest and 160 m
@@ -1326,6 +1389,7 @@ export const TESSERA = definePlanet({
       id: 'coldwell', name: 'The Cold Well', x: WX, z: WZ, r: 18, yaw: -1.08,
     },
   ],
+
 
   /* No `hazards` block. The schema's hazards are weather - falling ash, heat
    * shimmer over lava, steam - and vacuum has none of them. A world with no

@@ -1,4 +1,12 @@
 import { WORLD_MARKETS } from './ItemDefs.js';
+import {
+  SHIP_ORDER, SHIP_STATS, SHIP_POWER_TIERS, SHIP_STAT_META,
+  shipPowerPrice, shipPowerSellPrice, shipPowerName,
+} from '../ships/ShipStats.js';
+import {
+  WEAPON_ORDER, WEAPON_POWER_TIERS, WEAPON_TIER_STEP, WEAPON_LABEL,
+  weaponPowerPrice, weaponPowerSellPrice, weaponPowerName,
+} from './WeaponStats.js';
 
 /**
  * THE SHOP THAT WORKS WITH THE SERVER DOWN.
@@ -986,6 +994,113 @@ export const OFFLINE_BASE_ITEMS = Object.freeze([
     worlds: null,
   },].map(Object.freeze));
 
+/* ====================================================================== */
+/* The two GENERATED ladders                                              */
+/* ====================================================================== */
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  SHIP FITTINGS AND WEAPON TIERS: GENERATED, NOT COPIED, AND NOT IN
+ *  `OFFLINE_BASE_ITEMS`
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * These forty-eight rows are deliberately NOT members of `OFFLINE_BASE_ITEMS`,
+ * and that placement is the whole of their design.
+ *
+ * `marketplace-offline.test.mjs` compares `OFFLINE_BASE_ITEMS` against the
+ * hand-authored rows in `site/lib/marketplaceCatalog.ts` in BOTH directions -
+ * a row here that is not there fails as loudly as one there that is not here.
+ * That gate is right and must not be weakened, so a row that has no TypeScript
+ * twin cannot go in that array. It goes here instead, exactly where the
+ * TypeScript already puts its own two generated arrays (`MOUNT_SKIN_ROWS` and
+ * the sixty `MOUNT_UPGRADE_ROWS`), which that same test skips for the same
+ * reason: the scrape reads `source_key: '...'` literals and a product of three
+ * tables has none.
+ *
+ * ── They are GENERATED FROM THE GAME'S OWN LADDERS ────────────────────────
+ *
+ * `SHIP_STATS` and `SHIP_STAT_META.base` for the thirty-six fittings - three
+ * hulls, four stats, three tiers, because `ShipRegistry._powers` is keyed by
+ * HULL and a fitting bought for a Kestrel is not on the Dray - and
+ * `WEAPON_ORDER` with `weaponPowerPrice` for the twelve weapon tiers. Not a
+ * second table, not a
+ * copy of a price - the same functions the yard panel quotes from. That is the
+ * `MarketplaceOffline` header's own rule ("copying a product is how a copy
+ * rots") applied to a product this module can actually derive, because unlike
+ * the mount wall the source tables are JavaScript in `src/`.
+ *
+ * A hull or a stat added to `SHIP_STATS` therefore arrives with its three rungs
+ * priced and stocked. The Bastion has an EMPTY `SHIP_STATS` entry - it is a
+ * hulk that sells nothing - so it generates nothing, which is `ShipRegistry`'s
+ * `sellsPower` refusal expressed as an absence rather than as a row that would
+ * have to be refused at the counter.
+ *
+ * ── THE HONEST LIMITATION, STATED HERE RATHER THAN DISCOVERED ─────────────
+ *
+ * `Marketplace._loadCatalog` uses this bundle ONLY when `/api/marketplace/items`
+ * fails. So these forty-eight rows are on the shelf in a `vite`-only build -
+ * which is how this game is developed and play-tested, and the exact build
+ * whose empty Fitting Shop this file was written to fix - and NOT on the shelf
+ * when the API is up. Closing that gap is forty-eight rows in
+ * `site/lib/marketplaceCatalog.ts`, generated the same way from the same
+ * numbers; the changelog for this work carries the patch.
+ *
+ * The yard's ship fittings have a second counter that does not depend on any of
+ * this: `ShipMenu` sells all twelve directly, over `economy.spend` and
+ * `ShipRegistry.grantPower`, in the Esc panel. So the ship half is reachable in
+ * every build either way, and these rows are the shop's copy of an offer the
+ * panel already makes.
+ */
+const SHIP_UPGRADE_ROWS = SHIP_ORDER.flatMap((ship) => (SHIP_STATS[ship] ?? []).flatMap(
+  (stat) => Array.from({ length: SHIP_POWER_TIERS }, (_, i) => i + 1).map((tier) => ({
+    source_key: `ship_${ship}_${stat}_${tier}`,
+    name: shipPowerName(ship, stat, tier),
+    description: `${shipPowerName(ship, stat, tier)}: +${(SHIP_STAT_META[stat]?.perTier ?? 0) * tier}%`
+      + ` ${SHIP_STAT_META[stat]?.unit ?? stat}. Permanent, replaces the tier below.`
+      + ' Fitted in the yard; see your tiers in Esc → Customise ship.',
+    category: 'ships',
+    game_action: `ship_${ship}_${stat}_${tier}`,
+    action_config: { effect: 'grant_ship_power', ship, power: stat, tier },
+    quantity: null,
+    cost_buy: shipPowerPrice(stat, tier),
+    cost_sell: shipPowerSellPrice(stat, tier),
+    pricing_kind: 'fixed',
+    /* 600 upward, clear of the hand-authored block's 10-440. The yard is the
+     * only counter that stocks them (`worlds: ['dock']`, the pairing
+     * `dock-economy.test.mjs` asserts over every `ships` row), so they sort
+     * after everything a general vendor carries. */
+    sort_order: 600 + SHIP_ORDER.indexOf(ship) * 20 + (SHIP_STATS[ship] ?? []).indexOf(stat) * 4 + tier,
+    worlds: ['dock'],
+  })),
+));
+
+const WEAPON_UPGRADE_ROWS = WEAPON_ORDER.flatMap(
+  (weapon) => Array.from({ length: WEAPON_POWER_TIERS }, (_, i) => i + 1).map((tier) => ({
+    source_key: `weapon_${weapon}_damage_${tier}`,
+    name: weaponPowerName(weapon, tier),
+    description: `${WEAPON_LABEL[weapon] ?? weapon} upgrade: +${Math.round(WEAPON_TIER_STEP * tier * 100)}%`
+      + ' damage, permanently. Replaces the tier below it.',
+    category: 'weapons',
+    game_action: `weapon_${weapon}_damage_${tier}`,
+    action_config: { effect: 'grant_weapon_power', weapon, tier },
+    quantity: null,
+    cost_buy: weaponPowerPrice(weapon, tier),
+    cost_sell: weaponPowerSellPrice(weapon, tier),
+    pricing_kind: 'fixed',
+    /* 700 upward, after the ship block. `worlds: null` - a weapon tier is
+     * carried on the player and not fitted to a hull, so any counter that
+     * stocks `weapons` sells it, exactly as every ammunition pack is sold
+     * everywhere. */
+    sort_order: 700 + WEAPON_ORDER.indexOf(weapon) * 4 + tier,
+    worlds: null,
+  })),
+);
+
+/** Every generated row, in the order `offlineCatalog` appends them. */
+export const OFFLINE_UPGRADE_ROWS = Object.freeze(
+  [...SHIP_UPGRADE_ROWS, ...WEAPON_UPGRADE_ROWS].map(Object.freeze)
+);
+
 /**
  * The catalogue a vendor in `worldId` would be served, priced for that world.
  *
@@ -1001,7 +1116,14 @@ export function offlineCatalog(worldId) {
   const market = WORLD_MARKETS[worldId] ?? null;
   if (!market) return [];
   const out = [];
-  for (const item of OFFLINE_BASE_ITEMS) {
+  /* The generated ladders ride the SAME loop as the hand-authored rows, so
+   * they get the same world filter, the same `:<world>` id suffix, the same
+   * `Math.max(1, ...)` price floor and the same `offline: true` marking. A
+   * second loop for them would be a second place for one of those five things
+   * to be forgotten - and the one most easily forgotten is the id suffix,
+   * which is what makes an offline purchase and an online one name the same
+   * row. Both ladders price `fixed`, so the multipliers below are 1 for them. */
+  for (const item of [...OFFLINE_BASE_ITEMS, ...OFFLINE_UPGRADE_ROWS]) {
     if (item.worlds && !item.worlds.includes(worldId)) continue;
     let buyMul = 1;
     let sellMul = 1;

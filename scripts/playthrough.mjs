@@ -53,6 +53,22 @@
  *
  * Zero new dependencies, for the reason `world-shot.mjs` records: a second
  * browser-automation dependency is a second thing to rot.
+ *
+ * ── AND WHY THIS IS NOT `frame-gaps.mjs` ─────────────────────────────────
+ *
+ * They look like two drivers doing one job and they are not. `frame-gaps.mjs`
+ * is a BATCH recorder: it scripts a fixed sequence, records rAF gaps from
+ * before the first module is parsed, and prints a verdict. This is an
+ * INTERACTIVE handle: it boots once and then answers arbitrary commands over
+ * HTTP for as long as somebody is asking, which is what a survey needs and
+ * what a batch script structurally cannot be.
+ *
+ * What was genuinely wrong is that this file's browser was configured
+ * differently from that one's, so numbers taken through the two were compared
+ * as if they described the same machine. They did not — see the occlusion note
+ * on the spawn below, and the heartbeat on `/gaps`. Both are now ported. When
+ * the question is "what does this phase cost", still reach for `frame-gaps`;
+ * this one is for "what happens when a player does X".
  */
 
 import { spawn } from 'node:child_process';
@@ -303,6 +319,30 @@ async function main() {
     '--no-first-run', '--no-default-browser-check',
     '--hide-scrollbars', '--mute-audio', '--disable-extensions',
     '--force-device-scale-factor=1',
+    /* AN OCCLUDED WINDOW STOPS DELIVERING ANIMATION FRAMES AND NOTHING ELSE.
+     *
+     * Ported verbatim from `scripts/frame-gaps.mjs`, which carries the full
+     * measurement. Windows computes native window occlusion for headless
+     * windows too; a renderer it decides is occluded stops receiving
+     * BeginFrame while timers, promises and CDP evals keep running at full
+     * rate. Everything `/gaps` measures is an rAF interval, so an occluded
+     * stretch is recorded as one enormous frame gap with a completely idle
+     * main thread inside it — a 32,517.5 ms "stall" that carried 8,004
+     * heartbeats of a 4 ms timer and only 445 ms of genuine block.
+     *
+     * This driver had NONE of these while frame-gaps had all four, and both
+     * were quoted side by side. That is the mechanism behind the recorded
+     * 150-680x disagreement between the two: not a slower game, a different
+     * browser configuration. Any survey taken through this driver before this
+     * line was added is unattributable.
+     *
+     * `CalculateNativeWinOcclusion` is the one that matters on this platform.
+     * The `beats` figure `/gaps` now returns is the check that they still
+     * work. */
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+    '--disable-features=CalculateNativeWinOcclusion',
     /* See world-shot.mjs for why ANGLE is left on its platform default: a
      * SwiftShader fallback renders this world at about a frame a minute, and
      * the only symptom is slowness, which reads as "the world is heavy". */
@@ -624,21 +664,61 @@ async function main() {
      * caused. `performance.now()` deltas between rAF callbacks are the only
      * honest measure of a hitch a player would see; an average frame time
      * hides exactly the spike this criterion is about.
+     *
+     * ── AND A BARE rAF SAMPLER CANNOT TELL A STALL FROM AN ABSENT FRAME ────
+     *
+     * This used to be a bare rAF sampler: gap deltas, a p50/p99/max, no
+     * heartbeat. `frame-gaps.mjs` learned the hard way that the two things an
+     * rAF gap can mean have OPPOSITE fixes. A 4 ms timer chain runs on the
+     * same main thread and is not gated on the compositor, so inside a gap it
+     * either keeps ticking — the thread is free and the frame is stuck behind
+     * the GPU, the presenter, or an occluded window — or it stops with the
+     * frames, and the thread is the problem.
+     *
+     * `beats` is how many times the timer fired inside the gap; `blockedMs`
+     * is the longest single stretch the TIMER lost, which is real synchronous
+     * JavaScript and nothing else. `blocked*` is what a caller should quote.
+     *
+     * `blockedMs` takes the worse of the longest CLOSED stretch and the still
+     * OPEN one, because `worstBeat` can only ever measure a stretch that ENDED
+     * in a beat: a gap blocked from end to end fires the timer zero times and
+     * would otherwise report "blocked 0", which is the reading a genuinely
+     * starved gap gives and means the exact opposite.
+     *
+     * `starved` marks a gap that was over budget while its heartbeat never
+     * was — no rAF, idle thread. Those are not this game's cost; the recorded
+     * case is a 31,284 ms "world rebuild" whose crossing was 442 ms. The
+     * four anti-occlusion flags on the browser spawn above are what makes
+     * them rare; `beats` is what proves the flags are still working.
      */
-    async gaps({ action = 'read', label = null }) {
+    async gaps({ action = 'read', label = null, budget = 250 }) {
       if (action === 'arm') {
         return evaluate(`(() => {
-          window.__GAPS__ = { last: performance.now(), gaps: [], label: ${JSON.stringify(label)} };
+          const g = {
+            last: performance.now(), gaps: [], label: ${JSON.stringify(label)},
+            budget: ${Number(budget) || 250},
+            beat: performance.now(), beats: 0, worstBeat: 0,
+          };
+          window.__GAPS__ = g;
+          g.heart = setInterval(() => {
+            const t = performance.now();
+            const d = t - g.beat;
+            g.beat = t;
+            g.beats++;
+            if (d > g.worstBeat) g.worstBeat = d;
+          }, 4);
           const tick = () => {
             const now = performance.now();
-            const g = window.__GAPS__;
-            if (!g) return;
-            g.gaps.push(now - g.last);
+            if (window.__GAPS__ !== g) return;
+            /* The open stretch counts too — see the note above. */
+            const blocked = Math.max(g.worstBeat, now - g.beat);
+            g.gaps.push({ ms: now - g.last, blockedMs: blocked, beats: g.beats });
+            g.beats = 0; g.worstBeat = 0;
             g.last = now;
             g.raf = requestAnimationFrame(tick);
           };
-          window.__GAPS__.raf = requestAnimationFrame(tick);
-          return { armed: true };
+          g.raf = requestAnimationFrame(tick);
+          return { armed: true, budget: g.budget };
         })()`);
       }
       if (action === 'stop') {
@@ -646,16 +726,37 @@ async function main() {
           const g = window.__GAPS__;
           if (!g) return null;
           cancelAnimationFrame(g.raf);
+          clearInterval(g.heart);
           window.__GAPS__ = null;
-          const s = g.gaps.slice(1).sort((a,b)=>a-b);
+          /* Drop the first sample: it spans arming, not a frame. */
+          const rows = g.gaps.slice(1);
+          const ms = rows.map(r => r.ms).sort((a,b)=>a-b);
+          const at = (q) => ms.length ? +ms[Math.floor(ms.length*q)].toFixed(2) : null;
+          /* A gap is STARVED when it blew the budget while the heartbeat
+           * never did and kept ticking through roughly half of it. Same test
+           * frame-gaps.mjs applies; it is the one that caught four false
+           * stalls in eight runs. */
+          const starved = rows.filter(r =>
+            r.ms > g.budget && r.blockedMs <= g.budget && r.beats * 4 >= r.ms * 0.5);
+          const blocked = rows.map(r => r.blockedMs).sort((a,b)=>a-b);
+          const worst = rows.slice().sort((a,b)=>b.ms-a.ms).slice(0, 5);
           return {
-            label: g.label, frames: s.length,
-            max: s.length ? +s[s.length-1].toFixed(2) : null,
-            p99: s.length ? +s[Math.floor(s.length*0.99)].toFixed(2) : null,
-            p50: s.length ? +s[Math.floor(s.length*0.5)].toFixed(2) : null,
-            over250: s.filter(v=>v>250).length,
-            over100: s.filter(v=>v>100).length,
-            worst5: s.slice(-5).map(v=>+v.toFixed(1)),
+            label: g.label, budget: g.budget, frames: rows.length,
+            max: ms.length ? +ms[ms.length-1].toFixed(2) : null,
+            p99: at(0.99), p50: at(0.5),
+            over250: ms.filter(v=>v>250).length,
+            over100: ms.filter(v=>v>100).length,
+            /* THE HONEST FIGURES. Quote these, not \`max\`. */
+            blockedMax: blocked.length ? +blocked[blocked.length-1].toFixed(2) : null,
+            blockedOverBudget: rows.filter(r => r.blockedMs > g.budget).length,
+            starved: starved.length,
+            starvedWorst: starved.slice().sort((a,b)=>b.ms-a.ms).slice(0, 3)
+              .map(r => ({ ms: +r.ms.toFixed(1), blockedMs: +r.blockedMs.toFixed(1), beats: r.beats })),
+            worst5: worst.map(r => ({
+              ms: +r.ms.toFixed(1), blockedMs: +r.blockedMs.toFixed(1), beats: r.beats,
+              starved: r.ms > g.budget && r.blockedMs <= g.budget && r.beats * 4 >= r.ms * 0.5,
+            })),
+            rafStalls: window.__HARNESS_RAF_STALLS__ ?? 0,
           };
         })()`);
       }

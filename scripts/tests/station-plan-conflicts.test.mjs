@@ -187,7 +187,19 @@ import { ROAD_R1 } from '../../src/worlds/station/StationKit.js';
  * are the same four this file has photographed and left. Lower it when the
  * promenade is decided; never raise it for anything but a better instrument,
  * and say so here when you do. */
-const CEILING = 4;
+/* 4 -> 0 on 2026-09-01. The design decision this file has been waiting for got
+ * made: the promenade's two avenue-0 segments are NOT BUILT. Both the raised
+ * deck and its balustrade are skipped at any bearing where the segment's own
+ * rotated footprint answers `roleUnder(..., 'carriageway')` - the same question
+ * asked of the same shapes this gate asks - so the hub's own axis runs out to
+ * the glass and the promenade wraps it in two arms. The centre telescope and
+ * bench went with them; they are placed only where `onPromenade` says there is
+ * deck, so a future re-plan cannot leave them floating either.
+ *
+ * That leaves NOTHING standing on a carriageway anywhere in the station, which
+ * is where the spec's Phase 4 gate wanted to be. `=== 0` is now what the
+ * ceiling means; keep it there. */
+const CEILING = 0;
 
 /**
  * Conflicts by the build step that caused them.
@@ -237,9 +249,7 @@ const CEILING = 4;
 /* The three entries below the fold are the newly VISIBLE ones, not new ones -
  * see the note on CEILING. Everything above them is byte-identical to the
  * split this file has pinned since the link ownership increment. */
-const BY_OWNER = {
-  'Opening the commercial strip': 4,
-};
+const BY_OWNER = {};
 
 test('nothing new stands in a carriageway', async () => {
   const { world } = await buildStation();

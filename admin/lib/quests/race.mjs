@@ -376,14 +376,14 @@ export const RACE_QUESTS = [
     world: 'race',
     line: 'City Block',
     title: 'Master the street section that runs through the city blocks',
-    credits: 1400,
+    credits: 1120,
     dur: 1440,
     pre: ['Three Circuits', 'Gateway Handbook'],
     notes:
       '7 steps. CROSS-WORLD PREREQUISITE: `Gateway Handbook` is the station education line that teaches how the arches work, and step 7 sends the player back through this world\'s only arch. Step 5 is a five-lap `count > 1` step, which is a full standard-difficulty race at Vellum (RaceCircuits.js:397). Steps 1 and 7 are both about people but only step 7 is an `interact` — the gateway, not Kai Torres — so nothing here can be cleared twice by one press. `helm` is a real change: the default headgear is `none`.',
     steps: [
       { order: 1, label: 'Press E on Devrim Aslan in the ridge sector and get the street-section briefing before you drive it in anger', type: 'talk', target: 'Devrim Aslan', count: 1, world: 'race' },
-      { order: 2, label: 'Press F2 and put a Helm on. The city blocks have no run-off — that is not decoration', type: 'customize', target: 'helm', count: 1, world: 'race' },
+      { order: 2, label: 'Open the Esc menu, take Character, and put a Helm on. The city blocks have no run-off — that is not decoration', type: 'customize', target: 'helm', count: 1, world: 'race' },
       { order: 3, label: 'The rooftop caches above the blocks are the easiest ones to reach on this circuit. Recover 2 bullet drops from them', type: 'collect', target: 'bullet', count: 2, world: 'race' },
       { order: 4, label: 'And 2 alloy scrap from the same roofs', type: 'collect', target: 'alloy_scrap', count: 2, world: 'race' },
       { order: 5, label: 'Complete 5 laps of Vellum Ridge — a full standard-difficulty race. The blocks come at the end of the descent, when the tyres are already gone', type: 'race', target: 'vellum', count: 5, world: 'race' },
@@ -397,7 +397,7 @@ export const RACE_QUESTS = [
     world: 'race',
     line: 'Dragon Line',
     title: 'Fly the dragon race and then drive the same road on wheels',
-    credits: 2000,
+    credits: 1300,
     dur: 2880,
     pre: ['Three Circuits', 'Mount Up'],
     notes:
@@ -419,7 +419,7 @@ export const RACE_QUESTS = [
     world: 'race',
     line: 'Ridge Record',
     title: 'Put a full race distance on every circuit in the book',
-    credits: 3400,
+    credits: 1720,
     dur: 4320,
     pre: ['City Block', 'Dragon Line'],
     notes:
@@ -442,7 +442,7 @@ export const RACE_QUESTS = [
     world: 'race',
     line: 'Vellum Ridge Legend',
     title: 'Win outright at Vellum Ridge and carry the title to the hub',
-    credits: 6600,
+    credits: 2680,
     dur: 10080,
     pre: ['Ridge Record', 'Circuit Crown'],
     notes:
@@ -455,7 +455,7 @@ export const RACE_QUESTS = [
       { order: 5, label: 'Win one outright. Cross the line FIRST in any race on this site — a did-not-finish does not count, and the same win also clears whichever circuit you took it on', type: 'race', target: 'place_1', count: 1, world: 'race' },
       { order: 6, label: 'And take the flag once more on the dragon. Fly it at a circuit you still owe and you clear two steps with one race', type: 'race', target: 'dragon', count: 1, world: 'race' },
       { order: 7, label: 'Recover a nexus shard from the highest cache on the site — the title comes with a tribute to the hub', type: 'collect', target: 'nexus_shard', count: 1, world: 'race' },
-      { order: 8, label: 'Press F2 and take the Slim build. Every kilogram is a tenth of a second, and the record book does not care how you got there', type: 'customize', target: 'slim', count: 1, world: 'race' },
+      { order: 8, label: 'Open the Esc menu, take Character, and choose the Slim build. Every kilogram is a tenth of a second, and the record book does not care how you got there', type: 'customize', target: 'slim', count: 1, world: 'race' },
       { order: 9, label: 'Three unbroken minutes on site without a scratch, so the title stands clean', type: 'survive', target: 'race', count: 6, world: 'race' },
       { order: 10, label: 'Walk into the Aether Station arch by the paddock and press E. The Vellum Ridge title is recorded at the hub or it is not recorded at all', type: 'interact', target: 'station', count: 1, world: 'race' },
     ],

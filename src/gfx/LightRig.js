@@ -299,8 +299,31 @@ export class LightRig {
    *
    * Run every frame rather than on a timer: a light that reaches `projectObject`
    * even once costs a full recompile of everything in view, so there is no
-   * cadence at which missing one is acceptable. A traverse of ~2000 nodes with
-   * this callback measures well under 0.1 ms.
+   * cadence at which missing one is acceptable.
+   *
+   * ── HOW BIG THE WALK ACTUALLY IS (re-measured 1 Sep 2026) ───────────────
+   *
+   * This said "a traverse of ~2000 nodes measures well under 0.1 ms", and that
+   * number long predated the station's four outer zones. Re-counted against
+   * the built worlds rather than remembered, `world.group` alone:
+   *
+   *   station  1,712 nodes  (226 lights, 1,353 meshes, depth 4)
+   *   medieval   899 nodes  (156 lights,   645 meshes, depth 3)
+   *   dock       404 nodes  (186 lights,   165 meshes, depth 4)
+   *
+   * Only the ACTIVE world is parented - `WorldManager._activate` removes the
+   * previous group from the scene - so the station is the ceiling. The rest of
+   * the live scene is the characters (about 22 bones plus a root and a merged
+   * `SkinnedMesh` each, so roughly 1,500 nodes at the station's 59 spawns plus
+   * the avatar), the six gateways, and the loot/relic/viewmodel roots: call it
+   * 3,500-4,000 in total on the largest world.
+   *
+   * That is under twice what the old comment claimed and it was NOT optimised
+   * on the strength of the comment being stale. A dirty-flag scan seeded off
+   * `Object3D.add` was specified and refused: the walk is cheap, it carries
+   * the hidden-ancestor rule that `traverse` cannot express, and the failure
+   * mode of missing one light is a full recompile of everything in view. The
+   * number is recorded here so the next person measures rather than inherits.
    *
    * Ambient and hemisphere lights are left alone - they are global, there is
    * exactly one of each, and their counts never vary.
@@ -591,6 +614,11 @@ export class LightRig {
     }
     a.bias = b.bias;
     a.normalBias = b.normalBias;
+    // `radius` scales the 5-tap PCF Vogel disk (see main.js's note on the sun)
+    // and is the ONLY soft-shadow knob that does anything under PCFShadowMap.
+    // Omitted here it was silently dropped, so a world that softened its own
+    // shadows got the one-texel default back the moment the light was pooled.
+    a.radius = b.radius;
     a.blurSamples = b.blurSamples;
 
     const ca = a.camera;

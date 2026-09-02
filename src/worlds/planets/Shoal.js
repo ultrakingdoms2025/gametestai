@@ -1414,6 +1414,51 @@ export const SHOAL = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * A world that is mostly sea gets its viewpoints on the three things that
+   * stand out of it. 9.6 m/s2 - the second heaviest body a player can walk on -
+   * so a 4.8 m sprint jump crosses nothing here either; all three are walked. */
+  viewpoints: [
+    {
+      /* The cone above Kelphold: 75.2 m, the highest standable point on the
+       * planet, and the only place the whole shelf is in one frame. */
+      id: 'kelphold_peak', name: 'Kelphold Peak', x: -248, z: -176, r: 8,
+      terrain: 'highland', place: 'the Kelphold cone',
+      climb: 'North-west off Kelphold and up the south flank.',
+    },
+    {
+      /* The south-west brow of the Sunder shelf, 52.2 m, with 39.5 m of
+       * prominence - the biggest drop on Shoal - and The Tide Chasm cut into
+       * the shelf behind it. */
+      id: 'sunder_brow', name: 'Sunder Brow', x: 330, z: -380, r: 8,
+      terrain: 'shelf', place: 'the Sunder shelf over The Tide Chasm',
+      climb: 'South along the shelf from Sunder Deck to where it ends.',
+    },
+    {
+      /* The west rim of the lagoon basin out on the Wrackline - only 21 m up,
+       * but it is the rim of a 21 m hole in a flat, and the tide runs in and
+       * out of it. */
+      id: 'lagoon_rim', name: 'Lagoon Rim', x: 250, z: 270, r: 8,
+      terrain: 'shelf', place: 'the lagoon on The Wrackline',
+      climb: 'East from Glassflat Deck along the strand.',
+    },
+  ],
+
   landing: [
     /**
      * GLASSFLAT DECK - the primary, and therefore where the player arrives on
@@ -1437,6 +1482,7 @@ export const SHOAL = definePlanet({
      */
     { id: 'sunder', name: 'Sunder Deck', x: 372, z: -252, r: 20, yaw: 0.42 },
   ],
+
 
   /* No `hazards`. `PlanetWorld` reads `ashfall.density` and `steamColor` out
    * of that block and nothing else, and Shoal has neither ash nor vents;

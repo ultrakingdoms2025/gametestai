@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = {
   title: 'Redeem an access code — AETHER NEXUS',
   description: 'Turn an access code into full access to every world.',
+  alternates: { canonical: '/redeem' },
 };
 
 /**
@@ -22,7 +23,7 @@ export const metadata = {
 export default async function RedeemPage() {
   const session = await auth();
   return (
-    <main className="auth-shell">
+    <main id="main" tabIndex={-1} className="auth-shell">
       <RedeemPanel signedIn={!!session?.user?.id} />
     </main>
   );

@@ -390,6 +390,54 @@ export class ItemUseSystem {
        * nothing (see `chart` in `_canApply` below). */
       case 'ferrobasalt':
         return { type: 'magnet', duration: 20, range: 4.5, label: 'Lodestone clipped on' };
+      /* THE THREE HAND SAMPLES. Ore that reaches a bag, and what it does there.
+       *
+       * `ferrobasalt` above was the only ore with a case because it was the
+       * only ore that could reach a bag. `Mining.mine` now has a second
+       * destination - a node the ship cannot take, and that is small enough to
+       * pocket, goes into the bag instead of being refused - so twenty-one of
+       * the forty-seven ores can now be held. Three of them do something.
+       *
+       * Every one of them obeys the two rules `ferrobasalt` wrote down:
+       *
+       *   1. ROUTE TO AN EFFECT THAT ALREADY EXISTS. None of these three
+       *      invents a type. A flux stone glazed over a coat is a `ward`, a
+       *      hard cube behind a round is `firepower`, and beaten leaf scribed
+       *      and read is a `chart`. An effect invented for a rock is an effect
+       *      with one caller and no reviewer.
+       *   2. WEAKER THAN THE MANUFACTURED ARTICLE, ON BOTH AXES. 20 s rather
+       *      than 30, and a shallower multiplier, against the charm each one
+       *      imitates - so a Bastion Ward and an Ardent Charm are still worth
+       *      their 44 credits to somebody who is standing next to a counter.
+       *
+       * The third has no axes to be weaker on, and pays the difference in
+       * credits instead. See the note over `aurichalc` in `ItemDefs`.
+       *
+       * `20` and `0.85`/`1.15` are stated here and repeated in the item
+       * descriptions, which is the same two-copies-of-one-number hazard the
+       * `ferrobasalt` note records having been caught in ("this note used to
+       * say half a minute and the item said thirty seconds"). The gate that
+       * watches it is `scripts/tests/ore-in-the-bag.test.mjs`, which reads the
+       * duration out of the effect and asserts the item's own `desc` says the
+       * same thing in words. */
+      case 'cryolite':
+        return this._wardEffect(0.85, 20);
+      case 'sperrylite':
+        return { type: 'firepower', multiplier: 1.15, duration: 20 };
+      case 'aurichalc':
+        /* The Cartographer's Plate's refusal, verbatim and for the same
+         * reason: without one, `_canApply`'s false arrives as main.js's
+         * "Cannot use that right now", which does not tell a player whether
+         * the thing in their hand is broken, spent, or simply in the wrong
+         * sky. The difference is what it costs to find out - a chip of
+         * aurichalc is 700 cr/m3 and the Plate is 90. */
+        return {
+          type: 'chart',
+          refusal: {
+            reason: 'nothing-to-chart',
+            text: 'Nothing here left to chart — leaf marks a district you have not stood on, in a world that has them. Kept, not spent.',
+          },
+        };
       case 'portal_ping_30s':
         return { type: 'portalPing', duration: 30 };
       case 'npc_pause_5s':
@@ -605,14 +653,21 @@ export class ItemUseSystem {
    * it is guaranteed to be erased by the very next thing that happens to you.
    * That is the unit destroyed for nothing, with a receipt.
    *
+   * `duration` defaults to the 30 s every graded effect in this switch runs
+   * for, and is a PARAMETER only so `cryolite` can be shorter. A cracked flux
+   * stone is not a cast charm and must not last as long as one; passing the
+   * number is how that stays visible at the call site rather than becoming a
+   * second helper that drifts from this one.
+   *
    * @param {number} mul incoming damage multiplier, 0..1
+   * @param {number} [duration] seconds of play time
    * @returns {{type:string, multiplier:number, duration:number, refusal:object}}
    */
-  _wardEffect(mul) {
+  _wardEffect(mul, duration = 30) {
     return {
       type: 'ward',
       multiplier: mul,
-      duration: 30,
+      duration,
       refusal: this.player?.isDead
         ? {
           reason: 'dead',

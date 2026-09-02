@@ -150,6 +150,33 @@ export class WorldPrefetch {
   }
 
   /**
+   * Forget that `id` was ever prepared, so it can be prepared again.
+   *
+   * ── The Map that only grew ─────────────────────────────────────────────
+   *
+   * `started` is written by `claim` and `request` and was never read back out
+   * of. That was correct while worlds were built once and kept for ever;
+   * `WorldManager` now evicts built worlds it judges nothing is about to need,
+   * and an evicted world left in this Map can never be prepared again. The
+   * poller would skip it, the hold in `update` would stay off - `started.has`
+   * is the test for BOTH - and the player would walk up to a gateway whose
+   * destination is neither built nor warmed. That draw is this file's central
+   * invariant and it is measured at 8-14 s in one gameplay frame.
+   *
+   * A preparation IN FLIGHT is never forgotten. The eviction pass will not
+   * touch a building world either, so this is belt and braces, but the failure
+   * it prevents is a second `prepare` racing the first over one world's group.
+   *
+   * @param {string} id
+   * @returns {boolean} whether anything was forgotten
+   */
+  forget(id) {
+    const have = this.started.get(id);
+    if (!have || have === this.inFlight) return false;
+    return this.started.delete(id);
+  }
+
+  /**
    * Start preparing `id` now. One at a time: a second request while one is in
    * flight is remembered by `started` and will simply find itself already
    * done when the poller next looks. Returns the preparation's promise.

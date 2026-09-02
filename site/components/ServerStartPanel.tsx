@@ -93,29 +93,64 @@ const badge: CSSProperties = {
   color: '#7dffc8', fontSize: 12, letterSpacing: '0.06em',
 };
 
+/**
+ * The status has to survive the throw.
+ *
+ * `/api/game/server` answers `401 {"error":"Not authenticated."}` on both its
+ * verbs. Collapsing that into a bare message lost the one fact the UI needed to
+ * behave differently, and the failure branch below then told a signed-out
+ * player that "only the custom-server directory failed" and offered them a
+ * General play button — which POSTs to the same route, takes the same 401, and
+ * leaves every control on the screen disabled. A player who had merely been
+ * signed out was locked out of the game with no route back in.
+ */
+class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(String(body?.error ?? `Request failed (${res.status})`));
+  if (!res.ok) {
+    throw new ApiError(String(body?.error ?? `Request failed (${res.status})`), res.status);
+  }
   return body as T;
 }
+
+/** A signed-out session, whichever dialect the route speaks it in. */
+const isSignedOut = (e: unknown) =>
+  e instanceof ApiError && (e.status === 401 || e.status === 403);
 
 export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
   const [view, setView] = useState<View | null>(null);
   const [step, setStep] = useState<'choose' | 'servers'>('choose');
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /* Told apart from "still loading" so the failure branch can offer a way
+   * forward rather than a sentence. */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /* Told apart from every other load failure, because it is the only one where
+   * "go straight in" is false and a sign-in link is the whole answer. */
+  const [signedOut, setSignedOut] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await api<View>('/api/game/server');
       setView(data);
+      setSignedOut(false);
     } catch (e) {
-      setNote((e as Error).message);
+      setSignedOut(isSignedOut(e));
+      setLoadError((e as Error).message);
     }
   }, []);
 
@@ -142,7 +177,17 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
       });
       onEnter();
     } catch (e) {
-      setNote((e as Error).message);
+      /* A 401 here means the session went while the panel sat open. Drop back
+       * to the signed-out screen rather than leaving the raw refusal as a note
+       * beside buttons that will all refuse the same way — that screen is the
+       * only place with a sign-in link on it. */
+      if (isSignedOut(e)) {
+        setSignedOut(true);
+        setLoadError((e as Error).message);
+        setView(null);
+      } else {
+        setNote((e as Error).message);
+      }
       setBusy(false);
     }
   };
@@ -161,11 +206,104 @@ export function ServerStartPanel({ onEnter }: { onEnter: () => void }) {
         : `Asked to join ${row.name}. The owner has to approve it.`);
       await load();
     } catch (e) {
-      setNote((e as Error).message);
+      // Same reasoning as `enter` above. @see the signed-out branch below.
+      if (isSignedOut(e)) {
+        setSignedOut(true);
+        setLoadError((e as Error).message);
+        setView(null);
+      } else {
+        setNote((e as Error).message);
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  /**
+   * The directory could not be read.
+   *
+   * This used to render one line of raw error text inside a modal with no
+   * buttons in it — no retry, no exit, nothing. A database blip on the custom
+   * server directory therefore locked a paying player out of the game
+   * ENTIRELY, and the galling part is that General play needs none of this
+   * data: it posts `serverId: null` and boots the platform worlds. So the
+   * first thing this branch offers is the door the failure never touched.
+   *
+   * ── Except when the failure IS the door ──────────────────────────────────
+   *
+   * That reasoning holds for a database blip and is false for a 401. General
+   * play posts `action: 'select'` to the same route that just refused, so the
+   * button below would refuse identically and leave `busy` true with every
+   * control disabled — the lock-out this branch was written to prevent,
+   * reached by the branch itself. A signed-out session gets its own screen: no
+   * false reassurance, no button that cannot work, and the one link that fixes
+   * it.
+   */
+  if (!view && loadError && signedOut) {
+    return (
+      <div style={gate}>
+        <div style={modal} role="dialog" aria-modal="true" aria-labelledby="launch-title">
+          <h2 id="launch-title" ref={headingRef} tabIndex={-1}
+            style={{ margin: 0, fontSize: 20, outline: 'none' }}>
+            You are signed out
+          </h2>
+          <p role="alert" style={{ margin: 0, color: '#ffb4b4', fontSize: 14 }}>
+            ⚠ {loadError}
+          </p>
+          <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+            Your session has expired or been signed out elsewhere. This is not a fault and
+            nothing has been lost — your access, credits and progress are on your account
+            and will be exactly where you left them. Signing in again brings you straight
+            back here.
+          </p>
+          <a style={{ ...bigChoice, textDecoration: 'none' }} href="/login?callbackUrl=%2Fplay">
+            <b>Sign in and carry on</b>
+            <span style={{ color: '#9bb0c2', fontSize: 13 }}>
+              You will come back to this screen.
+            </span>
+          </a>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <a style={{ ...btn, textDecoration: 'none' }} href="/">Back to the site</a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!view && loadError) {
+    return (
+      <div style={gate}>
+        <div style={modal} role="dialog" aria-modal="true" aria-labelledby="launch-title">
+          <h2 id="launch-title" ref={headingRef} tabIndex={-1}
+            style={{ margin: 0, fontSize: 20, outline: 'none' }}>
+            We could not load the server list
+          </h2>
+          <p role="alert" style={{ margin: 0, color: '#ffb4b4', fontSize: 14 }}>
+            ⚠ {loadError}
+          </p>
+          <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+            Only the custom-server directory failed. General play does not use it, so
+            you can go straight in — the platform worlds, quests and marketplace are all
+            unaffected.
+          </p>
+          <button type="button" style={bigChoice} disabled={busy}
+            onClick={() => void enter(null)}>
+            <b>General play</b>
+            <span style={{ color: '#9bb0c2', fontSize: 13 }}>
+              The platform worlds, quests and marketplace — the default game.
+            </span>
+          </button>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" style={btn} disabled={busy} onClick={() => void load()}>
+              Retry the server list
+            </button>
+            <a style={{ ...btn, textDecoration: 'none' }} href="/">Back to the site</a>
+          </div>
+          {note && <p style={{ margin: 0, color: '#ffd9a0', fontSize: 13 }} role="status">{note}</p>}
+        </div>
+      </div>
+    );
+  }
 
   if (!view) {
     return (

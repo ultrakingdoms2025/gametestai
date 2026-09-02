@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight, dirLight } from '../gfx/WorldLight.js';
@@ -854,6 +875,78 @@ const KICKER = { x: -38, z: -132, w: 7, len: 11, h: 2.4 };
 /** Fall-line centres of the three groomed corridors. */
 const PISTE_LANES = [-96, -62, -32];
 
+/* ------------------------------------------------------------------ */
+/* The path network                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A readable route from the gate to every zone, as `[polyline, halfWidth]`.
+ *
+ * The spine is a 3.6 m wide tarmac avenue and the spurs are 2.5 m; both carry
+ * a scuffed verge ribbon `PATH_VERGE` metres wider so grass never meets a hard
+ * geometric edge, and both follow the terrain.
+ *
+ * ── Why this is module scope and not a local in `_buildGround` ────────────
+ * `_isPlantable`'s own docstring said it kept planting off "the playing
+ * surfaces, the car park AND THE PATHS", and the word `routes` did not appear
+ * anywhere in its body: it tested ten hand-written axis-aligned rectangles and
+ * an inset from the site border, and the paths are eleven polylines. The leg
+ * `(0,92) -> (0,125)` - the spine, straight down the world's own axis from the
+ * arrival gate - and the whole western route to the skate pad fall inside NO
+ * rectangle, so 150 broadleaf trees with COLLIDABLE TRUNKS, twenty cluster
+ * centres, the shrub tufts and ~27,750 grass blades were all free to stand in
+ * the middle of the avenue a player walks in on. Sports has no spatial gate of
+ * any kind, so nothing would ever have reported it.
+ *
+ * One table, read by the builder that lays the tarmac and by the predicate
+ * that keeps planting off it, so the two cannot drift.
+ */
+const PATH_ROUTES = [
+  [[[0, 176], [0, 150], [0, 120], [0, 92]], 1.8],
+  [[[0, 92], [-24, 88], [-52, 82], [-78, 79], [-100, 79]], 1.8],
+  // Pool spur. This used to run [22,100] -> [40,106] -> [52,110], which is
+  // straight through the swimming basin: the lawn sheet is holed over the
+  // pool, so with the ribbon winding fixed the tarmac appeared as a gravel
+  // causeway floating across four lanes of water. It now arrives on the
+  // west deck, where the deck slab at y=0.1 hides the last few metres.
+  [[[0, 92], [14, 97], [24, 101], [28, 108]], 1.25],
+  [[[0, 92], [34, 78], [62, 56], [84, 38], [95, 30]], 1.8],
+  [[[0, 92], [-8, 62], [-14, 26], [-26, -12], [-44, -44], [-56, -64]], 1.8],
+  [[[0, 92], [26, 52], [44, 10], [56, -26], [62, -52]], 1.25],
+  [[[0, 160], [40, 162], [82, 164], [112, 162]], 1.25],
+  [[[-100, 79], [-108, 40], [-112, 4], [-104, -34], [-84, -58]], 1.25],
+  [[[95, 30], [104, 8], [108, -22], [106, -50]], 1.25],
+  // Pool to car park, routed round the south side of the deck rather than
+  // over the basin.
+  [[[28, 108], [24, 124], [36, 133], [62, 136], [84, 140]], 1.25],
+];
+
+/** How much wider than the tarmac the scuffed verge ribbon runs. */
+const PATH_VERGE = 0.8;
+
+/**
+ * Distance from (x, z) to the nearest path centreline, in metres, minus that
+ * path's own half-width. Negative means standing on the tarmac.
+ *
+ * Point-to-SEGMENT, not point-to-vertex: the spine's legs are up to 33 m long
+ * and a vertex test would leave most of the avenue unprotected.
+ */
+function pathClearance(x, z) {
+  let best = Infinity;
+  for (const [route, halfW] of PATH_ROUTES) {
+    for (let i = 0; i < route.length - 1; i++) {
+      const ax = route[i][0], az = route[i][1];
+      const bx = route[i + 1][0], bz = route[i + 1][1];
+      const dx = bx - ax, dz = bz - az;
+      const len2 = dx * dx + dz * dz;
+      const t = len2 > 0 ? clamp01(((x - ax) * dx + (z - az) * dz) / len2) : 0;
+      const d = Math.hypot(x - (ax + dx * t), z - (az + dz * t)) - halfW;
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
 /**
  * Snow height. A longitudinal cosine profile (~23 deg average pitch) modulated
  * by a lateral falloff whose width grows with altitude, so the flanks stay
@@ -1060,6 +1153,16 @@ export class SportsWorld extends World {
       fogFar: 900,
       exposure: 0.94,
       ambientColor: new THREE.Color(0x8fa9cc),
+      /* 0.030, AND IT IS ALREADY THE ANSWER THE OTHER WORLDS WERE RETUNED TO.
+       *
+       * The collapse that took maze from 1.25, medieval from 0.62 and citadel
+       * from 0.70 down to a trace (World.js `ambientIntensity`) has nothing to
+       * do here: at 0.030 this world is effectively ambient-free already, and
+       * the note above records that it got there deliberately, by starving the
+       * flat terms so a 7.5 key could model. There is no flat energy left to
+       * move, and raising it toward the others "for consistency" would be
+       * undoing the one world that had the arrangement right first. Left
+       * untouched on purpose - this is not an oversight. */
       ambientIntensity: 0.030,
       skyColor: new THREE.Color(0x8fbde8),
       // Ground bounce warmed off olive and onto the concrete that actually
@@ -2027,8 +2130,33 @@ export class SportsWorld extends World {
    *
    * `holeRects` are world-space `{x0,z0,x1,z1}` boxes to leave open, for the
    * places the ground genuinely has no floor - the swimming basin and the skate
-   * bowl. A cell is dropped when its *centre* falls inside one, so ground
-   * continues right up to the opening instead of retreating a cell from it.
+   * bowl. A cell is dropped only when it lies ENTIRELY inside one, which is the
+   * same rule `_heightMesh` applies to the quads it draws over the same rects
+   * on the same 2.6 m grid. That identity is the whole point: wherever the lawn
+   * is drawn there is a floor under it, and the collider is open only where the
+   * lawn is open.
+   *
+   * It used to drop a cell whose *CENTRE* fell inside a rect, on the reasoning
+   * that ground should continue right up to the opening rather than retreat a
+   * cell from it. It does the opposite. A cell straddling the rect edge with
+   * its centre just inside is dropped whole, so the opening SPILLS up to half a
+   * cell OUT of the rect - past the slabs that were laid to replace the ground
+   * inside it, into ground the lawn mesh is still drawing. Two live holes came
+   * from that, both reported as the player falling through visible grass:
+   *
+   *   - the pool's north verge, x 26..75.4 by z 98.8..100.0 (1.2 m wide, 49 m
+   *     long), between the lido hedge at z 98.6 and the deck slab at z 100 -
+   *     "in sporting area near the pool i fall through the ground 37.4, 0, 98.9";
+   *   - the pool's east verge, x 75.0..75.4 by z 98.8..124.8 (0.4 m by 26 m);
+   *   - the skate pad's south verge, x -124.8..-26.0 at z 75.0..75.4 (0.4 m by
+   *     98 m), which nobody had walked into yet.
+   *
+   * Containment cannot produce that failure at all: the opening is always a
+   * subset of the rect the author asked for, on any grid, for any rect. What it
+   * can do is leave up to a cell of ground INSIDE the rect, so a hole rect must
+   * stay at least one cell clear of the drop it is opening - POOL's edge is 3 m
+   * from the basin's north wall and PAD's is 20 m from the bowl, against a
+   * 2.6 m cell.
    */
   _addHeightCollision(fn, x0, z0, x1, z1, res, holeRects = null) {
     const nqx = Math.max(1, Math.ceil((x1 - x0) / res));
@@ -2050,12 +2178,14 @@ export class SportsWorld extends World {
     if (holeRects && holeRects.length) {
       holes = new Uint8Array(nqx * nqz);
       for (let j = 0; j < nqz; j++) {
-        const cz = z0 + (j + 0.5) * stepZ;
+        const za = z0 + j * stepZ;
+        const zb = za + stepZ;
         for (let i = 0; i < nqx; i++) {
-          const cx = x0 + (i + 0.5) * stepX;
+          const xa = x0 + i * stepX;
+          const xb = xa + stepX;
           for (let r = 0; r < holeRects.length; r++) {
             const h = holeRects[r];
-            if (cx > h.x0 && cx < h.x1 && cz > h.z0 && cz < h.z1) {
+            if (xa >= h.x0 && xb <= h.x1 && za >= h.z0 && zb <= h.z1) {
               holes[j * nqx + i] = 1;
               break;
             }
@@ -2152,6 +2282,10 @@ export class SportsWorld extends World {
         size: sun.shadow.mapSize.x,
         bias: sun.shadow.bias,
         normalBias: sun.shadow.normalBias,
+        // Borrowed like the rest: the PCF disk radius set below is sized for
+        // THIS world's 4096 near cascade, and left behind it would follow the
+        // player into every other world's 2048 map at 5.86 cm/texel.
+        radius: sun.shadow.radius,
         intensity: sun.intensity,
       };
       // normalBias 0.02, not 0.07.
@@ -2164,7 +2298,21 @@ export class SportsWorld extends World {
       // suppress acne and the depth bias picks up the rest.
       sun.shadow.bias = -0.0006;
       sun.shadow.normalBias = 0.02;
-      sun.shadow.blurSamples = 12;
+      /* `blurSamples = 12` used to sit here and did nothing at all: three reads
+       * `blurSamples` only inside `VSMPass` (WebGLShadowMap.js), and this game
+       * runs `PCFShadowMap` (core/Engine.js). Under PCF the knob that softens
+       * an edge is `shadow.radius`, which scales the 5-tap Vogel disk - and the
+       * tap count is fixed at 5, so a wider disk is free.
+       *
+       * The near cascade is a 4096 map over the sphere fit of the first 55 m of
+       * the frustum (`_updateSunRig`): radius ~60 m at 4:3, ~86 m at 16:9, so
+       * 2.9-4.2 cm per texel. The outermost tap is at 0.95 of the radius, so 5
+       * softens an edge over ~28-40 cm. Deliberately a shade tighter in world
+       * terms than main.js's 4 on its 5.86 cm texel: this cascade exists for
+       * contact shadows, and the normalBias above was cut to 0.02 precisely to
+       * put those contacts back on the ground.
+       */
+      sun.shadow.radius = 5;
     }
 
     // Cascade 1: fixed box over the whole site, rendered once. See the note on
@@ -2180,7 +2328,16 @@ export class SportsWorld extends World {
     far.shadow.mapSize.set(this._farShadowMapSize, this._farShadowMapSize);
     far.shadow.bias = -0.0011;
     far.shadow.normalBias = 0.12;
-    far.shadow.blurSamples = 8;
+    /* Was `blurSamples = 8`, dead under PCF for the same reason as the near
+     * cascade above. The far cascade wants a SMALLER radius, not a matching
+     * one: this box is 600 m across a 2048 map - 29.3 cm per texel, 7-10x the
+     * near cascade - so radius 5 here would smear a band nearly 3 m wide and,
+     * stacked on a 12 cm normalBias, leak daylight in under the ski mound. At 2
+     * the band is ~1.1 m, which at the 55 m cascade split subtends the same
+     * angle as the near cascade's ~30 cm does at 15 m (both about 1/50 of the
+     * viewing distance), so the seam between the two does not announce itself.
+     */
+    far.shadow.radius = 2;
     {
       const sc = far.shadow.camera;
       sc.left = -farRadius;
@@ -2330,6 +2487,7 @@ export class SportsWorld extends World {
       if (this._sun) {
         this._sun.shadow.bias = this._sunRestore.bias;
         this._sun.shadow.normalBias = this._sunRestore.normalBias;
+        this._sun.shadow.radius = this._sunRestore.radius;
         this._sun.intensity = this._sunRestore.intensity;
       }
     }
@@ -2502,9 +2660,9 @@ export class SportsWorld extends World {
       }
     } catch { mat = null; }
     if (!mat) {
-      mat = new THREE.MeshStandardMaterial({
+      mat = microSurface(new THREE.MeshStandardMaterial({
         color, roughness, metalness, envMapIntensity: 1.15, ...extra,
-      });
+      }), 'painted', 1);
     }
     return this._mat(key, mat);
   }
@@ -3839,11 +3997,11 @@ export class SportsWorld extends World {
     this._metal('metal.dark', 0x3c444b, 0.6, 0.85, { envMapIntensity: 0.9 });
     // vertexColors: the bleacher seats and the pool lane ropes both tint per
     // instance, and without it every setColorAt() call below is a silent no-op.
-    this._mat('plastic.seat', new THREE.MeshStandardMaterial({
+    this._mat('plastic.seat', microSurface(new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.48, metalness: 0.02, vertexColors: true, envMapIntensity: 0.6,
-    }));
-    this._mat('plastic.net', new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.72, metalness: 0.05 }));
-    this._mat('plastic.netTape', new THREE.MeshStandardMaterial({ color: 0xf6f8f8, roughness: 0.55, metalness: 0.02 }));
+    }), 'painted', 0.5));
+    this._mat('plastic.net', microSurface(new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.72, metalness: 0.05 }), 'matte', 0.3));
+    this._mat('plastic.netTape', microSurface(new THREE.MeshStandardMaterial({ color: 0xf6f8f8, roughness: 0.55, metalness: 0.02 }), 'painted', 0.3));
     this._mat(
       'glass.window',
       new THREE.MeshPhysicalMaterial({
@@ -3857,7 +4015,7 @@ export class SportsWorld extends World {
         side: THREE.DoubleSide,
       })
     );
-    this._mat('paint.court', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }));
+    this._mat('paint.court', microSurface(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }), 'coarse', 4));
     /* ---------------- foliage ---------------- */
     // Flat-shaded untextured icosahedra were the loudest "low-poly toy" tell in
     // the world. Real canopies read as clumped leaf masses: dappled colour,
@@ -4118,13 +4276,13 @@ export class SportsWorld extends World {
       out[0] = out[1] = out[2] = g;
     });
     this._pbr('bark', barkA, barkH, null, { repeat: 2, repeatY: 1, roughness: 0.95, normalScale: 1.4, bump: 3.4, envMapIntensity: 0.4 });
-    this._mat('carPaint', new THREE.MeshStandardMaterial({
+    this._mat('carPaint', microSurface(new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.24, metalness: 0.55, envMapIntensity: 1.2, vertexColors: true,
-    }));
-    this._mat('rubber.dark', new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.9 }));
+    }), 'painted', 2));
+    this._mat('rubber.dark', microSurface(new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.9 }), 'matte', 0.5));
     this._mat(
       'snow.plain',
-      new THREE.MeshStandardMaterial({ color: 0xcfd9e6, roughness: 0.6, envMapIntensity: 1.1 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xcfd9e6, roughness: 0.6, envMapIntensity: 1.1 }), 'matte', 2)
     );
     // Rock and scree used to be untextured flat colours - an automatic fail at
     // the top of a 50 m landform. They borrow the gravel albedo/normal pair,
@@ -4836,25 +4994,7 @@ export class SportsWorld extends World {
     // grass never meets a hard geometric edge, and both follow the terrain.
     const spineMat = this._materials.get('path.tarmac');
     const vergeMat = this._materials.get('path.verge');
-    const routes = [
-      [[[0, 176], [0, 150], [0, 120], [0, 92]], 1.8],
-      [[[0, 92], [-24, 88], [-52, 82], [-78, 79], [-100, 79]], 1.8],
-      // Pool spur. This used to run [22,100] -> [40,106] -> [52,110], which is
-      // straight through the swimming basin: the lawn sheet is holed over the
-      // pool, so with the ribbon winding fixed the tarmac appeared as a gravel
-      // causeway floating across four lanes of water. It now arrives on the
-      // west deck, where the deck slab at y=0.1 hides the last few metres.
-      [[[0, 92], [14, 97], [24, 101], [28, 108]], 1.25],
-      [[[0, 92], [34, 78], [62, 56], [84, 38], [95, 30]], 1.8],
-      [[[0, 92], [-8, 62], [-14, 26], [-26, -12], [-44, -44], [-56, -64]], 1.8],
-      [[[0, 92], [26, 52], [44, 10], [56, -26], [62, -52]], 1.25],
-      [[[0, 160], [40, 162], [82, 164], [112, 162]], 1.25],
-      [[[-100, 79], [-108, 40], [-112, 4], [-104, -34], [-84, -58]], 1.25],
-      [[[95, 30], [104, 8], [108, -22], [106, -50]], 1.25],
-      // Pool to car park, routed round the south side of the deck rather than
-      // over the basin.
-      [[[28, 108], [24, 124], [36, 133], [62, 136], [84, 140]], 1.25],
-    ];
+    const routes = PATH_ROUTES;
     const bollards = [];
     const lamps = [];
     // Ribbons are merged per material so the whole network is two draw calls.
@@ -4871,7 +5011,7 @@ export class SportsWorld extends World {
         }
       }
       dense.push(route[route.length - 1]);
-      vergeGeos.push(ribbon(dense, halfW + 0.8, (x, z) => parkHeight(x, z) + 0.03, false, 0.2));
+      vergeGeos.push(ribbon(dense, halfW + PATH_VERGE, (x, z) => parkHeight(x, z) + 0.03, false, 0.2));
       spineGeos.push(ribbon(dense, halfW, (x, z) => parkHeight(x, z) + 0.062, false, 0.22));
 
       // Lamp posts and bollards give the route a rhythm and a night read.
@@ -5077,12 +5217,12 @@ export class SportsWorld extends World {
     if (stripe) {
       const paint = this._materials.get('paint.kerb') ?? this._mat(
         'paint.kerb',
-        new THREE.MeshStandardMaterial({
+        microSurface(new THREE.MeshStandardMaterial({
           color: stripe,
           roughness: 0.62,
           metalness: 0,
           envMapIntensity: 0.4,
-        })
+        }), 'painted', 1)
       );
       const caps = [];
       const cy = topY + kerbH - 0.098;
@@ -5429,7 +5569,7 @@ export class SportsWorld extends World {
     // Waxed granite: skaters wax ledges until the top 4 cm is nearly polished.
     const wax = this._mat(
       'ledge.wax',
-      new THREE.MeshStandardMaterial({ color: 0x8f8d88, roughness: 0.16, metalness: 0.06, envMapIntensity: 1.3 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x8f8d88, roughness: 0.16, metalness: 0.06, envMapIntensity: 1.3 }), 'polished', 2)
     );
 
     const boxAt = (u0, v0, u1, v1, h, y0 = 0, mat = conc) => {
@@ -5858,7 +5998,7 @@ export class SportsWorld extends World {
     ]);
     const poleMat = this._mat(
       'pole.piste',
-      new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 }), 'painted', 0.5)
     );
     const poles = [];
     for (let i = 0; i < 26; i++) {
@@ -5878,8 +6018,8 @@ export class SportsWorld extends World {
       new THREE.CylinderGeometry(0.03, 0.035, 1.8, 6).translate(0, 0.9, 0),
       new THREE.BoxGeometry(0.5, 0.34, 0.02).translate(0, 1.55, 0),
     ]);
-    const gateRed = this._mat('gate.red', new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 }));
-    const gateBlue = this._mat('gate.blue', new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 }));
+    const gateRed = this._mat('gate.red', microSurface(new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 }), 'painted', 0.5));
+    const gateBlue = this._mat('gate.blue', microSurface(new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 }), 'painted', 0.5));
     const red = [];
     const blue = [];
     for (let i = 0; i < 14; i++) {
@@ -6076,7 +6216,7 @@ export class SportsWorld extends World {
     ]);
     const chairMat = this._mat(
       'chair.lift',
-      new THREE.MeshStandardMaterial({ color: 0xd94f2b, roughness: 0.45, metalness: 0.3, envMapIntensity: 1.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xd94f2b, roughness: 0.45, metalness: 0.3, envMapIntensity: 1.2 }), 'painted', 1)
     );
     this._chairCount = 16;
     this._chairs = new THREE.InstancedMesh(chairGeo, chairMat, this._chairCount);
@@ -6342,7 +6482,7 @@ export class SportsWorld extends World {
 
     const sand = this._mat(
       'sand.pit',
-      new THREE.MeshStandardMaterial({ color: 0xe0cf9e, roughness: 1 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe0cf9e, roughness: 1 }), 'coarse', 4)
     );
     this._add(this._slab(TRACK.cx - 14, TRACK.cz - 22, TRACK.cx - 5, TRACK.cz - 19, 0.05, sand), false, true);
     this._add(
@@ -6865,7 +7005,7 @@ export class SportsWorld extends World {
     /* ---- coping ---- */
     const copingMat = this._mat(
       'tile.coping',
-      new THREE.MeshStandardMaterial({ color: 0xf0f2f0, roughness: 0.35, metalness: 0.02, envMapIntensity: 1.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xf0f2f0, roughness: 0.35, metalness: 0.02, envMapIntensity: 1.2 }), 'polished', 1)
     );
     const cop = [];
     cop.push(xform(new THREE.BoxGeometry(28.9, 0.1, 0.45), 46, 0.13, bz0 - 0.22));
@@ -6914,21 +7054,44 @@ export class SportsWorld extends World {
     ]);
     const blockMat = this._mat(
       'block.start',
-      new THREE.MeshStandardMaterial({ color: 0x1b6fd0, roughness: 0.42, metalness: 0.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x1b6fd0, roughness: 0.42, metalness: 0.2 }), 'painted', 0.5)
     );
     const blocks = [];
     for (let i = 0; i < 8; i++) blocks.push([bx0 - 0.75, 0.1, bz0 + 1 + i * 2, 0, 0, 0, 1]);
     this._instanced(blockGeo, blockMat, blocks);
 
     /* ---- diving boards ---- */
-    const platform = [];
-    platform.push(xform(new THREE.BoxGeometry(1.2, 3.2, 1.2), 65.5, 1.6, 111));
-    platform.push(xform(new THREE.BoxGeometry(2.2, 0.16, 2.2), 65.5, 3.28, 111));
-    const plat = new THREE.Mesh(mergeGeometries(platform), galv);
-    this._solid(plat);
+    /* TWO SOLIDS, not one merged mesh, and a ladder to get up there.
+     *
+     * `_solid` registers ONE box from the mesh's whole bounding box, so a
+     * merged column-plus-deck answered a 2.2 x 3.36 x 2.2 block: an invisible
+     * pier a metre wider than the 1.2 m column anybody can see, all the way to
+     * the water. Registered separately each collider is the thing it was drawn
+     * as. And the deck at 3.36 m had no way onto it at all - `Climb.MAX_RISE`
+     * is 2.4 - so the whole tower was scenery. */
+    const platCol = this._box(1.2, 3.2, 1.2, galv, 65.5, 1.6, 111);
+    this._solid(platCol);
+    const platDeck = this._box(2.2, 0.16, 2.2, galv, 65.5, 3.28, 111);
+    this._solid(platDeck);
+    /* Access ladder on the tower's east face - the west face carries the 6.2 m
+     * board. Stiles clear the 2.2 m deck's overhang at x = 66.6, and the rungs
+     * step 0.42 m, inside `CONFIG.player.stepHeight` = 0.45. The rung at 3.36
+     * is level with the deck, so the last move is a 0.15 m sidestep and not a
+     * pull-up; two more above it give the ladder a head to hold. */
+    const ladderX = 66.78;
+    const rungs = [];
+    for (const oz of [-0.32, 0.32]) {
+      rungs.push(xform(new THREE.BoxGeometry(0.07, 4.3, 0.07), ladderX, 2.15, 111 + oz));
+    }
+    for (let i = 1; i <= 9; i++) {
+      const ry = i * 0.42;
+      rungs.push(xform(new THREE.BoxGeometry(0.06, 0.06, 0.76), ladderX, ry, 111));
+      this.track(this.physics.addBox(ladderX, ry - 0.03, 111, 0.06, 0.03, 0.38, {}));
+    }
+    this._add(new THREE.Mesh(mergeGeometries(rungs), galv));
     const boardMat = this._mat(
       'board.dive',
-      new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.55 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.55 }), 'painted', 1)
     );
     const board3 = this._box(6.2, 0.12, 0.55, boardMat, 61.8, 3.36, 111);
     this._solid(board3);
@@ -6936,22 +7099,38 @@ export class SportsWorld extends World {
     this._solid(springStand);
     const spring = this._box(4.6, 0.1, 0.5, boardMat, 60.2, 1.25, 114.5);
     this._solid(spring);
-    // Handrails on the tower.
+    /* Handrails on the tower - AND THEY STOP YOU.
+     *
+     * Both runs were `_add`, so the only guard on a 3.36 m platform was drawn
+     * and not built: a player walked through the rail and off the side. One
+     * thin box per side, spanning the drawn post-and-rail envelope exactly
+     * (x 64.6-66.4, y 3.36-4.30, 0.12 m thick about the rail line), so the
+     * barrier is where the barrier looks like it is. `_solid` is no use here -
+     * it would take the merged mesh's bounding box and roof the platform. */
     const hr = [];
     for (const oz of [-0.85, 0.85]) {
       hr.push(strut(65.5, 3.36, 111 + oz, 65.5, 4.3, 111 + oz, 0.06));
       hr.push(strut(64.6, 4.3, 111 + oz, 66.4, 4.3, 111 + oz, 0.06));
+      this.track(this.physics.addBox(65.5, 3.83, 111 + oz, 0.9, 0.47, 0.06, {}));
     }
     const hrm = new THREE.Mesh(mergeGeometries(hr), galv);
     this._add(hrm);
 
-    /* ---- ladders + lifeguard chair ---- */
+    /* ---- ladders + lifeguard chair ----
+     *
+     * The pool ladders were drawn and nothing more, so the two things a
+     * swimmer can see for getting out of the basin were the one thing that
+     * could not carry them. A collider per rung, at the rung: the treads step
+     * 0.40 m, inside `CONFIG.player.stepHeight` = 0.45, and the top one at
+     * y = 0.2 is a 0.10 m rise short of the 0.1 m deck slab. */
     const lad = [];
     for (const z of [106, 116]) {
       lad.push(strut(bx1 + 0.1, 0.5, z - 0.25, bx1 + 0.1, -1.4, z - 0.25, 0.05));
       lad.push(strut(bx1 + 0.1, 0.5, z + 0.25, bx1 + 0.1, -1.4, z + 0.25, 0.05));
       for (let i = 0; i < 4; i++) {
-        lad.push(strut(bx1 + 0.1, 0.2 - i * 0.4, z - 0.25, bx1 + 0.1, 0.2 - i * 0.4, z + 0.25, 0.045));
+        const ry = 0.2 - i * 0.4;
+        lad.push(strut(bx1 + 0.1, ry, z - 0.25, bx1 + 0.1, ry, z + 0.25, 0.045));
+        this.track(this.physics.addBox(bx1 + 0.1, ry - 0.0225, z, 0.045, 0.0225, 0.3, {}));
       }
     }
     const ladders = new THREE.Mesh(mergeGeometries(lad), galv);
@@ -7113,7 +7292,7 @@ export class SportsWorld extends World {
     this._flattenFar(riser, 80, { clouds: 0.8, desat: 0.9 });
     const nosingMat = this._mat(
       'concrete.nosing',
-      new THREE.MeshStandardMaterial({ color: 0x35352f, roughness: 0.9, metalness: 0.05 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x35352f, roughness: 0.9, metalness: 0.05 }), 'coarse', 1)
     );
 
     const seatGeo = whiteColor(mergeGeometries([
@@ -7333,7 +7512,7 @@ export class SportsWorld extends World {
       [-14, 156, 0.3, 0xe8514a], [16, 152, -0.4, 0x2fb4a6], [58, 96, 1.1, 0xf0a92b],
       [-100, 88, 0.0, 0x6c7de0],
     ]) {
-      const mat = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.4, metalness: 0.25, envMapIntensity: 1.2 });
+      const mat = microSurface(new THREE.MeshStandardMaterial({ color: tint, roughness: 0.4, metalness: 0.25, envMapIntensity: 1.2 }), 'painted', 2);
       this._materials.set(`kiosk.${kx}.${kz}`, mat);
       const ky = parkHeight(kx, kz);
       this._enterableRect({
@@ -7404,11 +7583,11 @@ export class SportsWorld extends World {
       const bxp = side * 21;
       bannerPoles.push([bxp, 0, bz, 0, 0, 0, 1]);
       this.track(this.physics.addBox(bxp, 3.7, bz, 0.12, 3.7, 0.12, {}));
-      const mat = new THREE.MeshStandardMaterial({
+      const mat = microSurface(new THREE.MeshStandardMaterial({
         color: bannerColours[i % bannerColours.length],
         roughness: 0.85,
         side: THREE.DoubleSide,
-      });
+      }), 'matte', 2);
       this._materials.set(`banner.${i}`, mat);
       const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 3.4, 4, 6), mat);
       flag.position.set(bxp + side * 0.8, 4.6, bz);
@@ -7599,10 +7778,10 @@ export class SportsWorld extends World {
     const tentGeo = whiteColor(mergeGeometries(tentGeos));
     const tentMat = this._mat(
       'fabric.marquee',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.9, metalness: 0, vertexColors: true,
         side: THREE.DoubleSide, envMapIntensity: 0.4,
-      })
+      }), 'matte', 2)
     );
     const tents = [];
     for (const [x, z, ry] of [[-98, 77, 0.05], [-90, 77.5, -0.1], [6, 158, 0.1]]) {
@@ -7640,9 +7819,9 @@ export class SportsWorld extends World {
     ]));
     const matMat = this._mat(
       'foam.mat',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.95, vertexColors: true, envMapIntensity: 0.3,
-      })
+      }), 'matte', 1)
     );
     const mats = [];
     for (const [x, z, ry] of [[-84, 77, 0.6], [-70, 77.2, -0.2], [-120, 6, 0.3]]) {
@@ -7707,9 +7886,9 @@ export class SportsWorld extends World {
     const crateGeo = whiteColor(new THREE.BoxGeometry(0.9, 0.62, 0.7));
     const crateMat = this._mat(
       'crate.plastic',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.62, metalness: 0.05, vertexColors: true,
-      })
+      }), 'painted', 0.5)
     );
     const crates = [];
     const crng = makeRng(4471);
@@ -7928,7 +8107,6 @@ export class SportsWorld extends World {
   /* Landscaping and site furniture                                    */
   /* ---------------------------------------------------------------- */
 
-  /** Keep planting out of the playing surfaces, the car park and the paths. */
   /**
    * One lobe of a canopy: a noise-displaced icosahedron with *sphere* normals.
    *
@@ -7993,7 +8171,27 @@ export class SportsWorld extends World {
     );
   }
 
+  /**
+   * Keep planting out of the playing surfaces, the car park AND THE PATHS.
+   *
+   * The last clause was a claim, not a test. `routes` did not appear anywhere
+   * in this function: it was ten hardcoded axis-aligned rectangles plus an
+   * inset from the site border, and the path network is eleven polylines. The
+   * spine leg `(0,92) -> (0,125)` - the arrival avenue, straight down the
+   * world's own axis - and the entire western route to the skate pad fall
+   * inside no rectangle at all, so the four callers below were free to plant
+   * 150 broadleaf trees WITH COLLIDABLE TRUNKS, 20 cluster centres, shrub
+   * tufts and ~27,750 grass blades in the middle of a tarmac path. Sports has
+   * no spatial gate of any kind, so nothing would ever have said so.
+   *
+   * `halfW + PATH_VERGE` is the authored edge of the scuffed verge ribbon
+   * (`_buildGround` lays the verge at exactly that half-width), so this rejects
+   * where the path's own drawn surface ends rather than at a chosen margin.
+   *
+   * @see PATH_ROUTES, pathClearance
+   */
   _isPlantable(x, z) {
+    if (pathClearance(x, z) < PATH_VERGE) return false;
     const rects = [
       [PAD.x0 - 4, PAD.z0 - 4, PAD.x1 + 4, PAD.z1 + 6],
       [POOL.x0 - 4, POOL.z0 - 4, POOL.x1 + 4, POOL.z1 + 4],
@@ -8440,7 +8638,7 @@ export class SportsWorld extends World {
       new THREE.CylinderGeometry(0.33, 0.28, 0.9, 12).translate(0, 0.45, 0),
       new THREE.CylinderGeometry(0.37, 0.37, 0.08, 12).translate(0, 0.94, 0),
     ]);
-    const binMat = this._mat('bin', new THREE.MeshStandardMaterial({ color: 0x2b6b4a, roughness: 0.55, metalness: 0.3 }));
+    const binMat = this._mat('bin', microSurface(new THREE.MeshStandardMaterial({ color: 0x2b6b4a, roughness: 0.55, metalness: 0.3 }), 'painted', 0.5));
     const bins = [...this._props.bins,
       [-6, 0.1, 150], [6, 0.1, 150], [-20, 0.1, 170], [20, 0.1, 170],
       [-100, 0, 82], [-70, 0, 82], [-40, 0, -60], [64, 0, -48], [110, 0, -50],
@@ -8514,10 +8712,10 @@ export class SportsWorld extends World {
     ]);
     const hopperMat = this._mat(
       'hopper',
-      new THREE.MeshStandardMaterial({ color: 0xd9d9d3, roughness: 0.4, metalness: 0.6, side: THREE.DoubleSide })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xd9d9d3, roughness: 0.4, metalness: 0.6, side: THREE.DoubleSide }), 'polished', 0.3)
     );
     if (this._props.hoppers.length) this._instanced(hopperGeo, hopperMat, this._props.hoppers);
-    const ballMat = this._mat('ball.tennis', new THREE.MeshStandardMaterial({ color: 0xd7f23a, roughness: 0.85 }));
+    const ballMat = this._mat('ball.tennis', microSurface(new THREE.MeshStandardMaterial({ color: 0xd7f23a, roughness: 0.85 }), 'matte', 0.1));
     const balls = [];
     for (const h of this._props.hoppers) {
       for (let i = 0; i < 14; i++) {
@@ -8624,7 +8822,7 @@ export class SportsWorld extends World {
     ]);
     const coneMat = this._mat(
       'prop.cone',
-      new THREE.MeshStandardMaterial({ color: 0xe25a1e, roughness: 0.62, envMapIntensity: 0.5 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe25a1e, roughness: 0.62, envMapIntensity: 0.5 }), 'painted', 0.3)
     );
     const cones = [];
     for (const [cx, cz, n, r] of [
@@ -8651,9 +8849,9 @@ export class SportsWorld extends World {
     whiteColor(bagGeo);
     const bagMat = this._mat(
       'prop.bag',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.86, vertexColors: true, envMapIntensity: 0.4,
-      })
+      }), 'matte', 0.4)
     );
     const bagCols = [0x2c3a4c, 0x6d2a2a, 0x2b4a35, 0x3d3d44, 0xa8642a, 0x1f2a35];
     const bags = [];
@@ -8686,9 +8884,9 @@ export class SportsWorld extends World {
     whiteColor(boardGeo);
     const boardMat = this._mat(
       'prop.board',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.5, vertexColors: true, envMapIntensity: 0.6,
-      })
+      }), 'painted', 0.5)
     );
     const boards = [];
     for (let i = 0; i < 11; i++) {
@@ -8713,9 +8911,9 @@ export class SportsWorld extends World {
     whiteColor(bottleGeo);
     const bottleMat = this._mat(
       'prop.bottle',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.28, metalness: 0.1, vertexColors: true, envMapIntensity: 0.9,
-      })
+      }), 'polished', 0.2)
     );
     const bottles = [];
     for (const b of bags) bottles.push([b[0] + 0.4, b[1], b[2] + 0.25, 0, 0, 0, 1]);
@@ -8771,23 +8969,23 @@ export class SportsWorld extends World {
      */
     const clothMat = this._mat(
       'crowd.cloth',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff,
         roughness: 0.82,
         metalness: 0.02,
         vertexColors: true,
         envMapIntensity: 0.45,
-      })
+      }), 'matte', 0.6)
     );
     const skinMat = this._mat(
       'crowd.skin',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xc89a7c,
         roughness: 0.65,
         metalness: 0,
         vertexColors: true,
         envMapIntensity: 0.4,
-      })
+      }), 'matte', 0.4)
     );
 
     // Sixteen real sportswear albedos: rust, denim, olive, mustard, charcoal,

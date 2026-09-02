@@ -1266,6 +1266,52 @@ export const SALLOW = definePlanet({
    * lake country should not be a ten-minute walk every visit. THE THROAT SHELF
    * exists for exactly one reason: it is the only ground the stibnite can be
    * reached from, and flying to it is the decision the exotic tier costs.       */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * 8.1 m/s2, apex 0.992 m, a 5.4 m sprint jump.
+   *
+   * NOT the rim of the Throat, which is the best view on the planet and is 24 m
+   * of rim over 6.5 m of run - 75 degrees. The walk lattice cannot reach any
+   * point on it from any pad, and the pad that shares its name sits on a shelf
+   * BELOW it. Same rule as Lathe's Shepherd: an unproven climb is not a prize. */
+  viewpoints: [
+    {
+      /* The east rim of the Sink, 42 m, over a 40 m bowl with the cinnabar in
+       * the bottom of it. 348 m from Cauldron Flat. */
+      id: 'sink_rim', name: 'Sink East Rim', x: 344.5, z: 150, r: 8,
+      terrain: 'crater', place: 'the Sink',
+      climb: 'East across the pan from Cauldron, then round the rim.',
+    },
+    {
+      /* A fumarole cone standing 17 m out of the Brimstone Pan at 44.5 m, with
+       * the vent field all round it. */
+      id: 'pan_cone', name: 'Brimstone Cone', x: 164.72, z: 200, r: 6,
+      terrain: 'vent_field', place: 'the Brimstone Pan',
+      climb: 'North across the pan; the cone is the only thing standing up.',
+    },
+    {
+      /* The head of the Orpiment Seams at 25.7 m, 609 m from any pad - the
+       * longest walk on Sallow, up the whole length of the seam trench. */
+      id: 'seam_head', name: 'Orpiment Head', x: 20, z: 360, r: 8,
+      terrain: 'fissure', place: 'the Orpiment Seams',
+      climb: 'North up the seam from the pan and out at its head.',
+    },
+  ],
+
   landing: [
     {
       /* Facing NNE, at the Throat ring on the northern horizon - an 18 m pale
@@ -1284,6 +1330,7 @@ export const SALLOW = definePlanet({
       id: 'throat', name: 'The Throat Shelf', x: THROAT_PAD[0], z: THROAT_PAD[1], r: 16, yaw: -2.01,
     },
   ],
+
 
   hazards: {
     /** Sulfur dust in the air, drifting rather than falling - `ashfall` is the

@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import './ship-menu.css';
-import { SHIP_STAT_META, SHIP_CLASSES, shipSkinsFor, shipSkinItemId } from '../ships/ShipStats.js';
+import { SHIP_STAT_META, SHIP_CLASSES, shipSkinsFor, shipSkinItemId, shipPowerName } from '../ships/ShipStats.js';
 import { applyShipSkin } from '../ships/ShipSkins.js';
 import {
   SHIP_PALETTES, shipStatLine, schemeState, SCHEME_STATE_LABEL, schemeSections,
+  fittingRows, FITTING_STATE_LABEL,
 } from './ShipMenuLogic.js';
 
 /**
@@ -59,9 +60,10 @@ const _right = new THREE.Vector3();
 export class ShipMenu {
   /**
    * @param {{ root:HTMLElement, bus?:any, input?:any, ships:any, player?:any,
-   *           cosmetics?:any, inventory?:any, camera?:any, scene?:any }} ctx
+   *           cosmetics?:any, inventory?:any, economy?:any, camera?:any,
+   *           scene?:any }} ctx
    */
-  constructor({ root, bus, input, ships, player, cosmetics, inventory, camera, scene }) {
+  constructor({ root, bus, input, ships, player, cosmetics, inventory, economy, camera, scene }) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.ships = ships;
@@ -72,6 +74,18 @@ export class ShipMenu {
      * and is why `_schemeState` reads them defensively rather than assuming. */
     this.cosmetics = cosmetics ?? null;
     this.inventory = inventory ?? null;
+    /* THE PURSE, for the fitting till in `_fittingRow`. Optional, and resolved
+     * through the bag when it is not passed: `main.js` builds this panel with
+     * `inventory` and without `economy`, and `Inventory` holds the ledger it
+     * credits sales to (`this.economy = economy ?? null`). So the counter is
+     * live in the shipped build without a line of `main.js` changing, and an
+     * explicit `economy` still wins for a rig that hands one in.
+     *
+     * `_purse()` answers null when neither is reachable, and a null purse
+     * draws every rung with its price and REFUSES every click rather than
+     * granting a free fitting. The silence falls in the direction of not
+     * giving things away, which is the only direction it can safely fall. */
+    this._economy = economy ?? null;
     /* THE TURNTABLE, and why this panel needed a camera at all.
      *
      * The customiser is genuinely good - hull plating, trim, canopy tint,
@@ -233,6 +247,36 @@ export class ShipMenu {
     if (this._stats.length) {
       this._body.appendChild(this._section('Fitted out', 'sm-upgrades', (host) => {
         for (const stat of this._stats) host.appendChild(this._statRow(stat));
+      }));
+      /* THE COUNTER. Twelve rungs under the four pip rows that read them.
+       *
+       * A separate section rather than a button bolted onto `_statRow`,
+       * because the two say different things: "Fitted out" is what this hull
+       * IS and this is what it could be for money. Putting a price on the
+       * status row would also have meant three prices on one line, since a
+       * stat has three rungs and only one current tier.
+       *
+       * Every row is rebuilt from `fittingRows` on every `_sync`, so a
+       * purchase re-labels the rung it bought, unlocks the one above it and
+       * re-prices every other rung against the smaller purse, in one pass and
+       * with no per-row bookkeeping to get out of step. */
+      this._body.appendChild(this._section('Yard fittings', 'sm-fittings', (host) => {
+        host.appendChild(el('p', 'sm-secnote',
+          'Bought over the counter and fitted here. Permanent, and a tier replaces the one below it.'));
+        /* `sm-sec-b`, the section's own bare flow container, and not a class of
+         * this feature's own. `ship-customizer.test.mjs` requires every class
+         * this file writes to have a rule in `ship-menu.css` - which is the
+         * right rule, because "an unstyled element in a drawer is a row of
+         * black-on-black text nobody reports" - and it exempts exactly one
+         * class, `sm-sec-b`, on the grounds that a bare container needs no rule
+         * and an empty rule added to satisfy a test is a test satisfying
+         * itself. That reasoning is this list exactly: it stacks `.sm-stat`
+         * rows, which carry the whole layout, and has nothing of its own to
+         * say. So it borrows the container that already exists rather than
+         * inventing a second one plus a rule to justify it. */
+        const list = el('div', 'sm-sec-b');
+        host.appendChild(list);
+        this._syncers.push(() => this._renderFittings(list));
       }));
     }
     this._sync();
@@ -413,6 +457,139 @@ export class ShipMenu {
       fx.textContent = shipStatLine(this._shipId, stat, tier);
     });
     return row;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* The fitting till                                                  */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The ledger this counter debits, or null.
+   *
+   * See the note on `this._economy` in the constructor. Duck-typed on the two
+   * methods actually called - `spend` and a readable `credits` - so a stub
+   * that cannot refuse a debit is treated as no purse at all rather than
+   * throwing halfway through a sale.
+   *
+   * @returns {any|null}
+   */
+  _purse() {
+    for (const e of [this._economy, this.inventory?.economy]) {
+      if (e && typeof e.spend === 'function' && Number.isFinite(Number(e.credits))) return e;
+    }
+    return null;
+  }
+
+  /** Rebuild the twelve rungs against the live registry and the live purse. */
+  _renderFittings(list) {
+    const rows = fittingRows({
+      shipId: this._shipId,
+      stats: this._stats,
+      powers: this.ships.getPowers?.(this._shipId) ?? {},
+      /* A missing purse is ZERO credits, not infinite ones. Every rung then
+       * draws as `dear` - priced, visible, refused - which is the honest face
+       * of "this rig has no economy" and is the same direction
+       * `_schemeState` falls when there is no wardrobe. */
+      credits: Number(this._purse()?.credits) || 0,
+    });
+    list.textContent = '';
+    for (const row of rows) list.appendChild(this._fittingRow(row));
+  }
+
+  /** One rung: name, effect, price, and a button that is only ever a Buy. */
+  _fittingRow(row) {
+    /* `sm-stat` FIRST, and that is a reuse rather than a shortcut.
+     *
+     * `.sm-stat` is already `grid-template-columns: 1fr auto` with `.sm-stat-l`
+     * in the first cell and `.sm-stat-fx` spanning the row below - which is
+     * exactly this row's shape: a name, a control on the right, and the effect
+     * copy underneath. Authoring a second, near-identical block in
+     * `ship-menu.css` would be two descriptions of one layout, and this panel's
+     * own history is a catalogue of what happens to the second copy.
+     *
+     * The `sm-fit-*` classes carry no style. They are the hook a stylesheet or
+     * a test reaches for, and `dataset` carries the same three facts in a form
+     * that survives a class rename. */
+    const el_ = el('div', `sm-stat sm-fit sm-fit-${row.state}`);
+    el_.dataset.stat = row.stat;
+    el_.dataset.tier = String(row.tier);
+    el_.dataset.state = row.state;
+    const name = el('span', 'sm-stat-l', row.label);
+    const fx = el('span', 'sm-stat-fx', row.effect);
+    /* `sm-btn ghost`, the panel's own secondary button, and nothing of this
+     * feature's own - see the note on the list container above. The row's
+     * three facts live on `dataset`, which is a sturdier hook for a test than
+     * a class anyway. */
+    const btn = el('button', 'sm-btn ghost', row.state === 'owned' ? FITTING_STATE_LABEL.owned : `${row.price} CR`);
+    btn.type = 'button';
+    btn.title = `${shipPowerName(row.shipId, row.stat, row.tier)} — ${FITTING_STATE_LABEL[row.state]}`;
+    /* DISABLED IS THE DEFAULT AND `afford` IS THE EXCEPTION.
+     *
+     * Written this way round on purpose. A fourth state added later - a hull
+     * that stops selling a stat, a tier gated behind a licence - arrives
+     * disabled rather than buyable, which is the safe direction for a mistake
+     * in a file that spends the player's credits. */
+    btn.disabled = row.state !== 'afford';
+    btn.addEventListener('click', () => this._buyFitting(row));
+    el_.append(name, fx, btn);
+    return el_;
+  }
+
+  /**
+   * Sell one fitting.
+   *
+   * ── Refuse before you consume, and refuse before you CHARGE ──────────────
+   *
+   * `MountSkins.js` records the ordering rule and `ShipRegistry.applyScheme`
+   * follows it. Here there are two things that can be lost in the wrong order
+   * and the loss is asymmetric: a grant with no debit is a free upgrade, and a
+   * debit with no grant is the player's money gone. So the order is
+   *
+   *   1. re-derive the row's state from LIVE data (never from the DOM);
+   *   2. ask `sellsPower`, which `ShipRegistry` made public for exactly this;
+   *   3. `economy.spend`, which refuses rather than going below zero;
+   *   4. and only then `grantPower`.
+   *
+   * Step 1 is not paranoia. The button was labelled when the panel last
+   * synced, and between then and the click the player can have bought a
+   * livery, been paid a contract or had a save restored under them. A till
+   * that trusts its own label is a till that sells a tier the player already
+   * owns - and `grantPower` takes `max(owned, tier)`, so that purchase would
+   * be charged in full and change nothing.
+   *
+   * @param {{shipId:string, stat:string, tier:number, price:number}} row
+   * @returns {{ok:boolean, reason?:string}}
+   */
+  _buyFitting(row) {
+    const shipId = row?.shipId;
+    if (!shipId || shipId !== this._shipId) return { ok: false, reason: 'wrong-ship' };
+    if (this.ships.sellsPower && !this.ships.sellsPower(shipId, row.stat)) {
+      return { ok: false, reason: 'unsupported' };
+    }
+    const owned = Math.max(0, Math.floor(Number(this.ships.getPowers?.(shipId)?.[row.stat]) || 0));
+    if (row.tier <= owned) return { ok: false, reason: 'owned' };
+    if (row.tier > owned + 1) return { ok: false, reason: 'locked' };
+
+    const purse = this._purse();
+    const price = Math.max(1, Math.floor(Number(row.price) || 0));
+    if (!purse) return { ok: false, reason: 'no-economy' };
+    if (!purse.spend(price, 'ship-fitting')) return { ok: false, reason: 'credits' };
+
+    this.ships.grantPower?.(shipId, row.stat, row.tier);
+    /* Published for the persist scheduler, and named for the mount event it
+     * mirrors so a handler can be written by reading the one beside it. The
+     * grant has ALREADY happened by the time this fires - unlike
+     * `mount:power:buy`, which is the request as well as the receipt - so a
+     * build with no listener loses the save-on-purchase, not the purchase. */
+    this.bus?.emit?.('ship:power:buy', {
+      ship: shipId, power: row.stat, tier: row.tier, cost: price,
+    });
+    this.bus?.emit?.('hud:notify', {
+      text: `${shipPowerName(shipId, row.stat, row.tier)} fitted — ${price} CR`,
+      tone: 'info',
+    });
+    if (!this.bus) this._sync();
+    return { ok: true };
   }
 
   /* ---------------------------------------------------------------- */

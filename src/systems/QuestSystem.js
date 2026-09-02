@@ -20,6 +20,7 @@
  */
 
 import { allows } from '../worlds/WorldRules.js';
+import { offlineQuests } from './QuestsOffline.mjs';
 
 /**
  * Seconds of damage-free time that credit one `survive` count.
@@ -29,6 +30,69 @@ import { allows } from '../worlds/WorldRules.js';
  * See `_onPlayerDamaged`.
  */
 const SURVIVE_TICK_S = 30;
+
+/**
+ * Fold any authored identifier down to `[a-z0-9_]`.
+ *
+ * Module level and exported because a SECOND consumer now needs the same
+ * folding: `Loot` matches a refused pickup against the `collect` steps this
+ * file publishes on `quests:collect:pending`, and two spellings of "the same
+ * id" is how a matcher stops matching. See `tokenRunMatch`.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function normalizeTarget(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * True when the shorter token list appears CONTIGUOUSLY in the longer one.
+ *
+ * The anchoring is the whole point, and the reason is recorded on
+ * `QuestSystem._matchesStepTarget`: the old rule was a bare `includes`, which
+ * made the single character `1` a candidate that matched every race target
+ * containing the digit. Whole underscore-separated tokens keep the useful
+ * looseness (`vellum` inside `vellum_ridge_circuit`) and make a fragment
+ * incapable of standing in for an identity.
+ *
+ * @param {string[]} a
+ * @param {string[]} b
+ */
+export function tokenRunMatch(a, b) {
+  if (!a?.length || !b?.length) return false;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  for (let i = 0; i + short.length <= long.length; i++) {
+    let hit = true;
+    for (let j = 0; j < short.length; j++) {
+      if (long[i + j] !== short[j]) { hit = false; break; }
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `candidate` name the thing `target` asks for?
+ *
+ * The one place the anchored rule is stated, so the quest matcher and the
+ * pickup layer cannot drift apart. Both arguments are normalised here, so
+ * callers may pass raw authored strings.
+ *
+ * @param {string} target the step's target
+ * @param {string} candidate an identity the event offered
+ */
+export function targetMatches(target, candidate) {
+  const expected = normalizeTarget(target);
+  const got = normalizeTarget(candidate);
+  if (!expected || !got) return false;
+  if (expected === got) return true;
+  return tokenRunMatch(expected.split('_').filter(Boolean), got.split('_').filter(Boolean));
+}
 
 export class QuestSystem {
   /**
@@ -312,12 +376,92 @@ export class QuestSystem {
       // A quest taken while already standing in its world still ticks its visit
       // step; `_creditVisit` makes sure the world entry is only counted once.
       this._creditVisit();
-      this.bus?.emit('quests:changed', { engagements: this.engagements });
+      this._emitChanged({});
       this.bus?.emit('hud:notify', { text: `Quest accepted — ${quest.title}`, tone: 'info' });
     } catch (err) {
       console.error('[QuestSystem] accept failed:', err);
       this.bus?.emit('hud:notify', { text: 'Could not accept quest', tone: 'bad' });
     }
+  }
+
+  /**
+   * Give a quest back.
+   *
+   * ── The exit that did not exist ──────────────────────────────────────────
+   *
+   * `abandon` appeared nowhere: not in this file, not in `QuestBoard`, not in
+   * the API route. The only ways out of `in_progress` were finishing it and
+   * `_failQuest('Time expired')` - and that timer is WALL CLOCK, recomputed on
+   * reload as `duration_minutes*60000 - (Date.now() - accepted_at)`, so
+   * accepting a 45-minute quest and logging off overnight auto-failed it. That
+   * much is recoverable, because a failed engagement is re-acceptable (the
+   * board's `available` tab includes them). What was not recoverable was
+   * changing your mind: a player who took a quest they did not want had to
+   * either complete it or wait out its window to clear the board.
+   *
+   * Deliberately shaped as a `fail` and not as a deletion. Three consequences,
+   * all of them wanted: the engagement is re-acceptable afterwards, the reason
+   * is on the row so the board can say what happened, and no server-side
+   * completion is implied - abandoning pays nothing, exactly like
+   * `MinigameManager.abort` and `RaceManager.abort`.
+   *
+   * ── The two-step POST, and when it becomes one ───────────────────────────
+   *
+   * The shipped route knows `accept`, `progress`, `complete` and `fail`, and
+   * answers anything else with `400 Unknown action`. So this tries the
+   * dedicated `abandon` action first - which is the one the server SHOULD grow,
+   * because "the player gave it back" and "the clock ran out" are different
+   * facts and a ledger that conflates them cannot tell you which quests people
+   * refuse - and falls back to `fail` with an explicit reason, which every
+   * deployed server already handles. Delete the fallback once the action lands;
+   * nothing else here changes.
+   *
+   * @param {string} engagementId
+   * @returns {Promise<boolean>} true when the engagement was in progress and is
+   *   now given back
+   */
+  async abandon(engagementId) {
+    const entry = this.engagements.get(engagementId);
+    if (!entry || entry.engagement.status !== 'in_progress') return false;
+
+    entry.engagement.status = 'failed';
+    entry.engagement.failure_reason = 'Abandoned';
+    entry.timeLeftMs = null;
+    /* Any queued step progress belongs to a quest that is no longer running.
+     * Left in the queue it would be POSTed after the abandon and re-stamp
+     * `percent_complete` on a row the player has given back. */
+    this._syncQueue.delete(engagementId);
+
+    try {
+      let res = await fetch('/api/game/quests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'abandon', engagementId, reason: 'Abandoned' }),
+      });
+      if (!res.ok) {
+        res = await fetch('/api/game/quests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ action: 'fail', engagementId, reason: 'Abandoned' }),
+        });
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      /* The local state still stands down. A server that never heard about it
+       * restores the engagement on the next load, which is annoying and
+       * recoverable; refusing to release the board because the network is down
+       * is neither. Same reasoning as `_questsOffline`. */
+      console.error('[QuestSystem] abandon sync:', err);
+    }
+
+    this._emitChanged({});
+    this.bus?.emit('hud:notify', {
+      text: `Quest abandoned — ${entry.quest?.title ?? ''}`,
+      tone: 'info',
+    });
+    return true;
   }
 
   /* `markStepDone(engagementId, stepOrder)` was here, documented as "called
@@ -379,7 +523,7 @@ export class QuestSystem {
         credentials: 'include',
       });
       if (!res.ok) {
-        this._questsOffline(`http ${res.status}`);
+        this._questsOffline(`http ${res.status}`, worldId);
         return;
       }
       const contentType = res.headers.get('content-type') ?? '';
@@ -389,7 +533,32 @@ export class QuestSystem {
       const data = await res.json();
 
       if (data.player_id && !this._playerId) this._playerId = data.player_id;
-      this.worldQuests = data.quests ?? [];
+      const served = Array.isArray(data.quests) ? data.quests : [];
+      this.worldQuests = served;
+
+      /* SIGNED OUT AND SERVED NOTHING IS THE FIRST-RUN CASE, NOT AN EMPTY WORLD.
+       *
+       * The route answers a signed-out GET with the platform catalogue and
+       * `player_id: null`. When that catalogue comes back empty the database
+       * has not been seeded (or is not there), and the board would draw "No
+       * quests in this category" for a world that has ten of them - which is
+       * precisely what a first-run player sees, because `Onboarding` records
+       * that first run happens signed out.
+       *
+       * The bundle is used ONLY in that pair of conditions. In particular it is
+       * NOT used when a SIGNED-IN player is served an empty list: that is the
+       * operator having switched `is_active` off, and resurrecting rows they
+       * deliberately pulled would be this file overruling the admin console.
+       * A world with genuinely no seeded quests (the maze, space, the ten
+       * planets) yields an empty bundle too, so the two answers agree. */
+      let bundled = false;
+      if (!served.length && !this._playerId) {
+        const fallback = offlineQuests(worldId);
+        if (fallback.length) {
+          this.worldQuests = fallback;
+          bundled = true;
+        }
+      }
 
       // Merge backend engagements into local state
       for (const eng of (data.engagements ?? [])) {
@@ -416,35 +585,49 @@ export class QuestSystem {
       // as locally accepted ones.
       this._creditVisit();
 
-      this.bus?.emit('quests:changed', {
-        worldId,
-        quests: this.worldQuests,
-        engagements: this.engagements,
-      });
+      this._emitChanged({ worldId, quests: this.worldQuests, offline: bundled });
     } catch (err) {
-      this._questsOffline(err);
+      this._questsOffline(err, worldId);
     }
   }
 
   /**
-   * Record that the quest service is unreachable. Once per session, quietly.
+   * Record that the quest service is unreachable, and fall back to the bundle.
+   *
+   * The warning used to say "the board will show what is bundled and nothing
+   * else" while nothing was bundled - a sentence that was true and useless. It
+   * is now literally what happens: `QuestsOffline` carries the seeded content
+   * for all six worlds, pinned to `admin/lib/quests/` by a test, and the board
+   * draws it with its offline banner up.
+   *
+   * The engagements Map is left alone. Progress on an already-accepted quest is
+   * local state that outlives an outage, and `_flushSync` retries the writes
+   * when the service comes back.
    *
    * @param {unknown} why
+   * @param {string|null} [worldId] the world whose bundle to fall back to
    */
-  _questsOffline(why) {
+  _questsOffline(why, worldId = this._worldId) {
     if (!this._questsOfflineLogged) {
       this._questsOfflineLogged = true;
       console.warn('[QuestSystem] quest service unreachable; the board will show what is '
         + 'bundled and nothing else:', why);
     }
+    /* Assigned unconditionally, which also fixes the staleness the comment
+     * below has always claimed to fix and never did: nothing cleared
+     * `worldQuests` on a world change, so a failed load in the SECOND world of
+     * a session left the FIRST world's quests on the board looking live. The
+     * bundle is per-world, so this replaces them with this world's - and with
+     * an empty list for a world that has no seeded quests (the maze, space,
+     * the ten planets), which is the correct empty rather than a stale full. */
+    this.worldQuests = offlineQuests(worldId);
     /* And the board is told, so it can say "offline" rather than "empty" -
      * the same distinction the marketplace draws. `quests:changed` is what it
      * listens to; sending it with an empty list is what stops a stale list
      * from a previous world sitting there looking live. */
-    this.bus?.emit('quests:changed', {
+    this._emitChanged({
       worldId: this.worldManager?.active?.id ?? null,
       quests: this.worldQuests,
-      engagements: this.engagements,
       offline: true,
     });
   }
@@ -519,6 +702,21 @@ export class QuestSystem {
   _onKill(e) {
     const npc = e?.npc;
     if (!npc || npc.type !== 'hostile') return;
+    /* SOMEBODY ELSE'S KILL IS NOT YOUR QUEST STEP.
+     *
+     * `Combat.applyNPCDamage` puts `byPlayer` on every `npc:killed`, and
+     * `resolveMaul` routes a beast's jaws through it with `byPlayer: false`
+     * explicitly, for a reason its own comment states: "so a wolf eating a
+     * villager cannot pay the player for it". `Economy._onNPCKilled` honours
+     * that flag and pays nothing. This file did not read it at all, so quest 17's
+     * four named bandits and quest 20's Rook Gant and Sable Ida all cleared
+     * while the player stood back and let a predator do the work.
+     *
+     * `=== false` and not `!== true`: a hand-rolled or legacy emit that carries
+     * no flag is UNKNOWN, not "not the player", and refusing those would break
+     * every emitter that predates the field. Only an explicit denial is obeyed,
+     * which is the same reading `Onboarding` uses on the same event. */
+    if (e?.byPlayer === false) return;
     /* A herbivore is not a kill anybody asked for. `BeastNPC` files every
      * animal as a hostile - see the note on `type` there - and
      * `_matchesStepTarget` returns true for a step with no `target` at all, so
@@ -536,9 +734,35 @@ export class QuestSystem {
      * single path now, and it sees the killing blow like any other. */
   }
   
+  /**
+   * `defend` — one count per HIT the player lands. See `_onKill` for why the
+   * kill path does not also advance it.
+   *
+   * ── The flag this reads does not exist yet at the emit site ───────────────
+   *
+   * `npc:killed` carries `byPlayer`; `npc:damaged` does NOT. There is exactly
+   * one emitter - `Combat.applyNPCDamage`, `src/systems/Combat.js:455` - and it
+   * has the value in a local variable two lines above the emit:
+   *
+   *     const byPlayer = opts.byPlayer !== false;      // :396
+   *     this.bus.emit('npc:damaged', { npc, amount, health, isHeadshot, weaponId });
+   *
+   * The one-word repair is to add `byPlayer` to that payload. Until it lands,
+   * `defend: Wry Tam x8` (quest 20) is cleared by eight hits from ANYBODY -
+   * including the wolf that `resolveMaul` routes through the same choke point
+   * with `byPlayer: false` precisely so it cannot pay the player.
+   *
+   * The guard is written now and defensively: an explicit `false` is refused, a
+   * MISSING flag is treated as unknown and allowed through. That means this
+   * line is a no-op today and becomes the fix the moment Combat.js:455 carries
+   * the field, with no second edit here - and it can never be the thing that
+   * silently stops every `defend` step in the game from advancing, which is
+   * what `!== true` would have done against today's emitter.
+   */
   _onNpcDamaged(e) {
     const npc = e?.npc;
     if (!npc || npc.type !== 'hostile') return;
+    if (e?.byPlayer === false) return;
     this._advanceSteps('defend', (step, meta) => this._matchesStepTarget(step, meta), { event: e });
   }
   
@@ -610,10 +834,45 @@ export class QuestSystem {
     });
   }
   
+  /**
+   * The generic activity channel — `talk`, `interact`, `minigame`, `mine`, and
+   * whatever a future emitter invents. `e.type` is forwarded verbatim.
+   *
+   * ── One NPC is one person ────────────────────────────────────────────────
+   *
+   * A role-targeted `talk` step with `count > 1` was satisfiable by standing in
+   * front of ONE NPC and pressing E repeatedly. `_advanceSteps` only
+   * de-duplicates when `meta.onceKey` is set, and until now the only caller
+   * that set one was `_creditVisit` - so eight authored steps across seven
+   * quests (3, 5, 11, 31, 52, 102, 105) meant "press E three times at Rafiq"
+   * when the content's own note beside them says the opposite: "count: 3 over
+   * vendor is three different people and a short walk".
+   *
+   * The key is `talk:<npc>` with a constant token, which is the "once ever, per
+   * engagement" spelling of the existing mechanism (`_creditVisit` uses a
+   * moving token because a genuine re-entry SHOULD count again; a second
+   * conversation with the same person should not). The stamp is per engagement
+   * rather than per step, which is the stricter of the two readings and the one
+   * the labels describe.
+   *
+   * `id` first, `name` as the fallback: `HUD` flattens `{id, name, role}` onto
+   * the event, and every spawned NPC has an id, but a hand-rolled emit might
+   * only carry a name. An activity with neither is left un-keyed rather than
+   * collapsing every anonymous talker into one - `talk:undefined` would make
+   * the first conversation the only one that ever counted.
+   */
   _onActivity(e) {
     const type = e?.type;
     if (!type) return;
-    this._advanceSteps(type, (step, meta) => this._matchesStepTarget(step, meta), { event: e });
+    const meta = { event: e };
+    if (type === 'talk') {
+      const who = e?.id ?? e?.name ?? e?.npc?.id ?? e?.npc?.name ?? null;
+      if (who != null && String(who).trim()) {
+        meta.onceKey = `talk:${String(who).trim()}`;
+        meta.onceToken = 1;
+      }
+    }
+    this._advanceSteps(type, (step, m) => this._matchesStepTarget(step, m), meta);
   }
 
   /**
@@ -725,7 +984,7 @@ export class QuestSystem {
       if (changed) {
         this._syncQueue.add(engId);
         this._checkQuestComplete(engId);
-        this.bus?.emit('quests:changed', { engagements: this.engagements });
+        this._emitChanged({});
       }
     }
   }
@@ -768,20 +1027,16 @@ export class QuestSystem {
 
   /**
    * True when the shorter token list appears contiguously in the longer one.
+   *
+   * Kept as a method so existing callers and tests reach it where they always
+   * have; the implementation is the module-level {@link tokenRunMatch}, which
+   * `Loot` shares.
+   *
    * @param {string[]} a
    * @param {string[]} b
    */
   _tokenRunMatch(a, b) {
-    if (!a.length || !b.length) return false;
-    const [short, long] = a.length <= b.length ? [a, b] : [b, a];
-    for (let i = 0; i + short.length <= long.length; i++) {
-      let hit = true;
-      for (let j = 0; j < short.length; j++) {
-        if (long[i + j] !== short[j]) { hit = false; break; }
-      }
-      if (hit) return true;
-    }
-    return false;
+    return tokenRunMatch(a, b);
   }
 
   _eventTargetCandidates(type, event = {}) {
@@ -918,10 +1173,27 @@ export class QuestSystem {
         push(event?.shipId);
         break;
       case 'purchase':
+        /* A SALE IS NOT A PURCHASE.
+         *
+         * `market:trade` is emitted by both sides of the counter and says which
+         * it was in `kind` ('buy' | 'sell'). This branch pushed `event.itemId`
+         * unconditionally, so selling the very item a step asked you to BUY
+         * completed the step - and the two station tutorials whose entire
+         * subject is the buy side (n 106, "Learn the marketplace: buying AND
+         * selling") were among the thirteen quests it affected. Worse than a
+         * loophole: a player following the lesson in order sells first, and the
+         * step ticks for the wrong half of it.
+         *
+         * `kind` itself stays a candidate on both paths, because it is the
+         * handle the authored `purchase:sell` steps use - a step targeting
+         * 'sell' is asking for a sale and must still be satisfied by one. Only
+         * the ITEM identities are withheld from a sale, which is exactly the
+         * distinction: "you sold something" is true, "you bought this" is not. */
+        push(event?.kind);
+        if (event?.kind === 'sell') break;
         push(event?.itemId);
         push(event?.packId);
         push(event?.id);
-        push(event?.kind);
         push(event?.pack?.id);
         push(event?.pack?.itemId);
         break;
@@ -965,12 +1237,9 @@ export class QuestSystem {
     return candidates;
   }
 
+  /** @see normalizeTarget — the module-level function `Loot` shares. */
   _normalizeTarget(value) {
-    return String(value ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '');
+    return normalizeTarget(value);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1049,7 +1318,7 @@ export class QuestSystem {
     }
 
     this.bus?.emit('quests:quest:complete', { quest: entry.quest, engagementId, credits: awarded });
-    this.bus?.emit('quests:changed', { engagements: this.engagements });
+    this._emitChanged({});
     this.bus?.emit('hud:notify', {
       text: `Quest complete — ${entry.quest?.title ?? ''} +${awarded} CR`,
       tone: 'good',
@@ -1073,7 +1342,7 @@ export class QuestSystem {
       console.error('[QuestSystem] fail sync:', err);
     }
 
-    this.bus?.emit('quests:changed', { engagements: this.engagements });
+    this._emitChanged({});
     this.bus?.emit('hud:notify', {
       text: `Quest failed — ${entry.quest?.title ?? ''}: ${reason}`,
       tone: 'bad',
@@ -1155,6 +1424,70 @@ export class QuestSystem {
   /* ------------------------------------------------------------------ */
   /* Private — helpers                                                   */
   /* ------------------------------------------------------------------ */
+
+  /**
+   * Announce a change, and republish what the pickup layer needs with it.
+   *
+   * Every `quests:changed` in this file goes through here so the two can never
+   * disagree - a board that redrew and a `Loot` that still believed in a step
+   * the player finished thirty seconds ago is exactly the class of bug this
+   * file keeps finding in itself.
+   *
+   * @param {object} extra fields to merge onto the `quests:changed` payload
+   */
+  _emitChanged(extra = {}) {
+    this.bus?.emit('quests:changed', { ...extra, engagements: this.engagements });
+    this._publishCollectPending();
+  }
+
+  /**
+   * The `collect` steps that are live RIGHT NOW, for whoever hands out pickups.
+   *
+   * `Loot.collectEntry` takes nothing when the bag and the store are both full,
+   * and when it takes nothing it emits no `loot:collected` - so a `collect`
+   * step simply stops moving, while a throttled "Inventory full" notice appears
+   * that says nothing about the quest it is blocking. The player sees a counter
+   * frozen at 0/3 and a warning that reads like housekeeping.
+   *
+   * `Loot` has no handle on this class and main.js does not give it one, so the
+   * shape travels over the bus - and it is deliberately a flat, primitive list
+   * rather than the engagements Map: the alternative was `Loot` parsing
+   * `quest.steps` JSON and re-implementing `_matchesStepTarget`, i.e. a second
+   * description of the matcher living in a file that has no business owning
+   * one. Targets are pre-normalised here so the consumer needs only a string
+   * compare of token runs.
+   *
+   * Emitted even when empty, because "nothing is blocked" is the state that
+   * clears a stale list.
+   */
+  _publishCollectPending() {
+    if (!this.bus) return;
+    const worldId = this._worldId;
+    const out = [];
+    const seen = new Set();
+    for (const [, entry] of this.engagements) {
+      if (entry?.engagement?.status !== 'in_progress') continue;
+      for (const step of this._parseSteps(entry.quest?.steps)) {
+        if (step?.type !== 'collect') continue;
+        // The STEP's world, exactly as `_advanceSteps` reads it.
+        if (step.world && step.world !== worldId) continue;
+        const state = entry.stepStates?.[step.order];
+        if (state?.done) continue;
+        const target = normalizeTarget(step.target);
+        const key = `${target}|${step.label ?? ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          target,
+          label: String(step.label ?? ''),
+          have: Math.max(0, Number(state?.have) || 0),
+          count: Math.max(1, Number(step.count) || 1),
+          questTitle: String(entry.quest?.title ?? ''),
+        });
+      }
+    }
+    this.bus.emit('quests:collect:pending', { worldId, steps: out });
+  }
 
   _parseSteps(json) {
     if (!json) return [];

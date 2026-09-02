@@ -25,6 +25,15 @@ import { allows } from '../worlds/WorldRules.js';
  * They restock on a timer, which is what turns a cleared world into somewhere
  * worth coming back to.
  *
+ * ── The restock clock is not the record ───────────────────────────────────
+ * Because they restock, "which caches are on a timer" and "which caches have
+ * ever been found" are different questions, and this file answers both with
+ * different sets: `_emptied` is a clock that expires by design, and `_found`
+ * is a grow-only union of site ids that never does. The second is what
+ * `Charters` counts for its Consignments column - six sites a world, a hundred
+ * and eight across the Nexus - and it is the reason fourteen thin worlds have
+ * a second axis on the board at all. See both fields for the full argument.
+ *
  * ── How it is built ───────────────────────────────────────────────────────
  * Deliberately thin. The pickup, its mesh, the `E` prompt and the collection
  * path are all `Loot`'s, which already does exactly this job well; this class
@@ -289,6 +298,35 @@ export class Caches {
     this._emptied = new Map();
 
     /**
+     * Every site this player has EVER emptied. Grow-only, keyed by identity.
+     *
+     * ── Why a second set, when `_emptied` already knows ───────────────────
+     *
+     * `_emptied` is a RESTOCK CLOCK and it is meant to forget: `_prune` drops
+     * every deadline that has passed, on entry and on load, so the map stays
+     * bounded by the 210-second window rather than by lifetime play. That is
+     * exactly right for a timer and exactly wrong for a record. Three minutes
+     * after a player finds the last cache in a world, `_emptied` is empty
+     * again and there is nothing anywhere that says they found any of them.
+     *
+     * So the record is its own set, and it never forgets. It is the same shape
+     * `Relics.foundIds` and `Charters._deeds` are - a union of ids, which is
+     * what `progressLedger.ts` merges without a clock - and it is what lets
+     * `Charters` draw a Consignments column: a learned denominator (how many
+     * sites this world published, which the world decides) over an identity
+     * set owned here (which of them have been found).
+     *
+     * Written from `_onCollected` ONLY, never from `_empty`. `update`'s safety
+     * net also calls `_empty`, for a pickup Loot released without an event, and
+     * crediting a find there would hand a player a consignment nobody
+     * collected - the same distinction `_empty`'s own comment draws about the
+     * deadline it writes.
+     *
+     * @type {Set<string>}
+     */
+    this._found = new Set();
+
+    /**
      * The render-tree index `_hasVisibleFloor` queries, or null.
      *
      * Non-null only for the duration of one `_onWorld` call - see the note
@@ -317,6 +355,29 @@ export class Caches {
     return this.sites;
   }
 
+  /** Every site id this player has found, as a sorted array. */
+  get foundIds() {
+    return [...this._found].sort();
+  }
+
+  /**
+   * How many of one world's caches have ever been found.
+   *
+   * Prefix-matched on the site id, which begins `worldId/`, so the answer
+   * survives a world change and a placement that came out in a different
+   * order - the identical read `Charters._have` makes of `Mining.taken`.
+   *
+   * @param {string} worldId
+   * @returns {number}
+   */
+  foundCount(worldId) {
+    if (typeof worldId !== 'string' || !worldId) return 0;
+    const prefix = `${worldId}/`;
+    let n = 0;
+    for (const id of this._found) if (id.startsWith(prefix)) n++;
+    return n;
+  }
+
   /**
    * Sites for the minimap and HUD: world position plus whether it is currently
    * stocked, which is all a marker needs to know.
@@ -336,9 +397,16 @@ export class Caches {
   _onWorld(id, world) {
     this._worldId = id ?? null;
     this.sites.length = 0;
+    /* Both early returns ANNOUNCE, and that is not tidiness.
+     *
+     * `Charters` learns this world's cache denominator off the announcement,
+     * and its shrink rule is that a world which stops publishing a thing loses
+     * the column rather than keeping a denominator nobody can fill. A silent
+     * return would leave the Coil - which allows no caches at all - carrying
+     * whatever it was told last, for ever. */
     // No caches to dive for in a hedge maze.
-    if (!allows(world, 'caches')) return;
-    if (!world || !this.physics || !this.loot) return;
+    if (!allows(world, 'caches')) return this._announce();
+    if (!world || !this.physics || !this.loot) return this._announce();
 
     const rnd = mulberry(hashString(`cache:${id}`));
     /* `contentBounds` where a world draws a line between its playfield and the
@@ -500,7 +568,7 @@ export class Caches {
         + ` (${fromAuthored} authored, ${this.placement.darted} darted)`
       );
     }
-    this.bus?.emit('caches:changed', { worldId: id, sites: this.markers });
+    this._announce();
   }
 
   /**
@@ -1032,9 +1100,38 @@ export class Caches {
     for (const s of this.sites) {
       if (s.pickup && (s.pickup === p || !s.pickup.active)) {
         this._empty(s);
-        this.bus?.emit('caches:changed', { worldId: this._worldId, sites: this.markers });
+        /* THE RECORD, and the only place it is written. A collection is the one
+         * path that means a player went and got it; `_empty` is also reached by
+         * `update`'s safety net for a pickup Loot released on its own, and a
+         * consignment credited there would be a find nobody made. */
+        if (s.id) this._found.add(s.id);
+        this._announce();
       }
     }
+  }
+
+  /**
+   * Publish the cache board.
+   *
+   * One method rather than the four bare `bus.emit` lines this replaces,
+   * because the payload grew a denominator and a numerator and four call sites
+   * each composing their own is four chances for one of them to disagree - the
+   * argument `_site` already makes about the id.
+   *
+   * `sites` is unchanged and still the marker list the minimap wants. `total`
+   * and `found` are what `Charters` learns its Consignments column from: the
+   * denominator is what this world PUBLISHED (which varies - `_onWorld` scales
+   * the high sites with the map and the probes can refuse a slot), and the
+   * numerator is the identity set above. Neither is a constant anywhere.
+   */
+  _announce() {
+    if (!this.bus) return;
+    this.bus.emit('caches:changed', {
+      worldId: this._worldId,
+      sites: this.markers,
+      total: this.sites.length,
+      found: this.foundCount(this._worldId ?? ''),
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1063,7 +1160,7 @@ export class Caches {
     }
     if (n && worldId === this._worldId) {
       for (const s of this.sites) if (!s.pickup) this._stock(s);
-      this.bus?.emit('caches:changed', { worldId: this._worldId, sites: this.markers });
+      this._announce();
     }
     return n;
   }
@@ -1073,24 +1170,37 @@ export class Caches {
   /* ------------------------------------------------------------------ */
 
   /**
-   * The restock ledger, keyed by site identity.
+   * The restock ledger and the find record, both keyed by site identity.
    *
    * Deliberately NOT the site list: placement is derived from the world and
    * rebuilds itself on entry, and a saved list of positions would be a second
    * copy of something a world already knows - the same reason `Charters` does
    * not sync its learned rosters.
+   *
+   * TWO SETS AND NOT ONE, for the reason `_found` is declared under: `emptied`
+   * is a clock that is meant to expire and `found` is a record that must not.
+   * They are the same ids and they answer different questions.
    */
   serialize() {
     this._prune();
     const emptied = {};
     for (const [id, at] of this._emptied) emptied[id] = at;
-    return { emptied };
+    return { emptied, found: this.foundIds };
   }
 
-  /** REPLACE, not merge: a load has to be able to take a deadline away too. */
+  /**
+   * REPLACE, not merge: a load has to be able to take a deadline away too.
+   *
+   * The find record is replaced on the same rule and for the same reason
+   * `Relics`, `Viewpoints` and `Charters` all state - a load that could only
+   * ADD would leave a player holding progress the save they loaded does not
+   * contain. A save written before this key existed simply has none, and an
+   * absent `found` restores as an empty record rather than as an error.
+   */
   deserialize(data) {
     if (!data || typeof data !== 'object') return false;
     this._emptied.clear();
+    this._found.clear();
     const rows = data.emptied;
     if (rows && typeof rows === 'object') {
       const now = this.now();
@@ -1100,7 +1210,16 @@ export class Caches {
         this._emptied.set(id, at);
       }
     }
+    if (Array.isArray(data.found)) {
+      for (const id of data.found) if (typeof id === 'string' && id) this._found.add(id);
+    }
     for (const s of this.sites) this._restore(s);
+    /* Announced, because a restore MOVES THE RECORD: `Charters` recomputes its
+     * numerator from this set and the board it draws would otherwise stay on
+     * whatever the pre-load session had. `_restore` above is silent by design
+     * (it must not read as a collection), so the one announcement belongs
+     * here, once, after both halves are in. */
+    this._announce();
     return true;
   }
 
@@ -1153,7 +1272,7 @@ export class Caches {
         }
       }
     }
-    if (changed) this.bus?.emit('caches:changed', { worldId: this._worldId, sites: this.markers });
+    if (changed) this._announce();
   }
 
   dispose() {
@@ -1161,6 +1280,7 @@ export class Caches {
     this._offs.length = 0;
     this.sites.length = 0;
     this._emptied.clear();
+    this._found.clear();
   }
 }
 

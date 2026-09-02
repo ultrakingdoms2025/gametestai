@@ -595,7 +595,12 @@ export class RaceUI {
         const desc = el('span', 'rc-pick-d', this._diffBlurb(id));
         b.append(el('span', 'rc-pick-n', diffLabel(id)), desc);
         b.addEventListener('click', () => {
-          if (this.race) this.race.difficulty = id;
+          /* Through the setter, not `race.difficulty = id`. The manager now
+           * defaults to the easiest band a circuit offers and re-applies that
+           * default on every re-arm; `setDifficulty` is what records that a
+           * human made the choice, so re-arming the same circuit stops undoing
+           * it. See RaceManager.setDifficulty. */
+          this.race?.setDifficulty?.(id);
           this._syncPicks();
         });
         this.pickEl.appendChild(b);

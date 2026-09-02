@@ -188,6 +188,32 @@ test('the boot runs the eager chain only when asked, and the lazy poller otherwi
     + 'player next to a gateway never gets its world prepared');
 });
 
+test('switching the lazy poller off also lifts the resident cap, because nothing else can re-prepare', async () => {
+  const src = await readCode('src/main.js');
+  /* THE COUPLING, AND WHY IT IS NOT OPTIONAL.
+   *
+   * `WorldManager._evictStale` disposes a built world that is not active, not
+   * recent, and not near a gateway. That is only safe because `WorldPrefetch`
+   * brings it back when the player walks within PREFETCH_RANGE again. Both
+   * `?prefetch=off` and `?prefetch=all` switch that poller off — so under
+   * either flag an evicted world has NOTHING that can re-prepare it, and the
+   * next entry pays a full build inside a gameplay frame.
+   *
+   * Measured on an RTX 5080 before this line existed, with `?prefetch=all`:
+   * entry:citadel linked 275 new shader programs against a baseline of 0, and
+   * entry:race 42. The frame-gap counter gate failed on both with "was NOT
+   * built when the player entered it". Neither flag is a player path, so the
+   * VRAM bound the cap exists for is untouched by lifting it here. */
+  const off = src.indexOf("if (overrides.prefetch === 'off' || overrides.prefetch === 'all')");
+  assert.ok(off > 0, 'the prefetch overrides no longer disable the poller in one place');
+  const block = src.slice(off, off + 1400);
+  assert.match(block, /worldPrefetch\.enabled\s*=\s*false/,
+    'the overrides no longer switch the lazy poller off');
+  assert.match(block, /worldManager\.residentCap\s*=\s*Infinity/,
+    'the poller is switched off but the resident cap is left in force - an evicted world '
+    + 'can then never be re-prepared, and every later entry pays a full build in a gameplay frame');
+});
+
 test('the per-world step claims the gateways before the sliced warm and releases them in a finally', async () => {
   const src = await readCode('src/main.js');
   const from = src.indexOf('function prepareWorld(id)');
@@ -200,8 +226,24 @@ test('the per-world step claims the gateways before the sliced warm and releases
     + 'first one draws an un-warmed preview');
   assert.match(fn, /\.finally\(\(\) => portals\.releasePreviews\?\.\(id\)\)/,
     'the claim is not released in a finally; a build that throws leaves the gateway STABILISING');
-  assert.match(fn, /\.then\(\(\) => warmWorld\(id\)\)\s*\.then\(\(\) => warmPortalPreviews\(id\)\)/,
+  /* ORDER, not ADJACENCY. This was a regex requiring `warmWorld(id)` to be
+   * followed immediately by `warmPortalPreviews(id)` in the source text, which
+   * is a stricter claim than the one the comment makes and than the one that
+   * matters: `settleLinks(p0, ...)` was inserted between them — it waits for
+   * the links the program warm STARTED before the preview warm plans against
+   * them — and the adjacency regex failed while the property it exists to
+   * protect was not merely intact but strengthened.
+   *
+   * An index comparison is the honest spelling, and it is the one this test
+   * already uses two assertions above for `hold < warm`. */
+  const settle = fn.indexOf('settleLinks(');
+  const previews = fn.indexOf('warmPortalPreviews(id)');
+  assert.ok(warm > 0 && previews > warm,
     'the preview warm no longer follows the program warm');
+  assert.ok(settle > warm && settle < previews,
+    'prepareWorld no longer settles the program warm\'s links before planning the preview warm; '
+    + 'a player who sprints in from PREFETCH_RANGE can arrive on an unlinked program, and this '
+    + 'repo\'s measured cost for one of those is 5,433 ms');
   /* Both callers go through the one door. */
   const chain = src.slice(src.indexOf('function scheduleBackgroundBuilds'), src.indexOf('\n}', src.indexOf('function scheduleBackgroundBuilds')));
   assert.match(chain, /worldPrefetch\.request\(id\)/, 'the eager chain bypasses WorldPrefetch.request and can prepare a world twice');

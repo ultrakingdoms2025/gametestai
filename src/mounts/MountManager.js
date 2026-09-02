@@ -1861,8 +1861,30 @@ export class MountManager {
     };
   }
 
+  /**
+   * Restore the wardrobe, and park the mount that was out.
+   *
+   * ── IT HAS TO RETURN SOMETHING, AND IT RETURNED NOTHING ───────────────────
+   *
+   * `SaveGame._restoreMounts` is written the way every probe-first restore in
+   * that file is written:
+   *
+   *     if (snap.custom && mounts.deserialize?.(snap.custom)) return true;
+   *
+   * A bare `return;` makes that expression `undefined`, so the `if` fell
+   * through to the legacy `snap.active` branch - which is `undefined` too on
+   * any save this build writes, because `serialize()` puts `active` INSIDE the
+   * custom blob. The `else` on that branch then DISMOUNTED the player. Quit
+   * mid-flight on the dragon, reload, and you were standing on the concourse.
+   *
+   * So: `false` when there was nothing to apply, `true` when there was. The
+   * value is the contract, not a courtesy.
+   *
+   * @param {any} data
+   * @returns {boolean} true when a payload was read
+   */
   deserialize(data) {
-    if (!data) return;
+    if (!data || typeof data !== 'object') return false;
     if (Array.isArray(data.unlocked) && data.unlocked.length) {
       const known = new Set(['hoverboard', 'dragon', 'car', 'horse', 'eagle', 'bicycle']);
       this._unlocked = new Set(data.unlocked.filter((id) => known.has(id)));
@@ -1947,9 +1969,15 @@ export class MountManager {
         if (mount) this._applyPowers(mid, mount);
       }
     }
-    // Deferred: the world a save restores has to be live before a mount can be
-    // placed in it, so the caller finishes this with `restorePending()`.
+    /* Deferred: the world a save restores has to be live before a mount can be
+     * placed in it, so the caller finishes this with `restorePending()`.
+     *
+     * That caller is `SaveGame._restoreMounts`, and until this drop there was
+     * NO caller - the id was parked here and nothing ever collected it, so the
+     * deferral was a permanent drop rather than a delay. See the note on that
+     * method for the other two halves of the same defect. */
     if (data.active && this._unlocked.has(data.active)) this._restore = data.active;
+    return true;
   }
 
   /** Complete a deferred restore once a world is live. */

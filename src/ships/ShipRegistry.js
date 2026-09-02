@@ -34,10 +34,43 @@ import { Ship } from './Ship.js';
  * registers whatever is there. Nothing in `DockWorld` knows this class exists,
  * and a world that publishes no hulls simply has none.
  */
+/**
+ * The registry a counter should sell fittings against, or null.
+ *
+ * ── Why a module-level pointer, and where the pattern comes from ──────────
+ *
+ * `Marketplace` is constructed in `main.js` with `bus, economy, inventory,
+ * cosmetics, mounts, player, npcManager, input, root` - and no hulls. It needs
+ * them for one thing only: to REFUSE a `grant_ship_power` row rather than take
+ * the money and drop the grant, which is the reason `sellsPower` was made
+ * public in the first place. Adding a constructor argument would put the whole
+ * ship half of the shop behind an edit to a file neither module owns, and a
+ * counter that is inert until somebody else's file changes is a counter that
+ * shows twelve rows and refuses all of them.
+ *
+ * `ItemDefs.js` already holds exactly this shape: an `activeMarket` at module
+ * scope, written by `setMarketWorld`, read by `buyMultiplier` under every
+ * caller. This is that, for hulls.
+ *
+ * LAST CONSTRUCTED WINS, and the game builds exactly one. A test that builds
+ * its own gets its own, which is what a test wants; `dispose` clears the
+ * pointer only if it is still the one it set, so tearing down an old registry
+ * cannot blank a newer one.
+ *
+ * @returns {ShipRegistry|null}
+ */
+export function activeShipRegistry() {
+  return _active;
+}
+
+/** @type {ShipRegistry|null} */
+let _active = null;
+
 export class ShipRegistry {
   constructor({ bus = null, worldManager = null } = {}) {
     this.bus = bus;
     this.worldManager = worldManager;
+    _active = this;
     /** @type {Object<string, object>} */
     this._liveries = {};
     /** @type {Object<string, object>} */
@@ -371,5 +404,10 @@ export class ShipRegistry {
     this._offWorld = null;
     this._ships.clear();
     this._records.clear();
+    /* Only if it is still ME. A test that builds a second registry and then
+     * disposes the first must not blank the pointer the second one set - that
+     * is the "last move wins" rule the map editor paid for, stated the other
+     * way round. @see activeShipRegistry */
+    if (_active === this) _active = null;
   }
 }

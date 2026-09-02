@@ -430,7 +430,144 @@ export const WEAPON_MOUNTS = Object.freeze({
   rifle: { pos: [0.01, -0.05, -0.05], rot: [-1.35, 0.06, 0], muzzle: [0, 0.006, -0.71] },
   bow: { pos: [0.02, -0.05, -0.06], rot: [-1.5, 0.0, 1.45], muzzle: [0, 0.02, -0.34] },
   staff: { pos: [0.02, -0.06, -0.04], rot: [-1.42, 0.05, 0.1], muzzle: [0, 0.02, -1.12] },
+  /* The player's third-person props. They live here rather than in
+   * `PlayerAvatar` because a mount is a property of the MODEL, not of who is
+   * carrying it - and because `weaponHold` below has to measure grip -> muzzle
+   * for every model the arms can be asked to hold. `PlayerAvatar.PLAYER_PROPS`
+   * builds the geometry these describe.
+   *
+   * `carbine` is a separate key from `rifle` rather than a reuse of it: the
+   * two models are different lengths (the player's brake tip is at -0.790, the
+   * NPC's at -0.710), and `getMuzzleWorld` is where third-person shots leave
+   * from, so an approximation there is a shot that misses its own barrel. The
+   * carbine's numbers are the ones that were already in `PlayerAvatar`,
+   * measured in-engine from the hand's world basis at full aim weight.
+   *
+   * `muzzle` on a blade is its point; on a gauntlet it is where the bolt
+   * leaves the palm; on a bow it is the arrow pass at the riser. */
+  carbine: { pos: [-0.015, -0.056, -0.046], rot: [-0.06, 0.03, 2.9], muzzle: [0, 0.006, -0.79] },
+  sword: { pos: [-0.015, -0.05, -0.03], rot: [-0.06, 0.03, 2.9], muzzle: [0, 0.006, -0.95] },
+  longbow: { pos: [0.02, -0.05, -0.05], rot: [-1.5, 0, 1.45], muzzle: [0, 0.0, -0.20] },
+  gauntlet: { pos: [-0.01, -0.03, -0.02], rot: [-0.2, 0.03, 2.9], muzzle: [0, 0.01, -0.24] },
 });
+
+/**
+ * How each model is HELD, as opposed to where it sits in the fist.
+ *
+ * `WEAPON_MOUNTS` above says where the prop goes. This says what the arms do
+ * with it, and it is authored as fractions of the weapon's OWN geometry rather
+ * than as metres, because that is the whole point: `NPCAnimator` used to send
+ * the left hand to a hardcoded 0.44 m from the chest for every weapon in the
+ * game. That number is 36% of the way down a rifle's handguard - correct, for
+ * a rifle. A pistol's muzzle is 0.169 m from its grip and the right hand grips
+ * at 0.20 m, so the same 0.44 m put the left hand 7 cm PAST the end of the
+ * barrel, closing on nothing. A staff is 1.083 m long and got 0.44 as well.
+ *
+ *  - `hands`  1 or 2. A one-hander does not reach for a foregrip that does not
+ *             exist; the off hand counterbalances instead, and `hold`/`lateral`
+ *             /`drop` describe where it hangs rather than a point on the prop.
+ *  - `hold`   TWO-HANDERS ONLY: fraction of the grip -> muzzle vector where
+ *             the off hand goes. Negative is BEHIND the grip - the bow is
+ *             mounted in the right hand, so the left is the string hand and is
+ *             drawn back past it.
+ *  - `along`  ONE-HANDERS ONLY: the same quantity in metres, authored rather
+ *             than derived, because a counterweight hand's distance from the
+ *             chest has nothing to do with how long the barrel is.
+ *  - `lateral` sideways offset from the weapon's own line, metres. A support
+ *             hand rolls in under the barrel, so it sits slightly inboard of
+ *             the grip rather than on the axis.
+ *  - `right` / `left`  grip poses, keyed into `NPCAnimator.GRIPS`.
+ *  - `wristR` / `wristL`  hand-bone eulers at the aim hold. These were two
+ *             literals shared by every weapon; a drawn bowstring and a rifle's
+ *             support hand are not the same wrist.
+ */
+const WEAPON_HOLDS = Object.freeze({
+  rifle: {
+    hands: 2, hold: 0.36, lateral: -0.03, drop: 0,
+    right: 'grip', left: 'fore',
+    wristR: [0.1, 0, -0.18], wristL: [0.1, 0, 0.24],
+  },
+  pistol: {
+    // A pistol is fired one-handed here because the model is a compact
+    // sidearm: a supporting hand cupped under a 0.169 m frame reads as two
+    // fists jammed together at this silhouette size.
+    hands: 1, along: -0.12, lateral: -0.34, drop: 0.50,
+    right: 'grip', left: 'relaxed',
+    wristR: [0.06, 0, -0.14], wristL: [0.05, 0, 0.06],
+  },
+  staff: {
+    hands: 2, hold: 0.30, lateral: -0.02, drop: -0.02,
+    right: 'hilt', left: 'hilt',
+    wristR: [0.14, 0, -0.22], wristL: [0.12, 0, 0.30],
+  },
+  bow: {
+    // The riser is in the RIGHT hand (that is where `weaponMount` is), so the
+    // left draws. It ends up behind the grip and higher, near the cheek.
+    hands: 2, hold: -0.62, lateral: -0.16, drop: -0.10,
+    right: 'riser', left: 'draw',
+    wristR: [0.02, 0, -0.30], wristL: [0.16, 0, 0.42],
+  },
+  /** The player's carbine. Same stance as the NPC rifle, longer barrel. */
+  carbine: {
+    hands: 2, hold: 0.36, lateral: -0.03, drop: 0,
+    right: 'grip', left: 'fore',
+    wristR: [0.1, 0, -0.18], wristL: [0.1, 0, 0.24],
+  },
+  /** The player's bow. Held side-on in the right hand, drawn with the left. */
+  longbow: {
+    hands: 2, hold: -1.05, lateral: -0.16, drop: -0.10,
+    right: 'riser', left: 'draw',
+    wristR: [0.02, 0, -0.30], wristL: [0.16, 0, 0.42],
+  },
+  /** The player's melee prop. One hand on the hilt, the other counterweight. */
+  sword: {
+    hands: 1, along: -0.10, lateral: -0.30, drop: 0.42,
+    right: 'hilt', left: 'relaxed',
+    wristR: [0.24, 0, -0.10], wristL: [0.05, 0, 0.06],
+  },
+  /** A gauntlet or focus: the palm is the weapon, so the hand stays open. */
+  gauntlet: {
+    hands: 1, along: -0.08, lateral: -0.28, drop: 0.36,
+    right: 'open', left: 'relaxed',
+    wristR: [-0.22, 0, -0.24], wristL: [0.05, 0, 0.06],
+  },
+});
+
+/**
+ * Resolve a model's hold into the metres `NPCAnimator` actually reaches for.
+ *
+ * The animator is handed numbers, not fractions, because it must not have to
+ * know what a weapon is - it reads the resolved hold straight off whatever
+ * prop is visible in the hand (`userData.hold`). This is the one place the
+ * fraction meets the geometry, and it meets `WEAPON_MOUNTS` itself rather than
+ * a copy, so a mount edit moves the hands with it.
+ *
+ * @param {string} model key into `WEAPON_MOUNTS`
+ * @returns {{hands:number, along:number, lateral:number, drop:number,
+ *            right:string, left:string,
+ *            wristR:number[], wristL:number[], length:number}}
+ */
+export function weaponHold(model) {
+  const m = WEAPON_MOUNTS[model] ?? WEAPON_MOUNTS.rifle;
+  const h = WEAPON_HOLDS[model] ?? WEAPON_HOLDS.rifle;
+  const length = Math.hypot(
+    m.muzzle[0] - m.pos[0],
+    m.muzzle[1] - m.pos[1],
+    m.muzzle[2] - m.pos[2]
+  );
+  return Object.freeze({
+    hands: h.hands,
+    /** Metres beyond the right hand along the barrel; negative is behind it. */
+    along: h.hands === 2 ? h.hold * length : h.along,
+    lateral: h.lateral,
+    drop: h.drop,
+    right: h.right,
+    left: h.left,
+    wristR: h.wristR,
+    wristL: h.wristL,
+    length,
+  });
+}
 
 /**
  * Build (or fetch from the shared cache) the meshes for one weapon.
@@ -495,5 +632,11 @@ export function buildWeaponModel(weaponId, assets, theme) {
   const mount = WEAPON_MOUNTS[def.model] ?? WEAPON_MOUNTS.rifle;
   group.position.set(mount.pos[0], mount.pos[1], mount.pos[2]);
   group.rotation.set(mount.rot[0], mount.rot[1], mount.rot[2]);
+  /* The arms read the hold off the prop itself. `HostileNPC` prebuilds every
+   * model it can draw and switches with a `visible` flip, so the visible child
+   * of `weaponMount` already IS the answer to "what is in this hand" - putting
+   * the hold there means there is no second copy of that state to keep in
+   * step. @see NPCAnimator._readHold */
+  group.userData.hold = weaponHold(def.model);
   return { group, muzzle: mount.muzzle, mount, glow };
 }

@@ -9,7 +9,7 @@ export default async function MarketplacePage() {
 
   return (
     <div className="page-body">
-      <div className="page-title">Marketplace</div>
+      <h1 className="page-title">Marketplace</h1>
       <div className="card" style={{ display: 'grid', gap: 14, maxWidth: 820 }}>
         <p style={{ margin: 0, color: 'var(--txt-2)' }}>
           Open the live marketplace catalog manager to create, update, deactivate, and remove shop items.

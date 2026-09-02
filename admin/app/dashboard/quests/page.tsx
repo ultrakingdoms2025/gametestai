@@ -2,6 +2,9 @@ import { revalidatePath } from 'next/cache';
 import { redirect, notFound } from 'next/navigation';
 import { audit, createQuest, deleteQuest, getQuestById, listQuests, updateQuest } from '@/lib/db';
 import { getSession, requireAdminPage } from '@/lib/session';
+import { QUEST_WORLD_OPTIONS } from '@/lib/questVocab';
+import { describeQuestSaveError, questSaveSchema } from '@/lib/validate';
+import ConfirmedAction from '../ConfirmedAction';
 import QuestStepEditor from './StepEditor';
 import type { Step } from './StepEditor';
 
@@ -58,13 +61,16 @@ function parseSteps(value: unknown): Step[] {
   return [];
 }
 
-const WORLD_OPTIONS = [
-  { value: 'station',  label: 'Station'  },
-  { value: 'sports',   label: 'Sports'   },
-  { value: 'race',     label: 'Race'     },
-  { value: 'medieval', label: 'Medieval' },
-  { value: 'citadel',  label: 'Citadel'  },
-] as const;
+/**
+ * The world list is NOT written here.
+ *
+ * It used to be — five worlds, hand-listed, and `dock` was not among them, so
+ * all ten shipped dock quests were rejected on save with "World must be one of
+ * the 5 available worlds" and could not be edited at all. `QUEST_WORLD_OPTIONS`
+ * is derived from `scripts/quest-vocab.mjs`, which reads the `quests` rule off
+ * every registered World subclass, so a new world with a quest board appears
+ * here the day it ships. See `lib/questVocab.ts`.
+ */
 
 export default async function QuestsPage({
   searchParams,
@@ -105,31 +111,58 @@ export default async function QuestsPage({
     // Off => one-shot: the site refuses to re-accept a completed engagement.
     const repeatable = toBool(formData.get('repeatable'));
 
-    // Steps come as a single JSON string from the client StepEditor component
-    let stepsJson: string | null = null;
+    /* Steps come as a single JSON string from the client StepEditor component.
+     *
+     * The parse is deliberately outside the redirect: `redirect()` works by
+     * throwing, so calling it inside the `try` would be swallowed by the
+     * `catch` and the save would carry on with no steps. */
     const rawSteps = s(formData.get('steps_json'));
+    let parsedSteps: unknown[] | null = [];
     if (rawSteps) {
       try {
-        const parsed = JSON.parse(rawSteps);
-        if (Array.isArray(parsed) && parsed.length > 0) stepsJson = rawSteps;
-      } catch { /* malformed — leave null */ }
+        const parsed: unknown = JSON.parse(rawSteps);
+        parsedSteps = Array.isArray(parsed) ? parsed : null;
+      } catch {
+        parsedSteps = null;
+      }
     }
 
+    /** Everything below reports to the same place, so build the URL once. */
+    const fail = (message: string) => {
+      const detail = message.length > 1200 ? `${message.slice(0, 1197)}...` : message;
+      redirect(
+        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}`
+        + `error=${encodeURIComponent(detail)}`
+      );
+    };
+
     if (!questNumber || !world || !questLine || !title) {
-      redirect(
-        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Quest number, world, line and title are required`
-      );
-    }
-    if (!WORLD_OPTIONS.some((option) => option.value === world)) {
-      redirect(
-        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=World must be one of the 5 available worlds`
-      );
+      fail('Quest number, world, line and title are required');
     }
     if (durationMinutes !== null && (!Number.isInteger(durationMinutes) || durationMinutes < 1)) {
-      redirect(
-        `/dashboard/quests?${id ? `quest=${encodeURIComponent(id)}&` : ''}error=Completion window must be a whole number of minutes`
-      );
+      fail('Completion window must be a whole number of minutes');
     }
+    if (parsedSteps === null) {
+      /* The old code caught the parse error, left `stepsJson` null and saved
+       * anyway, so a broken payload produced a stepless quest under a green
+       * "Quest saved." banner — a 200 whose effect was silently dropped. */
+      fail('Activity steps could not be read. Nothing was saved.');
+    }
+
+    /* The real gate: does the engine have any way to advance these steps?
+     *
+     * `questSaveSchema` checks the shape here and hands the vocabulary
+     * question to `scripts/quest-vocab.mjs`'s own resolver, so a step this
+     * console accepts is a step `npm test` accepts. Before this, `saveQuest`
+     * asked only whether the array was non-empty — which is how a type with no
+     * emitter anywhere in `src/` could be written straight into the table and
+     * become a quest a player accepts and can never finish. */
+    const validated = questSaveSchema.safeParse({ world, steps: parsedSteps ?? [] });
+    if (!validated.success) {
+      fail(describeQuestSaveError(validated.error, (parsedSteps ?? []) as Array<Record<string, unknown>>));
+    }
+    const steps = validated.success ? validated.data.steps : [];
+    const stepsJson = steps.length ? JSON.stringify(steps) : null;
 
     if (id) {
       await updateQuest(id, {
@@ -170,7 +203,7 @@ export default async function QuestsPage({
   return (
     <div className="page-body">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 24 }}>
-        <div className="page-title" style={{ marginBottom: 0 }}>Quest management</div>
+        <h1 className="page-title" style={{ marginBottom: 0 }}>Quest management</h1>
         <a href="/dashboard/quests?quest=new" className="btn btn-primary">New quest</a>
       </div>
 
@@ -179,7 +212,7 @@ export default async function QuestsPage({
 
       <div className="grid-2">
         <section className="card">
-          <div className="section-title">{editing ? `Edit quest #${editing.quest_number}` : 'Create quest'}</div>
+          <h2 className="section-title">{editing ? `Edit quest #${editing.quest_number}` : 'Create quest'}</h2>
           <form action={saveQuest}>
             {editing ? <input type="hidden" name="id" value={String(editing.id)} /> : null}
             <div className="form-grid">
@@ -213,8 +246,8 @@ export default async function QuestsPage({
                 <label className="form-label" htmlFor="world">World assigned to</label>
                 <select id="world" name="world" defaultValue={editing?.world ?? ''}>
                   <option value="" disabled>Select a world</option>
-                  {WORLD_OPTIONS.map((w) => (
-                    <option key={w.value} value={w.value}>{w.label}</option>
+                  {QUEST_WORLD_OPTIONS.map((w) => (
+                    <option key={w.id} value={w.id}>{w.displayName} ({w.id})</option>
                   ))}
                 </select>
               </div>
@@ -316,15 +349,29 @@ export default async function QuestsPage({
           </form>
 
           {editing ? (
-            <form action={removeQuest} style={{ marginTop: 16 }}>
-              <input type="hidden" name="id" value={String(editing.id)} />
-              <button type="submit" className="btn btn-danger">Delete quest</button>
-            </form>
+            <div style={{ marginTop: 20, borderTop: '1px solid rgba(255,85,102,0.25)', paddingTop: 16 }}>
+              <ConfirmedAction
+                action={removeQuest}
+                phrase={String(editing.title)}
+                prompt="Type the quest title to confirm"
+                submitLabel="Delete quest"
+                warning={
+                  <>
+                    Deleting quest #{String(editing.quest_number)} removes its steps, its reward and
+                    its place in the <b>{String(editing.quest_line)}</b> line. Engagements players
+                    have already accepted are left pointing at a quest that no longer exists. There
+                    is no undo.
+                  </>
+                }
+              >
+                <input type="hidden" name="id" value={String(editing.id)} />
+              </ConfirmedAction>
+            </div>
           ) : null}
         </section>
 
         <section className="card">
-          <div className="section-title">Quest list</div>
+          <h2 className="section-title">Quest list</h2>
           <div className="tbl-wrap">
             <table>
               <thead>

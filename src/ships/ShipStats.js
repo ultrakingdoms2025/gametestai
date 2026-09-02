@@ -157,13 +157,116 @@ export const SHIP_STATS = Object.freeze({
   bastion: Object.freeze([]),
 });
 
-/** Per-tier effect. `unit` is UI copy and appears verbatim in the panel. */
+/**
+ * Per-tier effect. `unit` is UI copy and appears verbatim in the panel.
+ *
+ * `base` is the counter price of TIER I in credits, and it is here rather than
+ * in a catalogue for the reason `SHIP_SKINS.cost` is: two independently
+ * authored numbers for one upgrade is how a purchase comes to sell back for
+ * more than it cost. Everything that quotes a ship fitting - the yard panel,
+ * the offline catalogue, the test that checks them against each other - reads
+ * {@link shipPowerPrice}, and `shipPowerPrice` reads this.
+ *
+ * ── Where the four numbers come from ─────────────────────────────────────
+ *
+ * Ranked by what a tier actually BUYS, not by taste, and set against the mount
+ * ladder they mirror (`POWER_META` in site/lib/marketplaceCatalog.ts: 260 for
+ * acceleration, 280 armour, 300 speed, 340 fire). A ship fitting is dearer
+ * than the mount fitting it rhymes with because ore is the one uncapped faucet
+ * in the game - a Lathe seam pays up to 700 credits the cubic metre - and a
+ * sink priced against the kill ladder would be bought out in an afternoon.
+ *
+ *   fire   520  the biggest per-tier number in the table (+15%) and the only
+ *               one that shortens a fight, which is the thing that kills you
+ *   hold   460  +25% a tier, and the only fitting that PAYS FOR ITSELF: ten
+ *               more cubic metres against ore worth 190-700 the metre means a
+ *               tier-I hold is recovered in one exotic run and everything
+ *               after it is profit. Priced to be the obvious first purchase
+ *   power  420  +12% top speed; shortens every leg, changes no fight
+ *   shield 380  +10% less hull damage, and the cheapest because the Dray
+ *               already starts at three points of it and the pool it protects
+ *               is the one `shield_cell` can refill from a bag
+ */
 export const SHIP_STAT_META = Object.freeze({
-  power: Object.freeze({ label: 'Thrust', perTier: 12, unit: 'top speed' }),
-  shield: Object.freeze({ label: 'Shields', perTier: 10, unit: 'less hull damage' }),
-  fire: Object.freeze({ label: 'Firepower', perTier: 15, unit: 'laser damage' }),
-  hold: Object.freeze({ label: 'Hold', perTier: 25, unit: 'mineral capacity' }),
+  power: Object.freeze({ label: 'Thrust', perTier: 12, unit: 'top speed', base: 420 }),
+  shield: Object.freeze({ label: 'Shields', perTier: 10, unit: 'less hull damage', base: 380 }),
+  fire: Object.freeze({ label: 'Firepower', perTier: 15, unit: 'laser damage', base: 520 }),
+  hold: Object.freeze({ label: 'Hold', perTier: 25, unit: 'mineral capacity', base: 460 }),
 });
+
+/**
+ * How many tiers of one stat a hull sells. Three, the mount ladder's number.
+ *
+ * `MOUNT_POWER_TIERS` in `ItemDefs.js` is the same constant for the other
+ * vehicle, and the two are deliberately equal: a player who has learned that a
+ * fitting ladder is I, II, III on a horse must not find a fourth rung on a
+ * Kestrel and wonder what they missed.
+ */
+export const SHIP_POWER_TIERS = 3;
+
+/**
+ * Tier price multipliers, and this is a COPY of `TIER_MUL` in
+ * `site/lib/marketplaceCatalog.ts` - deliberately, and watched.
+ *
+ * The server's mount rows are priced `base * TIER_MUL[tier - 1]` and the ship
+ * rows have to be priced the same way or the yard would sell a ladder that
+ * climbs at a different rate from every other ladder in the game for no reason
+ * a player could ever discover. That file is TypeScript the browser bundle
+ * cannot import, which is the same wall `MarketplaceOffline` lives behind, and
+ * the same answer applies: `scripts/tests/ship-fitting-till.test.mjs` parses
+ * the TypeScript and fails if these three numbers part company with it.
+ *
+ * 3.15 rather than 3 on the top rung is the server's number, not a rounding:
+ * a third tier that cost exactly three firsts would make the ladder linear and
+ * the last rung the cheapest thing on it per point of effect.
+ */
+export const SHIP_TIER_MUL = Object.freeze([1, 2, 3.15]);
+
+/** Roman numerals, as every fitting ladder in the game spells its own rows. */
+export const SHIP_TIER_ROMAN = Object.freeze(['I', 'II', 'III']);
+
+/**
+ * Counter price for one tier of one ship stat, in credits.
+ *
+ * The single source every till reads. Returns 0 for a stat or tier that is not
+ * on the ladder, so a caller that fails to check `sellsPower` first quotes
+ * nothing rather than quoting `NaN` - which is the shape a price bug takes
+ * when it reaches a player, and it looks like a free item.
+ *
+ * @param {string} stat one of `SHIP_STAT_META`
+ * @param {number} tier 1..SHIP_POWER_TIERS
+ * @returns {number}
+ */
+export function shipPowerPrice(stat, tier) {
+  const meta = SHIP_STAT_META[stat];
+  const t = Math.floor(Number(tier) || 0);
+  if (!meta || t < 1 || t > SHIP_POWER_TIERS) return 0;
+  return Math.round(meta.base * SHIP_TIER_MUL[t - 1]);
+}
+
+/**
+ * What a vendor pays to take one back. Never reachable in the game - a fitting
+ * is banked in `ShipRegistry._powers` and is not a bag item - and stated
+ * anyway because a catalogue row carries a `cost_sell` and a row with a
+ * `cost_sell` at or above its `cost_buy` is a credit printer. 0.4 is the rate
+ * every mount upgrade row uses.
+ *
+ * @param {string} stat @param {number} tier @returns {number}
+ */
+export function shipPowerSellPrice(stat, tier) {
+  return Math.round(shipPowerPrice(stat, tier) * 0.4);
+}
+
+/**
+ * The shop-facing name of one fitting, e.g. `Kestrel Firepower II`.
+ * @param {string} shipId @param {string} stat @param {number} tier
+ * @returns {string}
+ */
+export function shipPowerName(shipId, stat, tier) {
+  const hull = SHIP_CLASSES[shipId]?.name ?? shipId;
+  const meta = SHIP_STAT_META[stat];
+  return `${hull} ${meta?.label ?? stat} ${SHIP_TIER_ROMAN[tier - 1] ?? tier}`;
+}
 
 /**
  * What each hull IS before a credit is spent — the stat bias the spec boards

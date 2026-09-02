@@ -18,6 +18,7 @@ import {
   revokeAccessCode,
 } from '@/lib/accessCodes';
 import { isAccessCodeKind } from '@/lib/accessCodeFormat';
+import ConfirmedAction from '../ConfirmedAction';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,6 +79,8 @@ export default async function CodesPage({
   const redemptions = selected ? await listRedemptions(selected) : [];
   const revealed = reveal ? await revealAccessCode(reveal) : null;
   const selectedRow = selected ? codes.find((row) => row.code_hash === selected) ?? null : null;
+  /** How many redeemers a claw-back would actually reach. */
+  const clawBackCount = redemptions.filter((r) => !r.clawed_back_at).length;
 
   async function mint(formData: FormData) {
     'use server';
@@ -139,12 +142,19 @@ export default async function CodesPage({
     const codeHash = s(formData.get('code_hash'));
     if (!codeHash) redirect('/dashboard/codes?error=No+code+selected');
 
+    /* `revokeAccessCode` returns false when the UPDATE matched no row — the
+       code was already withdrawn, or the hash names nothing. The page used to
+       report "Code withdrawn." either way: a success message for an action
+       that did not happen. Report what actually changed. */
     const changed = await revokeAccessCode(codeHash, session.username);
     if (changed) {
       await audit(session.username, 'access_code.revoke', `code:${codeHash}`);
     }
     revalidatePath('/dashboard/codes');
-    redirect(`/dashboard/codes?code=${encodeURIComponent(codeHash)}&done=revoked`);
+    redirect(
+      `/dashboard/codes?code=${encodeURIComponent(codeHash)}`
+      + `&done=${changed ? 'revoked' : 'revoke_noop'}`
+    );
   }
 
   async function restore(formData: FormData) {
@@ -159,7 +169,10 @@ export default async function CodesPage({
       await audit(session.username, 'access_code.restore', `code:${codeHash}`);
     }
     revalidatePath('/dashboard/codes');
-    redirect(`/dashboard/codes?code=${encodeURIComponent(codeHash)}&done=restored`);
+    redirect(
+      `/dashboard/codes?code=${encodeURIComponent(codeHash)}`
+      + `&done=${changed ? 'restored' : 'restore_noop'}`
+    );
   }
 
   async function clawBack(formData: FormData) {
@@ -202,7 +215,7 @@ export default async function CodesPage({
 
   return (
     <div className="page-body">
-      <div className="page-title">Access codes</div>
+      <h1 className="page-title">Access codes</h1>
 
       {error ? <div className="form-error" style={{ marginBottom: 16 }}>{error}</div> : null}
       {done ? <div className="form-success">{describeDone(done)}</div> : null}
@@ -224,7 +237,7 @@ export default async function CodesPage({
 
       {minted.length > 0 ? (
         <section className="card" style={{ marginBottom: 18 }}>
-          <div className="section-title">Just minted — copy these now</div>
+          <h2 className="section-title">Just minted — copy these now</h2>
           <p className="mono" style={{ marginBottom: 12 }}>
             {minted.length} code{minted.length === 1 ? '' : 's'}. They are stored encrypted and
             can be revealed one at a time later, but this is the only place they appear together.
@@ -240,7 +253,7 @@ export default async function CodesPage({
 
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <section className="card">
-          <div className="section-title">Mint codes</div>
+          <h2 className="section-title">Mint codes</h2>
           <form action={mint}>
             <div className="form-grid">
               <div className="form-row">
@@ -280,9 +293,9 @@ export default async function CodesPage({
         </section>
 
         <section className="card">
-          <div className="section-title">
+          <h2 className="section-title">
             {selectedRow ? `Code ${selectedRow.code_hint}` : 'Select a code'}
-          </div>
+          </h2>
           {!selectedRow ? (
             <p className="mono">Pick a code from the table to see who redeemed it and to withdraw it.</p>
           ) : (
@@ -337,18 +350,38 @@ export default async function CodesPage({
                     <button type="submit" className="btn btn-danger">Withdraw code</button>
                   </form>
                 )}
-                {redemptions.some((r) => !r.clawed_back_at) ? (
-                  <form action={clawBack}>
-                    <input type="hidden" name="code_hash" value={selectedRow.code_hash} />
-                    <button type="submit" className="btn btn-danger">
-                      Also end access for {redemptions.filter((r) => !r.clawed_back_at).length} redeemer
-                      {redemptions.filter((r) => !r.clawed_back_at).length === 1 ? '' : 's'}
-                    </button>
-                  </form>
-                ) : null}
               </div>
 
-              <div className="section-title" style={{ fontSize: 11 }}>Redeemed by</div>
+              {/* The comment at the top of this file has always said the
+                  claw-back is "a separate, counted, CONFIRMED action". The
+                  count was on the button and the confirmation was nowhere in
+                  the markup: one click ended access for every redeemer. This
+                  is the confirmation the comment described. */}
+              {redemptions.some((r) => !r.clawed_back_at) ? (
+                <div style={{ borderTop: '1px solid rgba(255,85,102,0.25)', paddingTop: 16, marginBottom: 18 }}>
+                  <ConfirmedAction
+                    action={clawBack}
+                    phrase={selectedRow.code_hint}
+                    prompt="Type the code hint to confirm"
+                    submitLabel={
+                      `Also end access for ${clawBackCount} redeemer${clawBackCount === 1 ? '' : 's'}`
+                    }
+                    warning={
+                      <>
+                        This ends the game access {clawBackCount} player
+                        {clawBackCount === 1 ? '' : 's'} redeemed {selectedRow.code_hint} for —
+                        mid-session, if they are playing. Anyone who has BOUGHT access since
+                        redeeming is skipped and keeps it. Withdrawing the code
+                        {selectedRow.revoked_at ? ' (already done)' : ''} touches nobody; this does.
+                      </>
+                    }
+                  >
+                    <input type="hidden" name="code_hash" value={selectedRow.code_hash} />
+                  </ConfirmedAction>
+                </div>
+              ) : null}
+
+              <h3 className="section-title" style={{ fontSize: 11 }}>Redeemed by</h3>
               {redemptions.length === 0 ? (
                 <p className="mono">Nobody has redeemed this code yet.</p>
               ) : (
@@ -389,7 +422,7 @@ export default async function CodesPage({
       </div>
 
       <div style={{ marginTop: 24 }}>
-        <div className="section-title">All codes</div>
+        <h2 className="section-title">All codes</h2>
         <div className="tbl-wrap">
           <table>
             <thead>
@@ -445,6 +478,10 @@ function fmt(value: string | null): string {
 function describeDone(token: string): string {
   if (token === 'revoked') return 'Code withdrawn. Nobody who already redeemed it was affected.';
   if (token === 'restored') return 'Code put back into service.';
+  /* The no-ops. A message that says a thing happened when it did not is worse
+     than no message: the operator stops looking. */
+  if (token === 'revoke_noop') return 'Nothing to withdraw — that code was already out of service.';
+  if (token === 'restore_noop') return 'Nothing to restore — that code was already in service.';
   if (token.startsWith('clawed:')) {
     const [, revoked, skipped] = token.split(':');
     const skippedNote = Number(skipped) > 0

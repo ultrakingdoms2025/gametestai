@@ -200,6 +200,24 @@ const CONTRACT = [
       'TREE_BUCKET_M', 'TREE_BUCKETS', 'STAND_SPECIES', 'standSpecies',
       'NAMED_WOODS', 'woodAt', 'DEADFALL_PER_WOOD'],
   },
+  /* The vale's half of the authored-PBR pipeline: the BINDING that stayed
+   * local when the loader moved to `worlds/assets/AuthoredAssets.js`.
+   * `MedievalWorld.build` awaits `loadMedievalSurfaces` and calls
+   * `dressMedievalSurfaces`, and both are built to degrade in silence - so a
+   * renamed export is a world that dresses nothing and logs nothing, which is
+   * indistinguishable from the state the vale ships in today and would fail
+   * nothing at all. The mode pair is the A/B switch an art review flips;
+   * `MEDIEVAL_AUTHORED_SURFACES` declares each surface's size and physical
+   * tile, `MEDIEVAL_UV_TILE_METRES` is the UV contract the repeat arithmetic
+   * divides by, and `MEDIEVAL_AUTHORED_CALIBRATION` is the per-surface
+   * decision none of them may be promoted without. One of the two entries
+   * that take the count 133 -> 135; the shared core below is the other. */
+  {
+    file: 'src/worlds/medieval/MedievalSurfaces.js',
+    exports: ['loadMedievalSurfaces', 'medievalAuthoredSurfaces', 'resetMedievalSurfaces',
+      'dressMedievalSurfaces', 'setMedievalSurfaceMode', 'medievalSurfaceMode',
+      'MEDIEVAL_AUTHORED_SURFACES', 'MEDIEVAL_AUTHORED_CALIBRATION', 'MEDIEVAL_UV_TILE_METRES'],
+  },
   { file: 'src/worlds/SportsWorld.js', exports: ['SportsWorld'], methods: ['build'] },
   /* Gateway 05's destination, and the only one of the six that was never
    * registered here. Registered now for the reason every other world is: it is
@@ -405,6 +423,31 @@ const CONTRACT = [
   /* Task 8 adds `DRESSING_KINDS` - the explicit dressing-exemption ledger the
    * fit contract's tests read - and the assets seam below. */
   { file: 'src/worlds/maze/MazeMeshes.js', exports: ['prefabFor', 'groupByExtentClass', 'isPrefab', 'prefabCount', 'releasePrefabs', 'extentClass', 'PREFAB_BUDGET', 'DRESSING_KINDS'] },
+  /* The shared core both authored-asset pipelines run on, extracted when
+   * Aldermoor Vale became the second world to carry authored PBR (see
+   * `medieval/MedievalSurfaces.js` above, the other half of the 133 -> 135
+   * pair). Registered because nothing here is reached by name from an import:
+   * `createAuthoredAssets` hands back an object literal, and both worlds call
+   * `_pipeline.load`, `.surfaces` and `.reset` through it - so a renamed op is
+   * a TypeError at world build one browser boot later, with no importer in the
+   * repo going red first. `TEXTURE_SLOTS` is the single spelling of the three
+   * map slots both worlds read (MazeAssets re-exports it as
+   * `MAZE_TEXTURE_SLOTS`), and two spellings of that list is how they would
+   * eventually disagree about which slots an authored set has to fill.
+   *
+   * Exports ONLY, and that is measured rather than assumed. The returned ops are
+   * the obvious things to pin as `methods`, and the pin would be vacuous: the
+   * factory's `@returns {{load:(renderer?:any)=>..., surfaces:(assets:object)
+   * =>object, reset:()=>void}}` annotation supplies a name followed by `(` on
+   * its own, so renaming `load`, `surfaces` AND `reset` all three at once
+   * still reported 135/135 green. That is the `static of` lesson at the foot
+   * of this file in its other clothes - a pin that cannot fail is worse than
+   * no pin, because it is counted - so the ops are left unpinned and said so
+   * here instead. */
+  {
+    file: 'src/worlds/assets/AuthoredAssets.js',
+    exports: ['createAuthoredAssets', 'TEXTURE_SLOTS'],
+  },
   /* Phase 6 Task 8. The authored-asset pipeline: manifest -> GLTFLoader ->
    * prefab registry, every failure path degrading to the procedural prefab.
    * `MAZE_ASSET_PREFABS` is the kind -> asset-id contract MazeMeshes builds
@@ -427,8 +470,19 @@ const CONTRACT = [
    * are - the loader is built to degrade silently to the procedural character,
    * so a stray delete would cost the whole art pass and fail nothing. The
    * generator is registered too, because the byte-diff test re-runs it and a
-   * rename would leave the committed .glb unreproducible. */
-  { file: 'src/npc/HeroAssets.js', exports: ['loadHeroAssets', 'heroParts', 'heroRoles', 'HERO_PART_KEYS', 'HERO_BONES', 'resetHeroAssets', 'installHeroAssets'] },
+   * rename would leave the committed .glb unreproducible.
+   *
+   * `HERO_OWN_PROGRAM_BUDGET` and `heroOwnSignatures` are the own-material
+   * ledger the pipeline added: the cap is four programs for one whole
+   * authored hero, enforced inside `_admitOwnMaterials` rather than in
+   * review, and the signature list is what makes the cap a number something
+   * can READ rather than a claim in a comment. Nothing outside this module
+   * reads either of them today - which is exactly why they are named here.
+   * A renamed constant leaves the `programs > BUDGET` check comparing
+   * against `undefined` (every set admitted, the station's program pin
+   * drifting upward one part at a time), and a renamed reader leaves the
+   * budget unreadable, and neither would fail a single import in the repo. */
+  { file: 'src/npc/HeroAssets.js', exports: ['loadHeroAssets', 'heroParts', 'heroRoles', 'HERO_PART_KEYS', 'HERO_BONES', 'resetHeroAssets', 'installHeroAssets', 'HERO_OWN_PROGRAM_BUDGET', 'heroOwnSignatures'] },
   { file: 'scripts/make-npc-glb.mjs', exports: ['FRAME', 'SLOT', 'TRI_BUDGET'] },
   { file: 'public/assets/npc/manifest.json', exports: [] },
   { file: 'public/assets/npc/raider.glb', exports: [] },

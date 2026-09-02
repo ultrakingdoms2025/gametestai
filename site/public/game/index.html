@@ -37,17 +37,181 @@
       href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script type="module" crossorigin src="/game/assets/index-DygROrgs.js"></script>
+    <script type="module" crossorigin src="/game/assets/index-CtZ10_AS.js"></script>
     <link rel="modulepreload" crossorigin href="/game/assets/three.core-Co-9pgkG.js">
-    <link rel="modulepreload" crossorigin href="/game/assets/RehearsalDraw-C_pMG0pU.js">
+    <link rel="modulepreload" crossorigin href="/game/assets/RehearsalDraw-LTgK0Maj.js">
     <link rel="modulepreload" crossorigin href="/game/assets/BufferGeometryUtils-NQeNCw5n.js">
-    <link rel="modulepreload" crossorigin href="/game/assets/StationKit-KkdDKTDR.js">
+    <link rel="modulepreload" crossorigin href="/game/assets/StationKit-CXbXc8sm.js">
     <link rel="modulepreload" crossorigin href="/game/assets/terrain-B-2kqJbh.js">
-    <link rel="modulepreload" crossorigin href="/game/assets/ItemDefs-Dm8f-0rP.js">
-    <link rel="stylesheet" crossorigin href="/game/assets/index-CAbynkED.css">
+    <link rel="modulepreload" crossorigin href="/game/assets/ItemDefs-sDky-ruM.js">
+    <link rel="stylesheet" crossorigin href="/game/assets/index-CYnCUXS7.css">
   </head>
   <body>
     <canvas id="viewport"></canvas>
-    <div id="ui-root"></div>
+    <div id="ui-root"></div>
+
+    <!--
+      A PAGE THAT CANNOT RUN MUST SAY SO. IT USED TO SAY NOTHING AT ALL.
+
+      `main.js` builds an `Engine` at module top level, and `Engine`'s
+      constructor builds a `THREE.WebGLRenderer` immediately. On a machine with
+      no WebGL - an old laptop, a locked-down work build, a VM with no GPU
+      passthrough, hardware acceleration switched off in the browser, a
+      blocklisted driver - Three throws during MODULE EVALUATION. Nothing after
+      that line runs, and `createLoadingScreen` is a thousand lines after it. So
+      the player got a black rectangle with no text, no logo, no error and no
+      hint, for ever. The console said why; nobody outside this project reads
+      the console.
+
+      There were two holes and this closes both.
+
+      1. NO SCRIPT AT ALL. `<noscript>` covers the player whose extension or
+         policy blocks JavaScript. It costs nothing and there was none.
+
+      2. NO WEBGL. The probe below runs BEFORE the module script - a classic
+         `<script>` in the body executes in document order, and `type="module"`
+         is deferred until after parsing, so this is guaranteed to have already
+         run and painted by the time `main.js` is even fetched. It builds a
+         throwaway canvas, asks for a context, and on failure writes a real
+         page: what happened, what usually causes it, what to try, and a link
+         to /account so a player who has paid for something can still reach it.
+
+      The probe releases its own context with `WEBGL_lose_context`. A browser
+      allows a limited number of live WebGL contexts (commonly ~16) and leaking
+      one here would be a cost paid by the renderer that is about to ask for the
+      real one.
+
+      `window.__AETHER_FATAL__` is left behind on purpose: `main.js` wraps its
+      `new Engine(...)` and calls this same renderer, so a context that passes
+      the probe and then fails to initialise gets the same visible page instead
+      of the same black rectangle.
+    -->
+    <noscript>
+      <div class="fatal">
+        <div class="fatal-card">
+          <h1>AETHER NEXUS</h1>
+          <p><b>JavaScript is switched off.</b></p>
+          <p>
+            This is a 3D game that runs entirely in your browser, so it cannot start
+            without it. Enable JavaScript for this site and reload the page.
+          </p>
+          <p><a href="/account">Go to your account</a></p>
+        </div>
+      </div>
+    </noscript>
+
+    <script>
+      (function () {
+        var ROOT = document.getElementById('ui-root') || document.body;
+
+        /**
+         * Paint a fatal error the player can actually read.
+         *
+         * Deliberately inline-styled and dependency-free: this has to work when
+         * the module bundle never evaluated, and it may have to work when
+         * hud.css has not loaded either.
+         */
+        window.__AETHER_FATAL__ = function (heading, detail, hint) {
+          if (document.querySelector('.fatal')) return;
+          var wrap = document.createElement('div');
+          wrap.className = 'fatal';
+          wrap.setAttribute(
+            'style',
+            'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;' +
+              'justify-content:center;padding:24px;background:#0b1220;color:#cfe4f2;' +
+              "font:400 15px/1.55 'Rajdhani',system-ui,-apple-system,sans-serif;"
+          );
+          var card = document.createElement('div');
+          card.setAttribute('style', 'max-width:560px;text-align:left;');
+          var h = document.createElement('div');
+          h.setAttribute(
+            'style',
+            "font:700 26px/1.1 'Chakra Petch',system-ui,sans-serif;letter-spacing:.14em;" +
+              'color:#2fe0ff;margin-bottom:6px;'
+          );
+          h.textContent = 'AETHER NEXUS';
+          var t = document.createElement('div');
+          t.setAttribute(
+            'style',
+            'font-weight:700;font-size:17px;color:#ffd7dc;margin:18px 0 10px;' +
+              'padding-left:12px;border-left:3px solid #ff3d55;'
+          );
+          t.textContent = heading;
+          var d = document.createElement('p');
+          d.setAttribute('style', 'margin:0 0 12px;');
+          d.textContent = detail;
+          card.appendChild(h);
+          card.appendChild(t);
+          card.appendChild(d);
+          if (hint) {
+            var hp = document.createElement('p');
+            hp.setAttribute('style', 'margin:0 0 16px;color:#8fb0c6;');
+            hp.textContent = hint;
+            card.appendChild(hp);
+          }
+          var nav = document.createElement('p');
+          nav.setAttribute('style', 'margin:0;');
+          var a = document.createElement('a');
+          a.href = '/account';
+          a.textContent = 'Go to your account';
+          a.setAttribute('style', 'color:#ffb03a;');
+          var sep = document.createElement('span');
+          sep.setAttribute('style', 'color:#3d5670;padding:0 10px;');
+          sep.textContent = '·';
+          var r = document.createElement('a');
+          r.href = '#';
+          r.textContent = 'Try again';
+          r.setAttribute('style', 'color:#2fe0ff;');
+          r.onclick = function (e) {
+            e.preventDefault();
+            location.reload();
+          };
+          nav.appendChild(a);
+          nav.appendChild(sep);
+          nav.appendChild(r);
+          card.appendChild(nav);
+          wrap.appendChild(card);
+          ROOT.appendChild(wrap);
+          var c = document.getElementById('viewport');
+          if (c) c.style.display = 'none';
+        };
+
+        var probe = null;
+        try {
+          probe = document.createElement('canvas');
+          var gl =
+            probe.getContext('webgl2') ||
+            probe.getContext('webgl') ||
+            probe.getContext('experimental-webgl');
+          if (!gl) {
+            window.__AETHER_NO_WEBGL__ = true;
+            window.__AETHER_FATAL__(
+              'Your browser cannot run 3D graphics here.',
+              'AETHER NEXUS needs WebGL, and this browser could not create a WebGL ' +
+                'context. Nothing is wrong with your account or your save.',
+              'The usual causes are hardware acceleration being switched off in the ' +
+                'browser settings, a graphics driver the browser has blocklisted, or a ' +
+                'virtual machine with no GPU. Turning hardware acceleration back on and ' +
+                'reloading fixes it most of the time; so does another browser.'
+            );
+          } else {
+            // Hand the context straight back: browsers cap how many can be live
+            // at once, and the renderer is about to ask for the one that counts.
+            var lose = gl.getExtension('WEBGL_lose_context');
+            if (lose) lose.loseContext();
+          }
+        } catch (err) {
+          window.__AETHER_NO_WEBGL__ = true;
+          window.__AETHER_FATAL__(
+            'Your browser cannot run 3D graphics here.',
+            'AETHER NEXUS needs WebGL, and asking for it failed: ' +
+              ((err && err.message) || err),
+            'Try switching hardware acceleration on in your browser settings, or try ' +
+              'another browser.'
+          );
+        }
+      })();
+    </script>
+
   </body>
 </html>

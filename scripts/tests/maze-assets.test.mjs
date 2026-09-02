@@ -9,7 +9,10 @@ import { MAZE, generateTopology, cellIndex, isOpen, DIR, connectorAt } from '../
 import {
   prefabFor, releasePrefabs, isPrefab, DRESSING_KINDS,
 } from '../../src/worlds/maze/MazeMeshes.js';
-import { MAZE_ASSET_PREFABS, MAZE_TEXTURE_SLOTS } from '../../src/worlds/maze/MazeAssets.js';
+import {
+  MAZE_ASSET_PREFABS, MAZE_TEXTURE_SLOTS,
+  loadMazeAssets, authoredSurfaces, resetMazeAssets,
+} from '../../src/worlds/maze/MazeAssets.js';
 import {
   MAZE_AUTHORED_TEXTURE_SIZES, MAZE_AUTHORED_TILE_METRES, MAZE_AUTHORED_CALIBRATION,
   mazeSurfaceMode, setMazeSurfaceMode,
@@ -185,6 +188,67 @@ test('a missing asset degrades to its procedural prefab', () => {
   const g = prefabFor({ kind: 'newel', hx: 0.3, hy: 0.5, hz: 0.3, lod: 0, assets: {} });
   assert.ok(g, 'no fallback geometry when the asset is absent - the world would render a hole');
   releasePrefabs();
+});
+
+test('a declared asset whose FILE is missing degrades, rather than throwing out of the build', async (t) => {
+  /* The half the test above cannot see. `assets: {}` proves the REGISTRY
+   * falls back; it says nothing about how an empty map comes to exist when
+   * the manifest declares eighteen entries and none of the files arrives.
+   *
+   * That path moved to the shared core (`src/worlds/assets/AuthoredAssets.js`)
+   * when Aldermoor Vale became the second world to carry authored PBR, and
+   * it was measured ungated from here: mutating BOTH of the core's catch
+   * sites from `warnOnce(...)` to `throw e` left this file 12/12 green while
+   * `medieval-surfaces.test.mjs` went red - so the world that actually ships
+   * fifteen KTX2 files and three .glb files was leaning on a degradation
+   * nothing of its own watched. Driven through the REAL manifest, because
+   * "declared" is a fact about that file rather than about a fixture.
+   *
+   * Geometry, not texture, is what reaches the catch: a texture entry needs a
+   * live WebGLRenderer for KTX2 `detectSupport` and there is none under
+   * `node --test`, so those are skipped one step earlier. The two paths share
+   * the try/catch and the warnOnce, which is the thing under test. */
+  t.after(() => { resetMazeAssets(); releasePrefabs(); });
+  resetMazeAssets();
+  const prevFetch = globalThis.fetch;
+  const prevWarn = console.warn;
+  const warned = [];
+  /* `ok: false` is what a 404 looks like to the loader - a renamed file, a
+   * partial deploy, an asset directory that never shipped. */
+  globalThis.fetch = async (url) => (String(url).endsWith('manifest.json')
+    ? { ok: true, json: async () => manifest }
+    : { ok: false, status: 404 });
+  console.warn = (m) => warned.push(String(m));
+  let assets;
+  try {
+    /* A bare `await`, not assert.doesNotReject: a rejection has to surface as
+     * the real error rather than as an assertion message about one. */
+    assets = await loadMazeAssets();
+  } finally {
+    console.warn = prevWarn;
+    globalThis.fetch = prevFetch;
+  }
+  assert.deepEqual(Object.keys(assets), [],
+    'a 404 on every declared file still put something in the asset map');
+  for (const e of manifest.assets.filter((x) => x.kind === 'geometry')) {
+    assert.ok(warned.some((w) => w.includes(e.id)),
+      `the missing '${e.id}' was never named - a silent 404 is a world that quietly lost its props`);
+  }
+  assert.deepEqual(authoredSurfaces(assets), {},
+    'authoredSurfaces built a set out of textures that never loaded');
+
+  /* And the point of all of it: the world still gets its props. Every kind
+   * the registry backs with an asset comes back with the same cached
+   * procedural geometry the no-asset path gets - which is also what says the
+   * degraded map never took the ':asset' cache branch with something falsy
+   * in it. Not a hole, not a second cache slot, and not a throw. */
+  const ext = { hx: 0.3, hy: 0.5, hz: 0.3, lod: 0 };
+  for (const kind of Object.keys(MAZE_ASSET_PREFABS)) {
+    const degraded = prefabFor({ kind, ...ext, assets });
+    assert.ok(degraded, `'${kind}' has no geometry when its asset 404s - the world would render a hole`);
+    assert.equal(degraded, prefabFor({ kind, ...ext }),
+      `'${kind}' degraded to something other than its procedural prefab`);
+  }
 });
 
 test('the fallback newel is a real prefab: cached, in-box, and batchable with the stone family', () => {

@@ -127,11 +127,36 @@ export function skinsForMount(mountId) {
  * nothing at all, so there is no cycle to worry about. It carries no THREE.js
  * either, which is what keeps this module headless-testable.
  */
-const KNOWN_SKIN_IDS = new Set([
+export const KNOWN_SKIN_IDS = new Set([
   ...CHARACTER_SKINS_BY_ID.keys(),
   ...MOUNT_SKINS_BY_ID.keys(),
   ...KNOWN_SHIP_SKIN_IDS,
 ]);
+
+/**
+ * How many cosmetics there are to own. The wardrobe's denominator.
+ *
+ * ── Why this constant exists, and what was wrong without it ───────────────
+ *
+ * `Charters.collection()` returned `cosmetics` as a BARE COUNT - "Skins owned
+ * 2", against nothing - while the three catalogues that make up the set were
+ * sitting right here, enumerable, and had been the whole time. Every other row
+ * on that panel is a fraction, because `Charters`' own header is built on the
+ * rule that a progression axis needs a finite denominator or it is not one.
+ * A number with no total is a number that cannot say whether the player is
+ * nearly done.
+ *
+ * Derived from {@link KNOWN_SKIN_IDS} rather than restated, so the two can
+ * never disagree: the set is the authority for what may be granted, and the
+ * denominator is exactly "everything that may be granted". Add a livery to
+ * `ShipStats.SHIP_SKINS` or a colourway to {@link CHARACTER_SKINS} and this
+ * moves by itself, which is the same arrangement `KNOWN_SHIP_SKIN_IDS` already
+ * has with the eighteen rows it is built from.
+ *
+ * It is a SIZE and not a list because the panel needs a total and nothing
+ * anywhere needs a second copy of the ids.
+ */
+export const COSMETIC_TOTAL = KNOWN_SKIN_IDS.size;
 
 export class Cosmetics {
   constructor({ bus } = {}) {

@@ -93,15 +93,42 @@ const btn: CSSProperties = {
   background: '#0d2233', color: '#9fe4ff', cursor: 'pointer',
 };
 
+/**
+ * The status has to survive the throw.
+ *
+ * Every `/api/servers/**` handler answers `401 {"error":"Not authenticated."}`
+ * for a missing session. Flattened into a bare message, that arrived on the
+ * failure screen below as "⚠ Not authenticated." underneath the heading "We
+ * could not load your servers", followed by the reassurance that "nothing has
+ * changed — this is a read" and a Retry button that re-issues the same 401 for
+ * as long as the owner presses it. All of it true of a database blip; none of
+ * it useful to somebody who has simply been signed out, and there was no
+ * sign-in link anywhere on the branch.
+ */
+class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(String(body?.error ?? `Request failed (${res.status})`));
+  if (!res.ok) {
+    throw new ApiError(String(body?.error ?? `Request failed (${res.status})`), res.status);
+  }
   return body as T;
 }
+
+/** A signed-out session, whichever dialect the route speaks it in. */
+const isSignedOut = (e: unknown) =>
+  e instanceof ApiError && (e.status === 401 || e.status === 403);
 
 /* ---- dropdown sources -------------------------------------------------
  * Every one of these is the CANONICAL list the write path validates against
@@ -161,15 +188,32 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /* There was no success state anywhere in this component. Every mutation on
+   * the page — approve a member, invite one, author a quest, change content
+   * mode, suspend a server — either threw and printed an error or changed
+   * nothing visible at all, so "did that work?" could only be answered by
+   * reading the list underneath and hoping you remembered what it said. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /* True only while the very first overview fetch has not yet resolved, so the
+   * null-overview branch below can tell "still loading" from "it failed". */
+  const [firstLoad, setFirstLoad] = useState(true);
+  /* Told apart from every other load failure: it is the only one a Retry
+   * cannot fix, and the only one with a one-click answer. */
+  const [signedOut, setSignedOut] = useState(false);
 
   const loadOverview = useCallback(async () => {
     try {
       const data = await api<Overview>('/api/servers');
       setOverview(data);
+      setError(null);
+      setSignedOut(false);
       setSelected((current) => current ?? data.owned[0]?.id ?? null);
     } catch (e) {
+      setSignedOut(isSignedOut(e));
       setError((e as Error).message);
+    } finally {
+      setFirstLoad(false);
     }
   }, []);
 
@@ -198,9 +242,19 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
   /* The typed confirmation for Delete: the server's own name, verbatim. A
    * click-through dialog is muscle memory; retyping the name is a decision. */
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  /* The mis-typed confirmation used to `return` with nothing said. The submit
+   * button is disabled until the name matches, but pressing Enter in the field
+   * still submits the form — so the owner's most likely path was: type it
+   * slightly wrong, press Enter, watch nothing happen at all, and have no way
+   * to tell a typo from a broken button. */
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const detailServerId = detail?.server.id ?? null;
 
-  useEffect(() => { setInviteQuery(''); setDeleteConfirm(''); }, [selected]);
+  useEffect(() => {
+    setInviteQuery('');
+    setDeleteConfirm('');
+    setDeleteError(null);
+  }, [selected]);
 
   useEffect(() => {
     const q = inviteQuery.trim();
@@ -226,22 +280,94 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
     return () => { stale = true; clearTimeout(timer); };
   }, [inviteQuery, detailServerId]);
 
-  const run = async (fn: () => Promise<unknown>) => {
+  /**
+   * @param done what to say when it works. Every mutation on this page goes
+   * through here, so giving it a default means none of them can be silent
+   * again; the ones with something more specific to report pass it.
+   */
+  const run = async (fn: () => Promise<unknown>, done = 'Saved.') => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await fn();
       await loadOverview();
       await loadDetail(selected);
+      setNotice(done);
     } catch (e) {
+      /* A session that went while the panel was open. Dropping the overview
+       * hands the render to the signed-out screen, which is the only place with
+       * a sign-in link on it — otherwise the owner gets "Not authenticated." in
+       * red above a form that will refuse every subsequent press the same way. */
+      if (isSignedOut(e)) {
+        setSignedOut(true);
+        setOverview(null);
+      }
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
+  /* A failed first load used to end here permanently: `overview` stayed null,
+   * the component returned one line of red text, and the only way back was a
+   * full page reload the page never mentioned. A transient database blip left
+   * a paying server owner looking at a dead screen. */
   if (!overview) {
-    return <p style={{ color: '#7fa4bd' }}>{error ?? 'Loading servers…'}</p>;
+    if (firstLoad && !error) {
+      return <p role="status" style={{ color: '#7fa4bd' }}>Loading servers…</p>;
+    }
+    /* A Retry against a 401 is a button that cannot work, offered under a
+     * sentence promising the data is fine. Both are true of a blip and neither
+     * is true here, so this case gets its own screen. */
+    if (signedOut) {
+      return (
+        <div style={{ ...card, borderColor: '#7a2b2b', maxWidth: 560 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>You are signed out</h2>
+          <p role="alert" style={{ margin: 0, color: '#ffb4b4' }}>
+            {error ?? 'Not authenticated.'}
+          </p>
+          <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+            Your session has expired or was signed out elsewhere. Nothing has changed —
+            your servers, members and subscription are all still there, waiting on the
+            account rather than on this browser.
+          </p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <a style={{ ...btn, textDecoration: 'none' }} href="/login?callbackUrl=%2Fadmin%2Fservers">
+              Sign in again
+            </a>
+            <a style={{ ...btn, textDecoration: 'none' }} href="/">Back to the site</a>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div style={{ ...card, borderColor: '#7a2b2b', maxWidth: 560 }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>We could not load your servers</h2>
+        <p role="alert" style={{ margin: 0, color: '#ffb4b4' }}>
+          {error ?? 'The request came back empty.'}
+        </p>
+        <p style={{ margin: 0, color: '#9bb0c2', fontSize: 13 }}>
+          Nothing has changed — this is a read. Your servers, members and subscription
+          are all still there.
+        </p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            style={btn}
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setError(null);
+              void loadOverview().finally(() => setBusy(false));
+            }}
+          >
+            {busy ? 'Retrying…' : 'Retry'}
+          </button>
+          <a style={{ ...btn, textDecoration: 'none' }} href="/account">Back to your account</a>
+        </div>
+      </div>
+    );
   }
 
   const ent = overview.entitlement;
@@ -250,7 +376,15 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
   return (
     <div style={{ display: 'grid', gap: 20 }}>
       {error && (
-        <div role="alert" style={{ ...card, borderColor: '#7a2b2b', color: '#ffb4b4' }}>{error}</div>
+        <div role="alert" style={{ ...card, borderColor: '#7a2b2b', color: '#ffb4b4' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      {notice && !error && (
+        <div role="status" style={{ ...card, borderColor: '#2b805f', color: '#7dffc8' }}>
+          ✓ {notice}
+        </div>
       )}
 
       {/* ---- what now? ---------------------------------------------------
@@ -336,7 +470,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                   name: String(form.get('name') ?? ''),
                   description: String(form.get('description') ?? ''),
                 }),
-              }));
+              }), 'Server created. Invite your players from the Members panel below.');
               e.currentTarget.reset();
             }}
             style={{ display: 'grid', gap: 8 }}
@@ -418,11 +552,13 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     <li key={m.playerId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span style={{ minWidth: 180 }}>{m.handle ?? '(no handle)'}</span>
                       <button type="button" style={btn} disabled={busy}
-                        onClick={() => run(() => memberAction(detail.server.id, m, 'approve'))}>
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'approve'),
+                          `${m.handle ?? 'That player'} is approved and can enter now.`)}>
                         Approve
                       </button>
                       <button type="button" style={btn} disabled={busy}
-                        onClick={() => run(() => memberAction(detail.server.id, m, 'reject'))}>
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'reject'),
+                          `${m.handle ?? 'That player'} was turned down.`)}>
                         Reject
                       </button>
                     </li>
@@ -457,7 +593,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                         void run(() => api(`/api/servers/${detail.server.id}/members`, {
                           method: 'POST',
                           body: JSON.stringify({ action: 'invite', handle: p.handle }),
-                        }));
+                        }), `${p.handle} is invited. They accept from the launch screen.`);
                         setInviteQuery('');
                       }}>
                       Invite {p.handle}
@@ -494,7 +630,8 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                   {m.state === 'invited' && (
                     <>
                       <button type="button" style={btn} disabled={busy}
-                        onClick={() => run(() => memberAction(detail.server.id, m, 'approve'))}>
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'approve'),
+                          `${m.handle ?? 'That player'} is approved and can enter now.`)}>
                         Approve
                       </button>
                       {/* `reject` from `invited` IS retraction - same verb the
@@ -502,14 +639,16 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                           the button changes, because "Reject" on an invitation
                           the owner sent themselves reads backwards. */}
                       <button type="button" style={btn} disabled={busy}
-                        onClick={() => run(() => memberAction(detail.server.id, m, 'reject'))}>
+                        onClick={() => run(() => memberAction(detail.server.id, m, 'reject'),
+                          `${m.handle ?? 'That player'} was turned down.`)}>
                         Retract invite
                       </button>
                     </>
                   )}
                   {m.state === 'approved' && m.playerId !== detail.server.ownerPlayerId && (
                     <button type="button" style={btn} disabled={busy}
-                      onClick={() => run(() => memberAction(detail.server.id, m, 'remove'))}>
+                      onClick={() => run(() => memberAction(detail.server.id, m, 'remove'),
+                        `${m.handle ?? 'That player'} was removed from this server.`)}>
                       Remove
                     </button>
                   )}
@@ -557,7 +696,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     onChange={() => run(() => api(`/api/servers/${detail.server.id}`, {
                       method: 'PATCH',
                       body: JSON.stringify({ contentMode: opt.value }),
-                    }))}
+                    }), `Content mode is now “${opt.title}”.`)}
                   />
                   <span style={{ display: 'grid', gap: 2 }}>
                     <b>{opt.title}</b>
@@ -596,7 +735,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     questLine: String(form.get('questLine') ?? 'custom'),
                     rewardCredits: Number(form.get('rewardCredits') ?? 0),
                   }),
-                }));
+                }), 'Quest added to this server.');
                 e.currentTarget.reset();
               }}
               style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))' }}
@@ -621,7 +760,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     onClick={() => run(() => api(
                       `/api/servers/${detail.server.id}/content?kind=quest&id=${encodeURIComponent(q.id)}`,
                       { method: 'DELETE' }
-                    ))}>
+                    ), `Deleted the quest “${q.title}”.`)}>
                     Delete
                   </button>
                 </li>
@@ -646,7 +785,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     signLabel: String(form.get('signLabel') ?? 'Lorekeeper'),
                     body: String(form.get('body') ?? ''),
                   }),
-                }));
+                }), 'Lore entry saved for this server.');
                 e.currentTarget.reset();
               }}
               style={{ display: 'grid', gap: 8 }}
@@ -675,7 +814,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     onClick={() => run(() => api(
                       `/api/servers/${detail.server.id}/content?kind=lore&id=${encodeURIComponent(l.scope)}`,
                       { method: 'DELETE' }
-                    ))}>
+                    ), `Deleted the lore entry “${l.title}”.`)}>
                     Delete
                   </button>
                 </li>
@@ -705,7 +844,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     costBuy: Number(form.get('costBuy') ?? 0),
                     costSell: Number(form.get('costSell') ?? 0),
                   }),
-                }));
+                }), 'Marketplace item added to this server.');
                 e.currentTarget.reset();
               }}
               style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))' }}
@@ -737,7 +876,7 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                       onClick={() => run(() => api(
                         `/api/servers/${detail.server.id}/content?kind=item&id=${encodeURIComponent(it.id)}`,
                         { method: 'DELETE' }
-                      ))}>
+                      ), `Retired “${it.name}”. Nobody can buy it now.`)}>
                       Retire
                     </button>
                   )}
@@ -759,8 +898,17 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (deleteConfirm.trim() !== detail.server.name) return;
+                  if (deleteConfirm.trim() !== detail.server.name) {
+                    setDeleteError(
+                      deleteConfirm.trim()
+                        ? `That is not the name. Type “${detail.server.name}” exactly, including capitals.`
+                        : `Type “${detail.server.name}” in the box to confirm.`
+                    );
+                    return;
+                  }
+                  setDeleteError(null);
                   const doomed = detail.server.id;
+                  const doomedName = detail.server.name;
                   setDeleteConfirm('');
                   /* NOT `run(...)`: that helper reloads the detail of the
                    * still-`selected` server afterwards, and the server this
@@ -769,11 +917,13 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                   void (async () => {
                     setBusy(true);
                     setError(null);
+                    setNotice(null);
                     try {
                       await api(`/api/servers/${doomed}`, { method: 'DELETE' });
                       setSelected(null);
                       setDetail(null);
                       await loadOverview();
+                      setNotice(`${doomedName} is deleted. Your server slot is free again.`);
                     } catch (err) {
                       setError((err as Error).message);
                     } finally {
@@ -791,9 +941,17 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                   style={input}
                   autoComplete="off"
                   placeholder={detail.server.name}
+                  aria-invalid={deleteError ? true : undefined}
+                  aria-describedby={deleteError ? 'delete-confirm-error' : undefined}
                   value={deleteConfirm}
-                  onChange={(e) => setDeleteConfirm(e.target.value)}
+                  onChange={(e) => { setDeleteConfirm(e.target.value); setDeleteError(null); }}
                 />
+                {deleteError && (
+                  <p id="delete-confirm-error" role="alert"
+                    style={{ margin: 0, color: '#ffb4b4', fontSize: 13 }}>
+                    ⚠ {deleteError}
+                  </p>
+                )}
                 <div>
                   <button
                     type="submit"
@@ -821,7 +979,9 @@ export function ServerAdminPanel({ justSubscribed = false }: { justSubscribed?: 
                     body: JSON.stringify({
                       status: detail.server.status === 'active' ? 'suspended' : 'active',
                     }),
-                  }))}>
+                  }), detail.server.status === 'active'
+                    ? `${detail.server.name} is suspended. Nobody can enter it, including you.`
+                    : `${detail.server.name} is live again.`)}>
                   {detail.server.status === 'active' ? 'Suspend' : 'Reinstate'}
                 </button>
               </div>

@@ -4,6 +4,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { sweep, blob } from '../gfx/Organic.js';
 import { World } from './World.js';
 import { COLLISION_LAYER } from '../physics/Physics.js';
+import { CONFIG } from '../core/Config.js';
 import { genPool } from '../workers/GenPool.js';
 import { terrainH, MESA_Y, MESA_R, SHOULDER, HALF, INNER_KEEP } from './terrain/CitadelHeight.js';
 import { venueBounds } from '../minigames/RooftopTrial.js';
@@ -1141,16 +1142,47 @@ export class CitadelWorld extends World {
      * cool. Shadows land brown rather than violet, and the town stops looking
      * like it is lit through a bruise. */
     env.ambientColor = new THREE.Color(0xa8977f);
-    env.ambientIntensity = 0.7;
+    /* 0.7 -> 0.12, AND THE ENERGY GOES TO HEMISPHERE, NOT TO THE PROBE.
+     *
+     * Which term receives it is the whole decision here, and the note above is
+     * why. This world's fill is deliberately WARM so that shade over red-brown
+     * ground lands brown instead of violet. The probe is `getEnvMap('daylight')`
+     * - a SHARED mood (`gfx/Materials.js ENV_MOODS.daylight`) with a blue sky
+     * and a neutral 0x6a6247 ground, authored for no world in particular. The
+     * hemisphere term is this world's own `skyColor`/`groundColor` pair below,
+     * including the hot sand.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / % of pixels under 12:
+     *
+     *   souk-alley    base 36.8 / 11.8%  ->  env-heavy (h1.15/e1.75) 39.3 / 9.2%
+     *                                    ->  THIS      (h1.50/e1.35) 39.3 / 10.4%
+     *   ward-centre   base 82.8 / 4.6%   ->  THIS 83.9 / 4.0%
+     *   gate-spawn    base 71.9 / 3.7%   ->  THIS 73.9 / 2.9%
+     *   desert-overv. base 110.8 / 0.1%  ->  THIS 111.5 / 0.0%
+     *
+     * The env-heavy variant scores marginally better on the alley's crush and
+     * was REJECTED on the picture: it pulled the shade side of the plaster and
+     * the alley floor toward the probe's blue, which is the exact purple-shadow
+     * failure the paragraph above documents. Same energy through the warm
+     * hemisphere keeps the shade brown and still models, because a hemisphere
+     * separates the corbel's lit top face from its shaded underside and a
+     * constant cannot. Zero shader programs: 103 across all candidates. */
+    env.ambientIntensity = 0.12;
     env.skyColor = new THREE.Color(0xa8c6e6);
     env.groundColor = new THREE.Color(0xc9a173);   // hot sand bouncing upward
-    env.hemiIntensity = 1.15;
+    // 1.15 -> 1.50: most of the 0.58 taken off ambient, as a term with a
+    // direction. See `ambientIntensity` above for the measurement.
+    env.hemiIntensity = 1.50;
     env.sunColor = new THREE.Color(0xffddA6);
     env.sunIntensity = 5.9;
     env.sunDirection = new THREE.Vector3(0.55, 0.42, 0.72).normalize();
-    env.envMapIntensity = 1.0;
+    // 1.0 -> 1.35. The smaller share of the ambient collapse: enough that the
+    // stone and the brasswork pick up a sky direction, held below the point
+    // where the shared `daylight` mood's blue starts tinting the shade.
+    env.envMapIntensity = 1.35;
     env.bloom = { strength: 0.42, radius: 0.5, threshold: 0.92 };
-    env.envMap = this.materials?.getEnvMap?.('daylight') ?? undefined;
+    env.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
   }
 
   /* ================================================================== */
@@ -2978,12 +3010,35 @@ export class CitadelWorld extends World {
 
     /* Stair up from the souk. The ward has to be reachable on foot as well as
      * by climbing - a vertical world that *requires* the vertical mechanic to
-     * see its centrepiece is a world that locks out anyone still learning it. */
-    for (let s = 0; s < 10; s++) {
-      const sy = cy + (s + 0.5) * (wardH / 10);
-      const sz = wardR + 6 - s * 0.7;
-      B.box('stone.cobble', 9, wardH / 10, 1.6, 0, sy, sz, 0, 0xb6a68a);
-      this.track(this.physics.addBox(0, sy, sz, 4.5, wardH / 20, 0.8));
+     * see its centrepiece is a world that locks out anyone still learning it.
+     *
+     * ── FOURTEEN STEPS, and the ten it replaces could not be walked ────────
+     * At ten steps over `wardH` = 6 m the top faces were `cy + 0.6 * (s + 1)`,
+     * so every riser was 0.600 m. `CONFIG.player.stepHeight` is 0.45, so the
+     * walk probe refused all ten; and 0.600 is under `Climb.MIN_RISE_GROUND`
+     * = 1.0, so no mantle was offered either. The only way onto the ward was
+     * to JUMP ten times - `parkour`'s apex is 0.878 - which is exactly the
+     * lock-out the comment above says this stair exists to prevent.
+     * `citadel-reach.test.mjs` passes because its `ReachGraph` models jump
+     * edges, so a flight of pure jumps reads as connected.
+     *
+     * 6 / 14 = 0.428571 m, which clears 0.45 with 0.021 m in hand. The total
+     * RUN is unchanged at 7.0 m, so the going falls 0.700 -> 0.500 and the
+     * pitch is bit-for-bit the same flight it always was: atan(0.6/0.7) and
+     * atan(0.428571/0.5) are both 40.60 degrees, comfortably inside the
+     * ~45-degree walkable band. The top tread lands at z = 29.5 against a ward
+     * edge at 30, so it still overlaps the deck it arrives on rather than
+     * leaving a lip. Fourteen was chosen over a hidden ramp proxy deliberately:
+     * a proxy puts the collision surface off the drawn treads, and drawn and
+     * solid staying identical is what `riser-legality.test.mjs` can check.
+     */
+    const wardSteps = 14;
+    const wardRun = 0.7 * 10;
+    for (let s = 0; s < wardSteps; s++) {
+      const sy = cy + (s + 0.5) * (wardH / wardSteps);
+      const sz = wardR + 6 - (s * wardRun) / wardSteps;
+      B.box('stone.cobble', 9, wardH / wardSteps, 1.6, 0, sy, sz, 0, 0xb6a68a);
+      this.track(this.physics.addBox(0, sy, sz, 4.5, wardH / (wardSteps * 2), 0.8));
     }
 
     // Keep.
@@ -3339,17 +3394,49 @@ export class CitadelWorld extends World {
        * spans against the authored 0.25 m plank gap on the centreline. Wide
        * enough to drop a body that drifts to the rail. */
       const rotY = -dirY;
-      /* Plank count is bounded by the STEP as well as by the span. 1.4 m of
-       * span per plank is right for a level bridge; on the landfall span it
-       * would be 11.6 m of descent over eleven planks, a 1.05 m drop each,
-       * which is over `NPC.GROUND_PROBE_UP` = 0.95 m and so is not a walk at
-       * all. Capping the rise at 0.6 m per plank leaves room for the catenary
-       * on top of it - the sag contributes another 0.15 m at the ends. */
-      const steps = Math.max(6, Math.round(span / 1.4), Math.ceil(Math.abs(b.y - a.y) / 0.6));
-      // Both ends hang 0.6 m under the deck they are tied to, and the walk
-      // between them is a straight lerp with the catenary taken off it.
-      const ay = a.y - 0.6;
-      const by = b.y - 0.6;
+      /* Plank count is bounded by the STEP as well as by the span - and the
+       * step is the PLAYER's, which is the correction this line needed.
+       *
+       * 1.4 m of span per plank is right for a level bridge; on the landfall
+       * span it would be 11.6 m of descent over eleven planks, a 1.05 m drop
+       * each. The cap that replaced it was 0.6 m per plank, chosen against
+       * `NPC.GROUND_PROBE_UP` = 0.95 - an NPC ground-follower's figure, not a
+       * pair of legs. `Player._move` takes a tread at
+       * `CONFIG.player.stepHeight` = 0.45, so measured on the built world all
+       * EIGHT spans had a worst plank-to-plank step of 0.600 to 0.685 m. Every
+       * rope bridge in the citadel had at least one step a player could not
+       * walk, and the direction it bites in is the one that matters: the drop
+       * ONTO a bridge is free, the step back UP onto the deck at the far end
+       * is not.
+       *
+       * Two terms now, and both are solved rather than guessed:
+       *
+       *   the HANG. Both ends tie 0.6 m under their deck, so the first and
+       *   last steps were 0.600 m whatever the plank count. It is the player's
+       *   step now, which is the largest hang a body can climb back out of.
+       *
+       *   the SAG. `sag(t) = A sin(pi t)` and the steepest step is the first,
+       *   `A sin(pi/steps) <= A pi / steps`. Adding `pi A` to the climb before
+       *   dividing is what makes the WORST step obey the cap instead of the
+       *   MEAN one - the old line divided the climb alone and then noted the
+       *   sag "contributes another 0.15 m at the ends", which is 0.15 m of
+       *   overshoot written down and left in.
+       *
+       * Measured after: worst step 0.450 on all eight spans, and the plank
+       * count goes 276 -> 328 (the two landfalls 21 -> 32, the great tower's
+       * perimeter 74 -> 104; the four loops and the minaret perimeter are
+       * already dense enough and do not move). */
+      const hang = Math.min(0.6, CONFIG.player.stepHeight);
+      const sagAmp = Math.min(3.4, span * 0.055);
+      const steps = Math.max(
+        6,
+        Math.round(span / 1.4),
+        Math.ceil((Math.abs(b.y - a.y) + Math.PI * sagAmp) / CONFIG.player.stepHeight)
+      );
+      // Both ends hang under the deck they are tied to, and the walk between
+      // them is a straight lerp with the catenary taken off it.
+      const ay = a.y - hang;
+      const by = b.y - hang;
 
       let worstStep = 0;
       let prevY = a.y;
@@ -3360,7 +3447,7 @@ export class CitadelWorld extends World {
         const px = a.x + dx * t;
         const pz = a.z + dz * t;
         // Catenary sag - a taut bridge reads as a girder, a sagging one as rope.
-        const sag = Math.sin(t * Math.PI) * Math.min(3.4, span * 0.055);
+        const sag = Math.sin(t * Math.PI) * sagAmp;
         const py = ay + (by - ay) * t - sag;
         worstStep = Math.max(worstStep, Math.abs(py - prevY));
         prevY = py;

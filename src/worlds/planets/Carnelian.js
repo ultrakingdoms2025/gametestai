@@ -1170,6 +1170,48 @@ export const CARNELIAN = definePlanet({
    * and `SpaceObjectives.richerPad` still names Anvil Deck to a player who
    * lands there on purpose.
    */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * 7.4 m/s2, apex 1.023 m, a 5.8 m sprint jump. Three walks up two fault
+   * scarps and a gorge terrace - which is what a fault-block world has. */
+  viewpoints: [
+    {
+      /* On top of The Ironwall, the 44 m east scarp, at 103.4 m and dead level.
+       * The whole Ochre Flats are 25 m below and to the west. */
+      id: 'ironwall', name: 'Ironwall Top', x: 0, z: -230, r: 8,
+      terrain: 'highland', place: 'The Ironwall',
+      climb: 'North off Anvil Deck and up the scarp ramp.',
+    },
+    {
+      /* The west terrace of Vermilion Gorge at its northern end - 79.5 m, with
+       * the 83 m trench cut into the shelf a few metres east. */
+      id: 'vermilion', name: 'Vermilion Terrace', x: 260, z: -10, r: 7,
+      terrain: 'outcrop', place: 'Vermilion Gorge, the west terrace',
+      climb: 'North up the terrace from Kiln Deck, keeping the gorge on your right.',
+    },
+    {
+      /* The Redgate scarp's south end, 61.7 m, 433 m out and the far side of
+       * the map from the gorge. */
+      id: 'redgate_scarp', name: 'Redgate Scarp', x: -206, z: -300, r: 8,
+      terrain: 'highland', place: 'the Redgate scarp',
+      climb: 'South along the scarp from the Redgate ramp.',
+    },
+  ],
+
   landing: [
     {
       /* Facing east-north-east: from here the Low Scarp is the near horizon,
@@ -1189,6 +1231,7 @@ export const CARNELIAN = definePlanet({
       id: 'kiln', name: 'Kiln Deck', x: 292, z: -215, r: 22, yaw: -0.08,
     },
   ],
+
 
   hazards: {
     /** Fine iron dust in suspension. Thin - 0.18 against Cinder's 0.35 - and

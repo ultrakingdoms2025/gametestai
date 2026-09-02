@@ -13,7 +13,13 @@ import { stripeConfigured } from '@/lib/stripe';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'Checkout — AETHER NEXUS' };
+export const metadata = {
+  title: 'Checkout — AETHER NEXUS',
+  alternates: { canonical: '/checkout' },
+  /* A checkout is a step, not a destination, and the totals on it depend on
+   * query parameters. Nothing here belongs in a search index. */
+  robots: { index: false, follow: true },
+};
 
 /**
  * The order confirmation.
@@ -49,7 +55,7 @@ export default async function Checkout(props: {
       : quoteEntryWithCredits(credits);
 
   return (
-    <main>
+    <main id="main" tabIndex={-1}>
       <section style={{ paddingTop: 56, borderBottom: 0 }}>
         <div className="wrap" style={{ maxWidth: 620 }}>
           <div className="head">
@@ -58,7 +64,7 @@ export default async function Checkout(props: {
                 ← Aether Nexus
               </Link>
             </div>
-            <h2>Checkout</h2>
+            <h1>Checkout</h1>
           </div>
 
           {!stripeConfigured() ? (
@@ -73,7 +79,7 @@ export default async function Checkout(props: {
           ) : null}
 
           <div className="panel">
-            <h3>Order</h3>
+            <h2>Order</h2>
             <div className="receipt">
               {quote.lines.map((l) => (
                 <div className="rline" key={l.label}>

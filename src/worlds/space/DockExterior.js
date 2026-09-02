@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../../gfx/Textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildHullSkin, worldProjectUV } from './HullSkin.js';
 import {
@@ -503,16 +524,16 @@ export class DockExterior {
        * most of the small structure on the station, so it is also most of what
        * the eye reads as "made of parts".
        */
-      trim: this._mat(new THREE.MeshStandardMaterial({
+      trim: this._mat(microSurface(new THREE.MeshStandardMaterial({
         color: 0x6e7784, roughness: 0.52, metalness: 0.62, fog: false,
-      })),
+      }), 'painted', 1)),
       /** Shadow structure: trusses, ribs, recesses. Nearly black. */
-      dark: this._mat(new THREE.MeshStandardMaterial({
+      dark: this._mat(microSurface(new THREE.MeshStandardMaterial({
         color: 0x1e2229, roughness: 0.84, metalness: 0.40, fog: false,
-      })),
-      hazard: this._mat(new THREE.MeshStandardMaterial({
+      }), 'painted', 2)),
+      hazard: this._mat(microSurface(new THREE.MeshStandardMaterial({
         color: 0xc9a13c, roughness: 0.74, metalness: 0.14, fog: false,
-      })),
+      }), 'painted', 1)),
       /**
        * Radiator faces. Nearly black and fairly smooth so they read as an
        * absence in the silhouette, with a dull red emission because a radiator
@@ -528,10 +549,10 @@ export class DockExterior {
        *
        * A radiator glows dull cherry. It does not glow like a warning light.
        */
-      fin: this._mat(new THREE.MeshStandardMaterial({
+      fin: this._mat(microSurface(new THREE.MeshStandardMaterial({
         color: 0x0f1218, roughness: 0.52, metalness: 0.48, fog: false,
         emissive: new THREE.Color(0.26, 0.08, 0.05), emissiveIntensity: 0.10,
-      })),
+      }), 'polished', 2)),
       /**
        * Light FITTINGS - strip lights, floods, the glow inside the well.
        * Unlit and well over 1.0 so they survive the bloom threshold. This is

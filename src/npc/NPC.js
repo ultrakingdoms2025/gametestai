@@ -46,6 +46,26 @@ const GROUND_PROBE_DROP = 2.6;
 /** Gap that gets closed rather than fallen through. Bigger than any step. */
 const GROUND_STICK = 0.34;
 /**
+ * ── THE GAIT CLAMP ────────────────────────────────────────────────────────
+ * `moveSpeed` is what a character MEANT to travel, and a character jammed
+ * against a doorway, a cart, or the back of the crowd in front of it means a
+ * full walk while covering nothing - which the animator used to spend on a full
+ * walk cycle, on the spot. `gaitSpeed` is the same number clamped to the ground
+ * the capsule actually covered, and it is the one the animator gets.
+ *
+ * `moveSpeed` itself is deliberately left alone: `HostileNPC` prices its aim
+ * penalty off it, `BeastNPC` decides `stalking` with it and `FriendlyNPC` gates
+ * standing on it, and none of those three asked a question about displacement.
+ *
+ * The two constants, the planar-only measurement, the asymmetric decay, and why
+ * a teleport needs no hook here, are all one argument and it is written out
+ * once, next to the player's copy of it.
+ * @see ../player/PlayerAvatar.js `GAIT_SLACK`
+ */
+const GAIT_SLACK = 1.15;
+/** @see GAIT_SLACK - decay of the gait clamp, per second, downwards only. */
+const GAIT_FALL = 8;
+/**
  * How far above the resolved floor a character has to be, for long enough,
  * before the watchdog treats it as stranded rather than as falling. Well clear
  * of stairs, slopes and the normal jitter of a stale ground sample.
@@ -163,6 +183,9 @@ export class NPC {
     this.targetYaw = this.yaw;
     this.turnRate = 0;
     this.moveSpeed = 0;
+    /** `moveSpeed` clamped to real displacement; what the animator is fed and
+     *  the state of the filter that produces it. @see GAIT_SLACK */
+    this.gaitSpeed = 0;
     this.desiredSpeed = CONFIG.npc.walkSpeed;
     this.wantsToMove = false;
     /** Latched "I am moving fast enough to steer my facing" - see `_steer`. */
@@ -688,6 +711,13 @@ export class NPC {
       this._integrateSeated(dt);
       return;
     }
+    /* Where this step started, for the gait clamp at the end of it. Taken here
+     * rather than held across steps on purpose: the manager pushes bodies apart
+     * and reseats stranded ones AFTER `_integrate` returns, and neither of those
+     * is a stride. This measures the integration and nothing else.
+     * @see GAIT_SLACK */
+    const fromX = this.position.x;
+    const fromZ = this.position.z;
     this.velocity.y += this._gravity * dt;
     /* Terminal velocity, and DELIBERATELY not per-world: it is a metres-per-
      * step limit that keeps a 0.33 m capsule from tunnelling through a floor,
@@ -760,6 +790,31 @@ export class NPC {
     }
     this._noteWalked(dt);
     this.moveSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+    this._clampGait(dt, Math.hypot(this.position.x - fromX, this.position.z - fromZ));
+  }
+
+  /**
+   * Reconcile `moveSpeed` against the ground this step actually covered and
+   * leave the answer in `gaitSpeed`.
+   *
+   * Run on the SIMULATION step, not the animation one. A distant character
+   * integrates one step in `lod.sim` while it keeps posing every frame, so
+   * measuring across poses would read three frames of standing still followed
+   * by one of quadruple speed for a character walking perfectly normally.
+   *
+   * @see GAIT_SLACK
+   * @param {number} dt the step just integrated
+   * @param {number} moved planar metres covered by that step
+   */
+  _clampGait(dt, moved) {
+    const raw = (moved / Math.max(dt, 1e-4)) * GAIT_SLACK;
+    // Up instantly, down damped, and never above the intent - which is what
+    // makes a respawn or a watchdog reseat a no-op instead of a spike.
+    const held =
+      raw >= this.gaitSpeed
+        ? raw
+        : this.gaitSpeed + (raw - this.gaitSpeed) * (1 - Math.exp(-GAIT_FALL * dt));
+    this.gaitSpeed = Math.min(this.moveSpeed, held);
   }
 
   /**
@@ -780,6 +835,7 @@ export class NPC {
   _integrateSeated(dt) {
     this.velocity.set(0, 0, 0);
     this.moveSpeed = 0;
+    this.gaitSpeed = 0;
     this.grounded = true;
     this._airTime = 0;
     this.groundY = this.seat.y;
@@ -831,6 +887,7 @@ export class NPC {
       this._sampleGround(dt, true);
     }
     this.moveSpeed = 0;
+    this.gaitSpeed = 0;
   }
 
   /**
@@ -985,7 +1042,9 @@ export class NPC {
     const useDt = Math.min(this._animAccum, 0.25);
     this._animAccum = 0;
 
-    this.animator.setLocomotion(this.moveSpeed, this.turnRate);
+    // `gaitSpeed`, not `moveSpeed`: the legs may only cycle over ground that
+    // was actually covered. @see GAIT_SLACK
+    this.animator.setLocomotion(this.gaitSpeed, this.turnRate);
     this.animator.setLookTarget(this._lookTarget);
     this.animator.update(useDt, elapsed, lod);
     this.humanoid.setDetailVisible(lod.detail);

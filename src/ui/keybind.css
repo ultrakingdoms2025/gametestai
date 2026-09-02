@@ -78,12 +78,36 @@
   color: #eaf6ff;
 }
 
+/* A `<button>` now, not a `<div>` - see the note in `KeybindMenu._build`. The
+   rules below reset what the UA gives a button and keep the caption look it
+   has always had; the only visible change is that a thumb can now press it,
+   which on a phone is the difference between closing this panel and reloading
+   the page. `min-height` meets the 44 px coarse-pointer floor `hud.css` sets
+   for every other control. */
 .kb-close {
   display: flex;
   align-items: center;
   gap: 6px;
   font: 500 11px/1 'Rajdhani', system-ui, sans-serif;
   color: #8fb0c6;
+  background: none;
+  border: 0;
+  padding: 6px 4px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.kb-close:hover,
+.kb-close:focus-visible {
+  color: #d8ecff;
+}
+
+@media (pointer: coarse) {
+  .kb-close {
+    min-height: 44px;
+    min-width: 44px;
+    justify-content: center;
+  }
 }
 
 .kb-close b,

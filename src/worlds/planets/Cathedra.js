@@ -1060,6 +1060,57 @@ export const CATHEDRA = definePlanet({
    * 17.6% from the Lantern. Three plates, three sealed walkable regions, three
    * pads - so "which pad" is the only navigation decision on Cathedra, and it
    * is the whole one.                                                        */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * 6.6 m/s2, apex 1.062 m, a 6.2 m sprint jump - the lightest of the seven
+   * heavy worlds and still nowhere near a traversal rule. All three are walks
+   * up plate edges, which is the only landform this world has.
+   *
+   * They are also the three THINNEST places to stand on the planet. Cathedra's
+   * air is a stated fact of this descriptor rather than a new one - the fog
+   * runs clear to the horizon, the sky is `alpine`, and the diamond dust below
+   * only forms in air this cold and this dry - and `PlanetWorld` now drives a
+   * cold-air stamina drain off the height these three stand at. The highest
+   * ground is the hardest to breathe on, which is exactly where the views are.
+   * @see ../PlanetWorld.js `_buildHazardField` */
+  viewpoints: [
+    {
+      /* The south rim of the Lectern - the ring wall round the deepest basin on
+       * the planet, 87.5 m with a 66 m sink inside it. */
+      id: 'lectern_rim', name: 'Lectern Rim', x: -225, z: -349, r: 8,
+      terrain: 'outcrop', place: 'the Lectern',
+      climb: 'Anticlockwise round the outside of the Lectern from The Lantern.',
+    },
+    {
+      /* The high side of the Spine Seam where the fault face is 32 m over 13 m
+       * of run - 68 degrees, and this is the top of it. 84 m. */
+      id: 'spine_head', name: 'Spine Head', x: -20, z: -80, r: 7,
+      terrain: 'fissure', place: 'the Spine Seam',
+      climb: 'East from The Lantern onto the upthrown block; the seam is the edge.',
+    },
+    {
+      /* The far east end of the cross seam, 52.3 m, out past The Gallery where
+       * the plate field runs to the horizon. */
+      id: 'gallery_east', name: 'Gallery Easting', x: 350, z: -70, r: 8,
+      terrain: 'shelf', place: 'the cross seam east of The Gallery',
+      climb: 'East off The Gallery along the upthrown side of the cross seam.',
+    },
+  ],
+
   landing: [
     {
       /* Facing WNW: out across the Pavement at the Spine's landmark spires,
@@ -1075,6 +1126,7 @@ export const CATHEDRA = definePlanet({
       id: 'lantern', name: 'The Lantern', x: LANTERN[0], z: LANTERN[1], r: 20, yaw: 0.87,
     },
   ],
+
 
   hazards: {
     /**

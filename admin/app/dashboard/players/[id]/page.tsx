@@ -216,14 +216,14 @@ export default async function PlayerPage({
 
   return (
     <div className="page-body">
-      <div className="page-title">{title}</div>
+      <h1 className="page-title">{title}</h1>
 
       {saved ? <div className="form-success">Saved.</div> : null}
       {error ? <div className="form-error" style={{ marginBottom: 16 }}>{error}</div> : null}
 
       <div className="grid-2">
         <section className="card">
-          <div className="section-title">Account details</div>
+          <h2 className="section-title">Account details</h2>
           <form action={savePlayer}>
             <div className="form-grid">
               <div className="form-row">
@@ -283,7 +283,7 @@ export default async function PlayerPage({
         </section>
 
         <section className="card">
-          <div className="section-title">Access & credits</div>
+          <h2 className="section-title">Access & credits</h2>
           <div className="mini-stack">
             <div><span className="mini-label">Player ID</span><div className="mono">{creating ? 'new' : String(player?.id)}</div></div>
             <div><span className="mini-label">Email hash</span><div className="mono">{String(player?.email_hash ?? '—')}</div></div>
@@ -349,7 +349,7 @@ export default async function PlayerPage({
           )}
 
           <div style={{ marginTop: 24 }}>
-            <div className="section-title">Recent purchase snapshot</div>
+            <h2 className="section-title">Recent purchase snapshot</h2>
             {player?.purchase_at ? (
               <div className="mini-stack">
                 <div><span className="mini-label">Last purchase time</span><div className="mono">{new Date(String(player.purchase_at)).toLocaleString()}</div></div>
@@ -365,7 +365,7 @@ export default async function PlayerPage({
 
       {!creating ? (
         <section className="card" style={{ marginTop: 24 }}>
-          <div className="section-title">Quest engagement history</div>
+          <h2 className="section-title">Quest engagement history</h2>
           <div className="tbl-wrap">
             <table>
               <thead>
@@ -424,7 +424,7 @@ export default async function PlayerPage({
 
       {!creating ? (
         <section className="card" style={{ marginTop: 24 }}>
-          <div className="section-title">Purchase &amp; access history</div>
+          <h2 className="section-title">Purchase &amp; access history</h2>
           <div className="tbl-wrap">
             <table>
               <thead>

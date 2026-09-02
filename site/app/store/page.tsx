@@ -7,7 +7,13 @@ import { stripeConfigured } from '@/lib/stripe';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'Buy credits — AETHER NEXUS' };
+export const metadata = {
+  title: 'Buy credits — AETHER NEXUS',
+  description:
+    'Credits are spent in-game on ammunition, equipment and anything a merchant will '
+    + 'sell you — and they can be earned as well as bought.',
+  alternates: { canonical: '/store' },
+};
 
 export default async function Store() {
   const { hasAccess } = await getCurrentAccessState();
@@ -16,7 +22,7 @@ export default async function Store() {
   const hosting = quoteServerHosting();
 
   return (
-    <main>
+    <main id="main" tabIndex={-1}>
       <section style={{ paddingTop: 56 }}>
         <div className="wrap">
           <div className="head">
@@ -25,7 +31,7 @@ export default async function Store() {
                 ← Aether Nexus
               </Link>
             </div>
-            <h2>Credits</h2>
+            <h1>Credits</h1>
             <p>
               Spent in-game on ammunition, equipment and anything a merchant will sell
               you. You can also earn them: race podiums, hidden relics, contracts and
@@ -71,7 +77,7 @@ export default async function Store() {
               The button is the SAME component the dashboard uses, not a second
               one — see `HostingSubscribeButton` for why that matters. */}
           <section className="panel" style={{ marginTop: 34 }}>
-            <h3>Host a custom server</h3>
+            <h2>Host a custom server</h2>
             <p>
               Your own lore, quests and marketplace items, played by the people you
               invite. Everything earned inside one stays inside it: server credits are a

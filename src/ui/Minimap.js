@@ -42,6 +42,39 @@ const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 14;
 const HEX_SIDES = 6;
 
+/* ── repaint cadence. @see `Minimap.update` ─────────────────────────────── */
+
+/**
+ * Ceiling on the repaint rate, in seconds between paints.
+ *
+ * 30 Hz. This is a 220 px dial of markers and a rotated floorplan blit; the
+ * frames above 30 are not legible on it, and on a 120 Hz panel three quarters
+ * of them were being spent clearing and repainting 193,600 device pixels.
+ */
+const MIN_REPAINT_S = 1 / 30;
+
+/**
+ * Floor on the repaint rate, in seconds between paints, when nothing moves.
+ *
+ * 10 Hz. Several markers pulse off `elapsed` and the slowest of them is
+ * `sin(elapsed * 1.4)` - about a 4.5 s period - so 10 Hz is 45 samples across
+ * one cycle and reads as continuous. A dial that stopped entirely while the
+ * player stood still would read as a broken widget rather than as a saving.
+ */
+const IDLE_REPAINT_S = 1 / 10;
+
+/**
+ * How far the drawn content must move before a repaint is worth taking.
+ *
+ * Half a device-independent pixel, expressed in MAP PIXELS rather than in
+ * metres on purpose: the same walk is a different number of pixels at every
+ * zoom level and in every world - the station's plan spans 1,488 m and the
+ * medieval valley 400 - so a metres threshold would mean something different
+ * in each of them. Half a pixel is the point below which the repaint cannot
+ * change what is on screen.
+ */
+const REPAINT_PX = 0.5;
+
 /** Accept `0xrrggbb`, a CSS string, or undefined. */
 function toCss(value, fallback) {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -139,6 +172,43 @@ export class Minimap {
       else this._hex.lineTo(x, y);
     }
     this._hex.closePath();
+
+    /**
+     * The backdrop gradient, built ONCE.
+     *
+     * `update` used to run `createRadialGradient` plus three `addColorStop`
+     * calls every frame, and all four arguments to it - `cx`, `cy`, 4 and `r` -
+     * are fixed for the life of the widget. Sixty identical gradient objects a
+     * second, each of which the 2D backend has to build a colour ramp for, to
+     * paint the same pixels. A `CanvasGradient` is immutable and reusable, so
+     * this is the same drawing with none of that.
+     */
+    this._bg = this.ctx.createRadialGradient(this._cx, this._cy, 4, this._cx, this._cy, this._r);
+    this._bg.addColorStop(0, 'rgba(12,26,40,0.86)');
+    this._bg.addColorStop(0.72, 'rgba(6,13,22,0.86)');
+    this._bg.addColorStop(1, 'rgba(2,5,10,0.92)');
+
+    /* ---- repaint cadence. @see `update` --------------------------------- */
+    /** When the last repaint happened, on the caller's `elapsed` clock. */
+    this._paintedAt = -Infinity;
+    /** Where the map was pointed then, so "has anything moved" is answerable. */
+    this._paintedAtX = NaN;
+    this._paintedAtZ = NaN;
+    this._paintedAtYaw = NaN;
+    /** Set by anything that changes the picture without the player moving. */
+    this._dirty = true;
+    /** Repaints taken and skipped, so the saving is measurable rather than claimed. */
+    this.paints = { drawn: 0, skipped: 0 };
+  }
+
+  /**
+   * Force the next `update` to repaint, whatever the cadence gate says.
+   *
+   * Called by everything that changes the picture without the player moving:
+   * a new world, a new floorplan, a zoom step, a circuit appearing.
+   */
+  invalidate() {
+    this._dirty = true;
   }
 
   /** Metres visible from the centre to the rim. */
@@ -161,6 +231,7 @@ export class Minimap {
    * @param {Array<object>|null} [racers] live markers, read every frame
    */
   setCircuit(points, racers = null) {
+    this._dirty = true;
     if (!Array.isArray(points) || points.length < 3) {
       this.circuit = null;
       this.racers = null;
@@ -191,6 +262,7 @@ export class Minimap {
    */
   zoom(delta) {
     if (!delta) return;
+    this._dirty = true;
     const step = CONFIG.minimap.zoomStep;
     this.zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomLevel * (delta > 0 ? 1 / step : step)));
   }
@@ -210,6 +282,7 @@ export class Minimap {
    * who never touches the zoom keys; the extra range is there when they do.
    */
   setWorld(world) {
+    this._dirty = true;
     this._world = world || null;
     this._plan = world ? this._bakePlan(world) : null;
 
@@ -353,14 +426,52 @@ export class Minimap {
     return _pt;
   }
 
+  /**
+   * Repaint the dial - subject to the cadence gate below.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   *  WHY THERE IS A GATE HERE AND NOT AT THE CALL SITE
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This method clears and repaints 193,600 device pixels, rotates a blit of
+   * the baked floorplan through it, and walks every marker list in the world.
+   * It is driven from `HUD.update` with no cadence of its own AND OUTSIDE THE
+   * `uiPaused` GATE, so it ran at the full frame rate including while the
+   * player was sitting in a menu with nothing on the map moving at all.
+   *
+   * The right cadence gate is at the call site, but the call site is
+   * `src/ui/HUD.js` and this file cannot edit it. A gate here is strictly
+   * better than none and cannot conflict with one added there later: a caller
+   * that stops calling every frame simply finds this already agreeing.
+   *
+   * ── The thresholds, and why they are in PIXELS ─────────────────────────
+   *
+   * A repaint that moves nothing by as much as a pixel is a repaint nobody
+   * can see, and the map's scale is what turns a distance into pixels: at the
+   * default zoom the dial shows tens of metres across ~107 px, so a quarter of
+   * a metre of walking is under half a pixel of map movement. A metres
+   * threshold would therefore mean something different at every zoom level and
+   * in every world (the station's plan spans 1,488 m, the valley 400). The
+   * screen-space form is the same statement at every scale.
+   *
+   * Between the two rate bounds:
+   *   - never more than `1 / MIN_REPAINT_S` (30 Hz), because this widget is
+   *     legible at 20-30 Hz and the frames above that are not free;
+   *   - never less than `1 / IDLE_REPAINT_S` (10 Hz) even when nothing moves,
+   *     because several markers pulse on `elapsed` (the slowest is
+   *     `sin(elapsed * 1.4)`) and a dial that froze while the player stood
+   *     still would read as broken rather than as a saving.
+   *
+   * The player arrow needs no fast path: this map is player-CENTRED and
+   * rotates to the player's heading, so the arrow is drawn at the middle of
+   * the dial and never moves. Everything that moves is behind it.
+   */
   update(_dt, elapsed) {
     const ctx = this.ctx;
     const size = this.size;
     const cx = this._cx;
     const cy = this._cy;
     const r = this._r;
-
-    ctx.clearRect(0, 0, size, size);
 
     const p = this.player?.position;
     const yaw = this.player?.yaw ?? 0;
@@ -370,15 +481,45 @@ export class Minimap {
     const cos = Math.cos(yaw);
     const scale = r / this.range;
 
+    /* ---- the cadence gate ---------------------------------------------- */
+    if (typeof elapsed === 'number' && Number.isFinite(elapsed) && !this._dirty) {
+      /* `_dirty` bypasses the ceiling as well as the floor, deliberately. A
+       * world swap, a zoom step and a circuit appearing are rare and are all
+       * cases where the dial would otherwise show the OLD picture for up to a
+       * frame budget - and none of them can arrive often enough to matter. */
+      const since = elapsed - this._paintedAt;
+      if (since < MIN_REPAINT_S) { this.paints.skipped++; return; }
+      /* A live race moves markers this widget does not own, so it can never be
+       * held off by the player standing still. */
+      if (!this.racers && since < IDLE_REPAINT_S) {
+        const dx = px - this._paintedAtX;
+        const dz = pz - this._paintedAtZ;
+        let dYaw = yaw - this._paintedAtYaw;
+        /* Wrapped: a heading crossing PI is a small turn, not a full circle. */
+        while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        /* Translation in map pixels, plus the rim's travel under a rotation -
+         * the largest distance any drawn point moves when the dial turns. */
+        const movedPx = Math.hypot(dx, dz) * scale + Math.abs(dYaw) * r;
+        if (movedPx < REPAINT_PX && Number.isFinite(movedPx)) { this.paints.skipped++; return; }
+      }
+      this._paintedAt = elapsed;
+      this._paintedAtX = px;
+      this._paintedAtZ = pz;
+      this._paintedAtYaw = yaw;
+    }
+    this._dirty = false;
+    this.paints.drawn++;
+
+    ctx.clearRect(0, 0, size, size);
+
     ctx.save();
     ctx.clip(this._hex);
 
     // --- backdrop --------------------------------------------------------
-    const bg = ctx.createRadialGradient(cx, cy, 4, cx, cy, r);
-    bg.addColorStop(0, 'rgba(12,26,40,0.86)');
-    bg.addColorStop(0.72, 'rgba(6,13,22,0.86)');
-    bg.addColorStop(1, 'rgba(2,5,10,0.92)');
-    ctx.fillStyle = bg;
+    // Built once in the constructor: every argument to it is fixed for the
+    // life of the widget. @see `this._bg`
+    ctx.fillStyle = this._bg;
     ctx.fillRect(0, 0, size, size);
 
     // --- floorplan (rotated blit of the baked canvas) ---------------------

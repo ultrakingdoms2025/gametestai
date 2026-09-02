@@ -2059,7 +2059,11 @@ export function buildSkeletonSpec(P) {
   const wrist = P.arm(0.72, 1).p;
   const tip = P.arm(1.0, 1).p;
   const defs = [];
-  const add = (name, parent, pos, tail) => defs.push({ name, parent, pos, tail });
+  /* `axis` is optional and only the driver bones carry one: it is the local
+   * axis a pose layer rotates that bone about (@see handFrame's `curl`).
+   * Unlike `pos`/`tail` it is a direction, so the ape remap below leaves it
+   * alone. */
+  const add = (name, parent, pos, tail, axis) => defs.push({ name, parent, pos, tail, axis });
 
   add('pelvis', null, [0, P.pelvisY, 0], [0, 1.075, 0]);
   add('spine01', 'pelvis', [0, 1.075, -0.005], [0, 1.18, -0.01]);
@@ -2074,6 +2078,13 @@ export function buildSkeletonSpec(P) {
     add(`upperArm${s}`, `clavicle${s}`, [shoulder * side, 1.392, 0], [elbow.x * side, elbow.y, elbow.z]);
     add(`foreArm${s}`, `upperArm${s}`, [elbow.x * side, elbow.y, elbow.z], [wrist.x * side, wrist.y, wrist.z]);
     add(`hand${s}`, `foreArm${s}`, [wrist.x * side, wrist.y, wrist.z], [tip.x * side, tip.y, tip.z]);
+    /* Two drivers per hand, placed on the mesh's own knuckle circle and thumb
+     * root so skin weighting measures each digit group against a segment that
+     * runs INSIDE it. @see FINGERS for why two and not thirty. */
+    const HL = handLandmarks(P, side);
+    const ax = HL.curl.toArray();
+    add(`fingers${s}`, `hand${s}`, HL.knuckle.toArray(), HL.fingerTip.toArray(), ax);
+    add(`thumb${s}`, `hand${s}`, HL.thumbBase.toArray(), HL.thumbTip.toArray(), ax);
     add(`thigh${s}`, 'pelvis', [sx * side, P.hipY, 0], [sx * side, 0.515, -0.012]);
     add(`calf${s}`, `thigh${s}`, [sx * side, 0.515, -0.012], [sx * side, P.ankleY, 0.01]);
     add(`foot${s}`, `calf${s}`, [sx * side, P.ankleY, 0.01], [sx * side, 0.03, -0.12]);
@@ -2114,6 +2125,24 @@ export function createSkeleton(spec) {
   const root = byName.get(spec[0].name);
   root.updateMatrixWorld(true);
   const skeleton = new THREE.Skeleton(bones);
+  /* Seat the hands AFTER the skeleton is bound, never before.
+   *
+   * `THREE.Skeleton` takes its bind inverses from the world matrices it is
+   * handed, so a curl applied a line earlier would be baked into the bind pose
+   * and the driver would then add a second one on top - which is exactly the
+   * bug the baked vertex curl was. Bound open, posed relaxed.
+   *
+   * It matters because not every humanoid has an `NPCAnimator` driving it:
+   * `MountManager`'s rider proxy poses its own figure, and a body built and
+   * never updated would otherwise stand there with two flat paddles where the
+   * old baked hook used to be. `_poseHands` overwrites this on its first
+   * frame for everything that IS animated. @see FINGERS */
+  const axis = new THREE.Vector3();
+  for (const def of spec) {
+    if (!def.axis) continue;
+    axis.set(def.axis[0], def.axis[1], def.axis[2]);
+    byName.get(def.name).quaternion.setFromAxisAngle(axis, REST_CURL);
+  }
   return { skeleton, bones, byName, root };
 }
 
@@ -2618,6 +2647,16 @@ const armBones = (side) => [
   B(`hand${S(side)}`), B('spine03', 2.0),
 ];
 const handBones = (side) => [B(`hand${S(side)}`, 0.8), B(`foreArm${S(side)}`, 1.3)];
+/* The digits and the thumb are their own parts with their own candidate lists,
+ * and that - not a tuned falloff - is what stops a finger bleeding onto its
+ * neighbour: neither list contains the other's driver, so no vertex of the
+ * digit group can pick up thumb influence and vice versa. `hand` stays in both
+ * at a 1.8 bias (its segment runs the length of the palm and out through the
+ * digits, so it is genuinely close to every finger vertex) to hold the root
+ * rings onto the palm; the bias is what keeps the tips at ~95% driver.
+ * @see FINGERS */
+const fingerBones = (side) => [B(`fingers${S(side)}`), B(`hand${S(side)}`, 1.8)];
+const thumbBones = (side) => [B(`thumb${S(side)}`), B(`hand${S(side)}`, 1.8)];
 const legBones = (side) => [
   B('pelvis', 1.6), B(`thigh${S(side)}`), B(`calf${S(side)}`), B(`foot${S(side)}`, 1.15),
   B(`toe${S(side)}`, 1.8),
@@ -3174,20 +3213,115 @@ function buildEar(part, P, side) {
   loft(part, sections, 12, { upHint: new THREE.Vector3(0, 0, -1), capEnd: true, capDepth: 0.5 });
 }
 
+/* ------------------------------------------------------------------ */
+/* Hand                                                                */
+/* ------------------------------------------------------------------ */
+
 /**
- * A hand, with fingers.
+ * Where the fingers start, measured down the forearm axis from the wrist.
  *
- * Previously the arm was one loft from the acromion to u=1.0 with `capEnd`,
- * which domed a 12 mm ring into a point: every character had a cone where a
- * hand should be. Nothing else on the body costs a frame as badly, because the
- * hands sit at the exact height a standing character's silhouette is read at.
- *
- * The frame is built explicitly rather than left to the loft's tangent frame so
- * the palm is a *slab*: a relaxed arm hangs with the palm facing the thigh, so
- * the wide axis runs front-to-back and the thin axis runs across the body.
- * ~430 triangles per hand at radial 6 on the fingers.
+ * This is also the LAST PALM RING, and that coincidence is load-bearing: the
+ * `fingers` bone pivots exactly on the knuckle circle, so a finger's root
+ * vertices sit on the rotation axis and move by (radius x angle) ~= 0 no
+ * matter how far the hand closes. That is what lets the palm stay weighted to
+ * `hand` alone and the digits to `fingers` alone without a seam opening
+ * between them. @see FINGER_DRIVER in NPCAnimator.
  */
-function buildHand(part, P, side) {
+const KNUCKLE_ALONG = 0.085;
+
+/**
+ * FOUR DIGITS ON ONE BONE, AND WHY NOT FIFTEEN.
+ *
+ * The obvious rig is three phalange bones per digit - 15 per hand, 30 on the
+ * body, which would more than double a 22-bone skeleton and be paid by every
+ * character in a crowd on every FK pass. It is also the configuration that
+ * BLEEDS: `assignSkinWeights` picks influences by inverse-power distance to a
+ * bone SEGMENT, the digits are ~10 mm thick and pitched 23 mm apart, so a
+ * vertex on the far side of the index finger is barely further from the middle
+ * finger's bone than from its own. At power 3.6 a ratio that small leaves a
+ * fifth of each digit driven by its neighbour, which is exactly the "fingers
+ * made of plasticine" artefact.
+ *
+ * One `fingers` driver per hand plus one `thumb` driver makes that failure
+ * mode STRUCTURALLY IMPOSSIBLE rather than merely tuned away: the four digits
+ * are one part with one candidate bone in the group, so there is no neighbour
+ * to bleed from. Four bones on the body total, and the two things a hand has
+ * to do - open, and close on something - are exactly the two degrees of
+ * freedom they buy.
+ *
+ * What they cannot do is articulate the phalanges independently, so the joint
+ * flexion stays baked (`PHALANGE_CURL`) and the driver supplies the knuckle
+ * closure. @see FINGER_DRIVER in NPCAnimator for the pose side of the deal.
+ *
+ * Spacing versus radius is the whole game in the table below. At 20.5 mm apart
+ * and 20.8 mm thick the four digits were exactly tangent for their whole
+ * length, welded into one slab, and the hand read as an oar blade. They are
+ * now pitched 23 mm apart, thinner, and splayed harder, so a 4-6 mm gap opens
+ * between them - about five pixels at 2.5 m, which is the threshold at which a
+ * viewer counts fingers instead of seeing a paddle.
+ *
+ * `curl` is a STAGGER, not a closure. A relaxed human hand rests in an uneven
+ * hook - index least curled, middle most, ring following it, little finger
+ * pulled in behind - and that irregularity is what stops four digits reading
+ * as one moulded slab. It used to carry the closure as well (0.21..0.35 rad of
+ * permanent knuckle flexion), which is precisely what welded every character's
+ * grip into one half-open hook that no weapon could ever fit. The mean is now
+ * zero; only the +-0.06 rad of irregularity is left, and the bone supplies the
+ * rest.
+ */
+const FINGERS = [
+  { z: -0.0345, len: 0.072, r: 0.0097, splay: -0.30, curl: -0.06 },
+  { z: -0.0115, len: 0.079, r: 0.0100, splay: -0.10, curl: 0.04 },
+  { z: 0.0115, len: 0.073, r: 0.0094, splay: 0.11, curl: 0.01 },
+  { z: 0.0345, len: 0.057, r: 0.0082, splay: 0.31, curl: 0.08 },
+];
+
+/**
+ * Flexion added at each interphalangeal joint, radians.
+ *
+ * Was 0.30, which put 1.20 rad (69 degrees) of permanent hook into a finger
+ * four rings long before the per-digit curl was even added. 0.13 leaves 0.52
+ * rad over the whole digit - a softly curved but OPEN finger - which is the
+ * shape a rigid segment has to have if one knuckle driver is going to close it
+ * around a 25-40 mm grip without the tip either missing the far side or
+ * driving through it.
+ */
+const PHALANGE_CURL = 0.13;
+/**
+ * The curl a hand sits at when nobody is posing it.
+ *
+ * Applied by `createSkeleton` to the driver bones as a default POSE, not as
+ * part of the bind. It is `NPCAnimator.GRIPS.relaxed[0]` and must stay equal
+ * to it, or a body's hands would visibly settle on its first animated frame;
+ * the constant is duplicated rather than imported because the rig must not
+ * depend on the animator. Pinned by npc-hand-grip.test.mjs.
+ */
+const REST_CURL = 0.42;
+/** Ring positions along a finger: four rings, three phalanges. */
+const PHALANGES = [0, 0.36, 0.68, 0.88, 1.0];
+
+/** The thumb, opposed, on the radial (forward) side of the palm. */
+const THUMB_KEYS = [
+  { s: 0.014, z: -0.030, x: 0.004, r: 0.0145 },
+  { s: 0.038, z: -0.046, x: 0.015, r: 0.0128 },
+  { s: 0.058, z: -0.056, x: 0.028, r: 0.0108 },
+  { s: 0.070, z: -0.060, x: 0.040, r: 0.0086 },
+];
+
+/**
+ * The hand's own frame - shared by the mesh and the skeleton.
+ *
+ * `buildSkeletonSpec` has to place the finger bones on the same circles the
+ * loft puts the finger roots on, and skin weighting then measures vertices
+ * against those bones. Two copies of this arithmetic would be two chances to
+ * disagree, and a disagreement here is a hand whose fingers are weighted to a
+ * bone that is not inside them.
+ *
+ * The frame is built explicitly rather than left to the loft's tangent frame
+ * so the palm is a *slab*: a relaxed arm hangs with the palm facing the thigh,
+ * so the wide axis runs front-to-back and the thin axis runs across the body.
+ */
+function handFrame(P, side) {
   const wrist = P.arm(WRIST_U, side).p.clone();
   const back = P.arm(WRIST_U - 0.09, side).p;
   // Down the forearm axis toward the fingertips.
@@ -3219,6 +3353,100 @@ function buildHand(part, P, side) {
   // Every shipped character in the genre runs 8-12% over; this is 9%.
   const HS = 1.09 * (P.handScale ?? 1);
 
+  /* The curl axis. A positive rotation about `dir x inward` carries `dir` onto
+   * `inward`, so one positive scalar closes either hand: both `dir` and
+   * `inward` mirror with `side`, and their cross product mirrors with them.
+   *
+   * It is a DIRECTION, so it is deliberately NOT put through `profilePoint`
+   * with the bone positions. The ape remap is a non-uniform scale on y, which
+   * is not a transform a unit axis survives (a direction would need the
+   * inverse transpose, like the normals in `applyProfile`), and the axis sits
+   * within 4 degrees of -Z where that scale does nothing at all.
+   */
+  const curl = new THREE.Vector3().crossVectors(dir, inward).normalize();
+
+  return { wrist, dir, across, inward, at, HS, curl };
+}
+
+/** Ring centres and radii down one finger, in the hand frame. */
+function fingerRings(F, fg) {
+  const out = [];
+  const len = fg.len * 1.05;
+  const r0 = fg.r * F.HS;
+  let along = KNUCKLE_ALONG;
+  let z = fg.z * F.HS;
+  let x = 0;
+  let curl = fg.curl;
+  for (let i = 0; i < PHALANGES.length; i++) {
+    const t = PHALANGES[i];
+    if (i > 0) {
+      const seg = (t - PHALANGES[i - 1]) * len;
+      curl += PHALANGE_CURL;
+      along += seg * Math.cos(curl);
+      x += seg * Math.sin(curl);
+      z += seg * Math.sin(fg.splay);
+    }
+    // Knuckle -> tip taper with a slight swell at each joint.
+    const r = r0 * lerp(1.0, 0.60, t) * (1 + 0.10 * Math.cos(t * Math.PI * 6));
+    out.push({ p: F.at(along, z, x), rx: r, ry: r * 0.88, e: 2.5 });
+  }
+  return out;
+}
+
+/** Ring centres and radii down the thumb, in the hand frame. */
+function thumbRings(F) {
+  return THUMB_KEYS.map((k) => ({
+    p: F.at(k.s, k.z * F.HS, k.x * F.HS),
+    rx: k.r * F.HS,
+    ry: k.r * F.HS * 0.9,
+    e: 2.4,
+  }));
+}
+
+/**
+ * The five things the SKELETON needs out of the hand mesh.
+ *
+ * Exported so a test can state where a finger bone is supposed to be without
+ * baking a copy of the hand's arithmetic into the test - the same reason
+ * `WEAPON_MOUNTS` is exported from `NPCWeapons`.
+ *
+ * The middle finger supplies the bone's tail because it is the longest, so the
+ * segment skin weighting measures against actually spans the digit group.
+ *
+ * @param {object} P @param {number} side +1 right, -1 left
+ * @returns {{knuckle:THREE.Vector3, fingerTip:THREE.Vector3,
+ *            thumbBase:THREE.Vector3, thumbTip:THREE.Vector3,
+ *            curl:THREE.Vector3}}
+ */
+export function handLandmarks(P, side) {
+  const F = handFrame(P, side);
+  const mid = fingerRings(F, FINGERS[1]);
+  const th = thumbRings(F);
+  return {
+    knuckle: F.at(KNUCKLE_ALONG, 0, 0),
+    fingerTip: mid[mid.length - 1].p,
+    thumbBase: th[0].p,
+    thumbTip: th[th.length - 1].p,
+    curl: F.curl,
+  };
+}
+/**
+ * A hand, with fingers.
+ *
+ * Previously the arm was one loft from the acromion to u=1.0 with `capEnd`,
+ * which domed a 12 mm ring into a point: every character had a cone where a
+ * hand should be. Nothing else on the body costs a frame as badly, because the
+ * hands sit at the exact height a standing character's silhouette is read at.
+ *
+ * The frame is built explicitly rather than left to the loft's tangent frame so
+ * the palm is a *slab*: a relaxed arm hangs with the palm facing the thigh, so
+ * the wide axis runs front-to-back and the thin axis runs across the body.
+ * ~430 triangles per hand at radial 6 on the fingers.
+ */
+function buildHand(parts, P, side) {
+  const F = handFrame(P, side);
+  const { at, HS } = F;
+
   // --- palm: a flattened slab that swells to the knuckle line --------
   const palm = [
     { s: -0.006, rx: 0.030, ry: 0.026, e: 2.8 },
@@ -3226,98 +3454,33 @@ function buildHand(part, P, side) {
     { s: 0.044, rx: 0.046, ry: 0.023, e: 3.2 },
     { s: 0.068, rx: 0.047, ry: 0.021, e: 3.2 },
     // Knuckle ring: the ripple is what puts four bumps in the silhouette.
-    { s: 0.085, rx: 0.045, ry: 0.020, e: 3.0, ripple: { amp: 0.14, freq: 4, phase: 0.4 } },
+    { s: KNUCKLE_ALONG, rx: 0.045, ry: 0.020, e: 3.0, ripple: { amp: 0.14, freq: 4, phase: 0.4 } },
   ];
   for (const k of palm) {
     k.rx *= HS;
     k.ry *= HS;
   }
   loft(
-    part,
+    parts.palm,
     palm.map((k) => ({ p: at(k.s, 0, 0), rx: k.rx, ry: k.ry, e: k.e, ripple: k.ripple ?? null })),
     12,
     { upHint: new THREE.Vector3(1, 0, 0), capStart: true, capDepth: 0.25 }
   );
 
-  // --- four fingers, splayed and curled toward the palm --------------
-  // Index is forward (-Z, the direction the character faces).
-  //
-  // Spacing versus radius is the whole game here. At 20.5 mm apart and 20.8 mm
-  // thick the four digits were exactly tangent for their whole length, welded
-  // into one slab, and the hand went back to being an oar blade. They are now
-  // pitched 23 mm apart, thinner, and splayed harder, so a 4-6 mm gap opens
-  // between them - about five pixels at 2.5 m, which is the threshold at which
-  // a viewer counts fingers instead of seeing a paddle. The per-finger curl
-  // offset staggers the tips so the far edge of the hand is a staircase rather
-  // than a straight cut.
-  //
-  // The curls are also no longer a monotone ramp. A relaxed human hand rests in
-  // an uneven hook - index least curled, middle most, ring following it, little
-  // finger pulled in behind - and that irregularity is what stops four digits
-  // reading as one moulded slab even when the gaps between them are correct.
-  // Roughly 12/18/16/20 degrees at the MCP.
-  const fingers = [
-    { z: -0.0345, len: 0.072, r: 0.0097, splay: -0.30, curl: 0.21 },
-    { z: -0.0115, len: 0.079, r: 0.0100, splay: -0.10, curl: 0.31 },
-    { z: 0.0115, len: 0.073, r: 0.0094, splay: 0.11, curl: 0.28 },
-    { z: 0.0345, len: 0.057, r: 0.0082, splay: 0.31, curl: 0.35 },
-  ];
-  for (const fg of fingers) {
-    fg.z *= HS;
-    fg.r *= HS;
-    fg.len *= 1.05;
-  }
-  for (const fg of fingers) {
-    const sections = [];
-    // Three phalanges: four rings, each rotated a little further into the curl.
-    const phal = [0, 0.36, 0.68, 0.88, 1.0];
-    let along = 0.085;
-    let z = fg.z;
-    let x = 0;
-    let curl = fg.curl;
-    for (let i = 0; i < phal.length; i++) {
-      const t = phal[i];
-      if (i > 0) {
-        const seg = (phal[i] - phal[i - 1]) * fg.len;
-        curl += 0.30;
-        along += seg * Math.cos(curl);
-        x += seg * Math.sin(curl);
-        z += seg * Math.sin(fg.splay);
-      }
-      // Knuckle -> tip taper with a slight swell at each joint.
-      const r = fg.r * lerp(1.0, 0.60, t) * (1 + 0.10 * Math.cos(t * Math.PI * 6));
-      sections.push({
-        p: at(along, z, x),
-        rx: r,
-        ry: r * 0.88,
-        e: 2.5,
-      });
-    }
-    loft(part, sections, 7, {
-      upHint: new THREE.Vector3(1, 0, 0),
-      capEnd: true,
-      capDepth: 0.6,
-    });
-  }
+  // --- four fingers, splayed, on their own bone ----------------------
+  for (const fg of FINGERS) loft(parts.digits, fingerRings(F, fg), 7, {
+    upHint: new THREE.Vector3(1, 0, 0),
+    capEnd: true,
+    capDepth: 0.6,
+  });
 
   // --- thumb: opposed, on the radial (forward) side of the palm ------
-  const th = [
-    { s: 0.014, z: -0.030, x: 0.004, r: 0.0145 },
-    { s: 0.038, z: -0.046, x: 0.015, r: 0.0128 },
-    { s: 0.058, z: -0.056, x: 0.028, r: 0.0108 },
-    { s: 0.070, z: -0.060, x: 0.040, r: 0.0086 },
-  ];
-  for (const k of th) {
-    k.z *= HS;
-    k.x *= HS;
-    k.r *= HS;
-  }
-  loft(
-    part,
-    th.map((k) => ({ p: at(k.s, k.z, k.x), rx: k.r, ry: k.r * 0.9, e: 2.4 })),
-    8,
-    { upHint: new THREE.Vector3(0, 1, 0), capStart: true, capEnd: true, capDepth: 0.5 }
-  );
+  loft(parts.thumb, thumbRings(F), 8, {
+    upHint: new THREE.Vector3(0, 1, 0),
+    capStart: true,
+    capEnd: true,
+    capDepth: 0.5,
+  });
 }
 
 /** The bare body: torso, head, ears, arms, hands, legs, feet. */
@@ -3354,8 +3517,18 @@ function buildBody(P, parts, FA) {
       // Shallow, so the stub under the palm can never form a tip.
       capDepth: 0.22,
     });
-    const hand = skin(handBones(side), 1.2);
-    buildHand(hand, P, side);
+    /* Three parts, one material slot, so the merge still emits ONE draw group
+     * for the skin - the split buys disjoint bone candidate lists, nothing
+     * else costs. @see fingerBones */
+    buildHand(
+      {
+        palm: skin(handBones(side), 1.2),
+        digits: skin(fingerBones(side), 1.2),
+        thumb: skin(thumbBones(side), 1.2),
+      },
+      P,
+      side
+    );
 
     const leg = skin(legBones(side), 1);
     loft(leg, legSections(P, side, 1.005, 0.098, 16), 14, {

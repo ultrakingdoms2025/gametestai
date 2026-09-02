@@ -210,7 +210,42 @@ export class SpaceWorld extends World {
        * own bounding box in the chase view at 0.16: median luma 9/255 with
        * 55.7% of hull pixels under 12, and 2/255 with 72.4% under 12 when
        * flying at the star - which is the framing a player spends the whole
-       * space half of the loop looking at. */
+       * space half of the loop looking at.
+       *
+       * ── AND IT SURVIVED THE AMBIENT COLLAPSE. DO NOT LOWER IT ────────────
+       *
+       * Every other world traded flat ambient for `hemiIntensity` and
+       * `envMapIntensity`, because a constant added regardless of normal is
+       * form shading deleted (World.js `ambientIntensity`). This world is the
+       * documented exception, on two counts, both measured by rewriting the
+       * three uniforms between shots of one booted session:
+       *
+       * 1. THERE IS ALMOST NOTHING HERE FOR AMBIENT TO FLATTEN. The paragraph
+       *    above already says why - the bodies are raw `ShaderMaterial`s from
+       *    `BodyShaders.js` with their own `uAmbient` and no `lights: true` -
+       *    and the sweep confirms it end to end. Across eleven `bearing-*`
+       *    framings, going from (a 0.28, h 0.22, e 0.95) to (a 0.12, h 0.30,
+       *    e 3.00) moved mean frame luma by less than 0.5 in every one:
+       *    carnelian 10.9 -> 10.9, erenmark 6.6 -> 6.6, sallow 8.3 -> 8.3,
+       *    lathe 15.7 -> 15.7, tessera 5.7 -> 5.7. The scene rig does not
+       *    reach the subject of those frames at all, so trading one rig term
+       *    for another cannot improve them.
+       *
+       * 2. THE PROBE HAS NO ENERGY TO RECEIVE IT. `ENV_MOODS.space` is a
+       *    near-black sky (0x04050b -> 0x171038 over the gradient) with a
+       *    0x14181f ground: its irradiance is a small fraction of this
+       *    ambient's, which is why e had to be taken all the way to 3.00
+       *    before the two framings that DO respond broke even (arrival 39.5 ->
+       *    42.6, portal-home 44.7 -> 47.3). Reaching that would also triple
+       *    the mood's four coloured nebula accents on every hull, and picking
+       *    those up "along its edges instead of reading as grey plastic" is
+       *    the deliberate look the 0.95 below was chosen for. Three luma on
+       *    two of fifteen framings is not worth repainting the fleet.
+       *
+       * The `bearing-cathedra` row looks like a counter-example in the raw
+       * sweep (26.8 -> 14.0 at e 1.60) and is not: Cathedra is a body on an
+       * orbit, and the same candidate re-shot lands back at 26.5. Moving
+       * subjects, not lighting. */
       ambientIntensity: 0.28,
       skyColor: new THREE.Color(0x16203a),
       groundColor: new THREE.Color(0x08070c),
@@ -219,6 +254,22 @@ export class SpaceWorld extends World {
       sunIntensity: 3.1,
       sunDirection: this.starDirection,
       envMapIntensity: 0.95,
+      /* ── The reflection probe the 0.95 above was already written for ──────
+       *
+       * That intensity was declared against a map this world never supplied,
+       * and `applyEnvironment` used to skip the assignment when a world
+       * published none - so the Kestrel's hull, the yard's plating and the
+       * belt's ice were multiplied by 0.95 of WHICHEVER WORLD RAN LAST, or of
+       * nothing at all on a cold `?world=space` boot. An intensity without a
+       * membership is not a setting, it is a coin flip on the route taken.
+       *
+       * `'space'` is the mood built for exactly this: a near-black sky, a dim
+       * ground term and four coloured accents, so a polished hull picks up
+       * nebula colour along its edges instead of reading as grey plastic.
+       * The library bakes all three moods once during warmup, so this line
+       * adds no PMREM target and no boot cost.
+       * @see gfx/Materials.js `ENV_MOODS.space` */
+      envMap: this.materials?.getEnvMap?.('space') ?? null,
       /* null keeps GRADE_PRESETS.space, whose bloom threshold is 1.60. Every
        * emissive value in this world was chosen against that number: the star
        * at 2.9, the bay mouth at 2.4, the running lights at 2.6, Cinder's

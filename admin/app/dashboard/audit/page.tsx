@@ -15,7 +15,7 @@ export default async function AuditPage({
 
   return (
     <div className="page-body">
-      <div className="page-title">Audit Log</div>
+      <h1 className="page-title">Audit Log</h1>
 
       <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center', gap: 16 }}>
         <div className="card" style={{ padding: '12px 20px', display: 'inline-flex', alignItems: 'center', gap: 12 }}>

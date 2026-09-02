@@ -657,10 +657,29 @@ test('minigame steps resolve only where a registered venue hosts the game', () =
   /* KNOWN-BAD. The same real game in a world with no venue must fail for the
    * world reason — nothing there can emit the event — and a game nobody wrote
    * must fail everywhere, including where the emitter exists. */
+  /* The reason moved, and the move is the point.
+   *
+   * This used to read `no-candidates` with the note "the vale publishes no
+   * minigameVenues at all", and that was true of the world rather than of the
+   * validator: medieval now publishes three rooftop trials, so a tennis match
+   * there is no longer "nothing here can emit this event" but "this is not one
+   * of the three ids reachable here". Both are correct rejections and the
+   * substance - a real game, named in a world that cannot host it, is REFUSED
+   * - is unchanged. What is asserted is that the diagnosis names the three
+   * candidates rather than pretending the world is empty, because a validator
+   * that says "no candidates" about a world with three of them sends the
+   * author looking in the wrong place.
+   *
+   * There is no longer any quest world with zero minigame venues, so the
+   * `no-candidates` branch is not reachable for this step type at all; it
+   * still guards every world for a step type nothing there emits. */
   const away = rejects('minigame', 'tennis_match', 'medieval',
-    'no medieval venue hosts tennis — the vale publishes no minigameVenues at all');
-  assert.equal(away.reason, 'no-candidates',
-    'the failure must say the world cannot emit a minigame event, not merely "unknown target"');
+    'no medieval venue hosts tennis — the vale publishes three rooftop trials and no court');
+  assert.equal(away.reason, 'unknown-target',
+    'the failure must name the ids the world does reach, not claim it reaches none');
+  assert.ok(away.candidates > 0,
+    'the diagnosis should count the ids the vale does reach, which is what makes it '
+    + '"unknown target" rather than "no candidates"');
   for (const world of VOCAB.questWorlds) {
     rejects('minigame', 'poker_night', world, 'no such game is registered anywhere');
   }

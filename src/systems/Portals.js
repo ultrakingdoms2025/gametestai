@@ -158,6 +158,19 @@ const ENTRY_R2 = DISC_R * DISC_R * 0.86;
 const REARM_R2 = DISC_R * DISC_R * 1.55;
 const REARM_DEPTH = 1.15;
 /**
+ * Exported so the arrival placement can be checked against it.
+ *
+ * `WorldManager.PORTAL_ARRIVAL_OFFSET` stands an arriving player this far in
+ * front of the gateway they came out of, and that depth against the disc plane
+ * is the ONLY thing that arms the gateway - the arrival point is already
+ * radially inside the aperture. If the offset ever drops below this, gateways
+ * never arm and walk-through dies silently in every world at once.
+ * @see scripts/tests/portal-walkthrough.test.mjs
+ */
+export const PORTAL_REARM_DEPTH = REARM_DEPTH;
+/** The re-arm radius, exported beside the depth for the same checker. */
+export const PORTAL_REARM_RADIUS = Math.sqrt(REARM_R2);
+/**
  * How high above the feet the crossing test is taken. `fixedUpdate` below uses
  * this literal; it is named here so a checker cannot drift from it.
  */
@@ -211,6 +224,34 @@ export function portalAperture(spec, feet) {
 
 /** The aperture radius a chest must be inside for a crossing to count. */
 export const PORTAL_ENTRY_RADIUS = Math.sqrt(ENTRY_R2);
+
+/**
+ * The frame `fixedUpdate`'s crossing test is taken in, built from a spec.
+ *
+ * Exported and shared for the same reason `portalAperture` above is: this is
+ * the ONE place the disc's world-space centre and its two axes are decided.
+ * `_createPortal` places the live record from it and
+ * `scripts/tests/portal-walkthrough.test.mjs` drives `fixedUpdate` with it, so
+ * a test that says walking through a gateway works is standing in the frame the
+ * game actually uses rather than in a second copy of the trigonometry.
+ *
+ * @param {{position:{x:number,y:number,z:number}, rotationY?:number}} spec
+ * @returns {{discPosition:THREE.Vector3, normal:THREE.Vector3, right:THREE.Vector3}}
+ *   `normal` points out of the disc's front face; `right` is tangential.
+ */
+export function portalEntryFrame(spec) {
+  const rotationY = spec.rotationY ?? 0;
+  return {
+    discPosition: new THREE.Vector3(
+      spec.position.x,
+      spec.position.y + DISC_Y,
+      spec.position.z
+    ),
+    normal: new THREE.Vector3(Math.sin(rotationY), 0, Math.cos(rotationY)),
+    right: new THREE.Vector3(Math.cos(rotationY), 0, -Math.sin(rotationY)),
+  };
+}
+
 /**
  * Grace period after a world swap. `WorldManager.activate` drops the player a
  * couple of metres in front of the return gateway and the capsule then settles
@@ -872,8 +913,46 @@ export class PortalSystem {
     /** One set of gateway materials, kept for the session. @see clear() */
     this._shaderAnchor = null;
 
+    /**
+     * A DISCONTINUOUS BODY MOVE IS NOT A WALK THROUGH A GATEWAY.
+     *
+     * `fixedUpdate` fires on a sign flip of the chest against the disc plane,
+     * sampled sixty times a second. It cannot tell a stride from a body that
+     * was simply *put* on the other side, and seven call sites put one there
+     * without any portal involvement: `Unstuck` (704), `SaveGame`'s load (1530),
+     * `RaceManager`'s grid placement (1039 - the race paddock's own gateway is
+     * metres away), `Viewpoints`' fast travel (390), and respawn. Any of those
+     * landing across an armed disc reads as a crossing.
+     *
+     * `Player.teleport()` is the single emitter of `player:spawned` and every
+     * one of those paths goes through it, so one listener closes all of them
+     * with no call-site changes - the same signal `PlayerAvatar`, `Stamina` and
+     * `ActiveEffects` already treat as "the body moved, drop what you knew".
+     *
+     * This became load-bearing when the `p.ready` term came off the crossing
+     * test above: readiness was accidentally braking these landings at any
+     * gateway whose destination was not resident, and that accident is now
+     * replaced by a guard that states what it is for.
+     */
+    this._offBus = [];
+    if (this.bus?.on) {
+      this._offBus.push(this.bus.on('player:spawned', () => this._disarmAll()));
+    }
+
     this._buildPreviewRig();
     this._buildWarpOverlay();
+  }
+
+  /**
+   * Put every portal back to "the player has not been clear of me yet", and
+   * hold entry off for `ARM_DELAY` while the capsule settles.
+   *
+   * Exactly what `buildForWorld` does on arrival, which is the other moment a
+   * body appears somewhere it did not walk to.
+   */
+  _disarmAll() {
+    for (let i = 0; i < this._portals.length; i++) this._portals[i]._armed = false;
+    this._armAt = (this.engine?.elapsed ?? 0) + ARM_DELAY;
   }
 
   /** @returns {any[]} live portals: `{ position, target, label, accent, mesh, ... }` */
@@ -1007,9 +1086,10 @@ export class PortalSystem {
     root.add(frame);
 
     // --- event horizon ----------------------------------------------
-    const right = new THREE.Vector3(Math.cos(rotationY), 0, -Math.sin(rotationY));
+    // The crossing frame comes from `portalEntryFrame` so the disc a player
+    // walks through and the disc a checker measures cannot be two discs.
+    const { discPosition, normal, right } = portalEntryFrame(spec);
     const up = new THREE.Vector3(0, 1, 0);
-    const normal = new THREE.Vector3(Math.sin(rotationY), 0, Math.cos(rotationY));
 
     const discMat = new THREE.ShaderMaterial({
       vertexShader: HORIZON_VERT,
@@ -1205,11 +1285,7 @@ export class PortalSystem {
       normal,
       right,
       /** World-space centre of the event horizon; used for entry tests. */
-      discPosition: new THREE.Vector3(
-        spec.position.x,
-        spec.position.y + DISC_Y,
-        spec.position.z
-      ),
+      discPosition,
       root,
       mesh: disc,
       discMat,
@@ -2474,6 +2550,37 @@ export class PortalSystem {
     cam.rotation.x = -0.045;
     cam.updateMatrixWorld(true);
 
+    /* ── THE DESTINATION'S LOD, RESOLVED AGAINST THE PREVIEW CAMERA ────────
+     *
+     * `DistanceLod.update(camera)` is only ever called from a world's own
+     * `update()`, and only the ACTIVE world updates. So a destination that has
+     * been built but never entered has every LOD entry in the state its
+     * constructor left it in: hi geometry everywhere, nothing hidden. That is
+     * the state this preview was drawing it in - into a 512x512 target, where
+     * a 25 cm leaf is a fraction of a texel and a hidden grass zone would have
+     * contributed literally nothing.
+     *
+     * `grep -n "_lod" src/systems/Portals.js` returned ZERO before this line.
+     * The measured saving those LOD tables buy in the worlds behind these
+     * gateways is 31-46% of triangles, and the preview was paying all of it.
+     *
+     * The cost lands badly, too. The draw is gated to `(frame + previewPhase)
+     * % 6 === 0` with `previewPhase = index % 6`, so at most one preview lands
+     * per frame - but the whole of that one preview's cost lands on THAT
+     * frame, giving a 10 Hz spike pattern that starts at `PREVIEW_RANGE` (40 m)
+     * and therefore occurs exactly while the player is walking up to a gateway.
+     *
+     * Here rather than in `_renderPreview` for two reasons. The time-sliced
+     * warm calls `_configurePreview` and then plans off `world.group`, so
+     * putting it here makes the warm plan the same set the live preview draws -
+     * warm what you draw, in the state you draw it, which is this file's
+     * standing rule. And every value this method sets is part of the program
+     * cache key; the LOD's geometry swap is not (hi and lo share a material),
+     * so this cannot introduce a key the warm does not cover.
+     *
+     * Never for the active world: the guard above has already returned. */
+    world._lod?.update?.(cam);
+
     const env = world.environment;
     this._previewAmbient.color.copy(env.ambientColor);
     this._previewAmbient.intensity = env.ambientIntensity;
@@ -3308,6 +3415,36 @@ export class PortalSystem {
    * gateway, standing on its dais; without the arming gate the first capsule
    * settle or sidestep there registered as a crossing and threw the player
    * straight back through the portal they had just walked out of.
+   *
+   * ── WHY THERE IS NO `p.ready` TEST HERE ──────────────────────────────────
+   * There used to be one, and it is the whole of the reported defect "portals
+   * in station should activate if i walk through them, in other worlds this
+   * occurs like that already but not in station".
+   *
+   * `p.ready` is `worldManager.isBuilt(p.target)`, recomputed every frame in
+   * `update` below. Every world except the station publishes ONE portal, and it
+   * targets the world you just walked out of - which is resident and built - so
+   * `ready` was true there and walking through worked. The station publishes
+   * SIX, to worlds `systems/WorldPrefetch.js` prepares lazily, one at a time,
+   * precisely so seventeen background builds cannot hitch the desktop again.
+   * Five of the six therefore read STABILISING most of the time, and a walk
+   * through them did nothing at all - silently, with no message, while pressing
+   * E at the same disc worked.
+   *
+   * `enter()` is built for exactly that case and says so (see its docstring):
+   * it notifies "still stabilising", kicks `wm.build(target)` and transitions
+   * anyway behind the warp's white-out. WorldPrefetch's own header states the
+   * intended contract in the same words - "an eager walker meets a STABILISING
+   * disc for a few seconds and then walks through it". So the fix is to let the
+   * walk reach `enter`, not to make the station build eagerly.
+   *
+   * Do not re-add a readiness test. It would restore a portal that ignores the
+   * player without saying why, and it would make walk-through and E disagree
+   * about the same disc.
+   *
+   * The brake `ready` was accidentally also applying - a body that lands ACROSS
+   * an armed disc transits - is paid for deliberately instead, by
+   * `_disarmAll()` on `player:spawned`. @see the constructor.
    */
   fixedUpdate(_dt, _elapsed) {
     if (this._transition || this._portals.length === 0) return;
@@ -3333,7 +3470,7 @@ export class PortalSystem {
         continue;
       }
 
-      if (p._side !== 0 && side !== p._side && rad2 < ENTRY_R2 && p.ready) {
+      if (p._side !== 0 && side !== p._side && rad2 < ENTRY_R2) {
         p._side = side;
         p._armed = false;
         this.enter(p);
@@ -3545,6 +3682,8 @@ export class PortalSystem {
   /** Full teardown: also frees the shared style kits and textures. */
   dispose() {
     this.clear();
+    for (const off of this._offBus ?? []) off?.();
+    this._offBus = [];
     for (const l of this._portalLights) {
       l.removeFromParent();
       l.dispose?.();

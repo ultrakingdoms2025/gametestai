@@ -909,6 +909,40 @@ body {
   clip-path: var(--clip-tr);
 }
 
+/* Almost everything that reaches the boot error is transient - a chunk that
+   failed to fetch, a world build that threw once, a request that timed out on
+   a flaky connection - so reloading is the fix and the panel used to offer no
+   way to do it. `pointer-events: auto` because the boot card's layers are not
+   interactive by default; `min-height` meets the coarse-pointer floor. */
+.boot-retry {
+  margin-top: 12px;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: #ffe1e6;
+  background: rgba(255, 61, 85, 0.16);
+  border: 1px solid rgba(255, 61, 85, 0.55);
+  padding: 7px 16px;
+  min-height: 34px;
+  cursor: pointer;
+  clip-path: var(--clip-tr);
+  pointer-events: auto;
+}
+
+.boot-retry:hover,
+.boot-retry:focus-visible {
+  color: #fff;
+  background: rgba(255, 61, 85, 0.28);
+  border-color: var(--red);
+}
+
+@media (pointer: coarse) {
+  .boot-retry {
+    min-height: 44px;
+    padding: 10px 20px;
+  }
+}
+
 .boot-hide {
   animation: boot-out 0.9s cubic-bezier(0.7, 0, 0.84, 0) forwards;
   pointer-events: none;
@@ -4447,10 +4481,12 @@ body.inv-menu-open .toasts {
 
    Nothing is lost while a sheet is up. The mount menu shows the same fittings
    as full rows with the same switches, at a size meant for a thumb. */
+/* `body.sm-open .mount-pow` is GONE from this list: the ship drawer now joins
+   `_overlays` like every other cursor-owning sheet, so `.hud.overlaid` covers
+   it through the first selector. */
 #ui-root:has(> .hud.overlaid) .mount-pow,
 #ui-root:has(> .chat.open) .mount-pow,
-#ui-root:has(> .pause.show) .mount-pow,
-body.sm-open .mount-pow {
+#ui-root:has(> .pause.show) .mount-pow {
   visibility: hidden;
 }
 
@@ -4560,6 +4596,93 @@ body.sm-open .mount-pow {
 /* ==========================================================================
    UNSTUCK PROMPT + CONFIRMATION
    ========================================================================== */
+/* ==========================================================================
+   THE STANDING ALERT BAR
+
+   Three conditions that a toast is the wrong shape for, because all three are
+   STATES rather than events: the GPU has gone away and the game is frozen; a
+   save only half-restored and the autosave has been switched off to protect
+   the good copy; the account session could not be reached and earnings are
+   going nowhere. See `HUD._buildAlerts` for each one and why.
+
+   Top-centre and ABOVE the toasts rather than below them, because this bar is
+   the thing that has to still be on screen ten minutes after it appeared and a
+   stack of toasts must not push it around. `pointer-events: none` throughout:
+   it is a notice, never a control, and it sits over the top of the play area.
+
+   Amber, not red. Red in this HUD means damage, and a player glancing at a red
+   bar mid-fight will read it as a hit rather than as a message.
+   ========================================================================== */
+.hud-alert {
+  position: absolute;
+  /* The same top inset every other panel uses, so the bar respects the notch
+     and sits ABOVE `.toasts` (which starts 2.875rem below this line) rather
+     than being pushed around by however many toasts happen to be up. */
+  top: var(--hud-t);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(760px, calc(100vw - 32px));
+  padding: 7px 14px;
+  font-family: var(--f-ui, 'Rajdhani', system-ui, sans-serif);
+  font-size: 12.5px;
+  line-height: 1.35;
+  letter-spacing: 0.03em;
+  color: #ffe9c6;
+  text-align: left;
+  background: linear-gradient(150deg, rgba(60, 34, 8, 0.86), rgba(20, 11, 4, 0.9));
+  border: 1px solid rgba(255, 180, 74, 0.5);
+  border-left-width: 3px;
+  clip-path: var(--clip-tr);
+  backdrop-filter: var(--glass-fx);
+  -webkit-backdrop-filter: var(--glass-fx);
+  pointer-events: none;
+}
+
+/* `display: flex` above outranks the `hidden` attribute's UA default. The
+   global `[hidden] { display: none !important }` near the top of this file
+   already covers it; this is stated anyway, exactly as `.server-chip[hidden]`
+   states it, so a future edit to that global rule cannot silently un-hide a
+   bar whose whole contract is that it is absent until something is wrong. */
+.hud-alert[hidden] {
+  display: none;
+}
+
+/* The toasts move down to make room, rather than being drawn over.
+   `.toasts` is anchored at `--hud-t + 2.875rem`, which is inside this bar
+   once its text wraps to two or three lines on a phone. `:has()` on the
+   sibling relationship is the same technique `#ui-root:has(> .hud.overlaid)`
+   uses further down, and it means the shift is driven by the bar's real
+   visibility rather than by a second flag that could disagree with it. */
+.hud:has(> .hud-alert:not([hidden])) .toasts {
+  top: calc(var(--hud-t) + 6.25rem);
+}
+
+/* A slow pulse, so a bar that has been up for a while still reads as live
+   rather than as furniture. Opacity only - it is compositor-work and costs
+   nothing on a frame budget this game is already tight against. */
+.hud-alert-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffb04a;
+  box-shadow: 0 0 8px rgba(255, 180, 74, 0.8);
+  animation: hud-alert-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes hud-alert-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-alert-dot { animation: none; }
+}
+
 .stuck {
   position: absolute;
   left: 50%;
@@ -5622,10 +5745,10 @@ body.sm-open .mount-pow {
  * `.chat.open` defect above with a different panel on top.
  *
  * `.hud.overlaid` is the HUD's own "a sheet owns the screen" flag, set by
- * `_wireOverlayEvents` for every one of those panels. `body.sm-open` is here
- * because `ship:menu:open` is the one panel event that flag does not listen
- * for - the same "cover it from the outside" move `maze-map.css` makes on
- * `.pause`, and for the same reason: `HUD.js` belongs to someone else.
+ * `_wireOverlayEvents` for every one of those panels - the ship drawer now
+ * included. `body.sm-open .wstrip` used to be here beside it, because
+ * `ship:menu:open` was the one panel event that flag did not listen for; the
+ * pair is wired now, so the workaround is gone and the flag does the work.
  *
  * `visibility`, not `pointer-events`: `#ui-root button` opts every slot back
  * into pointer events by selector and would undo it. Same note as the chat
@@ -5635,8 +5758,7 @@ body.sm-open .mount-pow {
  * is a SIBLING of `.hud`, not a child of it - `HUD.js:485` puts it straight on
  * `#ui-root` so its slots stay clickable above the pause overlay, and says so.
  * The descendant form matched nothing at all and read as working. */
-#ui-root:has(> .hud.overlaid) .wstrip,
-body.sm-open .wstrip {
+#ui-root:has(> .hud.overlaid) .wstrip {
   visibility: hidden;
 }
 

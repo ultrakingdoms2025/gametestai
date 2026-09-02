@@ -74,6 +74,62 @@ import { ensureProgressSchema } from './progressLedger';
  * unbounded thing §9 refused. They are declared below with `ceiling: null` and
  * refused at read, so the plumbing is ready the day a roster is published and
  * nothing ranks on a ceiling nobody measured.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE ONE EXCEPTION: TIMES, INSIDE A CUSTOM SERVER, WITH A FLOOR
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Everything above stands. `REFUSED.race` and `REFUSED.trial` are unchanged,
+ * `rankableCategory('race')` still answers null, and no global board ranks a
+ * time. What is added below is a set of boards that exist ONLY inside a custom
+ * server, and the argument for them is not that §9 was wrong. It is that §9's
+ * own test — "is the forger's advantage bounded?" — has a different answer here
+ * for two separate reasons, and both had to hold before a single row was
+ * ranked.
+ *
+ * ── 1. The floor makes a forged time bounded, which was §9's whole test ───
+ *
+ * §9 permits a board where "a forger merely arrives sooner at a ceiling
+ * everyone shares — a bounded, survivable failure", and refuses times because
+ * "a time has no ceiling, so a forger's advantage on one is unbounded". A time
+ * has no ceiling. It does have a FLOOR, and a floor bounds a forgery in exactly
+ * the same way a ceiling does: a claim below the floor is not merely early, it
+ * is impossible, so it is dropped rather than ranked, and the best available
+ * forgery is a fixed distance from the best available truth.
+ *
+ * That distance is not hand-waved. `timeFloorMs` divides the circuit's real
+ * measured length by the fastest speed the game's own tuning permits anything
+ * to travel — see `SPEED_CEILING_MPS`, which is derived from four constants in
+ * the game source and not chosen. On Vellum at CONTENDER the floor is 86.4 s
+ * against a best measured clean lap set of 220.3 s
+ * (`scripts/tests/race-pace.test.mjs` measures the laps), so a perfect forgery
+ * beats a perfect run by a factor of 2.5 and can never beat it by more. Bounded
+ * — which is the property §9 asked for — and stated as a number.
+ *
+ * ── 2. Forty members are an accountability a global board cannot have ─────
+ *
+ * A global board is strangers. A custom server is a room of people who invited
+ * each other, whose owner can remove a member, and whose chat log sits beside
+ * the board. A time that beats the field by a factor of two in that room is
+ * read by forty people who know whether it happened. The bound in (1) is what
+ * makes the residual small; this is what makes the residual somebody's problem
+ * rather than nobody's.
+ *
+ * Neither argument transfers to the global board, which is why these boards
+ * appear in `openBoards` only under a server scope and `readBoard` refuses them
+ * outright with `serverId: null`. There is no flag to flip and no configuration
+ * that widens them: the refusal is a branch on the scope, in the reader.
+ *
+ * ── What is still refused, and why the list did not simply grow ───────────
+ *
+ * TRIAL times are NOT ranked, here or anywhere, and the reason is the floor
+ * rather than the clock. A trial venue is published by a world at build time,
+ * the roster is learned per visit, and the venues are not even the same KIND of
+ * contest — `DroneHack` and `TestFire` have no route to measure. The server
+ * cannot state the minimum possible time for a venue it has never heard of, and
+ * a "floor" of zero is not a floor. That is the same refusal `viewpoints` gets
+ * one paragraph up, applied to the other end of the number line: a bound the
+ * server cannot compute is a bound that does not exist.
  */
 
 /** Any pg client — a plain Client in tests, a pooled one in a route. */
@@ -117,7 +173,13 @@ export const RELIC_CEILING_PER_WORLD = 110;
 export type BoardSource = 'items' | 'quests' | 'values';
 
 /** Which column the platform manifest is enumerated against. */
-export type ManifestDomain = 'world-scope' | 'world-key' | 'quest-catalogue' | 'none';
+export type ManifestDomain =
+  | 'world-scope'
+  | 'world-key'
+  | 'quest-catalogue'
+  /** One circuit at one grade, ranked ascending among a server's members. */
+  | 'server-time'
+  | 'none';
 
 export interface CategorySpec {
   readonly id: string;
@@ -126,6 +188,25 @@ export interface CategorySpec {
   /** Progress kind, for `source: 'items'`. */
   readonly kind: string;
   readonly domain: ManifestDomain;
+  /**
+   * True for a board that has no global form at all.
+   *
+   * Read by `openBoards` (which never advertises one outside a server) AND by
+   * `readBoard` (which refuses one outside a server). Two independent checks on
+   * purpose: the advertisement is a convenience and the refusal is the gate, so
+   * a client that guesses an id it was never offered still gets nothing.
+   */
+  readonly serverOnly?: boolean;
+  /** Ledger scope for a `server-time` board: the world id. */
+  readonly scope?: string;
+  /** Ledger item key for a `server-time` board: `circuitId/difficulty`. */
+  readonly itemKey?: string;
+  /**
+   * The fastest time this board will admit, in milliseconds. A stored value
+   * below it is DROPPED — never ranked, never shown, never corrected to the
+   * floor. See `timeFloorMs`.
+   */
+  readonly floorMs?: number;
   /**
    * The maximum a player can reach, fixed by content.
    *
@@ -189,9 +270,13 @@ export const REFUSED: Readonly<Record<string, string>> = Object.freeze({
     'Bounded per event, unbounded in aggregate. A credit board ranks whoever forged most patiently — the economy design reached this independently.',
   weekly_credits: 'Same as credits. Roadmap §5.6 asked for it; Phase 3 §9 refuses it.',
   race:
-    'A client clock with unbounded improvement. Race pickups pay on DNF, so the run need not even finish.',
+    'Not ranked globally: a client clock with unbounded improvement, and race pickups pay on DNF so '
+    + 'the run need not even finish. Inside a custom server the same times ARE ranked, per circuit and '
+    + 'grade, because a floor derived from the track length bounds a forgery and forty members can see it.',
   trial:
-    'A client clock, and trial PBs are editable localStorage. A forged time is not merely early, it is unreachable.',
+    'A client clock, and trial PBs are editable localStorage. Not ranked anywhere, global or scoped: a '
+    + 'venue roster is learned per visit and half the venues are not races at all, so the server cannot '
+    + 'state the minimum possible time — and a time board with no floor is the unbounded thing §9 refused.',
   kills: 'Respawning source; unbounded.',
   ore: 'Respawning source; unbounded.',
   survival_wave: 'A count from a respawning source. Same shape as kills.',
@@ -200,6 +285,225 @@ export const REFUSED: Readonly<Record<string, string>> = Object.freeze({
 /** The spec for a category, or null if this server will not rank it. */
 export function rankableCategory(id: string): CategorySpec | null {
   return (Object.prototype.hasOwnProperty.call(RANKABLE, id) && RANKABLE[id]) || null;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Server-scoped time boards, and the floor that makes them admissible     */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The four constants the speed ceiling is built out of, each with the file it
+ * comes from. `leaderboard.test.ts` reads all four back out of the game source
+ * and fails if any has moved, because the floor is only a bound while these
+ * are the real numbers.
+ */
+export const SPEED_SOURCES = Object.freeze({
+  /** `src/race/RacerAI.js` — `REF_TOP`, the rival pace reference, m/s. */
+  refTopMps: 33.5,
+  /** `src/race/RacerAI.js` — `DIFFICULTIES.expert.pace`, the fastest band. */
+  apexPace: 1.20,
+  /** `src/race/RacerAI.js` — `DIFFICULTIES.expert.spread`, its envelope. */
+  apexSpread: 0.07,
+  /** `src/mounts/Car.js` — `BOOST_SPEED`, the quickest player machine, m/s. */
+  carBoostMps: 34,
+  /** `src/systems/ItemDefs.js` — `MOUNT_POWER_TIERS`, the top Speed tier. */
+  mountPowerTiers: 3,
+  /** `src/mounts/Car.js` — `_powerMul = 1 + power * 0.12`, per-tier gain. */
+  powerPerTier: 0.12,
+  /** `src/systems/ItemDefs.js` — `speed_boost_100`, "temporarily doubles". */
+  maxSpeedPotion: 2,
+});
+
+/**
+ * The fastest anything in this game can travel in a straight line, m/s.
+ *
+ * ── Why this is a MAXIMUM over two candidates and not one number ─────────
+ *
+ * The obvious candidate is the tuned rival envelope: `REF_TOP * pace *
+ * (1 + spread)` at APEX, which is 33.5 × 1.20 × 1.07 = 43.014 m/s. That is the
+ * quickest thing `RacerAI` will ever put on the road, and using it alone gives
+ * a floor 18-25% under the best lap anybody has measured — a beautifully tight
+ * bound.
+ *
+ * It is also WRONG, in the one direction a floor must never be wrong. The
+ * player's car tops out at `BOOST_SPEED` 34 m/s stock, `_powerMul` multiplies
+ * that by `1 + tiers * 0.12` (1.36 at the third and last Speed tier), and a
+ * Velocity Crown multiplies it AGAIN by 2 for as long as the player keeps
+ * drinking them — `MountManager` feeds `player.speedMultiplier` straight into
+ * `Car._buffMul` with nothing in a race that turns it off. 34 × 1.36 × 2 =
+ * 92.48 m/s. A floor built on 43.014 would delete the record of a player who
+ * had bought the fittings and used the consumable the shop sells them, which is
+ * a real run destroyed to catch a forgery — the exact trade `progressLedger`'s
+ * whole header refuses to make.
+ *
+ * So the ceiling is the larger, and the cost is stated rather than hidden: the
+ * floor is roughly 2.5x under a strong real time instead of 1.2x. Bounded is
+ * the property §9 asked for. Tight was never the property.
+ *
+ * The assumption inside the number is deliberately the generous one — that the
+ * doubling potion is held for the entire race, which its duration does not
+ * actually allow. A bound is allowed to assume the impossible in the direction
+ * that admits more real runs. It is not allowed to assume it in the other.
+ */
+export const SPEED_CEILING_MPS = Math.max(
+  SPEED_SOURCES.refTopMps * SPEED_SOURCES.apexPace * (1 + SPEED_SOURCES.apexSpread),
+  SPEED_SOURCES.carBoostMps
+    * (1 + SPEED_SOURCES.mountPowerTiers * SPEED_SOURCES.powerPerTier)
+    * SPEED_SOURCES.maxSpeedPotion
+);
+
+export interface RaceTrack {
+  readonly id: string;
+  readonly name: string;
+  /** World id the ledger scopes these times under. */
+  readonly world: string;
+  /** Centreline length in metres, measured off the real `RaceCourse`. */
+  readonly metres: number;
+  readonly laps: Readonly<Record<string, number>>;
+}
+
+/**
+ * The circuits, their measured lengths and their lap counts.
+ *
+ * Authored here for the same reason `PLATFORM_WORLDS` is: `site/` is a separate
+ * Next app that does not import the game's ES modules. `metres` is not a design
+ * figure — it is `new RaceCourse(worldControls(def), …).length` for the real
+ * definition, and `leaderboard.test.ts` rebuilds all three and compares, so a
+ * control point moved in `RaceCircuits.js` fails this file rather than quietly
+ * lowering a floor.
+ *
+ * The drift that survives that test is one-directional and safe. The centreline
+ * is the ROAD's length; a racing line clips the inside of a corner and is
+ * marginally shorter, and Aurora's vertical loop is geometry the car climbs
+ * over that the centreline does not measure at all. Both make the true distance
+ * differ from `metres` — the first downwards by a fraction of a percent over
+ * 20 m minimum-radius corners, the second upwards. Against 150% of headroom in
+ * `SPEED_CEILING_MPS`, neither moves the verdict.
+ */
+export const RACE_TRACKS: readonly RaceTrack[] = Object.freeze([
+  Object.freeze({
+    id: 'vellum', name: 'Vellum Ridge Circuit', world: 'race',
+    metres: 1598.9648, laps: Object.freeze({ easy: 3, standard: 5, expert: 10 }),
+  }),
+  Object.freeze({
+    id: 'cinder', name: 'Cinder Gorge', world: 'race',
+    metres: 1295.4912, laps: Object.freeze({ easy: 3, standard: 6, expert: 11 }),
+  }),
+  Object.freeze({
+    id: 'aurora', name: 'Aurora Rise', world: 'race',
+    metres: 1220.0744, laps: Object.freeze({ easy: 3, standard: 6, expert: 11 }),
+  }),
+]);
+
+/** `RacerAI.DIFFICULTIES` grade ids, with the labels the game shows. */
+export const RACE_GRADES: Readonly<Record<string, string>> = Object.freeze({
+  easy: 'ROOKIE',
+  standard: 'CONTENDER',
+  expert: 'APEX',
+});
+
+/**
+ * The fastest time a run over `metres * laps` could possibly take, in whole ms.
+ *
+ * `Math.floor`, and the comparison downstream is `>=`, so the floor itself is
+ * admitted. Rounding the other way would reject a time by one millisecond for
+ * no reason anybody could reconstruct.
+ */
+export function timeFloorMs(metres: number, laps: number): number {
+  return Math.floor((metres * laps * 1000) / SPEED_CEILING_MPS);
+}
+
+/** `race_time.<world>.<circuit>.<grade>` — the id a client passes back. */
+export function raceTimeBoardId(world: string, circuitId: string, grade: string): string {
+  return `race_time.${world}.${circuitId}.${grade}`;
+}
+
+function buildTimeBoards(): Record<string, CategorySpec> {
+  const out: Record<string, CategorySpec> = {};
+  for (const track of RACE_TRACKS) {
+    for (const grade of Object.keys(RACE_GRADES)) {
+      const laps = track.laps[grade];
+      if (!(laps > 0)) continue;
+      const id = raceTimeBoardId(track.world, track.id, grade);
+      out[id] = cat({
+        id,
+        label: `${track.name} · ${RACE_GRADES[grade]}`,
+        source: 'values',
+        /* The ledger kind `ProgressSync` already posts: `val('race', world,
+         * circuitId/difficulty, ms)`. Nothing new is written for these boards
+         * and nothing new is asked of the client — every one of these times has
+         * been in `player_progress_values` since the mission drop. */
+        kind: 'race',
+        domain: 'server-time',
+        serverOnly: true,
+        scope: track.world,
+        itemKey: `${track.id}/${grade}`,
+        floorMs: timeFloorMs(track.metres, laps),
+        /* A time board has no ceiling and never will. `null` here is what makes
+         * `readBoard`'s generic "no ceiling, refuse" branch unreachable for it —
+         * the `server-time` case is handled before that test, and the test that
+         * follows still protects every other domain. */
+        ceiling: null,
+        why: `${laps} laps of ${Math.round(track.metres)} m. Times under `
+          + `${timeFloorMs(track.metres, laps)} ms are physically impossible and are dropped.`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Every server-scoped time board, by id.
+ *
+ * Deliberately a SECOND registry rather than more rows in `RANKABLE`. That
+ * separation is not tidiness: `leaderboard.test.ts` asserts that no member of
+ * `RANKABLE` has `source: 'values'` — "a value is a number a device sent, and
+ * §9's refusal of times is exactly a refusal to rank one" — and that assertion
+ * must keep meaning what it says. A global board still ranks no number a client
+ * chose. These are the boards that do, and they are somewhere else, under a
+ * scope check, with a floor.
+ */
+export const SERVER_TIME_BOARDS: Readonly<Record<string, CategorySpec>> =
+  Object.freeze(buildTimeBoards());
+
+/**
+ * The spec for any board id, given the scope it was asked for.
+ *
+ * `rankableCategory` is left alone and still answers only for the global
+ * registry, because the test that pins §9's refusals calls it and its answer is
+ * the thing being pinned. This is the resolver `readBoard` uses.
+ */
+export function boardSpec(id: string, scope: BoardScope): CategorySpec | null {
+  const global = rankableCategory(id);
+  if (global) return global;
+  if (!scope?.serverId) return null;
+  return (
+    (Object.prototype.hasOwnProperty.call(SERVER_TIME_BOARDS, id) && SERVER_TIME_BOARDS[id]) || null
+  );
+}
+
+/** True for an id that only ever exists inside a server. Used by the route. */
+export function isServerOnlyBoard(id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SERVER_TIME_BOARDS, id);
+}
+
+/**
+ * `M:SS.mmm`, from whole milliseconds.
+ *
+ * The wire carries this string in `score` for a time board, and the raw integer
+ * in `ms` beside it. That is not a cosmetic choice: `RecordsPanel` renders
+ * `${e.score}` for every board it is offered, so a board whose score is a
+ * millisecond count reads as "220338" on the standings sheet. Formatting on the
+ * server is what lets a new category appear in-game with no client change,
+ * which is the same reasoning that put the refusal REASONS on the wire rather
+ * than in the client.
+ */
+export function formatRaceTime(ms: number): string {
+  const whole = Math.max(0, Math.trunc(ms));
+  const minutes = Math.floor(whole / 60000);
+  const seconds = Math.floor((whole % 60000) / 1000);
+  const millis = whole % 1000;
+  return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -304,12 +608,23 @@ export interface BoardResult {
   category: string;
   label: string;
   scope: BoardScope;
-  /** The maximum this board can show. §9's rule, as a number. */
-  ceiling: number;
+  /**
+   * The maximum this board can show. §9's rule, as a number.
+   *
+   * `null` for a time board, which has no maximum and never will — the bound
+   * that makes one admissible is `floorMs`, at the other end. Nullable rather
+   * than zero so a reader cannot mistake "unbounded above" for "nothing to
+   * score".
+   */
+  ceiling: number | null;
+  /** The fastest time this board admits, ms. Null for a counting board. */
+  floorMs: number | null;
+  /** How to read `score`: a tally, or a formatted time. */
+  unit: 'count' | 'time';
   entries: BoardEntry[];
 }
 
-export type BoardRefusal = 'unknown_category' | 'no_ceiling';
+export type BoardRefusal = 'unknown_category' | 'no_ceiling' | 'server_only';
 
 export type BoardOutcome =
   | { ok: true; board: BoardResult }
@@ -329,14 +644,22 @@ export interface BoardOptions {
  * two parameters after whatever the inner query used, so each category can bind
  * exactly the parameters it needs and no more — Postgres refuses a query with a
  * parameter it cannot type, so an unused shared slot is not an option.
+ *
+ * `dir` is which way "better" runs. Counting boards rank the largest first; a
+ * time board ranks the smallest first, and it is a parameter of this function
+ * rather than a second copy of the wrapper because everything else about
+ * ranking — the tie rule, the caller's own row, the join to `players` — is
+ * identical and a second copy would drift. It is an enum, not a string spliced
+ * from a caller, so no request can reach the SQL text.
  */
-function ranked(inner: string, nextIndex: number): string {
+function ranked(inner: string, nextIndex: number, dir: 'desc' | 'asc' = 'desc'): string {
   const lim = `$${nextIndex}`;
   const me = `$${nextIndex + 1}`;
+  const order = dir === 'asc' ? 'ASC' : 'DESC';
   return `
     WITH scores AS (${inner}),
     ranked AS (
-      SELECT player_id, score, RANK() OVER (ORDER BY score DESC) AS rank
+      SELECT player_id, score, RANK() OVER (ORDER BY score ${order}) AS rank
         FROM scores
        WHERE score > 0
     )
@@ -429,6 +752,48 @@ const QUEST_SCORES = `
    GROUP BY e.player_id
 `;
 
+/**
+ * One circuit at one grade, among the approved members of one server.
+ *
+ * Three things this query is doing that are each load-bearing.
+ *
+ *   - **`server_members` is the FROM clause**, exactly as the world manifest is
+ *     the FROM clause of the relic board. A player who is not an approved member
+ *     of this server is not a candidate row, so there is no membership filter to
+ *     forget and no way for a stranger's time to appear on a private board.
+ *     `state = 'approved'` and not merely "has a row": an invited or removed
+ *     member is in `server_members` too.
+ *
+ *   - **`v.value >= $5` is the floor**, applied in the WHERE and not afterwards
+ *     in JavaScript. A time below the physically possible is never selected, so
+ *     it cannot be ranked, cannot be counted, and cannot appear as the caller's
+ *     own row through the `OR r.player_id = $me` clause in `ranked`. It is also
+ *     not corrected upward to the floor: an impossible claim is dropped, and
+ *     rewriting it would be the server inventing a time nobody drove.
+ *
+ *   - **`server_id` is NOT consulted on the value row.** These times were
+ *     recorded against the PLATFORM circuits — `ProgressSync` has been posting
+ *     them since long before custom servers existed and stamps nothing — so a
+ *     board that required a stamp would be permanently empty. The scope of this
+ *     board is who may see it and who may be on it, both of which come from
+ *     membership. The identity being ranked is a platform circuit at a platform
+ *     grade, enumerated by `RACE_TRACKS`, so the forged-identity hole the global
+ *     boards close by construction does not open here either: an owner cannot
+ *     author `vellum/standard`, it already exists.
+ */
+const SERVER_TIME_SCORES = `
+  SELECT v.player_id, v.value AS score
+    FROM server_members m
+    JOIN player_progress_values v
+      ON v.player_id = m.player_id
+   WHERE m.server_id = $1
+     AND m.state = 'approved'
+     AND v.kind = $2
+     AND v.scope = $3
+     AND v.item_key = $4
+     AND v.value >= $5::bigint
+`;
+
 /** The same countable set as `QUEST_SCORES`, so the two cannot disagree. */
 const QUEST_CEILING = `
   SELECT COUNT(*)::int AS n
@@ -453,13 +818,62 @@ export async function readBoard(
   scope: BoardScope,
   opts: BoardOptions
 ): Promise<BoardOutcome> {
-  const spec = rankableCategory(categoryId);
-  if (!spec) return { ok: false, reason: 'unknown_category' };
-  if (spec.ceiling === null) return { ok: false, reason: 'no_ceiling' };
+  const spec = boardSpec(categoryId, scope);
+  /* The gate, and it is a gate rather than an advertisement. A caller that
+   * guesses a server-only id while unscoped is refused here even though
+   * `openBoards` never offered it — `boardSpec` returns null for one without a
+   * server, so this is `unknown_category`; the explicit `server_only` refusal
+   * below is for the case where the id resolved but the scope did not. */
+  if (!spec) {
+    return {
+      ok: false,
+      reason: isServerOnlyBoard(categoryId) ? 'server_only' : 'unknown_category',
+    };
+  }
+  if (spec.serverOnly && !scope?.serverId) return { ok: false, reason: 'server_only' };
 
   const limit = Math.max(1, Math.min(100, Math.trunc(opts.limit) || 1));
   const me = opts.playerId;
   const worlds = [...manifestFor(scope)];
+
+  /* A time board is handled BEFORE the no-ceiling refusal, because it is the
+   * one board whose `ceiling: null` is a statement of fact rather than a
+   * declaration that the server cannot rank it. Every other domain still falls
+   * through to that test, which is what keeps `viewpoints` and `wings` refused.
+   */
+  if (spec.domain === 'server-time') {
+    const floorMs = Number(spec.floorMs);
+    /* A time board with no floor is not a time board this server will read. It
+     * cannot happen from `buildTimeBoards`, which computes one for every entry;
+     * it is checked anyway because the ONLY thing making a ranked time
+     * admissible at all is that number, and a silent zero would rank a claim of
+     * one millisecond. Fails closed. */
+    if (!Number.isFinite(floorMs) || floorMs <= 0) return { ok: false, reason: 'no_ceiling' };
+
+    const r = await db.query(ranked(SERVER_TIME_SCORES, 6, 'asc'), [
+      scope.serverId, spec.kind, spec.scope ?? '', spec.itemKey ?? '', floorMs, limit, me,
+    ]);
+    return {
+      ok: true,
+      board: {
+        category: spec.id,
+        label: spec.label,
+        scope,
+        ceiling: null,
+        floorMs,
+        unit: 'time',
+        entries: (r.rows as ScoreRow[]).map((row) => ({
+          playerId: String(row.player_id),
+          handle: row.handle ?? null,
+          score: Number(row.score),
+          rank: Number(row.rank),
+          self: String(row.player_id) === me,
+        })),
+      },
+    };
+  }
+
+  if (spec.ceiling === null) return { ok: false, reason: 'no_ceiling' };
 
   let sql: string;
   let params: unknown[];
@@ -507,11 +921,23 @@ export async function readBoard(
 
   return {
     ok: true,
-    board: { category: spec.id, label: spec.label, scope, ceiling, entries },
+    board: { category: spec.id, label: spec.label, scope, ceiling, floorMs: null, unit: 'count', entries },
   };
 }
 
-/** Every board a caller may ask for, with the refusals left out. */
-export function openBoards(): CategorySpec[] {
-  return Object.values(RANKABLE).filter((s) => s.ceiling !== null);
+/**
+ * Every board a caller may ask for in this scope, with the refusals left out.
+ *
+ * The scope argument is what keeps the time boards out of a global index. It
+ * defaults to `GLOBAL` rather than being required, because the default is the
+ * NARROWER answer: a caller that forgets to pass a scope advertises fewer
+ * boards, never more. That is the opposite of `BoardScope`'s own rule about
+ * required arguments, and deliberately so — there the risk was reading a global
+ * board when a server one was meant, here the risk is offering a server board
+ * to somebody with no server.
+ */
+export function openBoards(scope: BoardScope = GLOBAL): CategorySpec[] {
+  const global = Object.values(RANKABLE).filter((s) => s.ceiling !== null);
+  if (!scope?.serverId) return global;
+  return [...global, ...Object.values(SERVER_TIME_BOARDS)];
 }

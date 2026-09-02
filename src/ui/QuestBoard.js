@@ -241,13 +241,26 @@ export class QuestBoard {
     const detail = this._el.querySelector('.qb-detail');
 
     list.innerHTML = '';
+    /* The offline notice now has to survive a NON-EMPTY list.
+     *
+     * It used to live in the empty-state branch, which was the only state that
+     * existed: with the service down the board had nothing to draw. Now
+     * `QuestsOffline` fills it, so the outage is invisible unless the banner
+     * sits above the rows - and "these are bundled, and accepting one needs the
+     * service" is the fact that stops a player thinking the ACCEPT button is
+     * broken. Still the marketplace's distinction, just no longer conflated
+     * with emptiness. */
+    if (this._offline) {
+      list.innerHTML = '<div class="qb-empty qb-offline">Quest service unreachable &mdash; '
+        + 'showing the quests bundled with this world. Sign in with the service up to accept '
+        + 'one; progress you have already made is safe.</div>';
+    }
     if (!items.length) {
       /* An unreachable service and an empty category are different facts, and
        * only one of them is the player's problem to solve. */
-      list.innerHTML = this._offline
-        ? '<div class="qb-empty qb-offline">Quest service unreachable &mdash; showing what is '
-          + 'bundled with this world. Your progress is safe.</div>'
-        : '<div class="qb-empty">No quests in this category.</div>';
+      if (!this._offline) {
+        list.innerHTML = '<div class="qb-empty">No quests in this category.</div>';
+      }
     }
 
     for (const item of items) {
@@ -326,27 +339,75 @@ export class QuestBoard {
 
     const preSteps = quest.pre_steps ? JSON.parse(quest.pre_steps) : [];
 
+    /* WHICH WORLD A STEP IS FOR.
+     *
+     * `QuestSystem._advanceSteps` skips any step whose `step.world` is not the
+     * world the player is standing in - that gate is what makes the cross-world
+     * quests work at all - and this panel showed no sign of it. 34 steps across
+     * 17 quests are cross-world, so on quest 203 a player stands on the station
+     * picking up relic coins and watches `collect:relic_coin 0/3` refuse to
+     * move, while the row beside it says "Auto" in the same colour as the steps
+     * that ARE ticking. The step was not broken and the panel was not lying,
+     * exactly - it was withholding the one fact that explains the behaviour.
+     *
+     * The active world is read off the quest system rather than passed in, so
+     * the row re-renders correctly on the `quests:changed` that every world
+     * change already produces. */
+    const activeWorld = this.questSystem?._worldId
+      ?? this.questSystem?.worldManager?.active?.id
+      ?? null;
+
     // Build steps HTML
     let stepsHtml = '';
     for (const step of steps) {
       const state   = stepStates[step.order] ?? { done: false, have: 0 };
-      const doneCls = state.done ? 'done' : (isActive ? 'active-step' : '');
+      /* A step for somewhere else is neither done nor live. Greyed rather than
+       * hidden: "go to Aldermoor and do this" is itself the instruction. */
+      const elsewhere = !!step.world && !!activeWorld && step.world !== activeWorld;
+      const doneCls = state.done
+        ? 'done'
+        : (elsewhere ? 'qb-step-away' : (isActive ? 'active-step' : ''));
       const countHtml = step.count > 1
         ? `<span class="qb-step-count">${state.have ?? 0}/${step.count}</span>`
         : '';
-      const statusText = state.done ? 'Done' : 'Auto';
+      const statusText = state.done ? 'Done' : (elsewhere ? 'Elsewhere' : 'Auto');
+      /* `[collect \u00B7 medieval]` rather than a second badge: the type tag is
+       * already the row's "what the engine is watching" cell, and the world is
+       * the other half of that same fact. A step with no `world` fires
+       * anywhere and says nothing extra. */
+      const typeText = step.world ? `${step.type} \u00B7 ${step.world}` : String(step.type ?? '');
+      /* Inline, because `quest-board.css` is not this change's to edit and a
+       * class with no rule behind it would grey nothing. One declaration, on
+       * the rows that need it. */
+      const dim = elsewhere && !state.done ? ' style="opacity:.45"' : '';
       stepsHtml += `
-        <div class="qb-step ${doneCls}">
+        <div class="qb-step ${doneCls}"${dim}>
           <span class="qb-step-icon">${state.done ? '\u2713' : '\u25CB'}</span>
           <span class="qb-step-label">${esc(step.label)}</span>
           ${countHtml}
-          <span class="qb-step-type">[${esc(step.type)}]</span>
+          <span class="qb-step-type">[${esc(typeText)}]</span>
           <span class="qb-step-status">${esc(statusText)}</span>
         </div>`;
     }
 
     const acceptBtn = !entry || entry.engagement?.status === 'failed'
       ? `<button class="qb-accept-btn" data-quest="${esc(quest.id)}">ACCEPT QUEST</button>`
+      : '';
+
+    /* THE WAY OUT.
+     *
+     * There was none. The only exits from `in_progress` were finishing the
+     * quest and the wall-clock timer expiring, and that timer keeps running
+     * while the game is closed - so "accept a 45-minute quest, log off, come
+     * back tomorrow" was an automatic failure, and "I took the wrong quest"
+     * had no answer at all short of waiting the window out. Offered only on a
+     * quest that is actually in progress, and confirmed in place rather than
+     * through a dialog: giving a quest back is reversible (a failed engagement
+     * is re-acceptable from the Available tab), so a second full-screen sheet
+     * would be ceremony for a decision that costs nothing but progress. */
+    const abandonBtn = isActive
+      ? '<button class="qb-accept-btn qb-abandon-btn" style="border-color:rgba(255,110,110,.45);'
+        + 'color:#ff9a9a">ABANDON QUEST</button>'
       : '';
 
     container.innerHTML = `
@@ -363,10 +424,34 @@ export class QuestBoard {
         <div class="qb-steps-header">STEPS</div>
         <div class="qb-steps">${stepsHtml}</div>
         ${acceptBtn}
+        ${abandonBtn}
       </div>`;
 
+    // Abandon handler. Queried first, and by its OWN class: it shares
+    // `qb-accept-btn` for the styling, so `querySelector('.qb-accept-btn')`
+    // below would otherwise find it - the two are never rendered together
+    // today, and relying on that is how the wrong button gets wired tomorrow.
+    const abandonEl = container.querySelector('.qb-abandon-btn');
+    if (abandonEl) {
+      abandonEl.addEventListener('click', async () => {
+        abandonEl.disabled = true;
+        abandonEl.textContent = 'Abandoning...';
+        await this.questSystem?.abandon?.(entry?._engId ?? this._selectedEngId);
+        /* Back to Available, where the quest now is: `abandon` files the
+         * engagement as failed and `_refresh`'s available filter admits a
+         * failed engagement, so the player can see straight away that giving it
+         * back did not delete it. */
+        this._activeTab     = 'available';
+        this._selectedEngId = null;
+        this._el.querySelectorAll('.qb-tab').forEach((b) => {
+          b.classList.toggle('active', b.dataset.tab === 'available');
+        });
+        this._refresh();
+      });
+    }
+
     // Accept handler
-    const acceptEl = container.querySelector('.qb-accept-btn');
+    const acceptEl = container.querySelector('.qb-accept-btn:not(.qb-abandon-btn)');
     if (acceptEl) {
       acceptEl.addEventListener('click', async () => {
         acceptEl.disabled     = true;

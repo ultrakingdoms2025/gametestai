@@ -452,7 +452,14 @@ export class CombatSystem {
     const applied = Math.max(0, before - health);
 
     if (!this._sawNpcDamaged) {
-      this.bus.emit('npc:damaged', { npc, amount, health, isHeadshot, weaponId });
+      /* `byPlayer` rides along for the same reason it rides on `npc:killed`
+       * below: `resolveMaul` routes a beast savaging a villager through this
+       * very choke point, and without the flag a `defend` quest step counts
+       * those hits. Quest 20's "defend Wry Tam x8" was clearable by standing
+       * back and letting a wolf do the work. Economy already honoured the
+       * flag on the kill event; QuestSystem could not honour it on damage
+       * because damage never carried it. */
+      this.bus.emit('npc:damaged', { npc, amount, health, isHeadshot, weaponId, byPlayer });
     }
 
     const killed = npc.isDead === true && !wasDead;

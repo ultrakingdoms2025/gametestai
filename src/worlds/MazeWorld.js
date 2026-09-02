@@ -296,13 +296,60 @@ export class MazeWorld extends World {
   /**
    * Force the next build's seed, or null for the usual fresh random one.
    *
-   * NULL IN EVERY NORMAL BOOT. Only `src/dev/Harness.js` writes it, only under
-   * `?dev=1`, and it exists because a review instrument cannot compare two
-   * runs of a world that is different every time. See `build()`.
+   * Two writers, and they want it for opposite reasons.
+   *
+   *   - `src/dev/Harness.js`, under `?dev=1` only, because a review instrument
+   *     cannot compare two runs of a world that is different every time.
+   *   - `adoptDailySeed`, from `/api/game/session`'s `daily_seed`, so that
+   *     everyone signed in shares TODAY's labyrinth. See that method.
+   *
+   * Still null in a signed-out boot, and null in any boot where the session
+   * call failed — the maze re-rolls per entry exactly as it always did. See
+   * `build()`.
    *
    * @type {number|null}
    */
   static seedOverride = null;
+
+  /**
+   * Take today's shared seed from a `/api/game/session` payload.
+   *
+   * ── What this makes true, and what it very deliberately does not ────────
+   *
+   * Every signed-in player in the same server walks the SAME labyrinth today,
+   * because both clients derive nothing — they are handed one number the
+   * server computed from the server id and the UTC date (`dailySeed` in
+   * `site/lib/customServers.ts`). Tomorrow it is a different maze, so the
+   * unlearnability this world is built on survives at the granularity that
+   * matters.
+   *
+   * It does NOT make the maze a shared SPACE. Two members in today's maze are
+   * in two private copies of one layout; neither can see the other, neither
+   * moves anything the other will find, and nothing in this game delivers
+   * presence. The word for what they share is the floor plan.
+   *
+   * ── Why it is a method here rather than three lines in main.js ──────────
+   *
+   * Validation. The value arrives from an HTTP body, and `seedOverride` is
+   * consumed by `generateTopology` with no further checking: a string, a float
+   * or a NaN out of a half-deployed endpoint would produce a maze that differs
+   * between two clients that both believe they are sharing one — the exact
+   * failure the feature exists to remove, wearing a disguise. Anything that is
+   * not a whole number inside the range `build()` rolls for itself is refused,
+   * and refusing leaves the fresh-random behaviour in place rather than
+   * substituting a guess.
+   *
+   * @param {any} account the parsed `/api/game/session` body, or null
+   * @returns {boolean} true when a shared seed was adopted
+   */
+  static adoptDailySeed(account) {
+    const raw = account?.daily_seed;
+    if (typeof raw !== 'number' || !Number.isInteger(raw)) return false;
+    // The range `build()` generates for itself: an unsigned 32-bit integer.
+    if (raw < 0 || raw > 0xffffffff) return false;
+    MazeWorld.seedOverride = raw;
+    return true;
+  }
 
   /**
    * How many pollen motes ride with the player.
@@ -392,15 +439,145 @@ export class MazeWorld extends World {
     this.environment.fogNear = 20;
     this.environment.fogFar = 160;
     this.environment.ambientColor = new THREE.Color(0x6f7f68);
-    /* Raised from 0.7. Levels 0-2 are ROOFED by the floor above - inherent to
-     * stacking four levels nine metres apart - so almost no sun reaches them
-     * and the maze read as very dark. The candles do the local work; this
-     * lifts the floor so a corridor between two of them is gloomy rather than
-     * black. */
-    this.environment.ambientIntensity = 1.25;
+    /* 1.25 -> 0.12, AND THE ROOFED LEVELS CAME OUT BRIGHTER, NOT DARKER.
+     *
+     * The 1.25 was the paint roller the probe below was added to replace: a
+     * constant added to every fragment regardless of normal, so a hedge's two
+     * faces at a corner sat at the same value and the corner did not read.
+     * @see World.js `ambientIntensity` for why that is definitional.
+     *
+     * BRIGHTNESS-MATCHED A/B, one booted session, same maze seed (3436772362),
+     * three uniforms rewritten between shots. Frame mean luma / % of pixels
+     * under 12 (the "gone to black" floor):
+     *
+     *   corridor  (roofed)  base 39.1 / 0.5%   ->  this 39.6 / 0.4%
+     *   lift-car  (roofed)  base 39.7 / 1.3%   ->  this 41.2 / 1.1%
+     *   above-entrance      base 142.2 / 0%    ->  this 142.2 / 0%
+     *
+     * So the roofed levels this 1.25 existed for are held or improved, and the
+     * open top level does not move at all - up there the sun owns the frame
+     * and the fill terms are noise. The naive version of this change, dropping
+     * ambient and replacing nothing (a=0.15, hemi and env untouched), IS the
+     * trap: corridor 31.9 and lift-car crush 3.5%, which is the pitch-black
+     * maze. The energy has to go somewhere, and 0.75 of `envMapIntensity` is
+     * where it went.
+     *
+     * What that buys, and it is the whole point: at equal mean luma the
+     * overhanging floor slab in `lift-car` now has a lit top edge and a
+     * distinctly darker soffit, and the shaft walls carry a vertical gradient
+     * toward the sky. At 1.25 both were one flat tan.
+     *
+     * Zero shader programs: 107 before and after, all four candidates. */
+    this.environment.ambientIntensity = 0.12;
+    /* 0.45, and stated rather than inherited. The hedge tops want a little
+     * more sky than the floor gets, but the maze's real fill is the probe -
+     * a hemisphere term only separates up from down, and a corridor is
+     * vertical walls. Measured as the weakest of the three redistributions
+     * tried (hemi-heavy h=1.10/e=1.00 came back at corridor 38.3, below base). */
+    this.environment.hemiIntensity = 0.45;
+    /* ── THE HEMISPHERE PAIR, AND THE VIOLET FLOOR IT FIXES ────────────────
+     *
+     * These two were never stated, so `applyEnvironment` fell back to
+     * `skyColor ?? ambientColor` (the olive 0x6f7f68 above) and
+     * `groundColor ?? fogColor` (the blue-grey 0xa8c0ce above). Neither was
+     * authored as a bounce colour: one is an ambient tint, the other is fog.
+     * Every other world that has thought about its bounce states the pair -
+     * `CitadelWorld`, `MedievalWorld`, `RaceWorld`, `SpaceWorld` - and this is
+     * the maze doing the same, for the same reason the citadel gives: shade
+     * over warm ground has to land BROWN, not violet.
+     *
+     * WHAT WENT WRONG. Moving the ambient into the probe (0.12 / 1.75, above)
+     * put the maze's fill into `ENV_MOODS.daylight`, which is a BLUE SKY, and
+     * a roofed candle-lit corridor cannot see the sky at all - three has no
+     * occlusion on `scene.environment`, so the floor was lit by a sky that is
+     * not there. Measured on the shipped frames (seed 110548205, mean B minus
+     * mean R over the frame, and over the lower third where the floor is):
+     *
+     *   corridor  full  base -11.4  ->  Phase 3  -2.2   (+9.2 toward blue)
+     *   corridor  low3  base  -7.4  ->  Phase 3  +9.3   (+16.7)
+     *   lift-car  full  base  -1.5  ->  Phase 3  +5.6
+     *   tower-top full  base -31.4  ->  Phase 3 -23.1
+     *
+     * Terracotta dirt under an orange ceiling was reading LILAC. The luma
+     * instrument that signed off Phase 3 cannot see this: corridor luma moved
+     * 39.5 -> 42.0 and crush 0.90% -> 0.44%, both improvements, while the
+     * frame turned violet underneath them. A scalar is blind along every axis
+     * it does not measure - which is why the numbers below are RGB.
+     *
+     * WHY THE HUE AND NOT THE INTENSITY. Dropping `envMapIntensity` was tried
+     * first and is the wrong knob twice over: at 1.35 the corridor is still
+     * blue (low3 +4.9, barely half way back) and the crush the probe bought
+     * goes with it - 0.44% -> 0.96%, WORSE than the 0.90% before Phase 3. The
+     * probe's blue is in the picture because the probe is bright, and the only
+     * cure by subtraction is to give back the legibility. So the probe keeps
+     * its 1.75 and the hemisphere carries warmth instead, which is the
+     * citadel's answer to the identical failure.
+     *
+     * WHAT THIS PAIR IS. `skyColor` is what a maze floor sees looking up: a
+     * candle-lit ceiling on the roofed levels. `groundColor` is the terracotta
+     * bouncing back up into every soffit and hedge underside, where the fog's
+     * blue-grey used to sit. Measured, same seed, the three framings the swing
+     * was measured on:
+     *
+     *                    base        Phase 3      THIS
+     *   corridor  full   -11.4         -2.2      -11.1   crush 0.90/0.44/0.36%
+     *   corridor  low3    -7.4         +9.3       -9.0
+     *   lift-car  full    -1.5         +5.6       +1.4   crush 1.30/0.69/0.58%
+     *   tower-top full   -31.4        -23.1      -30.0   crush 0.29/0.16/0.13%
+     *
+     * All three framings are back inside 3 of the pre-Phase-3 hue and every
+     * crush figure is at or below the Phase 3 one, so the legibility Phase 3
+     * bought is kept in full. The corridor is 9% brighter than Phase 3 (luma
+     * 42.0 -> 46.0): a hemisphere can only ADD, and the probe's blue can only
+     * be balanced by adding red, never by removing blue. Trimming that back
+     * was tried (the same pair at 0.84 of this luminance) and it costs the
+     * lift-car framing its margin - +2.6 against a base of -1.5 - for 1.3 of
+     * luma, so it was refused.
+     *
+     * WHAT IS STILL WRONG, and it is not fixable from this file: the maze
+     * wants a WARM env mood, not `daylight` dimmed or counterweighted.
+     * `ENV_MOODS` offers `space`, `daylight` and `alpine` - two blue skies and
+     * a starfield - and a fourth mood costs a fourth PMREM prefilter in
+     * `MaterialLibrary.warmup` for every world, on this project's most
+     * sensitive path. If one is ever added for another reason, this world
+     * should take it and these two lines should be re-measured against it.
+     * @see gfx/Materials.js `ENV_MOODS`
+     *
+     * Zero shader programs: 128 in every one of the seven runs behind the
+     * numbers above, candidates included - both
+     * hemisphere colours are uniforms and `gfx/LightRig.js` pools the light
+     * COUNT, which is the part of the cache key that could have moved. */
+    this.environment.skyColor = new THREE.Color(0xffd6a0);
+    this.environment.groundColor = new THREE.Color(0xb07a52);
     this.environment.sunColor = new THREE.Color(0xfff2d8);
     this.environment.sunIntensity = 2.2;
     this.environment.sunDirection = new THREE.Vector3(-0.3, 0.9, -0.25).normalize();
+    /* ── The reflection probe ──────────────────────────────────────────────
+     *
+     * This world published no `envMap` at all, and `applyEnvironment` used to
+     * skip the assignment when a world published none - so the maze's stone,
+     * its candle brass and its water were lit by WHICHEVER WORLD RAN LAST, or
+     * by nothing at all on a cold `?world=maze` boot. Neither is a look
+     * anybody authored, and which one you got depended on your route. Same
+     * one line, and the same reasoning, as `CitadelWorld`, `RaceWorld` and
+     * `DockWorld`.
+     *
+     * `'daylight'`: the top level is open to the sky, the background is an
+     * overcast blue-grey and the sun comes almost straight down. `'space'`
+     * would put a starfield in the puddles of a daylit hedge maze.
+     *
+     * The coordinated retune this note asked for has now happened: the 1.25
+     * paint roller above is 0.12 and this probe carries the difference at
+     * `envMapIntensity` 1.75. The probe had to exist first, and it did.
+     * `?? undefined` in the sibling worlds meant "keep whatever was there",
+     * which is the bug; `?? null` is "no probe", which is what a headless
+     * build with a stub material library should honestly get.
+     * @see gfx/Materials.js `getEnvMap` */
+    this.environment.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
+    /* 1.0 -> 1.75: the 1.13 of flat ambient removed above, arriving as a term
+     * that knows which way a surface faces. See `ambientIntensity` for the
+     * brightness-matched measurement that fixed the exchange rate. */
+    this.environment.envMapIntensity = 1.75;
   }
 
   /**
@@ -478,12 +655,19 @@ export class MazeWorld extends World {
      * have no lift at all - which is also why `VIEWS.maze`'s `lift-car` used to
      * abort a whole run.
      *
-     * `MazeWorld.seedOverride` is null in every normal boot, so the player's
-     * maze is untouched. `src/dev/Harness.js` sets it under `?dev=1` and
+     * `src/dev/Harness.js` sets it under `?dev=1` and
      * `scripts/world-shot.mjs --seed` passes it in; both RECORD the seed they
      * used, so a run that did not fix one still says which maze it
-     * photographed and any seed can be re-flown. That is the whole of the
-     * change to this file. */
+     * photographed and any seed can be re-flown.
+     *
+     * ── AND THE SECOND WRITER, WHICH IS A PLAYER-FACING FEATURE ──────────
+     * `MazeWorld.adoptDailySeed` sets it from `/api/game/session`'s
+     * `daily_seed`, so a signed-in player's maze is today's SHARED maze
+     * rather than a private roll. Re-entering during the same session
+     * therefore returns the same layout, which is the point: a route worth
+     * telling someone about has to still be there when they walk it. A
+     * signed-out boot, or one whose session call failed, leaves the override
+     * null and re-rolls exactly as before. See `adoptDailySeed`. */
     this.seed = MazeWorld.seedOverride ?? ((Math.random() * 0xffffffff) >>> 0);
 
     await onProgress?.(0.05, 'Growing the hedges');

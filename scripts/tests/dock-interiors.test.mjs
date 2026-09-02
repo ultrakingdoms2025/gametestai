@@ -660,8 +660,13 @@ test('the yard asks its material library for a reflection probe', async () => {
   assert.ok(world.environment.envMap, 'the yard publishes no envMap - its metals are lit by the last world');
   assert.equal(world.environment.envMap.__probe, 'space',
     'the shed has a roof and a starfield past the blast door; a daylight probe indoors reads as a hole in the wall');
-  /* 1.05, and this is the third value it has had. 0.75 -> 0.85 was the note
-   * below; 0.85 -> 1.05 is the yard's darkness pass.
+  /* 1.50, and this is the fourth value it has had. 0.75 -> 0.85 was the note
+   * below; 0.85 -> 1.05 was the yard's darkness pass; 1.05 -> 1.50 is the
+   * ambient collapse, which took `ambientIntensity` 0.42 -> 0.12 and spent the
+   * difference here and on `hemiIntensity`. The argument is the one already
+   * made two paragraphs down and it is the reason this world was chosen to
+   * receive the larger share: a constant added regardless of normal cannot
+   * separate a plated flank from a silhouette, and the probe can.
    *
    * Half of this world is OUTSIDE — five piers and three hulls standing in
    * vacuum with a real starfield behind them — and out there the probe is the
@@ -677,7 +682,7 @@ test('the yard asks its material library for a reflection probe', async () => {
    * environment is what separates a plated flank from a silhouette. It is one
    * of three levers taken; `exposure` is deliberately NOT one of them, and
    * `dock-light.test.mjs` records why. */
-  assert.equal(world.environment.envMapIntensity, 1.05);
+  assert.equal(world.environment.envMapIntensity, 1.50);
 });
 
 /* ══════════════════════════════════════════════════════════════════════════ */

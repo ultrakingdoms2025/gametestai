@@ -58,6 +58,8 @@
  * is emitted as VISUAL geometry with no collider wherever it stands on a route.
  */
 
+import { CONFIG } from '../../core/Config.js';
+
 const TAU = Math.PI * 2;
 
 /* ================================================================== */
@@ -88,8 +90,26 @@ export const FALL_DAMAGE_M = 7.5;
 export const FALL_LETHAL_M = 40.0;
 /** Continuous ascent one stamina bar buys. */
 export const CLIMB_SUSTAIN_M = 29.3;
-/** `NPC.GROUND_PROBE_UP`: the tallest step a walk absorbs without a jump. */
+/**
+ * `NPC.GROUND_PROBE_UP`: the tallest step an NPC's ground-follower absorbs.
+ *
+ * NOT the player's. Kept because the ring's NPC routing is still described
+ * against it, and renamed nowhere so the two are never confused again: what a
+ * FLIGHT is authored against is `PLAYER_STEP` below.
+ */
 export const STEP_UP = 0.95;
+
+/**
+ * The tallest riser a player's own legs take, from the engine that takes it.
+ *
+ * `Player._move` accepts a tread when `treadY <= prev.y + P.stepHeight + 0.01`
+ * and nothing else in the game raises that. Imported rather than copied,
+ * because every number in this file that a body has to obey is imported.
+ */
+export const PLAYER_STEP = CONFIG.player.stepHeight;
+
+/** What `helix` keeps in hand between its solved target and `PLAYER_STEP`. */
+const HELIX_MARGIN = 0.02;
 
 /**
  * What a landing costs, in metres of the arc's run.
@@ -426,36 +446,73 @@ export class RegionSite {
   }
 
   /**
-   * A walkable flight of steps, every riser inside `STEP_UP`.
+   * A walkable flight of steps, every riser inside the PLAYER's step.
    *
    * This is what makes a one-way descent a place rather than a trap. The
    * terraces, the pit and the aqueduct all drop further than a body can jump
-   * back up, and every one of them gets a flight: `walkClear` samples every
-   * metre and refuses a step over 0.95 m, so the riser is authored at 0.82 and
-   * the treads overlap by half their pitch, which is what makes the graph link
-   * the whole flight with plain walk edges in BOTH directions.
+   * back up, and every one of them gets a flight.
+   *
+   * ── THE CONSTANT THIS WAS AUTHORED AGAINST WAS THE WRONG BODY ───────────
+   *
+   * It said "every riser inside `STEP_UP`", and `STEP_UP` is 0.95 quoted from
+   * `NPC.GROUND_PROBE_UP` - how far a wandering NPC's ground-follower will
+   * absorb before it re-plants its feet. It is not what a player can step.
+   * `Player._move` takes a tread only when
+   *
+   *     treadY <= prev.y + CONFIG.player.stepHeight + 0.01
+   *
+   * and `CONFIG.player.stepHeight` is 0.45. So the file's default riser of
+   * 0.82 was 0.37 m OVER a step - and 0.82 is also under `Climb`'s
+   * `MIN_RISE_GROUND` = 1.0, so no mantle was offered either. The only way up
+   * any of these flights was to jump every tread (`parkour` apex 0.878).
+   *
+   * Measured on the built ring before this changed: THIRTY-SIX flights, every
+   * one of them, risers 0.679 to 0.810 m. Not one was walkable. That is the
+   * same defect the ward stair carried at 0.600 m, six regions wide, and
+   * `citadel-reach.test.mjs` was green throughout because its own flood also
+   * quoted 0.95.
+   *
+   * ── The repair: more treads, same total run, same pitch ────────────────
+   *
+   * `rise` and `run` stay what they always were - the flight's PITCH - and the
+   * riser is clamped to the player's step with the going scaled to match, so
+   * `rise / run` is bit-for-bit unchanged and a flight occupies the same
+   * ground it always did. The default 0.82 / 1.30 becomes 0.45 / 0.713, which
+   * is 32.24 degrees either way. Treads double and overlap by the same
+   * fraction of their pitch (`tread = going * 1.6`), so the collision surface
+   * is continuous exactly as before.
+   *
+   * The alternative - keep the riser and hide a ramp proxy under it - is the
+   * one the ward stair refused for the reason that still holds: a proxy puts
+   * the collision surface off the drawn treads, and drawn and solid staying
+   * identical is what `riser-legality.test.mjs` is able to check.
    */
   stair({ x, z, dirX, dirZ, fromY, toY, width = 2.6, rise = 0.82, run = 1.3,
     key = 'stone.castle', tint = 0xb9a884, anchorTop = false }) {
     const climb = toY - fromY;
-    const steps = Math.max(1, Math.ceil(Math.abs(climb) / rise));
+    /* Clamp the riser to the body, and take the going with it so the pitch a
+     * caller authored survives. A caller that already asks for a legal riser
+     * is untouched: `riser === rise` leaves `going === run`. */
+    const riser = Math.min(rise, PLAYER_STEP);
+    const going = riser === rise ? run : run * (riser / rise);
+    const steps = Math.max(1, Math.ceil(Math.abs(climb) / riser));
     const dy = climb / steps;
-    if (Math.abs(dy) > STEP_UP) {
-      throw new Error(`${this.spec.id}: stair riser ${dy.toFixed(2)} m exceeds STEP_UP ${STEP_UP}`);
+    if (Math.abs(dy) > PLAYER_STEP + 1e-9) {
+      throw new Error(`${this.spec.id}: stair riser ${dy.toFixed(2)} m exceeds the player's step ${PLAYER_STEP}`);
     }
     const rot = Math.atan2(-dirZ, dirX);
-    const tread = run * 1.6;
+    const tread = going * 1.6;
     /* `anchorTop` puts `(x, z)` at the HEAD of the flight rather than its foot.
      * Every stair in this file exists to reach a deck whose edge is already
      * known, and computing the foot backwards from the head is the only way
      * the top tread lands the same distance from the lip whatever the climb
      * turns out to be. */
     if (anchorTop) {
-      x -= dirX * steps * run;
-      z -= dirZ * steps * run;
+      x -= dirX * steps * going;
+      z -= dirZ * steps * going;
     }
     for (let i = 0; i < steps; i++) {
-      const s = (i + 0.5) * run;
+      const s = (i + 0.5) * going;
       const px = x + dirX * s;
       const pz = z + dirZ * s;
       const top = fromY + dy * (i + 1);
@@ -477,9 +534,10 @@ export class RegionSite {
     const rec = {
       steps,
       rise: dy,
-      length: steps * run,
+      going,
+      length: steps * going,
       foot: { x, y: fromY, z },
-      top: { x: x + dirX * steps * run, y: toY, z: z + dirZ * steps * run },
+      top: { x: x + dirX * steps * going, y: toY, z: z + dirZ * steps * going },
     };
     this.stairs.push(rec);
     return rec;
@@ -517,6 +575,30 @@ export class RegionSite {
   helix({ cx, cz, dStart, dStop, theta0, spin = 1, rise = 0.80, pitch = 1.5,
     tread = 2.4, width = 3.0, proud = 0.55, key = 'stone.castle', tint = 0xb0a184,
     maxTreads = 60 }) {
+    /* Same correction `stair` carries, and for the same reason: this flight
+     * was solved against a 0.70 m rock gain per tread and a player steps 0.45.
+     * Measured before this line existed, the Pilgrim Stair's 38 treads rose
+     * 0.700 m apiece - a jump every tread, up 26 m, on the region whose whole
+     * verb is SUSTAINED CLIMB.
+     *
+     * The riser is clamped to the body and the going scaled with it, so the
+     * path's slope is unchanged and the flight wraps the peak exactly as far
+     * as it did; `maxTreads` is scaled by the same ratio so the cap still
+     * stops the same runaway rather than truncating the fix.
+     *
+     * `HELIX_MARGIN` and not zero: `stair`'s riser is arithmetic (`climb /
+     * steps`) and lands exactly where it is put, but this one is DISCOVERED -
+     * the bisect solves for a rock gain and the tread is then built from a
+     * second probe at the settled angle, so the two disagree by a little. Aim
+     * at 0.45 and the built flight comes out at 0.450, on the wrong side of
+     * the gate by a rounding error. Two centimetres is the same order of
+     * margin the ward stair left (0.021) and it is spent once, at the target,
+     * rather than by loosening what the gate accepts. */
+    const ratio = rise > PLAYER_STEP - HELIX_MARGIN ? (PLAYER_STEP - HELIX_MARGIN) / rise : 1;
+    rise *= ratio;
+    pitch *= ratio;
+    tread *= ratio;
+    maxTreads = Math.ceil(maxTreads / ratio);
     let d = dStart;
     let th = theta0;
     let prevTop = null;
@@ -556,8 +638,8 @@ export class RegionSite {
         const step2 = Math.abs(top - prevTop);
         if (step2 < lo) lo = step2;
         if (step2 > hi) hi = step2;
-        if (step2 > STEP_UP) {
-          throw new Error(`${this.spec.id}: helix riser ${step2.toFixed(2)} m exceeds STEP_UP ${STEP_UP}`);
+        if (step2 > PLAYER_STEP + 1e-9) {
+          throw new Error(`${this.spec.id}: helix riser ${step2.toFixed(2)} m exceeds the player's step ${PLAYER_STEP}`);
         }
       }
       prevTop = top;

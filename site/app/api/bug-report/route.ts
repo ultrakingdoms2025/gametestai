@@ -1,4 +1,28 @@
 import { NextResponse, NextRequest } from 'next/server';
+import { auth } from '@/lib/auth';
+import { RATE_LIMITS, clientIp, consumeRateLimit, tooManyRequests } from '@/lib/rateLimit';
+
+/**
+ * The in-game bug reporter.
+ *
+ * ── What it was ──────────────────────────────────────────────────────────
+ *
+ * An unauthenticated open mail relay. No session, no limit: anyone who found
+ * the path could POST 4,000 characters of anything and have this domain deliver
+ * it, as often as they liked, to a fixed inbox. Two costs, and the second is the
+ * one that lasts — the inbox is unusable while it is happening, and the sending
+ * domain's reputation is spent, so the password-reset mail that matters stops
+ * being delivered.
+ *
+ * ── What it is now ───────────────────────────────────────────────────────
+ *
+ * A session is required. The reporter is opened from inside the game, which is
+ * behind the paywall and behind the launch cookie, so every legitimate caller
+ * already has one — this costs no real reporter anything. And the report
+ * carries the signed-in address rather than a `handle` field out of the body,
+ * so a report can actually be replied to and cannot be attributed to someone
+ * else.
+ */
 
 const RESEND_KEY = process.env.RESEND_API_KEY;
 const FROM = process.env.EMAIL_FROM ?? 'noreply@aethernexus.games';
@@ -14,6 +38,23 @@ function escapeHtml(s: string): string {
 }
 
 export async function POST(request: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Sign in first.' }, { status: 401 });
+  }
+
+  const verdict = await consumeRateLimit(
+    'bug-report',
+    [
+      { namespace: 'user', value: session.user.id },
+      { namespace: 'ip', value: clientIp(request) },
+    ],
+    RATE_LIMITS.bugReport
+  );
+  if (!verdict.allowed) {
+    return tooManyRequests(verdict, 'Too many bug reports. Try again shortly.');
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -28,7 +69,12 @@ export async function POST(request: NextRequest) {
 
   const world    = String(body.world    ?? 'unknown').slice(0, 64);
   const position = String(body.position ?? 'unknown').slice(0, 128);
-  const handle   = String(body.handle   ?? 'anonymous').slice(0, 64);
+  /* The handle the client sent is kept for context, but the SESSION's address
+   * is what identifies the reporter. A body field alone let one player file a
+   * report under another's name, and left every report unanswerable. */
+  const claimedHandle = String(body.handle ?? '').slice(0, 64);
+  const account  = String(session.user.email ?? session.user.id).slice(0, 200);
+  const handle   = claimedHandle ? `${claimedHandle} <${account}>` : account;
   const safeDesc = description.slice(0, 4000);
 
   const subject = `[Bug Report] ${world} — ${handle}`;

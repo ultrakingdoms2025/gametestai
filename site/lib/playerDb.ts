@@ -7,6 +7,7 @@ import { Client } from 'pg';
 import { createCipheriv, createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { creditInTransaction, ensureCreditSchema, ensureOpeningBalance } from './creditLedger';
 import { earnServerCredits } from './serverCredits';
+import { checkGameState } from './gameStateShape';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -395,6 +396,10 @@ export async function getGameState(siteUserId: string): Promise<unknown | null> 
   }
 }
 
+export type SaveGameStateResult =
+  | { ok: true; dropped: string[] }
+  | { ok: false; reason: 'no_player' | 'invalid_shape'; detail?: string };
+
 /**
  * Persist the inventory/mounts/cosmetics snapshot.
  *
@@ -402,25 +407,71 @@ export async function getGameState(siteUserId: string): Promise<unknown | null> 
  * `credit_balance = $1` from the browser's own number, which is the hole phase 2
  * exists to close: a player's balance was whatever their tab last claimed. The
  * balance now moves only through `credit_events`.
+ *
+ * And it no longer stores whatever arrived. The blob is validated against the
+ * shape `src/main.js` actually builds, per-item quantities are bounded, and an
+ * oversized save is REFUSED rather than `slice()`d — see `lib/gameStateShape.ts`
+ * for what silently truncating JSON was doing to people's inventories.
  */
-export async function saveGameState(siteUserId: string, state: unknown): Promise<boolean> {
+export async function saveGameState(
+  siteUserId: string,
+  state: unknown
+): Promise<SaveGameStateResult> {
   await ensureGameStateColumn();
-  const stateJson = state == null ? null : JSON.stringify(state).slice(0, 200_000);
+
+  /* `null` still means "leave whatever is stored alone" — the COALESCE below
+   * has always meant that, and a client that omits `state` is pushing trades
+   * rather than clearing a save. */
+  if (state == null) {
+    const { rows } = await pgQuery<{ id: string }>(
+      `UPDATE players SET updated_at = NOW() WHERE site_user_id = $1 RETURNING id`,
+      [siteUserId]
+    );
+    return rows[0] ? { ok: true, dropped: [] } : { ok: false, reason: 'no_player' };
+  }
+
+  const checked = checkGameState(state);
+  if (!checked.ok) {
+    return { ok: false, reason: 'invalid_shape', detail: checked.reason };
+  }
+
   const { rows } = await pgQuery<{ id: string }>(
     `UPDATE players
-     SET game_state = COALESCE($1, game_state), updated_at = NOW()
+     SET game_state = $1, updated_at = NOW()
      WHERE site_user_id = $2
      RETURNING id`,
-    [stateJson, siteUserId]
+    [JSON.stringify(checked.state), siteUserId]
   );
-  return !!rows[0];
+  return rows[0] ? { ok: true, dropped: checked.dropped } : { ok: false, reason: 'no_player' };
 }
 
 /**
  * Record an in-game merchant trade so it shows in the admin purchase history.
  * amount_cents is 0 (no real money changed hands); credits_amount carries the
  * credit delta (positive = credits spent buying, negative = credits earned selling).
+ *
+ * ── These rows are CLIENT-REPORTED, and now say so ────────────────────────
+ *
+ * Nothing on the server witnessed the trade: the browser says it happened, and
+ * this writes a row into `purchases` -- the same table settled Stripe orders
+ * land in, which the admin app reports from. Sitting there unmarked, an
+ * unverified claim was indistinguishable from money that actually moved.
+ *
+ * `stripe_intent_enc` carries the marker, because it is the field that already
+ * describes a row's provenance (a Stripe id for a real order, `game:buy:...`
+ * for these) and adding a column to a table this app does not own is the
+ * larger change. The prefix is a stable string so a reporting query can exclude
+ * these rows with one `NOT LIKE`, and the caller bounds the figures before they
+ * get here -- see `app/api/game/state/route.ts`.
  */
+/**
+ * What marks a `purchases` row as the client's word rather than a settled
+ * payment. One string, exported, so the admin app's reporting and this writer
+ * cannot drift: `WHERE stripe_intent_enc NOT LIKE 'client:%'` is the whole
+ * exclusion.
+ */
+export const CLIENT_REPORTED_PREFIX = 'client:';
+
 export async function recordGameTrade(opts: {
   siteUserId: string;
   kind: 'buy' | 'sell';
@@ -441,7 +492,10 @@ export async function recordGameTrade(opts: {
     [
       randomUUID(),
       playerId,
-      `game:${opts.kind}:${opts.itemName.slice(0, 60)} x${Math.max(1, Math.floor(opts.qty))}`,
+      /* `client:` in front of the existing `game:` tag. Both halves matter: the
+       * prefix is what reporting filters on, and the rest is what a human reads
+       * when they are looking at one row and wondering what it was. */
+      `${CLIENT_REPORTED_PREFIX}game:${opts.kind}:${opts.itemName.slice(0, 60)} x${Math.max(1, Math.floor(opts.qty))}`,
       opts.kind === 'buy' ? 'market_buy' : 'market_sell',
       Math.floor(opts.credits),
     ]
@@ -980,7 +1034,102 @@ export type CompleteQuestResult = {
   /** Authoritative post-grant balance, so the client can mirror instead of guess. */
   creditBalance: number | null;
   status: string | null;
+  /**
+   * Why a refusal was a refusal, when `ok` is false and it was not simply "no
+   * such engagement". Added so the client can tell "you have not finished this"
+   * from "that quest does not exist", which are the same 404 without it.
+   */
+  reason?: 'not_found' | 'wrong_status' | 'steps_incomplete' | 'capped';
 };
+
+/** One authored step, as `quests.steps` holds it. */
+type AuthoredStep = { order?: unknown; count?: unknown; label?: unknown };
+/** One step's progress, as `player_quest_engagements.step_states` holds it. */
+type StepState = { done?: unknown; have?: unknown };
+
+/**
+ * Are every one of this quest's authored steps actually finished?
+ *
+ * ── The argument this replaces, and what changed under it ─────────────────
+ *
+ * There used to be a long comment here explaining that reading `step_states`
+ * WOULD NOT HELP, on the grounds that `updateQuestStepStates` takes both the
+ * states and the percentage straight from the request body, so requiring
+ * complete steps would only move the forgery one request earlier: POST the
+ * steps, then POST the completion.
+ *
+ * That is true, and it is still true, and the conclusion drawn from it was
+ * wrong. "A determined forger can send two requests instead of one" is not an
+ * argument for accepting one request; it is an argument that the SECOND request
+ * is not the place the real fix lives. Meanwhile the absence had a cost that
+ * the comment did not weigh: with no check at all, `status = 'in_progress'` was
+ * the entire predicate, so a completion could be claimed for a quest whose
+ * steps had never been touched by anything -- including by a client that never
+ * ran the quest's world. Requiring the steps costs an honest player nothing,
+ * because their client has already written them, and it means a forged
+ * completion has to at least describe the work it is claiming to have done.
+ *
+ * ── What this is and is not ───────────────────────────────────────────────
+ *
+ * It is a CONSISTENCY check, not a proof of play, and it is worth being precise
+ * about that so nobody mistakes it for one. The server still has no simulation.
+ * What a real fix needs is server-OBSERVABLE evidence -- a purchase, a credit
+ * event, a server-priced minigame result -- and the verbs with no server-side
+ * trace (visit, talk, interact) cannot be verified without the server
+ * witnessing them. That remains a design change and remains not done.
+ *
+ * ── The two cases that are deliberately allowed ───────────────────────────
+ *
+ *   - A quest with NO authored steps completes freely. `steps` is nullable and
+ *     plenty of rows have never had one; refusing those would make every such
+ *     quest permanently unfinishable, which is a far larger and far more
+ *     visible fault than the one being closed.
+ *   - An engagement whose quest ROW HAS GONE (deleted since acceptance, so the
+ *     LEFT JOIN yields null) completes on its denormalised reward. There is
+ *     nothing left to check it against, and the client cannot delete a quest
+ *     row, so the case is an operator's action rather than an attack.
+ */
+export function questStepsSatisfied(
+  stepsJson: string | null,
+  stepStatesJson: string | null
+): boolean {
+  if (!stepsJson) return true;
+
+  let steps: AuthoredStep[];
+  try {
+    const parsed = JSON.parse(stepsJson);
+    if (!Array.isArray(parsed)) return true; // not a step list; nothing to check
+    steps = parsed as AuthoredStep[];
+  } catch {
+    /* Unparseable authored steps are an authoring fault, not a player one.
+     * Refusing here would make the quest unfinishable for everyone who had
+     * already accepted it. */
+    return true;
+  }
+  if (steps.length === 0) return true;
+
+  let states: Record<string, StepState>;
+  try {
+    const parsed = stepStatesJson ? JSON.parse(stepStatesJson) : null;
+    states = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, StepState>)
+      : {};
+  } catch {
+    states = {};
+  }
+
+  for (const step of steps) {
+    /* Keyed by `step.order` -- the same key `QuestSystem._parseSteps` and
+     * `stepStates[step.order]` use on the client. Read as a string because JSON
+     * object keys always are, whatever the authored `order` was. */
+    const state = states[String(step.order)];
+    if (!state || state.done !== true) return false;
+    const count = Math.max(1, Number(step.count) || 1);
+    const have = Number(state.have);
+    if (!Number.isFinite(have) || have < count) return false;
+  }
+  return true;
+}
 
 async function readCreditBalance(playerId: string): Promise<number | null> {
   const { rows } = await pgQuery<{ credit_balance: number }>(
@@ -1004,47 +1153,38 @@ async function readCreditBalance(playerId: string): Promise<number | null> {
  *   overwrite this grant on its next state push.
  */
 /**
- * WHY THIS DOES NOT READ `step_states`, AND WHY READING THEM WOULD NOT HELP.
+ * WHAT STOPS A QUEST BEING PAID WITHOUT BEING PLAYED.
  *
- * It is recorded in several places that a quest can be paid without being
- * played, because this function never reads `step_states`. That is TRUE, and
- * the obvious fix - require the steps to be complete before paying - IS NOT A
- * FIX. `updateQuestStepStates` takes `stepStates` and `percentComplete`
- * straight from the request body (`app/api/game/quests/route.ts`), so the
- * client writes both. Requiring complete steps would move the forgery one
- * request earlier: POST the steps, then POST the completion.
+ * Three things now, where there used to be one.
  *
- * That would be a gate measuring something the client controls, which is the
- * failure this repository keeps paying for. So the absence is deliberate and
- * documented rather than an oversight waiting to be closed.
+ *   1. `status = 'in_progress'` in the UPDATE predicate, so a replayed or
+ *      concurrent completion pays once. This was always here.
+ *   2. The reward is not client-settable. `acceptQuestEngagement` fetches the
+ *      row with `getQuestById(questId)` and stores `quest.reward_credits` on
+ *      the engagement; this function reads `q.reward_credits` or that stored
+ *      copy. A forged completion pays the CATALOGUE price, never an arbitrary
+ *      number. This was always here too.
+ *   3. `questStepsSatisfied` -- every authored step present, `done: true`, and
+ *      `have >= count`. NEW, and see that function for the argument it
+ *      overturns and the exact limits of what it buys.
  *
- * ── WHAT THE EXPOSURE ACTUALLY IS ─────────────────────────────────────────
+ * ── And the cap is now applied, which it was not ──────────────────────────
  *
- * Bounded, and worth stating precisely so nobody over- or under-reacts:
+ * This call used to pass `ignoreCap: true`, with a comment arguing that
+ * honouring `CAPS.quest` could only "mark a quest completed and pay zero for
+ * it, which is the silent theft `creditPricing.ts` says a ceiling must never
+ * cause". The objection was correct about the CONSEQUENCE and wrong about the
+ * remedy: the answer is not to remove the ceiling, it is to not steal.
  *
- *   - The reward is NOT client-settable. `acceptQuestEngagement` fetches the
- *     row with `getQuestById(questId)` and stores `quest.reward_credits` on the
- *     engagement; this function reads `q.reward_credits` or that stored copy.
- *     A forged completion pays the CATALOGUE price, not an arbitrary number.
- *   - A server-scoped quest cannot pay platform credits at all - see the
- *     branch below - and its server payout is capped per event by
- *     `SERVER_CREDIT_KINDS.quest`.
- *   - `status = 'in_progress'` in the UPDATE predicate makes a replay pay once.
+ * So the cap is honoured, and a capped completion ROLLS BACK -- the engagement
+ * stays `in_progress`, nothing is paid, and the caller is told `capped`. The
+ * player loses nothing and can finish it when the window rolls over. Without
+ * the cap, a REPEATABLE quest was an uncapped faucet: accept, complete, accept,
+ * complete, at `reward_credits` a time, for as long as anyone cared to loop.
  *
- * So the exposure is: a player may skip the work and claim a platform quest's
- * own reward. Real, bounded by the quest catalogue, and NOT a mint.
- *
- * ── WHAT A REAL FIX WOULD NEED ────────────────────────────────────────────
- *
- * Server-OBSERVABLE evidence of play, rather than client-reported state. Some
- * step verbs already produce it - a purchase, a credit event, a server-priced
- * minigame result - and those could be verified. Verbs with no server-side
- * trace (visit, talk, interact) cannot be, without the server witnessing them.
- * That is a design change, not an edit here.
- *
- * The consequence is already defended where it matters most: the rankability
- * rule in the mission architecture spec says to rank only on sets whose
- * maximum is fixed by content, never on totals or times, FOR THIS REASON.
+ * 120 completions an hour is far above any honest session -- especially now
+ * that every step has to be reported finished first -- so this should never
+ * fire in real play. If it ever does, the log line below is the thing to read.
  */
 export async function completeQuestEngagement(
   engagementId: string,
@@ -1057,12 +1197,16 @@ export async function completeQuestEngagement(
     engagement_reward: number | null;
     credit_balance: number;
     server_id: string | null;
+    quest_steps: string | null;
+    step_states: string | null;
   }>(
     `SELECT e.status,
             q.reward_credits AS quest_reward,
             e.reward_credits AS engagement_reward,
             pl.credit_balance,
-            e.server_id
+            e.server_id,
+            q.steps        AS quest_steps,
+            e.step_states  AS step_states
      FROM player_quest_engagements e
      JOIN players pl ON pl.id = e.player_id
      LEFT JOIN quests q ON q.id = e.quest_id
@@ -1074,7 +1218,7 @@ export async function completeQuestEngagement(
   if (!engagement) {
     return {
       ok: false, alreadyCompleted: false, creditsAwarded: 0,
-      creditBalance: null, status: null,
+      creditBalance: null, status: null, reason: 'not_found',
     };
   }
   const balanceBefore = Number(engagement.credit_balance);
@@ -1087,7 +1231,20 @@ export async function completeQuestEngagement(
   if (engagement.status !== 'in_progress') {
     return {
       ok: false, alreadyCompleted: false, creditsAwarded: 0,
-      creditBalance: balanceBefore, status: engagement.status,
+      creditBalance: balanceBefore, status: engagement.status, reason: 'wrong_status',
+    };
+  }
+
+  /* THE WORK, BEFORE THE MONEY.
+   *
+   * Checked here rather than inside either branch below, because it applies to
+   * both economies and because nothing should be flipped to 'completed' by a
+   * request that has not said the quest was finished. See
+   * `questStepsSatisfied` for what this does and does not prove. */
+  if (!questStepsSatisfied(engagement.quest_steps, engagement.step_states)) {
+    return {
+      ok: false, alreadyCompleted: false, creditsAwarded: 0,
+      creditBalance: balanceBefore, status: engagement.status, reason: 'steps_incomplete',
     };
   }
 
@@ -1227,12 +1384,40 @@ export async function completeQuestEngagement(
         detail: `quest:${engagementId}`,
         eventKey: `quest:${engagementId}`,
         amount: reward,
-        ignoreCap: true,
+        /* NO `ignoreCap`. `CAPS.quest` is 120 an hour, which no honest session
+         * reaches, and without it a repeatable quest was an unbounded faucet:
+         * accept, complete, accept, complete, at `reward_credits` a turn. */
       });
-      /* COMMIT even when the credit was refused. The flip won, so this player
-       * completed the quest; rolling that back would re-open a quest they have
-       * finished. A refusal here is `duplicate` — the reward was already
-       * ledgered — and the balance returned is the authoritative one either way. */
+
+      /* A CAPPED COMPLETION IS ROLLED BACK, NOT COMMITTED.
+       *
+       * This is the answer to the objection that used to justify `ignoreCap`:
+       * that honouring the ceiling could only mark a quest completed and pay
+       * zero for it, which is silent theft from the player. It would be -- if
+       * the flip were committed. Rolling back instead leaves the engagement
+       * `in_progress` and the balance untouched, so the player has lost
+       * nothing and can complete it once the window rolls over.
+       *
+       * The zero row `creditInTransaction` wrote goes with the rollback, so
+       * this log line is the only trace. That is a deliberate trade: an
+       * audit row is worth less than not taking a reward away, and at 120 an
+       * hour a genuine player will never see this. */
+      if (paid.reason === 'capped') {
+        await client.query('ROLLBACK');
+        console.error(
+          `[quests] quest reward capped for player ${playerId} on engagement `
+          + `${engagementId}; completion rolled back and nothing paid.`
+        );
+        return {
+          ok: false, alreadyCompleted: false, creditsAwarded: 0,
+          creditBalance: balanceBefore, status: 'in_progress', reason: 'capped',
+        };
+      }
+
+      /* COMMIT on every other outcome. The flip won, so this player completed
+       * the quest; rolling that back would re-open a quest they have finished.
+       * The remaining refusal is `duplicate` — the reward was already ledgered
+       * — and the balance returned is authoritative either way. */
       await client.query('COMMIT');
       return {
         ok: true, alreadyCompleted: false,

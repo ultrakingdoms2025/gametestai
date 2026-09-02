@@ -1334,6 +1334,61 @@ export const LATHE = definePlanet({
   ],
 
   /* ---------------------------------------------------------------- */
+  /* WHY THIS BLOCK SITS ABOVE `landing` AND NOT BELOW IT.
+   *
+   * `scripts/tests/quest-verbs.test.mjs` builds the pilot vocabulary by
+   * scraping this file: it finds `
+  landing:` and then matches every
+   * `id: '...', name:` from there TO THE END OF THE FILE. A viewpoint record
+   * has the same two fields in the same order, so a `viewpoints:` block placed
+   * after `landing:` is read as three more landing pads and the test fails with
+   * `"ash_throne" is a pad on Cinder and is not a legal pilot target`.
+   *
+   * The scrape is what is wrong - it should stop at the end of the array it
+   * started in - and fixing it belongs in that file. Until it is fixed, key
+   * order is load-bearing in a way nothing in this file could tell you, so it
+   * is written down here in all ten descriptors rather than discovered again.
+   */
+  /* ── VIEWPOINTS ───────────────────────────────────────────────────────
+   * 1.9 m/s2: apex 1.609 m, hang 1.74 s, an 8.0 m broad jump at a walk and
+   * 14.3 m at a sprint. The second-lightest body in the system and the second
+   * place where a rim notch is a step rather than a detour.
+   *
+   * WHAT IS DELIBERATELY NOT HERE: the crest of The Shepherd. It is the best
+   * vantage on the moon - 84.9 m, 50 m of prominence, and the gas giant sitting
+   * on it - and its inner rim is 40 m of wall over 13 m of run, which is 72
+   * degrees. The 38-degree walk lattice cannot reach it, the player's own
+   * step-up ladder gives out at 59, and the only way up is `FreeClimb` holding
+   * Space against a 40 m face while `Stamina` drains. That may well work. It is
+   * not PROVEN to work, and a prize whose reachability rests on a model nobody
+   * has flown is this repo's oldest defect wearing a rope. It stays out until
+   * somebody climbs it. */
+  viewpoints: [
+    {
+      /* The west shoulder of Oldwall - the old degraded basin whose rim is a
+       * 100 m-wide swell rather than a wall, so it is walked rather than
+       * climbed. 40.5 m, 157 m out from Highwall. */
+      id: 'oldwall_rim', name: 'Oldwall Shoulder', x: -260, z: -210, r: 7,
+      terrain: 'outcrop', place: 'Oldwall',
+      climb: 'North-west off Highwall and up the outer swell.',
+    },
+    {
+      /* Newfall's north rim, 40.8 m, over a 19 m bowl with the ray field
+       * running away north-east from it. */
+      id: 'newfall_rim', name: 'Newfall North Rim', x: 60, z: -71.1, r: 6,
+      terrain: 'crater', place: 'Newfall',
+      climb: 'South-west from Drifthead along the ray, then up the rim.',
+    },
+    {
+      /* Out on The Sweep at the south-east corner, 17.2 m up on a low swell -
+       * the flattest ground on the moon and therefore the one place where
+       * Ceraunus is the whole of the view instead of half of it. 330 m out. */
+      id: 'sweep_south', name: 'Sweep Southing', x: 270, z: -270, r: 8,
+      terrain: 'plain', place: 'The Sweep',
+      climb: 'South-east from Drifthead across the drift, no climb at all.',
+    },
+  ],
+
   landing: [
     /** The arrival. `yaw` PI is due south, because `Player` faces -Z at yaw 0 -
      *  so the first thing a player sees when the world resolves is Ceraunus. */
@@ -1353,6 +1408,7 @@ export const LATHE = definePlanet({
       id: 'highwall', name: 'Highwall', x: HIGHWALL[0], z: HIGHWALL[1], r: 22, yaw: Math.PI,
     },
   ],
+
 
   /**
    * Ring infall. This moon is inside the fringe of a ring system and sweeping it

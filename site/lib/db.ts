@@ -4,7 +4,9 @@
  * including Neon direct connection strings.
  */
 import { Client } from 'pg';
+import { createHmac, randomBytes } from 'node:crypto';
 import { hash, compare } from 'bcryptjs';
+import { appSecret } from './appSecret';
 // `open` is aliased: unaliased it resolves to the DOM's window.open in this
 // project's lib set, and the mistake typechecks.
 import { seal, open as unseal } from './secretBox';
@@ -67,6 +69,71 @@ export async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS site_password_resets_user_idx
     ON site_password_resets(user_id)
   `);
+
+  /* Columns added to an existing table, the way `mapOverlay.ts` and
+   * `customServers.ts` do it: `ADD COLUMN IF NOT EXISTS` with a DEFAULT, so
+   * deploying this against a database that already has rows is a no-op rather
+   * than a migration anybody has to run. */
+
+  /* WHERE AN ENROLMENT IN PROGRESS LIVES.
+   *
+   * `totp_secret` used to be the only column, and enrolment wrote a brand-new
+   * secret straight into it before the user had proved they could read a code.
+   * Two consequences, and the second is the serious one:
+   *
+   *   - an abandoned setup left a secret nobody's phone had, so the account had
+   *     a `totp_secret` that could never verify;
+   *   - starting an enrolment SET `totp_enabled = false`, so merely reaching
+   *     the endpoint stripped a working second factor off the account. Since it
+   *     was a GET, that was a link.
+   *
+   * A pending secret is therefore kept apart from the live one and only
+   * promoted by `promoteTotpSecret` once a code has verified against it. The
+   * working secret is never touched by an enrolment that has not finished. */
+  await query(`ALTER TABLE site_users ADD COLUMN IF NOT EXISTS totp_pending_secret TEXT`);
+
+  /* THE TOKEN GENERATION, FOR INVALIDATION.
+   *
+   * Sessions are JWTs, which are self-contained by definition: nothing the
+   * server does to a row can reach a token already in someone's cookie jar. So
+   * a password reset, a 2FA enrolment and a 2FA removal all left every existing
+   * session signed in -- including the attacker's, which is the session the
+   * reset was performed to get rid of.
+   *
+   * The token carries this number; `lib/auth.ts` compares it on every session
+   * read and refuses a mismatch. Bumping it is therefore "sign every device
+   * out", and every credential change bumps it. */
+  await query(`ALTER TABLE site_users ADD COLUMN IF NOT EXISTS session_epoch INTEGER NOT NULL DEFAULT 1`);
+
+  /* RECOVERY CODES.
+   *
+   * Without these a lost phone was a permanent lockout, and the de-facto escape
+   * was Google sign-in on the same address -- which is to say the escape hatch
+   * was a 2FA bypass. See `lib/auth.ts`.
+   *
+   * Stored as an HMAC, never in the clear, for the same reason `totp_secret` is
+   * sealed: a readable row is a working second factor for anyone who reads it.
+   * A hash rather than the reversible seal, because nothing ever needs to
+   * DISPLAY a code again -- they are shown once, at enrolment, and afterwards
+   * only ever compared. */
+  await query(`
+    CREATE TABLE IF NOT EXISTS site_totp_recovery_codes (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES site_users(id) ON DELETE CASCADE,
+      code_hash  TEXT NOT NULL,
+      used_at    TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  /* Single-use is enforced by `used_at IS NULL` in the consuming UPDATE, and
+   * the UNIQUE index is what stops one code being enrolled twice for the same
+   * account -- otherwise a duplicate would consume one row and leave the other
+   * standing, which is a code that works twice. */
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS site_totp_recovery_codes_idx
+      ON site_totp_recovery_codes(user_id, code_hash)
+  `);
+
   schemaEnsured = true;
 }
 
@@ -82,6 +149,10 @@ export type SiteUser = {
   google_id: string | null;
   totp_secret: string | null;
   totp_enabled: boolean;
+  /** An enrolment that has not yet proved itself. Never consulted at sign-in. */
+  totp_pending_secret: string | null;
+  /** Bumped by every credential change; pinned into the JWT. See `lib/auth.ts`. */
+  session_epoch: number;
   created_at: Date;
   updated_at: Date;
 };
@@ -144,10 +215,21 @@ export async function verifyPassword(user: SiteUser, password: string): Promise<
   return compare(password, user.password_hash);
 }
 
+/**
+ * Set a password, and sign every existing session out.
+ *
+ * The epoch bump is the whole point of the second column. A password reset that
+ * leaves old JWTs valid does not evict anybody -- so the session an attacker is
+ * holding survives the reset performed specifically to remove it, for as long
+ * as the token lives. `lib/auth.ts` refuses a token whose epoch has moved.
+ */
 export async function setPassword(userId: string, password: string): Promise<void> {
+  await ensureSchema();
   const passwordHash = await hash(password, BCRYPT_ROUNDS);
   await query(
-    'UPDATE site_users SET password_hash = $1, updated_at = now() WHERE id = $2',
+    `UPDATE site_users
+        SET password_hash = $1, session_epoch = session_epoch + 1, updated_at = now()
+      WHERE id = $2`,
     [passwordHash, userId]
   );
 }
@@ -169,11 +251,213 @@ export async function updateUserEmail(userId: string, email: string): Promise<vo
  * which also passes through the plaintext secrets written before this.
  */
 export async function setTotpSecret(userId: string, secret: string | null, enabled = false): Promise<void> {
+  await ensureSchema();
+  /* Changing the second factor signs the other devices out, for the same reason
+   * changing the password does: whoever is holding a session obtained with the
+   * OLD factor should not keep it across the change. */
   await query(
-    'UPDATE site_users SET totp_secret = $1, totp_enabled = $2, updated_at = now() WHERE id = $3',
+    `UPDATE site_users
+        SET totp_secret = $1, totp_enabled = $2, totp_pending_secret = NULL,
+            session_epoch = session_epoch + 1, updated_at = now()
+      WHERE id = $3`,
     [seal(secret), enabled, userId]
   );
 }
+
+/**
+ * Park a new secret for an enrolment that has not been confirmed.
+ *
+ * Writes ONLY `totp_pending_secret`. Nothing about a working second factor
+ * moves, which is the difference between this and what enrolment used to do --
+ * see the column's comment in `ensureSchema`.
+ */
+export async function setPendingTotpSecret(userId: string, secret: string): Promise<void> {
+  await ensureSchema();
+  await query(
+    'UPDATE site_users SET totp_pending_secret = $1, updated_at = now() WHERE id = $2',
+    [seal(secret), userId]
+  );
+}
+
+/** The in-progress enrolment's secret, unsealed, or null. */
+export function readPendingTotpSecret(user: { totp_pending_secret: string | null } | null): string | null {
+  try {
+    return unseal(user?.totp_pending_secret ?? null);
+  } catch (err) {
+    console.error('[db] could not open a pending TOTP secret:', (err as Error)?.message);
+    return null;
+  }
+}
+
+/**
+ * Promote a verified enrolment to the live second factor, and issue its
+ * recovery codes, in ONE transaction.
+ *
+ * Atomic on purpose: an account that ends up with `totp_enabled = true` and no
+ * recovery codes is one lost phone away from a permanent lockout, and that is
+ * precisely the state a crash between two separate statements would leave.
+ */
+export async function promoteTotpSecret(
+  userId: string,
+  secret: string,
+  recoveryCodes: string[]
+): Promise<void> {
+  await ensureSchema();
+  const client = makeClient();
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE site_users
+          SET totp_secret = $1, totp_enabled = TRUE, totp_pending_secret = NULL,
+              session_epoch = session_epoch + 1, updated_at = now()
+        WHERE id = $2`,
+      [seal(secret), userId]
+    );
+    // A fresh enrolment starts with a fresh set; any survivor of an earlier one
+    // would be a code for a secret that no longer exists.
+    await client.query('DELETE FROM site_totp_recovery_codes WHERE user_id = $1', [userId]);
+    for (const code of recoveryCodes) {
+      await client.query(
+        `INSERT INTO site_totp_recovery_codes (user_id, code_hash) VALUES ($1, $2)
+         ON CONFLICT (user_id, code_hash) DO NOTHING`,
+        [userId, hashRecoveryCode(code)]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Turn the second factor off completely, codes included.
+ *
+ * The codes go with it. Leaving them behind would mean a later re-enrolment
+ * inherited codes minted against a secret that no longer exists, and -- worse
+ * -- that the codes printed before 2FA was switched off would still be accepted
+ * the moment it was switched back on.
+ */
+export async function clearTotp(userId: string): Promise<void> {
+  await ensureSchema();
+  await query(
+    `UPDATE site_users
+        SET totp_secret = NULL, totp_enabled = FALSE, totp_pending_secret = NULL,
+            session_epoch = session_epoch + 1, updated_at = now()
+      WHERE id = $1`,
+    [userId]
+  );
+  await query('DELETE FROM site_totp_recovery_codes WHERE user_id = $1', [userId]);
+}
+
+// ---------------------------------------------------------------------------
+// Recovery codes
+// ---------------------------------------------------------------------------
+
+/** How many codes an enrolment issues. */
+export const RECOVERY_CODE_COUNT = 8;
+
+/* Crockford-ish base32 minus the characters people mis-copy: no I, L, O, U, 0
+ * or 1. A recovery code is read off a screen and typed back months later, under
+ * stress, by somebody who has just lost their phone. */
+const RECOVERY_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+
+/**
+ * A code, as it is shown to the user: two groups of five.
+ *
+ * ~49 bits of entropy each. Guessing one is not a threat model that the rate
+ * limiter in front of sign-in leaves open, but there is no reason to be mean
+ * with random bytes.
+ */
+function newRecoveryCode(): string {
+  const bytes = randomBytes(10);
+  let out = '';
+  for (let i = 0; i < 10; i++) {
+    out += RECOVERY_ALPHABET[bytes[i] % RECOVERY_ALPHABET.length];
+    if (i === 4) out += '-';
+  }
+  return out;
+}
+
+export function generateRecoveryCodes(count = RECOVERY_CODE_COUNT): string[] {
+  return Array.from({ length: count }, newRecoveryCode);
+}
+
+/**
+ * Compare and store form: uppercased, with everything that is not a code
+ * character removed.
+ *
+ * So the dash, a stray space, and lower case all resolve to the same code. A
+ * user who types what they were shown must not be told it is wrong because they
+ * left the hyphen out.
+ */
+function normalizeRecoveryCode(raw: string): string {
+  return String(raw ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/**
+ * Keyed hash, matching the pattern `forgot-password` already uses for reset
+ * tokens: HMAC with the app secret rather than a bare digest, so the column is
+ * useless to somebody holding a stolen dump and a rainbow table.
+ */
+export function hashRecoveryCode(raw: string): string {
+  return createHmac('sha256', appSecret()).update(normalizeRecoveryCode(raw)).digest('hex');
+}
+
+/**
+ * Spend one recovery code, or report that it was not one.
+ *
+ * ── Single use is the database's job, not a read-then-write ───────────────
+ *
+ * The UPDATE's own `used_at IS NULL` predicate is what makes a code
+ * single-use: two sign-in attempts arriving together both pass a prior SELECT,
+ * and only one can match this. `RETURNING` says which.
+ *
+ * A code is never compared as a string in this process either -- the hash is
+ * the lookup key, so the comparison is the index's, and there is nothing here
+ * for a timing attack to measure.
+ */
+export async function consumeRecoveryCode(userId: string, raw: string): Promise<boolean> {
+  const normalized = normalizeRecoveryCode(raw);
+  if (normalized.length < 8) return false;
+  await ensureSchema();
+  const { rows } = await query<{ id: string }>(
+    `UPDATE site_totp_recovery_codes
+        SET used_at = now()
+      WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
+      RETURNING id`,
+    [userId, hashRecoveryCode(normalized)]
+  );
+  return !!rows[0];
+}
+
+/** How many codes are left, for the account page to warn on. */
+export async function countUnusedRecoveryCodes(userId: string): Promise<number> {
+  await ensureSchema();
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM site_totp_recovery_codes
+      WHERE user_id = $1 AND used_at IS NULL`,
+    [userId]
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Whether a string is SHAPED like a recovery code rather than a TOTP token.
+ *
+ * Used at sign-in to decide which check to run. A TOTP token is exactly six
+ * digits; a recovery code is ten characters from an alphabet with no digits-only
+ * spelling, so the two cannot be confused -- and `timingSafeEqual` is not needed
+ * to tell them apart because the shape is not a secret.
+ */
+export function looksLikeRecoveryCode(raw: string): boolean {
+  const normalized = normalizeRecoveryCode(raw);
+  return normalized.length === 10 && !/^\d+$/.test(normalized);
+}
+
 
 /**
  * The usable secret for a user, whether it was stored sealed or in the clear.

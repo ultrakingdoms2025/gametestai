@@ -95,7 +95,49 @@ export class World {
       fogFar: 320,
       exposure: 1.0,
       ambientColor: new THREE.Color(0x404a60),
-      ambientIntensity: 0.6,
+      /* ── AMBIENT IS THE REMOVAL OF FORM SHADING, SO IT IS NOW A TRACE ─────
+       *
+       * `AmbientLight` adds `color * intensity` to `irradiance` for every
+       * fragment REGARDLESS OF NORMAL (three r185, lights_fragment_begin).
+       * Whatever it contributes, it contributes equally to the lit face and
+       * the shaded face of the same box, so every unit of it is a unit of
+       * terminator deleted. It is the one fill term in the rig that cannot
+       * model anything.
+       *
+       * The other two can. `HemisphereLight` mixes ground into sky by
+       * `dot(N, up)`, so it separates an up-facing plane from a down-facing
+       * one; `scene.environment` (a PMREM probe, scaled by
+       * `environmentIntensity`) is fully directional and carries specular as
+       * well. Phase 2 gave every world a probe precisely so this phase had
+       * somewhere to move the energy INTO - see `applyEnvironment` in main.js,
+       * which now assigns `env.envMap ?? null` unconditionally.
+       *
+       * ALL THREE ARE UNIFORMS. `AmbientLight`/`HemisphereLight` counts are in
+       * three's program cache key and `gfx/LightRig.js` pools them into a
+       * fixed slot set, so the COUNT never moves; `environmentIntensity` is a
+       * float uniform and `envMapCubeUVHeight` (which is a key field) is
+       * pinned at 1024 across every world by program-cache-key.test.mjs. So
+       * the whole retune is worth exactly ZERO shader programs, measured: the
+       * live sweep that produced the per-world numbers below wrote these three
+       * uniforms between screenshots of one booted session and
+       * `renderer.info.programs.length` never moved (maze 107, citadel 103,
+       * race 106, dock 110, medieval 137, station 149, cinder 104, space 116).
+       *
+       * 0.6 -> 0.12 here is a DEFAULT OF RECORD, not a shipped change: all
+       * nine `extends World` subclasses set `ambientIntensity` themselves
+       * (grep says so), so no world has ever rendered with this number. It is
+       * lowered so the next world to be written inherits a fill that models
+       * rather than one that flattens, and pairs with the `hemiIntensity`
+       * below - previously absent, which meant a new world silently inherited
+       * `applyEnvironment`'s own `?? 0.4` fallback rather than a value stated
+       * anywhere a reader would look. */
+      ambientIntensity: 0.12,
+      /* Stated here rather than left to `applyEnvironment`'s `?? 0.4`, so the
+       * fill a new world inherits is visible in the file that declares the
+       * rest of its environment. `skyColor`/`groundColor` stay unstated: they
+       * fall back to `ambientColor` and `fogColor`, which is the right answer
+       * for a world that has not thought about its bounce yet. */
+      hemiIntensity: 0.75,
       sunColor: new THREE.Color(0xffffff),
       sunIntensity: 2.0,
       sunDirection: new THREE.Vector3(-0.4, 0.85, -0.3).normalize(),

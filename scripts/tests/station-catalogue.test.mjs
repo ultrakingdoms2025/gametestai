@@ -272,13 +272,160 @@ test('the collision the world derives from its own geometry is unchanged', async
    * DEEPER into the blocks. See the note on `parkP` in `_buildHabitat`, which
    * also records the four planters that are still inside a block footprint and
    * were left there.
+   *
+   * -- Re-taken 2026-09-01: the spatial-audit pass ---------------------
+   * 372160 -> 372908 found, 170718 -> 170471 boxed, 201442 -> 202437 kept,
+   * 8765 -> 8763 chunks, 26711 -> 26705 colliders. Four changes, all in
+   * `_buildCommercial` and `_buildNearField`, and every one of them is a
+   * player-reachability repair rather than a re-plan:
+   *
+   *   The promenade's two avenue-0 segments are NOT BUILT. Both the raised
+   *   deck and its balustrade are skipped where the segment's own rotated
+   *   footprint answers `StationPlan.roleUnder(..., 'carriageway')`, so the
+   *   hub's own axis runs out to the glass instead of ending at a 2 m deck
+   *   with a rail on top. Two deck slabs, two rail runs and the centre
+   *   telescope and bench stop existing; `station-plan-conflicts` went 4 -> 0
+   *   in the same commit.
+   *
+   *   The balustrade is CUT at both flight heads (`promenadeRailRuns`), which
+   *   turns 26 rail pieces into 30 shorter ones, and its collider now stops at
+   *   the drawn cap (3.325) instead of 3.80.
+   *
+   *   The deck collider's top moved 2.05 -> 2.00, onto the slab drawn under
+   *   it, and the flights are seated off `promenadeFlight()` so their
+   *   collision surface lies ON the grate drawn on them rather than 0.092 m
+   *   under it. A ramp that stops sinking the player into itself is a ramp
+   *   whose triangles stop being counted as already-inside-a-box, which is
+   *   the direction this list keeps recording.
+   *
+   *   `_buildNearField`'s `legal` swapped a bare `across < 5.0` for
+   *   `avenueClearance`, so the 96 scattered props can no longer stand on a
+   *   9.9 m carriageway, and the same loop now asks `_onLegend` at the
+   *   ORIGINAL position as well as at every nudge candidate. Both change
+   *   which samples are refused, and that pass shares one `rng` stream, so
+   *   the whole scatter downstream of the first refusal lands somewhere
+   *   else. `kept` rising 995 is that scatter standing clear of structure it
+   *   used to be half inside.
+   *
+   * -- RE-TAKEN 2026-09-01: the three closed spatial findings -------------
+   * 372908 -> 372792 found, 170471 -> 170485 boxed, 202437 -> 202307 kept;
+   * chunks unchanged at 8763, colliders 26705 -> 26757 (+52), planting 1361.
+   * Four deliberate changes, every one of them a player-reachability repair,
+   * and each one's arithmetic is at its own call site:
+   *
+   *   THE PROMENADE FLIGHTS' DRAWN PAD WAS BANKED, NOT PITCHED. The 6.4 m
+   *   grate on each flight was authored at yaw `-th` while its `_ramp` proxy
+   *   was at `-th + PI/2`, and `GeoBatch.at` pitches about the piece's LOCAL
+   *   X - so the pad tilted ACROSS the climb instead of along it. Measured
+   *   before the fix: a constant 1.000 m at every radius from 152 to 158 and
+   *   0.200 to 1.800 m across its 4.8 m width, on both flights. That surface
+   *   is collided, and a body climbing met a 0.62 m rise at r = 153 - over
+   *   `stepHeight` 0.45 and under `MIN_RISE_GROUND` 1.0, so neither a step
+   *   nor a mantle. The balustrade cut that shipped last week opened a gap
+   *   onto a flight nobody could climb. Same triangle count, different
+   *   orientation, so this moves `boxed` and `kept` and not `found`.
+   *
+   *   FOUR SHOPFRONT PANELS ARE NOT BUILT. `_buildNearField`'s lit band ran
+   *   into the promenade: one panel across the +18 degree flight with its
+   *   soffit 0.27 m over the climb at the head end, and three standing on the
+   *   deck with 0.10 m of clearance over it. They are skipped by
+   *   `boxOnPromenade`, the same shape of guard the pylon skip already used.
+   *   -116 found is those four panels, their trim, their room plane and their
+   *   emissive strip.
+   *
+   *   THE SIX GATEWAY SERVICE RAMPS MOVED OUT 2.6 m. `GATEWAY.RAMP_Z` 12 ->
+   *   14.6, so a ramp's head lands ON the dais rim instead of 2.6 m inside
+   *   it. Same geometry, further out.
+   *
+   *   THE SEVEN SPOIL HEAPS ARE COLLIDED AS CONES. One box per heap became a
+   *   stepped stack of inscribed squares following the drawn cone, every
+   *   riser inside the player's step, and the haul ramp that used to climb
+   *   into the side of one is retired. +52 colliders is 7 boxes becoming 59
+   *   tiers, less the ramp's own; `found` is unaffected because a collider is
+   *   not geometry, and `boxed` rises because a heap that is collided where
+   *   it is drawn swallows more of the dirt drawn on it.
+   *
+   * -- 2026-09-02: THE KIT LEARNED TO CHAMFER AND THIS DID NOT MOVE -------
+   * The world gained 330,624 drawn triangles (3,468,968 -> 3,799,592, +9.5%)
+   * and every figure on this line is unchanged to the triangle. That is the
+   * entry, and it is here because "unchanged" is the surprising answer.
+   *
+   * `StationKit.boxGeo` now chamfers any box whose smallest dimension reaches
+   * BEVEL_MIN (1.0 m), which is 3,469 pieces on this world - 2,724 merged
+   * parts and 745 instances. A chamfered box is 108 triangles against a plain
+   * box's 12, so +96 each.
+   *
+   * For one day this pass CHARGED THOSE TRIANGLES TWICE. It landed at 551,953
+   * found, 294,873 boxed, 257,080 kept, 11,203 chunks and 29,197 colliders -
+   * +179,161 soup, +54,773 kept (+27.1%) and +2,440 colliders for a 9.5% rise
+   * in what is drawn - because `_solidifyStructure` derives collision FROM THE
+   * DRAWN GEOMETRY, so every chamfered corner was soup to be extracted as well
+   * as pixels to be shaded. It cost 70.8 ms on the third station repeat in
+   * `frame-gaps`, which crossed the 250 ms gate.
+   *
+   * It is not charged twice any more. A chamfer only ever cuts material AWAY
+   * from a box's corners, so the square box it was cut from is a conservative
+   * collider for it - very slightly larger at eight corners, which is the safe
+   * direction and is what the player walked into before the chamfer existed.
+   * `GeoBatch.add` records that box (`StationKit.squareBoxCorners`) and
+   * `_collisionSoup` substitutes it for the piece's 108 triangles, which is
+   * what `ShipKit` has always done by authoring its colliders instead of
+   * deriving them: "cbox draws through box and collides the FULL box".
+   *
+   * The substitute uses three's own quad diagonals, read off a
+   * `BoxGeometry(2,2,2)` rather than authored - see `SQUARE_BOX_TRIS`. That is
+   * why this line reads UNCHANGED rather than nearly unchanged: a hand-cut
+   * diagonal has the same four corners and two different triples, and
+   * `_dropEnclosedTriangles` asks about triples. Measured, it moved 3
+   * triangles of 202,307 between `boxed` and `kept`.
+   *
+   * The chamfer's own budget argument still stands and the threshold is still
+   * the single dial: the measured curve at 0.55/0.80/1.00/1.20/1.60 is in the
+   * `BEVEL_MIN` comment in `StationKit.js`. Its collision column is now the
+   * cost of a chamfer that IS collided, which none of them is.
+   */
+  /* -- RE-TAKEN 2026-09-02: the gateway nosing sat 6 mm too proud ---------
+   * boxed 170,485 -> 170,751 (+266), kept 202,307 -> 202,041 (-266), chunks
+   * 8,763 -> 8,715 (-48), colliders 26,757 -> 26,709 (-48). `found` and
+   * `planting` are unchanged, which is the check that this moved a surface
+   * rather than adding or removing any geometry: the same 36 nosing plates
+   * are drawn, 0.055 m lower.
+   *
+   * WHY THEY MOVED AT ALL. `GATEWAY.TRIM_PROUD` went 0.06 -> 0.005, so each
+   * approach nosing now sits 5 mm proud of the tread it caps instead of
+   * 60 mm. A plate that stands 60 mm above its tread has its top surface
+   * outside the tread's own box collider and is therefore soup to be kept; a
+   * plate sunk to 5 mm is swallowed by that box, and `_dropEnclosedTriangles`
+   * moves it to `boxed`. 266 triangles over six gateways and six treads, and
+   * the 48 chunks they used to need are 48 colliders that no longer exist.
+   *
+   * WHY IT MOVED, which is the part worth reading. The station is the only
+   * world that collides its DRAWN geometry, so those plates are the surface a
+   * body stands on, and the profile this line measures WAS the flight: the
+   * physics returned 0.46, 0.86, 1.26, 1.66, 2.06, 2.46 up the centre lane.
+   * The first riser off the plaza was therefore 0.46 m against
+   * `CONFIG.player.stepHeight` 0.45 - and `Player._move`'s step probe accepts
+   * a tread at `prev.y + stepHeight + 0.01`, which is 0.46 exactly. It still
+   * refused, on all six bearings, because the collision mesh stores its
+   * vertices as float32: the probe read 0.460000008344650269 against a limit
+   * of 0.460000000000000020 and lost by 8.3 nanometres.
+   *
+   * That is the whole defect and it is why this is a repair and not a nudge.
+   * The flight had NO margin - it was authored exactly on the limit - and the
+   * rounding fell the wrong way, so all six gateway approaches were
+   * unclimbable at their foot in the centre lane, which is the lane a player
+   * walking at a gateway uses. Every later riser was 0.40 and fine, because
+   * every tread after the first is climbed FROM a plate and the plate
+   * cancels. Measured both ways with the world built at each value; at 0.005
+   * the same probe reads 0.400000000000000022 and passes on all six.
+   * @see GATEWAY.TRIM_PROUD, scripts/tests/portal-walkthrough.test.mjs
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 372160, boxed: 170718, kept: 201442, planting: 1361 },
+    { found: 372792, boxed: 170751, kept: 202041, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 8765, 'the chunking changed');
+  assert.equal(chunks, 8715, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -346,8 +493,24 @@ test('the collision the world derives from its own geometry is unchanged', async
    * same event: a plant whose column a figure was sharing now needs its own.
    * Total found is UNCHANGED, which is the check that this removed colliders
    * and not geometry.
+   *
+   * -- And the chamfer costs NOTHING here: 26757, 2026-09-02 --------------
+   * It cost 2,440 for one day (26,757 -> 29,197): more soup made more chunks
+   * (8,763 -> 11,203) and a chunk carries colliders. The chamfer is still on
+   * and this is back at 26,757, because the soup no longer contains it - see
+   * the deepEqual above. Nothing about the drawn world was undone; the mesh
+   * count, the material count and the named-node set never moved in either
+   * direction.
+   *
+   * -- And 48 of them were the gateway nosings' own chunks -----------------
+   * 26,757 -> 26,709 on 2026-09-02, exactly one per chunk lost, for the reason
+   * on the deepEqual above: a nosing sunk to 5 mm proud lies inside the tread
+   * box that already collides it, so it stops needing collision of its own.
+   * Eight per gateway. Nothing a body can stand on was removed - the tread box
+   * is still there, and it is now the surface the step probe finds, 0.40 m up
+   * instead of 0.46.
    */
-  assert.equal(physics.colliders.length, 26711, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26709, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {
@@ -386,6 +549,29 @@ test('every reported position is finite', async () => {
  * the old anchor, so it now lands half a metre off and still reports ok:true.
  * `scripts/check-stored-overlays.mjs` reads this same fixture, and it is what
  * says whether any stored document actually targets the name.
+ *
+ * ── Re-taken 2026-09-02: six anchors, 0.055 m each ──────────────────────
+ * `gateway-race:trim`, `gateway-sports:trim`, `gateway-maze:trim`,
+ * `gateway-citadel:trim`, `gateway-medieval:trim` and `gateway-dock:trim` all
+ * fell from y = 0.38 to y = 0.325. No name was minted or retired, and no x or
+ * z moved on any of them.
+ *
+ * An anchor is the bottom-centre of the batch's bounds, and the bottom of each
+ * gateway's `trim` batch is the underside of the LOWEST approach nosing.
+ * `GATEWAY.TRIM_PROUD` went 0.06 -> 0.005, which lowers every nosing by
+ * 0.055, so the bound follows it down by 0.055 and nothing else in the batch -
+ * the handrails, the stanchion caps, the terminal posts - moved at all. The
+ * measurement that made that change is on the collision pin above: the nosing
+ * was the surface a body stood on, and at 0.06 proud it put the first riser
+ * off the plaza 8.3 nanometres beyond what `Player._move`'s step probe will
+ * accept, on all six bearings.
+ *
+ * 55 mm is under the half-metre that mattered for `habitat:panelDark`, but it
+ * is recorded the same way and for the same reason: a stored move against one
+ * of these six names was authored as a translation from the old anchor and now
+ * lands 55 mm low, still reporting ok:true. `check-stored-overlays.mjs` reads
+ * this fixture and is what answers whether any stored document targets these
+ * six; it was NOT re-run for this change, because it needs production credentials.
  */
 test('the name set and every anchor match the pin', async () => {
   const cat = await catalogue();

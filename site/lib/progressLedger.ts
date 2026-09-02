@@ -140,6 +140,33 @@ const MAX_GROUPS = 64;
 const MAX_KEY_LEN = 64;
 const MAX_SCOPE_LEN = 64;
 
+/**
+ * How many NEW keys one (kind, scope) may gain inside one window.
+ *
+ * ── The hole this closes ──────────────────────────────────────────────────
+ *
+ * The bounds above cap the size of ONE request. They cap nothing about the
+ * rate, so a single well-formed POST could award every relic, viewpoint,
+ * charter and deed in the game at once -- and because this ledger never
+ * subtracts and had no revoke path, that forged claim was PERMANENT. Nothing
+ * could take it back short of hand-written SQL.
+ *
+ * The two halves of the answer are here and in `revokeProgressItems` below:
+ * bound how fast a claim can arrive, and make a claim that got through
+ * reversible by an operator.
+ *
+ * ── Why the number is what it is ──────────────────────────────────────────
+ *
+ * A world holds up to 110 relics, so 500 new keys of one kind in one world in
+ * one hour is several worlds' worth of discovery at a pace nobody plays at. The
+ * failure mode this file names is LOSS, so the cap is set where an honest
+ * player cannot reach it and the excess is REPORTED rather than silently
+ * dropped -- the caller gets the (kind, scope) pairs that were trimmed, so a
+ * client that somehow hits one can say so instead of quietly losing progress.
+ */
+const MAX_NEW_KEYS_PER_WINDOW = 500;
+const DELTA_WINDOW_SECONDS = 3600;
+
 export interface ItemGroup {
   kind: string;
   /** World id, or '' for the kinds that are not per-world. */
@@ -171,6 +198,13 @@ export interface MergeResult {
   changed: number;
   /** Kinds the payload named that this ledger does not know. Reported, not fatal. */
   rejected: string[];
+  /**
+   * `kind/scope` pairs whose window budget was exhausted, so some keys in the
+   * payload were not stored. Reported rather than silent: a client that hits
+   * one has either found a bug or is being throttled, and both are things
+   * somebody needs to be able to see.
+   */
+  capped: string[];
 }
 
 export async function ensureProgressSchema(db: Db): Promise<void> {
@@ -191,6 +225,19 @@ export async function ensureProgressSchema(db: Db): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS player_progress_items_idx
       ON player_progress_items (player_id, kind, scope, item_key)
   `);
+  /* The index `readFirstReports` runs on.
+   *
+   * Leading with (kind, scope) because that pair is always an equality in that
+   * query, then `item_key` because the answer is grouped by it, then
+   * `created_at` because the aggregate is a MIN over it — so the plan is a range
+   * scan that finds each key's earliest row at the front of its own run rather
+   * than a sort of every relic every member has ever recorded. The existing
+   * unique index leads with `player_id`, which that query does not constrain at
+   * all, so it could not serve this. */
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS player_progress_items_first_idx
+      ON player_progress_items (kind, scope, item_key, created_at)
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS player_progress_values (
@@ -206,6 +253,25 @@ export async function ensureProgressSchema(db: Db): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS player_progress_values_idx
       ON player_progress_values (player_id, kind, scope, item_key)
   `);
+
+  /* The Phase 7 column, ensured HERE as well as in `leaderboard.ts`.
+   *
+   * `serverIdMigrations.test.ts` states the rule and the incident behind it: a
+   * module that issues SQL against one of these tables and references
+   * `server_id` must not depend on another module having run first, because
+   * that is exactly how `/api/game/quests` and `/api/marketplace/items`
+   * returned 500 to every caller in production. This module gained such a
+   * reference when `readFirstReports` joined `server_members`, so it gains the
+   * ensure with it. Idempotent, additive, and free the second time.
+   *
+   * What this ensure CANNOT cover, stated rather than assumed: `server_members`
+   * itself, which lives in `customServers.ts` — and `customServers.ts` imports
+   * `leaderboard.ts` which imports this file, so importing it back would be a
+   * cycle. `readFirstReports` therefore requires its caller to have run
+   * `ensureCustomServerSchema` on the same client, which the progress route
+   * does immediately before calling it. */
+  await db.query(`ALTER TABLE player_progress_items ADD COLUMN IF NOT EXISTS server_id TEXT`);
+  await db.query(`ALTER TABLE player_progress_values ADD COLUMN IF NOT EXISTS server_id TEXT`);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -287,6 +353,203 @@ async function mergeValues(
   return r.rowCount ?? 0;
 }
 
+/**
+ * How many keys of one (kind, scope) this player has gained inside the window.
+ *
+ * `created_at` is on the row, so this is a count of ARRIVALS rather than of
+ * holdings -- which is the right thing to bound. A player who legitimately owns
+ * 3,000 relics from months of play is not throttled by having them; only by
+ * claiming another 500 in the next hour.
+ */
+async function recentlyAdded(
+  db: Db,
+  playerId: string,
+  kind: string,
+  scope: string
+): Promise<number> {
+  const r = await db.query(
+    `SELECT COUNT(*)::int AS n FROM player_progress_items
+      WHERE player_id = $1 AND kind = $2 AND scope = $3
+        AND created_at > NOW() - ($4 || ' seconds')::interval`,
+    [playerId, kind, scope, String(DELTA_WINDOW_SECONDS)]
+  );
+  return Number(r.rows[0]?.n ?? 0);
+}
+
+/**
+ * Take progress away again.
+ *
+ * ── Why a ledger that "never subtracts" needs this ────────────────────────
+ *
+ * `mergeProgress` never subtracts, and that rule is right: a payload that omits
+ * something is a device that has not seen it yet, not a report that it was
+ * lost. But "the merge never subtracts" was quietly doing duty as "nothing ever
+ * subtracts", and those are different claims. Progress here is client-declared
+ * -- the server cannot witness a relic being found -- so a forged claim was
+ * permanent, and the only remedy was hand-written SQL against production.
+ *
+ * This is the deliberate account correction the header always said was the
+ * exception ("the only way progress leaves this ledger is a deliberate account
+ * reset"). It is deliberately NOT reachable from `/api/game/progress`: no
+ * request a player can make reaches it, because a client that could ask for a
+ * deletion could delete somebody's afternoon, which is the failure this whole
+ * module exists to prevent. It is for an operator, from the admin app or a
+ * console, with a reason.
+ *
+ * Scoped to one (player, kind, scope) and an explicit key list rather than
+ * taking a predicate: a mistyped filter on a bulk delete is exactly how a
+ * correction becomes the incident.
+ *
+ * @returns how many rows were actually removed.
+ */
+export async function revokeProgressItems(
+  db: Db,
+  playerId: string,
+  kind: string,
+  scope: string,
+  keys: string[]
+): Promise<number> {
+  const clean = [...new Set((Array.isArray(keys) ? keys : []).map(cleanKey).filter(Boolean))] as string[];
+  if (!clean.length) return 0;
+  const r = await db.query(
+    `DELETE FROM player_progress_items
+      WHERE player_id = $1 AND kind = $2 AND scope = $3 AND item_key = ANY($4::text[])`,
+    [playerId, kind, scope ?? '', clean]
+  );
+  return r.rowCount ?? 0;
+}
+
+/** The value-shaped sibling of `revokeProgressItems`. */
+export async function revokeProgressValues(
+  db: Db,
+  playerId: string,
+  kind: string,
+  scope: string,
+  keys: string[]
+): Promise<number> {
+  const clean = [...new Set((Array.isArray(keys) ? keys : []).map(cleanKey).filter(Boolean))] as string[];
+  if (!clean.length) return 0;
+  const r = await db.query(
+    `DELETE FROM player_progress_values
+      WHERE player_id = $1 AND kind = $2 AND scope = $3 AND item_key = ANY($4::text[])`,
+    [playerId, kind, scope ?? '', clean]
+  );
+  return r.rowCount ?? 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* First REPORTED — and the word "reported" is the whole contract           */
+/* ---------------------------------------------------------------------- */
+
+export interface FirstReport {
+  /** The relic / viewpoint / deed id. */
+  itemKey: string;
+  playerId: string;
+  handle: string | null;
+  /** When the row arrived HERE. Not when it was found. See below. */
+  reportedAt: string;
+  self: boolean;
+}
+
+/**
+ * The exact sentence a caller is allowed to build out of `readFirstReports`.
+ *
+ * Exported as a constant rather than left to each caller to phrase, because
+ * this is the claim the data supports and every UI that renders it must make
+ * the same one. A route that wants to say something else has to change this
+ * line, where the reason is written down, rather than in a template it is easy
+ * to write "first to find" into by accident.
+ */
+export const FIRST_REPORT_CLAIM = 'first to report';
+
+/**
+ * The limitation, in the response, in the source, and in the UI string.
+ *
+ * `created_at` is the moment the row reached Postgres. `ProgressSync` batches —
+ * it pushes on discovery events and on save, not on a timer, and a device with
+ * no connection pushes nothing until it has one — so the gap between finding a
+ * relic and reporting it is unbounded and entirely invisible from this side.
+ *
+ * The consequence is not hypothetical and is not a rounding error: a player who
+ * plays offline for a week and signs in on Friday will lose a claim to somebody
+ * who found the same relic on Thursday and synced immediately. That player
+ * genuinely got there first and the ledger genuinely cannot know it.
+ *
+ * There is no server-side fix available. A client-declared discovery timestamp
+ * would be a clock the player controls, and this file's own header refuses to
+ * consult a device clock anywhere for exactly that reason — "a phone a few
+ * minutes fast would otherwise silently win every conflict". A weaker claim
+ * that is true beats a stronger claim that is a lie, so the weaker claim is
+ * what ships, and it ships in the words.
+ */
+export const FIRST_REPORT_CAVEAT =
+  'This is the first player to SYNC this find, not necessarily the first to make it. '
+  + 'Progress uploads in batches, so a player who was offline can lose a claim they earned.';
+
+/**
+ * Who reported each item of one (kind, scope) first, among a server's members.
+ *
+ * ── DISTINCT ON rather than a GROUP BY and a second query ────────────────
+ *
+ * Postgres orders by `(item_key, created_at, player_id)` and keeps the first
+ * row of each `item_key` run, which is the earliest report and its owner in one
+ * pass over the index added in `ensureProgressSchema`. A `MIN(created_at)`
+ * GROUP BY would give the time and not the player, and the usual repair — join
+ * the aggregate back to the table — reintroduces the tie the ordering already
+ * settles.
+ *
+ * `player_id` is the last ordering term and it is not decoration: two rows CAN
+ * share a `created_at`, because `NOW()` in Postgres is the transaction start and
+ * a batch insert stamps every row in it identically. Without that term the
+ * winner of a tie would be whichever row the plan happened to reach first, so
+ * the same query could answer differently on two runs and nobody would be able
+ * to say which was wrong. With it, ties resolve to a fixed answer.
+ *
+ * ── Scoped to members, the same way the time boards are ──────────────────
+ *
+ * `server_members` is the FROM clause, `state = 'approved'`, so a non-member is
+ * not a candidate and there is no visibility filter to forget. `server_id` on
+ * the progress row is deliberately NOT consulted: these are platform relics
+ * recorded by `ProgressSync`, which stamps nothing, so requiring a stamp would
+ * make every answer empty.
+ */
+export async function readFirstReports(
+  db: Db,
+  opts: { serverId: string; kind: string; scope?: string; playerId: string; limit?: number }
+): Promise<FirstReport[]> {
+  const kind = typeof opts?.kind === 'string' ? opts.kind.trim() : '';
+  if (!kind || !KINDS[kind] || KINDS[kind].shape !== 'set') return [];
+  const serverId = typeof opts?.serverId === 'string' ? opts.serverId.trim() : '';
+  if (!serverId) return [];
+  const scope = cleanScope(opts?.scope);
+  if (scope === null) return [];
+  const limit = Math.max(1, Math.min(500, Math.trunc(Number(opts?.limit)) || 200));
+
+  const r = await db.query(
+    `SELECT DISTINCT ON (i.item_key)
+            i.item_key, i.player_id, i.created_at, pl.handle
+       FROM server_members m
+       JOIN player_progress_items i
+         ON i.player_id = m.player_id
+       LEFT JOIN players pl ON pl.id = i.player_id
+      WHERE m.server_id = $1
+        AND m.state = 'approved'
+        AND i.kind = $2
+        AND i.scope = $3
+      ORDER BY i.item_key, i.created_at, i.player_id
+      LIMIT $4`,
+    [serverId, kind, scope, limit]
+  );
+
+  return r.rows.map((row) => ({
+    itemKey: String(row.item_key),
+    playerId: String(row.player_id),
+    handle: row.handle ?? null,
+    reportedAt: String(row.created_at ?? ''),
+    self: String(row.player_id) === opts.playerId,
+  }));
+}
+
 /** Everything this player has, shaped for the client to adopt wholesale. */
 export async function readProgress(db: Db, playerId: string): Promise<ProgressState> {
   const state: ProgressState = { items: {}, values: {} };
@@ -332,6 +595,7 @@ export async function mergeProgress(
 ): Promise<MergeResult> {
   let changed = 0;
   const rejected = new Set<string>();
+  const capped = new Set<string>();
 
   const groups = Array.isArray(payload?.items) ? payload.items.slice(0, MAX_GROUPS) : [];
   for (const group of groups) {
@@ -346,7 +610,25 @@ export async function mergeProgress(
       const key = cleanKey(raw);
       if (key) seen.add(key);
     }
-    changed += await unionItems(db, playerId, kind, scope, [...seen]);
+
+    /* The window budget for this (kind, scope).
+     *
+     * Counted BEFORE the insert and applied to the batch, so the cap cannot be
+     * stepped over by one large final group. Keys already held cost nothing --
+     * `unionItems` conflicts on them and they were counted when they first
+     * arrived -- so a client re-sending its whole set on every boot, which is
+     * exactly what `ProgressSync` does, never consumes budget. Only genuinely
+     * new keys do, which is what makes this bound a DELTA rather than a size. */
+    let toAdd = [...seen];
+    if (toAdd.length) {
+      const already = await recentlyAdded(db, playerId, kind, scope);
+      const room = Math.max(0, MAX_NEW_KEYS_PER_WINDOW - already);
+      if (toAdd.length > room) {
+        capped.add(`${kind}/${scope}`);
+        toAdd = toAdd.slice(0, room);
+      }
+    }
+    if (toAdd.length) changed += await unionItems(db, playerId, kind, scope, toAdd);
   }
 
   /* Grouped by kind so each kind's rule is applied in one statement, and so a
@@ -373,5 +655,10 @@ export async function mergeProgress(
     changed += await mergeValues(db, playerId, kind, spec.mode, rows);
   }
 
-  return { state: await readProgress(db, playerId), changed, rejected: [...rejected] };
+  return {
+    state: await readProgress(db, playerId),
+    changed,
+    rejected: [...rejected],
+    capped: [...capped],
+  };
 }

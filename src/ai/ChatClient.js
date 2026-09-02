@@ -279,9 +279,22 @@ export class ChatClient {
    * planets on the far side of the yard's launch portal.
    *
    * The count is what `main.js` registers: station, medieval, sports, citadel,
-   * race, maze, dock, space, and the ten planets - eighteen. If a world is
-   * added, this is the second place after `WORLD_NAMES` that has to be told,
-   * and the fourth after `api/chat.js` and `server/chat-server.js`.
+   * race, maze, dock, space, and the ten planets - eighteen.
+   *
+   * PLACES THAT MUST BE TOLD when a world is added, as of Sep 2026. The list
+   * used to name `api/chat.js`, which was a stale duplicate of the deployed
+   * route and has been deleted:
+   *   1. `WORLD_NAMES`, just above.
+   *   2. This reply.
+   *   3. `server/chat-server.js`'s setting table (dev server only).
+   *   4. `site/lib/worlds.ts` — and ONLY that one for the deployed site now.
+   *      `site/app/api/chat/route.ts` used to carry a hand-typed roster that
+   *      said six worlds and five portals; it derives the whole block from
+   *      `WORLDS` + `TOTAL_DESTINATIONS` instead, so it corrects itself.
+   *
+   * That the offline path here was RIGHT ("eighteen") while the paid LLM path
+   * was wrong is worth remembering: the fallback nobody budgeted for was the
+   * more accurate of the two for months.
    */
   _gameFactReply(q) {
     if (/\b(how many|count|number of)\b/.test(q) && /\b(portal|gate|gateway|world|worlds)\b/.test(q)) {

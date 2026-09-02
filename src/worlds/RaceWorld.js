@@ -654,16 +654,42 @@ export class RaceWorld extends World {
     env.fogFar = 760;
     env.exposure = 1.0;
     env.ambientColor = new THREE.Color(0x8fa2b4);
-    env.ambientIntensity = 0.55;
+    /* 0.55 -> 0.12, redistributed to hemisphere and probe.
+     *
+     * A constant added regardless of normal is form shading deleted; the two
+     * terms it moves into both know which way a surface faces.
+     * @see World.js `ambientIntensity`.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / % of pixels under 12:
+     *
+     *   grandstand    base 37.9 / 15.9%  ->  41.2 / 11.3%
+     *   tyre-stack    base 78.4 /  9.7%  ->  80.8 /  8.6%
+     *   chicane-block base 114.4 / 1.4%  ->  116.1 / 0.9%
+     *   start-grid    base 83.3 /  1.1%  ->  85.1 /  0.7%
+     *   marshal-post  base 110.3 / 0.4%  ->  111.7 / 0.3%
+     *
+     * Every framing gains a little mean and loses a third of its crushed
+     * pixels, and p95 does not move (chicane 175 -> 176) - the fill reopened
+     * the shadows without touching the key, which is the arrangement the sun
+     * note above is written for. The grandstand is the case that matters: its
+     * shaded lower rows and concrete risers were a single near-black mass and
+     * now read as steps with a lit nosing. Zero shader programs: 106 either
+     * side. */
+    env.ambientIntensity = 0.12;
     env.skyColor = new THREE.Color(0x9dc4ec);
     // Grass and tarmac bouncing up: green-grey, not the desert tan the citadel
     // needed. Getting this wrong is what turns shadows purple.
     env.groundColor = new THREE.Color(0x6f7a58);
-    env.hemiIntensity = 1.1;
+    // 1.1 -> 1.25 and 1.0 -> 1.45 below: the 0.43 taken off ambient, split so
+    // the probe takes the larger share. Unlike the citadel this world's shade
+    // is meant to read cool (grass and tarmac, not hot sand), so the shared
+    // `daylight` mood's blue sky is the right colour to receive it.
+    env.hemiIntensity = 1.25;
     env.sunColor = new THREE.Color(0xfff2d8);
     env.sunIntensity = 5.4;
     env.sunDirection = new THREE.Vector3(0.42, 0.72, 0.55).normalize();
-    env.envMapIntensity = 1.0;
+    env.envMapIntensity = 1.45;
     env.bloom = { strength: 0.38, radius: 0.5, threshold: 0.94 };
     env.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
   }

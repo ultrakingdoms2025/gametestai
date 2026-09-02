@@ -210,7 +210,42 @@ export class SpaceWorld extends World {
        * own bounding box in the chase view at 0.16: median luma 9/255 with
        * 55.7% of hull pixels under 12, and 2/255 with 72.4% under 12 when
        * flying at the star - which is the framing a player spends the whole
-       * space half of the loop looking at. */
+       * space half of the loop looking at.
+       *
+       * ── AND IT SURVIVED THE AMBIENT COLLAPSE. DO NOT LOWER IT ────────────
+       *
+       * Every other world traded flat ambient for `hemiIntensity` and
+       * `envMapIntensity`, because a constant added regardless of normal is
+       * form shading deleted (World.js `ambientIntensity`). This world is the
+       * documented exception, on two counts, both measured by rewriting the
+       * three uniforms between shots of one booted session:
+       *
+       * 1. THERE IS ALMOST NOTHING HERE FOR AMBIENT TO FLATTEN. The paragraph
+       *    above already says why - the bodies are raw `ShaderMaterial`s from
+       *    `BodyShaders.js` with their own `uAmbient` and no `lights: true` -
+       *    and the sweep confirms it end to end. Across eleven `bearing-*`
+       *    framings, going from (a 0.28, h 0.22, e 0.95) to (a 0.12, h 0.30,
+       *    e 3.00) moved mean frame luma by less than 0.5 in every one:
+       *    carnelian 10.9 -> 10.9, erenmark 6.6 -> 6.6, sallow 8.3 -> 8.3,
+       *    lathe 15.7 -> 15.7, tessera 5.7 -> 5.7. The scene rig does not
+       *    reach the subject of those frames at all, so trading one rig term
+       *    for another cannot improve them.
+       *
+       * 2. THE PROBE HAS NO ENERGY TO RECEIVE IT. `ENV_MOODS.space` is a
+       *    near-black sky (0x04050b -> 0x171038 over the gradient) with a
+       *    0x14181f ground: its irradiance is a small fraction of this
+       *    ambient's, which is why e had to be taken all the way to 3.00
+       *    before the two framings that DO respond broke even (arrival 39.5 ->
+       *    42.6, portal-home 44.7 -> 47.3). Reaching that would also triple
+       *    the mood's four coloured nebula accents on every hull, and picking
+       *    those up "along its edges instead of reading as grey plastic" is
+       *    the deliberate look the 0.95 below was chosen for. Three luma on
+       *    two of fifteen framings is not worth repainting the fleet.
+       *
+       * The `bearing-cathedra` row looks like a counter-example in the raw
+       * sweep (26.8 -> 14.0 at e 1.60) and is not: Cathedra is a body on an
+       * orbit, and the same candidate re-shot lands back at 26.5. Moving
+       * subjects, not lighting. */
       ambientIntensity: 0.28,
       skyColor: new THREE.Color(0x16203a),
       groundColor: new THREE.Color(0x08070c),

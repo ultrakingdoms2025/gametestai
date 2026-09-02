@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight } from '../gfx/WorldLight.js';
@@ -907,11 +928,53 @@ export class PlanetWorld extends World {
       fogFar: sky.fog?.far ?? 600,
       exposure: sky.exposure ?? 1.0,
       ambientColor: new THREE.Color(sky.ambient?.color ?? 0x404040),
-      ambientIntensity: sky.ambient?.intensity ?? 0.5,
+      /* CAPPED, not replaced, because ten planets author ten different values.
+       *
+       * Every descriptor's `sky.ambient.intensity` lives in a `planets/*.js`
+       * file, and each is a considered number for that planet's air. What is
+       * NOT considered anywhere is that an `AmbientLight` adds its value to
+       * every fragment regardless of normal, so all ten were spending most of
+       * their fill on deleting their own terminators.
+       * @see World.js `ambientIntensity`.
+       *
+       * A cap rather than a multiplier: a planet that already authored a low
+       * ambient meant it and is left exactly alone, while the ones sitting at
+       * 0.46-0.55 come down to a trace. The energy is picked back up by
+       * `hemiIntensity` and `envMapIntensity` below.
+       *
+       * Measured on cinder (authored ambient 0.46), one booted session, three
+       * uniforms rewritten between shots. Frame mean luma / p05, `crush%`
+       * being 0 on all eight framings before and after:
+       *
+       *   caldera        base 38.6 / 27  ->  39.7 / 27
+       *   pad-ashfall    base 40.5 / 29  ->  42.2 / 30
+       *   lava-shore     base 39.0 / 19  ->  40.2 / 20
+       *   rimhold        base 42.8 / 28  ->  43.9 / 30
+       *   colonnade      base 40.2 / 24  ->  41.6 / 26
+       *
+       * A small, uniform gain at both ends - these worlds are sun-and-dome
+       * dominated and the fill was never a large share of the frame - but it
+       * is a gain in the right direction, and p95 rises with it (caldera 56 ->
+       * 60), so it is range rather than a wash. Zero shader programs: 104
+       * either side. */
+      ambientIntensity: Math.min(sky.ambient?.intensity ?? 0.5, 0.15),
+      /* The planets never stated one, so they were silently taking
+       * `applyEnvironment`'s `?? 0.4` fallback. 0.75 is that plus the share of
+       * the ambient cap above that belongs on a term which separates an
+       * up-facing plane from a down-facing one - which on a height-field world
+       * of craters, flanks and terraces is most of the geometry. */
+      hemiIntensity: 0.75,
       sunColor: new THREE.Color(sky.sun?.color ?? 0xffffff),
       sunIntensity: sky.sun?.intensity ?? 2.2,
       sunDirection: sunDir,
-      envMapIntensity: sky.envMapIntensity ?? 1.0,
+      /* x1.55, a multiplier rather than a value, for the same reason the
+       * ambient above is a cap: Tessera's deliberate 0.35 is a statement about
+       * Tessera's sky and must stay a fraction of the others, not be levelled
+       * with them. The probe this scales is baked from the planet's OWN dome
+       * plus its own ground bounce (`_bakeEnvMap` below), so the energy
+       * arriving here arrives in the planet's colour - which is why the bulk
+       * of the ambient cap was sent here and not to the hemisphere. */
+      envMapIntensity: (sky.envMapIntensity ?? 1.0) * 1.55,
       /* DECLARED null, filled in by `_bakeEnvMap` once the dome exists.
        *
        * The intensity above was being applied to a map these ten worlds never
@@ -2329,11 +2392,11 @@ export class PlanetWorld extends World {
      * something on a pad has to be findable at night and it is 4 m across
      * instead of 34.
      */
-    const ringMat = new THREE.MeshStandardMaterial({
+    const ringMat = microSurface(new THREE.MeshStandardMaterial({
       name: `planet.${P.id}.padmark`,
       color: 0xb9a893,
       roughness: 0.82,
-    });
+    }), 'coarse', 8);
     const innerMat = new THREE.MeshStandardMaterial({
       name: `planet.${P.id}.padmark.inner`,
       color: 0x140d09,

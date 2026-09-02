@@ -47,6 +47,9 @@ export const TIER_IDS = ['low', 'medium', 'high'];
  * @property {number} maxPixelRatio ceiling on devicePixelRatio
  * @property {number} resolutionFloor lower bound for the adaptive scaler
  * @property {boolean} shadows
+ * @property {number} geometryScale multiplier on radial segment counts — BOOT
+ *   ONLY, and the one field where `high` is deliberately ABOVE what shipped.
+ *   See the tessellation section below.
  * @property {{ao:boolean, shafts:boolean, bloom:boolean, smaa:boolean, film:boolean}} postfx
  *   exactly the flags `PostFX.setQuality` reads; pinned by a gate against its
  *   real signature, because a renamed flag would apply nothing and the only
@@ -67,6 +70,10 @@ export const TIERS = {
      * pixels than a 1080p desktop was giving each degree of view. */
     resolutionFloor: 0.5,
     shadows: false,
+    /* 1, not 0.75. Tessellation only ever goes UP from here; see the
+     * tessellation section below for why a phone gains nothing from coarser
+     * cylinders and loses every silhouette in the game. */
+    geometryScale: 1,
     postfx: { ao: false, shafts: false, bloom: false, smaa: false, film: false },
   },
   medium: {
@@ -83,6 +90,7 @@ export const TIERS = {
      * is "everything that makes the game look like itself, minus the one pass
      * that costs as much as the rest". Bloom and shafts are most of the art
      * direction; ambient occlusion is contact shading nobody misses at 30 fps. */
+    geometryScale: 1,
     postfx: { ao: false, shafts: true, bloom: true, smaa: true, film: true },
   },
   high: {
@@ -97,9 +105,127 @@ export const TIERS = {
     maxPixelRatio: 2,
     resolutionFloor: 0.8,
     shadows: true,
+    /* THE ONE EXCEPTION to the paragraph above, and deliberately so. Every
+     * other field on this tier RESTORES what shipped; this one is the only
+     * lever on the table that can RAISE it, and a tier system that can only
+     * ever subtract is half a tier system. 1.5, argued below. */
+    geometryScale: 1.5,
     postfx: { ao: true, shafts: true, bloom: true, smaa: true, film: true },
   },
 };
+
+/* ------------------------------------------------------------------ */
+/* Tessellation                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The scale the world kits multiply a radial segment count by. See
+ * `tessSegments`.
+ *
+ * ── Why a latched module value and not `resolveTier()` at the call site ───
+ *
+ * This module imports nothing, so a world file CAN import it without a cycle -
+ * that is not what stops it. Two other things do.
+ *
+ * `detectTierId({})` returns `'high'`: with no `navigator` the coarse-pointer
+ * test is false and every numeric test is undefined, so a world that resolved
+ * its own tier would silently re-tessellate itself in every headless test and
+ * every `make-*-glb` run. A default of 1 keeps a build with no boot byte-for-
+ * byte what shipped, and makes raising it an explicit act.
+ *
+ * And a world that is already built cannot be re-tessellated. That puts this
+ * squarely with `msaa` and `shadowMapSize` in the BOOT-ONLY half - so
+ * `applyBootTier` latches it and `applyTier` deliberately does not, and the
+ * hub's Graphics row is already honest that the boot-only half waits for a
+ * reload.
+ */
+let _geometryScale = 1;
+
+/**
+ * Latch the scale. Called by `applyBootTier`, before any world is built.
+ *
+ * Clamped to >= 1, and that clamp is the invariant rather than a defensive
+ * habit: every radial count in the game was authored against 1.0, and a scale
+ * below it would quietly redraw the whole world coarser than any artist ever
+ * saw it. Anything non-finite means "no opinion", which is 1.
+ *
+ * @param {number} scale
+ */
+export function setGeometryScale(scale) {
+  _geometryScale = Number.isFinite(scale) && scale > 1 ? scale : 1;
+}
+
+/** @returns {number} the scale in force. For gates and diagnostics. */
+export function getGeometryScale() {
+  return _geometryScale;
+}
+
+/**
+ * Raise an authored radial segment count to the tier in force.
+ *
+ * ── What this is for ──────────────────────────────────────────────────────
+ *
+ * Nothing under `src/worlds/` read a tier before this. Every radial count in
+ * the game was a literal that an RTX 5080 and a phone both received, so the
+ * ~650 curved primitives sitting at radial <= 12 could not be raised for
+ * desktop because there was no mechanism, not because anyone had measured that
+ * they should not be. 375 of those call sites funnel through four helpers -
+ * `MedievalWorld`'s `cylGeo`/`coneGeo`, `station/StationKit`'s `cylGeo` and
+ * `InteriorKit`'s `vcyl` - which is why one multiplier reaches half of them.
+ *
+ * ── UP ONLY, and why the lower tiers sit at 1.0 ───────────────────────────
+ *
+ * `Math.max` is not belt-and-braces; it is the whole policy. The authored
+ * counts are already AT the floor: across the four helpers the histogram's
+ * mass is radial 4-8 (medieval alone: 4 x21, 5 x39, 6 x29, 7 x13, 8 x30), and
+ * a 0.75 scale would round radial 4 down to 3. Radial 3 is a count this
+ * codebase uses ON PURPOSE - the bridge-pier cutwaters at MedievalWorld.js
+ * ~9738 and ~10509 - precisely because three segments read as a triangle. A
+ * cheap tier that turned every iron strap into a cutwater is not a cheap tier.
+ *
+ * Nor would it buy a phone anything measurable. All of this geometry is merged
+ * once into a `GeoBatch` bucket at build time and uploaded; a phone's bill in
+ * this project is shader link (42 point lights measured at 59.8 s of compile)
+ * and fill (GTAO measured at 40-46% of the frame), which is why `low` and
+ * `medium` spend their budget on `postfx` and `resolutionFloor` and leave the
+ * static vertex buffers alone.
+ *
+ * ── Why 1.5 for `high`, and not 1.25 ──────────────────────────────────────
+ *
+ * The dominant bucket is radial 8, which is a 45-degree facet. 1.25 rounds it
+ * to 10 (36 degrees); 1.5 rounds it to 12 (30 degrees), and 30 degrees is the
+ * step where a barrel at arm's length stops reading as an octagon. The same
+ * holds up the histogram: 6 -> 9 rather than 8, 12 -> 18 rather than 15,
+ * 16 -> 24 rather than 20, 20 -> 30 rather than 25. 1.25 is a number that
+ * costs a quarter and shows in nothing.
+ *
+ * ── What it costs, honestly ───────────────────────────────────────────────
+ *
+ * ZERO shader programs, which is this project's standing budget gate: a radial
+ * count is not a `#define`, and a 30-segment cylinder links the same program as
+ * a 20-segment one. Zero draw calls - every one of these lands in a merged
+ * batch that already existed.
+ *
+ * Triangles scale EXACTLY linearly and nothing else moves: a closed
+ * `CylinderGeometry(_,_,_,r,1)` is 4r triangles, open-ended 2r, a
+ * `ConeGeometry(_,_,r,1)` 2r. Summed over the literal call sites, 1.5 raises
+ * the radial-segment sum by 51.5% (MedievalWorld), 50.1% (station kits and
+ * zones), 50.3% (StationWorld) and 50.0% (InteriorKit) - so it raises the
+ * triangles those helpers emit by the same, at any instance multiplicity.
+ *
+ * NOT MEASURED: what share of a world's 2.3-3.4 M `worldTriangles` those
+ * helpers emit. There is no headless path to a built world (see the note at
+ * the top of scripts/tests/station-audit.test.mjs) and this machine cannot
+ * time frames. A `world-shot` sweep is the measurement that closes it, and if
+ * the station's comes back expensive this single number is the entire knob.
+ *
+ * @param {number} seg an authored radial segment count
+ * @returns {number} the count to build with
+ */
+export function tessSegments(seg) {
+  if (!Number.isFinite(seg)) return seg;
+  return Math.max(seg, Math.round(seg * _geometryScale));
+}
 
 /**
  * Read what the device is willing to say about itself.
@@ -282,11 +408,19 @@ export function resolveTier(hints, pin = null) {
  * ceiling and the shadow map's resolution are all read out of `CONFIG` by
  * constructors, and the composer's MSAA is read by `PostFX`'s module scope.
  *
+ * `geometryScale` joins them because a world that has already been built and
+ * merged cannot be re-tessellated - and because this is the hook `main.js`
+ * already calls before any world exists, so the kits need nothing threaded
+ * through them. It is latched ahead of the `config` guard: a caller with no
+ * `CONFIG` still gets a coherent tessellation rather than the previous tier's.
+ *
  * @param {QualityTier} tier
  * @param {{render:object}} config
  */
 export function applyBootTier(tier, config) {
-  if (!tier || !config?.render) return;
+  if (!tier) return;
+  setGeometryScale(tier.geometryScale);
+  if (!config?.render) return;
   config.render.maxPixelRatio = tier.maxPixelRatio;
   config.render.far = tier.far;
   config.render.shadowMapSize = tier.shadowMapSize;
@@ -298,6 +432,12 @@ export function applyBootTier(tier, config) {
  * Every collaborator is optional and every call is guarded: this runs at boot
  * before some of them exist, and again from a menu row where a throw would be a
  * black screen rather than a missing setting.
+ *
+ * `geometryScale` is deliberately NOT here. Re-latching it mid-session would
+ * leave the worlds already built at one tessellation and the ones the lazy
+ * prefetcher builds next at another, inside a single session, for no gain a
+ * player could see - the built worlds cannot follow. It belongs to
+ * `applyBootTier` and to a reload.
  *
  * @param {QualityTier} tier
  * @param {{renderer?:any, camera?:any, engine?:any, postfx?:any, config?:object}} ctx

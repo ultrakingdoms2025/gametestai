@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
   bakeSurface, bakeSurfaceAsync, fbm01, fbm2D, ridgedFbm2D, worley2D, WORLEY,
-  domainWarp2D, WARP, smoothstep, mix, clamp01,
+  domainWarp2D, WARP, smoothstep, mix, clamp01, microSurface,
 } from '../../gfx/Textures.js';
 import { authoredSurfaces } from './MazeAssets.js';
 
@@ -112,9 +112,13 @@ export function materialFingerprint(mat) {
  * afford nineteen kinds:
  *
  *  - the plain lit family: kinds differing only in uniforms (colour,
- *    roughness, emissive), which the program cache key never sees;
+ *    roughness, emissive), which the program cache key never sees. Since the
+ *    micro-surface pass these all carry the ONE shared detail normal, so the
+ *    family moved from `MeshStandardMaterial` to `...|normalMap` intact - a
+ *    move, not a split, because not one of them was left flat;
  *  - the vertex-coloured lit family (Task 4): the movers whose prefabs bake
- *    contact AO into a colour attribute but carry no maps (gate, slideWall);
+ *    contact AO into a colour attribute but carry no OTHER maps (gate,
+ *    slideWall), which moved the same way and for the same reason;
  *  - the full PBR family, vertex-coloured - Task 5's DELIBERATE addition:
  *    hedge, floor, stair/shaftWall and footing wear a complete
  *    albedo + normal + packed-ORM set from `bakeSurface` on top of Task 4's
@@ -130,8 +134,8 @@ export function materialFingerprint(mat) {
  *    which `opaque` in the cache key splits from everything else.
  */
 export const MAZE_PROGRAM_FAMILIES = Object.freeze([
-  'MeshStandardMaterial',
-  'MeshStandardMaterial|vertexColors',
+  'MeshStandardMaterial|normalMap',
+  'MeshStandardMaterial|normalMap|vertexColors',
   'MeshStandardMaterial|map|normalMap|metalnessMap|roughnessMap',
   'MeshStandardMaterial|map|normalMap|metalnessMap|roughnessMap|vertexColors',
   'MeshBasicMaterial|transparent|blending:additive',
@@ -583,11 +587,16 @@ export function buildMazeMaterials() {
    *    upload, one sampler, two channels (glTF packing, G=roughness,
    *    B=metalness) - so the scalar `roughness`/`metalness` go to 1.0, the
    *    identity for a mapped material, and the map carries the value;
-   *  - `aoMap` stays empty: no maze prefab carries a uv1 attribute, and an
-   *    aoMap without its UV set is a silent no-op at best. The occlusion
-   *    this world actually owns per-instance is Task 4's vertex-colour bake,
-   *    which multiplies in through `vertexColors` - wiring the ORM's R
-   *    channel on top would darken the same corners twice;
+   *  - `aoMap` stays empty, for ONE of the two reasons this note used to
+   *    give. The uv1 half was wrong and is struck: `WebGLPrograms.getParameters`
+   *    resolves `aoMapUv` through `getChannel( material.aoMap.channel )`, and
+   *    `Texture.channel` defaults to 0, which `getChannel` maps to plain `uv`
+   *    - an aoMap on a prefab with only `uv` samples exactly the UV set it
+   *    already has. The reason that survives is the second one, and it is
+   *    sufficient on its own: the occlusion this world owns per-instance is
+   *    Task 4's vertex-colour bake, which multiplies in through
+   *    `vertexColors`, and wiring the ORM's R channel on top would darken the
+   *    same corners twice;
    *  - `color` goes to WHITE on every surfaced kind: the tone lives in the
    *    authored albedo now, and a leftover tint would multiply it into mud.
    */
@@ -793,6 +802,42 @@ export function buildMazeMaterials() {
     }),
     canopy: new THREE.MeshStandardMaterial({ color: 0x24391f, roughness: 1, metalness: 0 }),
   };
+
+  /* THE ELEVEN KINDS THAT HAD NO SURFACE AT ALL.
+   *
+   * Everything above that is not on `SURFACE_RECIPES` is a flat colour and a
+   * roughness scalar: one uniform specular lobe across a lift car, a stone
+   * slab, a candle. `microSurface` hands each of them the ONE shared detail
+   * normal from `gfx/Textures.js` - scratches, sanding grain, a little orange
+   * peel at roughly 4 cm - varying only `normalScale` and `repeat`, neither of
+   * which Three puts in a program cache key.
+   *
+   * THE PROGRAM ARITHMETIC, WHICH IS THE ONLY REASON THIS IS SAFE. Every one
+   * of the eleven gains the SAME single slot, so the two families below MOVE
+   * rather than split:
+   *
+   *     MeshStandardMaterial               -> MeshStandardMaterial|normalMap
+   *     MeshStandardMaterial|vertexColors  -> ...|normalMap|vertexColors
+   *
+   * `MAZE_PROGRAM_FAMILIES` is still five entries and the census test still
+   * measures five, because a family with one member left behind would have
+   * been six. If a future kind here is left flat, that is the cost.
+   *
+   * `uvMeters` is the world size one UV unit spans on the prefab the material
+   * dresses - a 2 m lift panel, a 0.3 m token - so the detail lands at the
+   * same physical scale on a candle as on a hedge gate. */
+  microSurface(_materials.lift, 'polished', 2);
+  microSurface(_materials.liftDoor, 'coarse', 2);
+  microSurface(_materials.credits, 'polished', 0.3);
+  microSurface(_materials.token, 'polished', 0.3);
+  microSurface(_materials.foliage, 'matte', 0.5);
+  microSurface(_materials.candle, 'matte', 0.2);
+  microSurface(_materials.ivy, 'matte', 0.5);
+  microSurface(_materials.plate, 'coarse', 1);
+  microSurface(_materials.canopy, 'matte', 4);
+  microSurface(_materials.gate, 'matte', 1);
+  microSurface(_materials.slideWall, 'matte', 1);
+
   /* EVERY MATERIAL CARRIES ITS KEY AS ITS NAME.
    *
    * `scripts/world-shot.mjs --ablate` hides meshes by material NAME, and it
@@ -937,7 +982,9 @@ export function setMazeSurfaceMode(mode) {
     m.normalMap = next.normalMap;
     /* One ORM, two slots - the same one-upload-two-channels sharing the
      * procedural wiring established; aoMap stays deliberately empty in both
-     * modes (no prefab carries a uv1, and vertex AO owns occlusion). */
+     * modes, for the one reason that survives above: vertex AO owns occlusion
+     * here, and an aoMap would darken the same corners twice. (Not for want
+     * of a uv1 - `aoMap.channel` defaults to 0, which is plain `uv`.) */
     m.roughnessMap = next.ormMap;
     m.metalnessMap = next.ormMap;
     for (const t of prev) {

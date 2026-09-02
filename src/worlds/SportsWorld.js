@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight, dirLight } from '../gfx/WorldLight.js';
@@ -1132,6 +1153,16 @@ export class SportsWorld extends World {
       fogFar: 900,
       exposure: 0.94,
       ambientColor: new THREE.Color(0x8fa9cc),
+      /* 0.030, AND IT IS ALREADY THE ANSWER THE OTHER WORLDS WERE RETUNED TO.
+       *
+       * The collapse that took maze from 1.25, medieval from 0.62 and citadel
+       * from 0.70 down to a trace (World.js `ambientIntensity`) has nothing to
+       * do here: at 0.030 this world is effectively ambient-free already, and
+       * the note above records that it got there deliberately, by starving the
+       * flat terms so a 7.5 key could model. There is no flat energy left to
+       * move, and raising it toward the others "for consistency" would be
+       * undoing the one world that had the arrangement right first. Left
+       * untouched on purpose - this is not an oversight. */
       ambientIntensity: 0.030,
       skyColor: new THREE.Color(0x8fbde8),
       // Ground bounce warmed off olive and onto the concrete that actually
@@ -2602,9 +2633,9 @@ export class SportsWorld extends World {
       }
     } catch { mat = null; }
     if (!mat) {
-      mat = new THREE.MeshStandardMaterial({
+      mat = microSurface(new THREE.MeshStandardMaterial({
         color, roughness, metalness, envMapIntensity: 1.15, ...extra,
-      });
+      }), 'painted', 1);
     }
     return this._mat(key, mat);
   }
@@ -3939,11 +3970,11 @@ export class SportsWorld extends World {
     this._metal('metal.dark', 0x3c444b, 0.6, 0.85, { envMapIntensity: 0.9 });
     // vertexColors: the bleacher seats and the pool lane ropes both tint per
     // instance, and without it every setColorAt() call below is a silent no-op.
-    this._mat('plastic.seat', new THREE.MeshStandardMaterial({
+    this._mat('plastic.seat', microSurface(new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.48, metalness: 0.02, vertexColors: true, envMapIntensity: 0.6,
-    }));
-    this._mat('plastic.net', new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.72, metalness: 0.05 }));
-    this._mat('plastic.netTape', new THREE.MeshStandardMaterial({ color: 0xf6f8f8, roughness: 0.55, metalness: 0.02 }));
+    }), 'painted', 0.5));
+    this._mat('plastic.net', microSurface(new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.72, metalness: 0.05 }), 'matte', 0.3));
+    this._mat('plastic.netTape', microSurface(new THREE.MeshStandardMaterial({ color: 0xf6f8f8, roughness: 0.55, metalness: 0.02 }), 'painted', 0.3));
     this._mat(
       'glass.window',
       new THREE.MeshPhysicalMaterial({
@@ -3957,7 +3988,7 @@ export class SportsWorld extends World {
         side: THREE.DoubleSide,
       })
     );
-    this._mat('paint.court', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }));
+    this._mat('paint.court', microSurface(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }), 'coarse', 4));
     /* ---------------- foliage ---------------- */
     // Flat-shaded untextured icosahedra were the loudest "low-poly toy" tell in
     // the world. Real canopies read as clumped leaf masses: dappled colour,
@@ -4218,13 +4249,13 @@ export class SportsWorld extends World {
       out[0] = out[1] = out[2] = g;
     });
     this._pbr('bark', barkA, barkH, null, { repeat: 2, repeatY: 1, roughness: 0.95, normalScale: 1.4, bump: 3.4, envMapIntensity: 0.4 });
-    this._mat('carPaint', new THREE.MeshStandardMaterial({
+    this._mat('carPaint', microSurface(new THREE.MeshStandardMaterial({
       color: 0xffffff, roughness: 0.24, metalness: 0.55, envMapIntensity: 1.2, vertexColors: true,
-    }));
-    this._mat('rubber.dark', new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.9 }));
+    }), 'painted', 2));
+    this._mat('rubber.dark', microSurface(new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.9 }), 'matte', 0.5));
     this._mat(
       'snow.plain',
-      new THREE.MeshStandardMaterial({ color: 0xcfd9e6, roughness: 0.6, envMapIntensity: 1.1 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xcfd9e6, roughness: 0.6, envMapIntensity: 1.1 }), 'matte', 2)
     );
     // Rock and scree used to be untextured flat colours - an automatic fail at
     // the top of a 50 m landform. They borrow the gravel albedo/normal pair,
@@ -5159,12 +5190,12 @@ export class SportsWorld extends World {
     if (stripe) {
       const paint = this._materials.get('paint.kerb') ?? this._mat(
         'paint.kerb',
-        new THREE.MeshStandardMaterial({
+        microSurface(new THREE.MeshStandardMaterial({
           color: stripe,
           roughness: 0.62,
           metalness: 0,
           envMapIntensity: 0.4,
-        })
+        }), 'painted', 1)
       );
       const caps = [];
       const cy = topY + kerbH - 0.098;
@@ -5511,7 +5542,7 @@ export class SportsWorld extends World {
     // Waxed granite: skaters wax ledges until the top 4 cm is nearly polished.
     const wax = this._mat(
       'ledge.wax',
-      new THREE.MeshStandardMaterial({ color: 0x8f8d88, roughness: 0.16, metalness: 0.06, envMapIntensity: 1.3 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x8f8d88, roughness: 0.16, metalness: 0.06, envMapIntensity: 1.3 }), 'polished', 2)
     );
 
     const boxAt = (u0, v0, u1, v1, h, y0 = 0, mat = conc) => {
@@ -5940,7 +5971,7 @@ export class SportsWorld extends World {
     ]);
     const poleMat = this._mat(
       'pole.piste',
-      new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 }), 'painted', 0.5)
     );
     const poles = [];
     for (let i = 0; i < 26; i++) {
@@ -5960,8 +5991,8 @@ export class SportsWorld extends World {
       new THREE.CylinderGeometry(0.03, 0.035, 1.8, 6).translate(0, 0.9, 0),
       new THREE.BoxGeometry(0.5, 0.34, 0.02).translate(0, 1.55, 0),
     ]);
-    const gateRed = this._mat('gate.red', new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 }));
-    const gateBlue = this._mat('gate.blue', new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 }));
+    const gateRed = this._mat('gate.red', microSurface(new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 }), 'painted', 0.5));
+    const gateBlue = this._mat('gate.blue', microSurface(new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 }), 'painted', 0.5));
     const red = [];
     const blue = [];
     for (let i = 0; i < 14; i++) {
@@ -6158,7 +6189,7 @@ export class SportsWorld extends World {
     ]);
     const chairMat = this._mat(
       'chair.lift',
-      new THREE.MeshStandardMaterial({ color: 0xd94f2b, roughness: 0.45, metalness: 0.3, envMapIntensity: 1.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xd94f2b, roughness: 0.45, metalness: 0.3, envMapIntensity: 1.2 }), 'painted', 1)
     );
     this._chairCount = 16;
     this._chairs = new THREE.InstancedMesh(chairGeo, chairMat, this._chairCount);
@@ -6424,7 +6455,7 @@ export class SportsWorld extends World {
 
     const sand = this._mat(
       'sand.pit',
-      new THREE.MeshStandardMaterial({ color: 0xe0cf9e, roughness: 1 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe0cf9e, roughness: 1 }), 'coarse', 4)
     );
     this._add(this._slab(TRACK.cx - 14, TRACK.cz - 22, TRACK.cx - 5, TRACK.cz - 19, 0.05, sand), false, true);
     this._add(
@@ -6947,7 +6978,7 @@ export class SportsWorld extends World {
     /* ---- coping ---- */
     const copingMat = this._mat(
       'tile.coping',
-      new THREE.MeshStandardMaterial({ color: 0xf0f2f0, roughness: 0.35, metalness: 0.02, envMapIntensity: 1.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xf0f2f0, roughness: 0.35, metalness: 0.02, envMapIntensity: 1.2 }), 'polished', 1)
     );
     const cop = [];
     cop.push(xform(new THREE.BoxGeometry(28.9, 0.1, 0.45), 46, 0.13, bz0 - 0.22));
@@ -6996,7 +7027,7 @@ export class SportsWorld extends World {
     ]);
     const blockMat = this._mat(
       'block.start',
-      new THREE.MeshStandardMaterial({ color: 0x1b6fd0, roughness: 0.42, metalness: 0.2 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x1b6fd0, roughness: 0.42, metalness: 0.2 }), 'painted', 0.5)
     );
     const blocks = [];
     for (let i = 0; i < 8; i++) blocks.push([bx0 - 0.75, 0.1, bz0 + 1 + i * 2, 0, 0, 0, 1]);
@@ -7033,7 +7064,7 @@ export class SportsWorld extends World {
     this._add(new THREE.Mesh(mergeGeometries(rungs), galv));
     const boardMat = this._mat(
       'board.dive',
-      new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.55 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.55 }), 'painted', 1)
     );
     const board3 = this._box(6.2, 0.12, 0.55, boardMat, 61.8, 3.36, 111);
     this._solid(board3);
@@ -7234,7 +7265,7 @@ export class SportsWorld extends World {
     this._flattenFar(riser, 80, { clouds: 0.8, desat: 0.9 });
     const nosingMat = this._mat(
       'concrete.nosing',
-      new THREE.MeshStandardMaterial({ color: 0x35352f, roughness: 0.9, metalness: 0.05 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0x35352f, roughness: 0.9, metalness: 0.05 }), 'coarse', 1)
     );
 
     const seatGeo = whiteColor(mergeGeometries([
@@ -7454,7 +7485,7 @@ export class SportsWorld extends World {
       [-14, 156, 0.3, 0xe8514a], [16, 152, -0.4, 0x2fb4a6], [58, 96, 1.1, 0xf0a92b],
       [-100, 88, 0.0, 0x6c7de0],
     ]) {
-      const mat = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.4, metalness: 0.25, envMapIntensity: 1.2 });
+      const mat = microSurface(new THREE.MeshStandardMaterial({ color: tint, roughness: 0.4, metalness: 0.25, envMapIntensity: 1.2 }), 'painted', 2);
       this._materials.set(`kiosk.${kx}.${kz}`, mat);
       const ky = parkHeight(kx, kz);
       this._enterableRect({
@@ -7525,11 +7556,11 @@ export class SportsWorld extends World {
       const bxp = side * 21;
       bannerPoles.push([bxp, 0, bz, 0, 0, 0, 1]);
       this.track(this.physics.addBox(bxp, 3.7, bz, 0.12, 3.7, 0.12, {}));
-      const mat = new THREE.MeshStandardMaterial({
+      const mat = microSurface(new THREE.MeshStandardMaterial({
         color: bannerColours[i % bannerColours.length],
         roughness: 0.85,
         side: THREE.DoubleSide,
-      });
+      }), 'matte', 2);
       this._materials.set(`banner.${i}`, mat);
       const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 3.4, 4, 6), mat);
       flag.position.set(bxp + side * 0.8, 4.6, bz);
@@ -7720,10 +7751,10 @@ export class SportsWorld extends World {
     const tentGeo = whiteColor(mergeGeometries(tentGeos));
     const tentMat = this._mat(
       'fabric.marquee',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.9, metalness: 0, vertexColors: true,
         side: THREE.DoubleSide, envMapIntensity: 0.4,
-      })
+      }), 'matte', 2)
     );
     const tents = [];
     for (const [x, z, ry] of [[-98, 77, 0.05], [-90, 77.5, -0.1], [6, 158, 0.1]]) {
@@ -7761,9 +7792,9 @@ export class SportsWorld extends World {
     ]));
     const matMat = this._mat(
       'foam.mat',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.95, vertexColors: true, envMapIntensity: 0.3,
-      })
+      }), 'matte', 1)
     );
     const mats = [];
     for (const [x, z, ry] of [[-84, 77, 0.6], [-70, 77.2, -0.2], [-120, 6, 0.3]]) {
@@ -7828,9 +7859,9 @@ export class SportsWorld extends World {
     const crateGeo = whiteColor(new THREE.BoxGeometry(0.9, 0.62, 0.7));
     const crateMat = this._mat(
       'crate.plastic',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.62, metalness: 0.05, vertexColors: true,
-      })
+      }), 'painted', 0.5)
     );
     const crates = [];
     const crng = makeRng(4471);
@@ -8580,7 +8611,7 @@ export class SportsWorld extends World {
       new THREE.CylinderGeometry(0.33, 0.28, 0.9, 12).translate(0, 0.45, 0),
       new THREE.CylinderGeometry(0.37, 0.37, 0.08, 12).translate(0, 0.94, 0),
     ]);
-    const binMat = this._mat('bin', new THREE.MeshStandardMaterial({ color: 0x2b6b4a, roughness: 0.55, metalness: 0.3 }));
+    const binMat = this._mat('bin', microSurface(new THREE.MeshStandardMaterial({ color: 0x2b6b4a, roughness: 0.55, metalness: 0.3 }), 'painted', 0.5));
     const bins = [...this._props.bins,
       [-6, 0.1, 150], [6, 0.1, 150], [-20, 0.1, 170], [20, 0.1, 170],
       [-100, 0, 82], [-70, 0, 82], [-40, 0, -60], [64, 0, -48], [110, 0, -50],
@@ -8654,10 +8685,10 @@ export class SportsWorld extends World {
     ]);
     const hopperMat = this._mat(
       'hopper',
-      new THREE.MeshStandardMaterial({ color: 0xd9d9d3, roughness: 0.4, metalness: 0.6, side: THREE.DoubleSide })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xd9d9d3, roughness: 0.4, metalness: 0.6, side: THREE.DoubleSide }), 'polished', 0.3)
     );
     if (this._props.hoppers.length) this._instanced(hopperGeo, hopperMat, this._props.hoppers);
-    const ballMat = this._mat('ball.tennis', new THREE.MeshStandardMaterial({ color: 0xd7f23a, roughness: 0.85 }));
+    const ballMat = this._mat('ball.tennis', microSurface(new THREE.MeshStandardMaterial({ color: 0xd7f23a, roughness: 0.85 }), 'matte', 0.1));
     const balls = [];
     for (const h of this._props.hoppers) {
       for (let i = 0; i < 14; i++) {
@@ -8764,7 +8795,7 @@ export class SportsWorld extends World {
     ]);
     const coneMat = this._mat(
       'prop.cone',
-      new THREE.MeshStandardMaterial({ color: 0xe25a1e, roughness: 0.62, envMapIntensity: 0.5 })
+      microSurface(new THREE.MeshStandardMaterial({ color: 0xe25a1e, roughness: 0.62, envMapIntensity: 0.5 }), 'painted', 0.3)
     );
     const cones = [];
     for (const [cx, cz, n, r] of [
@@ -8791,9 +8822,9 @@ export class SportsWorld extends World {
     whiteColor(bagGeo);
     const bagMat = this._mat(
       'prop.bag',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.86, vertexColors: true, envMapIntensity: 0.4,
-      })
+      }), 'matte', 0.4)
     );
     const bagCols = [0x2c3a4c, 0x6d2a2a, 0x2b4a35, 0x3d3d44, 0xa8642a, 0x1f2a35];
     const bags = [];
@@ -8826,9 +8857,9 @@ export class SportsWorld extends World {
     whiteColor(boardGeo);
     const boardMat = this._mat(
       'prop.board',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.5, vertexColors: true, envMapIntensity: 0.6,
-      })
+      }), 'painted', 0.5)
     );
     const boards = [];
     for (let i = 0; i < 11; i++) {
@@ -8853,9 +8884,9 @@ export class SportsWorld extends World {
     whiteColor(bottleGeo);
     const bottleMat = this._mat(
       'prop.bottle',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.28, metalness: 0.1, vertexColors: true, envMapIntensity: 0.9,
-      })
+      }), 'polished', 0.2)
     );
     const bottles = [];
     for (const b of bags) bottles.push([b[0] + 0.4, b[1], b[2] + 0.25, 0, 0, 0, 1]);
@@ -8911,23 +8942,23 @@ export class SportsWorld extends World {
      */
     const clothMat = this._mat(
       'crowd.cloth',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xffffff,
         roughness: 0.82,
         metalness: 0.02,
         vertexColors: true,
         envMapIntensity: 0.45,
-      })
+      }), 'matte', 0.6)
     );
     const skinMat = this._mat(
       'crowd.skin',
-      new THREE.MeshStandardMaterial({
+      microSurface(new THREE.MeshStandardMaterial({
         color: 0xc89a7c,
         roughness: 0.65,
         metalness: 0,
         vertexColors: true,
         envMapIntensity: 0.4,
-      })
+      }), 'matte', 0.4)
     );
 
     // Sixteen real sportswear albedos: rust, denim, olive, mustard, charcoal,

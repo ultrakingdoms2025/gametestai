@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 import { GhostCompetitor } from './GhostCompetitor.js';
 import { segDistSq } from '../race/CheckpointSweep.js';
 
@@ -679,9 +700,9 @@ export class SkiRun {
     const lineGeo = new THREE.CylinderGeometry(0.06, 0.075, 2.8, 6).translate(0, 1.4, 0);
     // Same palette as the decorative slalom on the west lane, so the live
     // course reads as course furniture rather than debug markers.
-    const red = new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 });
-    const blue = new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 });
-    const orange = new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 });
+    const red = microSurface(new THREE.MeshStandardMaterial({ color: 0xd2262c, roughness: 0.5 }), 'painted', 0.3);
+    const blue = microSurface(new THREE.MeshStandardMaterial({ color: 0x1f5fd0, roughness: 0.5 }), 'painted', 0.3);
+    const orange = microSurface(new THREE.MeshStandardMaterial({ color: 0xf47a1f, roughness: 0.6 }), 'painted', 0.3);
 
     const pole = (geo, mat, x, z) => {
       const m = new THREE.Mesh(geo, mat);

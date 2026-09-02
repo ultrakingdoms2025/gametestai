@@ -2,6 +2,10 @@ import * as THREE from 'three';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight, dirLight } from '../gfx/WorldLight.js';
+/* The radial-segment multiplier for the tier in force. `gfx/QualityTier.js`
+ * imports nothing, so this is a leaf import and not a cycle; it reads 1 - the
+ * counts authored below, unchanged - unless a real boot has latched a tier. */
+import { tessSegments } from '../gfx/QualityTier.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { World } from './World.js';
 import { InteriorKit } from './InteriorKit.js';
@@ -874,7 +878,15 @@ function shadeHex(hex, k) {
   return (r << 16) | (g << 8) | b;
 }
 
-function cylGeo(rTop, rBot, h, seg, tile = 0.5, open = false) {
+/**
+ * `seg` is the count this world was AUTHORED at; `tessSegments` is the tier's
+ * multiplier on it, and it only ever raises. It has to be resolved once and
+ * used for both the geometry and the UV split below - `sideCount` is derived
+ * from the radial count, so passing the authored number to one and the scaled
+ * number to the other would stretch every cap in the vale.
+ */
+function cylGeo(rTop, rBot, h, segAuthored, tile = 0.5, open = false) {
+  const seg = tessSegments(segAuthored);
   const g = new THREE.CylinderGeometry(rTop, rBot, h, seg, 1, open);
   const uv = g.attributes.uv;
   const sideCount = (seg + 1) * 2;
@@ -887,7 +899,9 @@ function cylGeo(rTop, rBot, h, seg, tile = 0.5, open = false) {
   return g;
 }
 
-function coneGeo(r, h, seg, tile = 0.5) {
+/** Spire and roof cones. Same authored-vs-built split as `cylGeo` above. */
+function coneGeo(r, h, segAuthored, tile = 0.5) {
+  const seg = tessSegments(segAuthored);
   const g = new THREE.ConeGeometry(r, h, seg, 1, false);
   const uv = g.attributes.uv;
   const sideCount = (seg + 1) * 2;
@@ -1287,11 +1301,47 @@ export class MedievalWorld extends World {
      * is exactly why three separate reviews described the keep as a black
      * cut-out. 0.62/0.82 still leaves a ~6:1 ratio - firmly golden hour - but
      * keeps albedo in the shadow instead of a hole.
+     *
+     * ── Round 5: 0.62 -> 0.14, AND THIS DOES NOT REPEAT ROUND 4 ──────────
+     *
+     * Round 4 cut the TOTAL fill and got holes. This keeps the total and
+     * changes its SHAPE: 0.48 comes off ambient and lands on `hemiIntensity`
+     * (0.82 -> 0.95) and `envMapIntensity` (1.00 -> 1.60). The paragraph above
+     * already states the job the surviving fill is meant to do - "keeping
+     * shadow-side detail off the floor rather than competing with the sun" -
+     * and a term that adds the same value to every normal cannot do that job
+     * without also flattening the plane it lifts. A probe can, and this
+     * world's probe is not a shared mood: `_bakeEnvMap` bakes it from this
+     * world's OWN dusk dome, so the energy arrives in the right colour.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / median / % of pixels under 12:
+     *
+     *   castle-approach  base 94.6 / 81 / 0.1%  ->  98.4 / 96 / 0.0%
+     *   village-street   base 52.0 / 29 / 2.4%  ->  56.2 / 33 / 1.3%
+     *   village-square   base 53.9 / 41 / 0.6%  ->  58.1 / 48 / 0.5%
+     *   castle-gate      base 72.9 / 43 / 0.0%  ->  75.8 / 48 / 0.0%
+     *   portal           base 84.1 / 55 / 0.2%  ->  88.8 / 63 / 0.1%
+     *   ramparts-vista   base 87.5 / 45 / 0.4%  ->  88.9 / 48 / 0.3%
+     *
+     * The median rises by up to 15 while p95 does not move at all (castle-
+     * approach 177 -> 177, ramparts 213 -> 213). That is the definition of
+     * "reopened the shadows without competing with the sun": the key end of
+     * the histogram is untouched and the ~6:1 ratio survives. On the picture,
+     * the curtain wall's lower courses come back out of a flat brown mass and
+     * the round tower gains a terminator that wraps it - the thing three
+     * reviews said was missing, fixed by giving the fill a direction rather
+     * than by giving the scene more of it.
+     *
+     * Zero shader programs: 137 either side.
      */
-    env.ambientIntensity = 0.62;
+    env.ambientIntensity = 0.14;
     env.skyColor = new THREE.Color(0x7295cc);
     env.groundColor = new THREE.Color(0x7d6543);
-    env.hemiIntensity = 0.82;
+    // 0.82 -> 0.95, the smaller share of the round-5 ambient collapse. Most of
+    // it went to the probe: this world's fill problem is on VERTICAL masonry,
+    // which a hemisphere (a dot(N, up) mix) barely distinguishes.
+    env.hemiIntensity = 0.95;
     env.sunColor = new THREE.Color(0xffbf72);
     env.sunIntensity = 3.70;
     /* ~18 degrees of elevation, and swung to rake the hero axes.
@@ -1326,8 +1376,14 @@ export class MedievalWorld extends World {
     env.sunDirection = new THREE.Vector3(0.876, 0.305, 0.418).normalize();
     /* Sky-side fill. Not a hack: at dusk the ~180 degrees of sky opposite the
      * sun is still a large, bright, cool source, and it is the only thing that
-     * separates two shadow-side masonry planes from each other. */
-    env.envMapIntensity = 1.00;
+     * separates two shadow-side masonry planes from each other.
+     *
+     * 1.00 -> 1.60 in round 5. That sentence is the argument for putting the
+     * bulk of the collapsed ambient here rather than in the hemisphere: it is
+     * already the only term in the rig that tells two shadow-side vertical
+     * planes apart, and it was carrying a third less energy than the constant
+     * that was flattening them. */
+    env.envMapIntensity = 1.60;
     env.bloom = { strength: 0.30, radius: 0.62, threshold: 1.15 };
     env.ao = 1.05;
     env.grade = {

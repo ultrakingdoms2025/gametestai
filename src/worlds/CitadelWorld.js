@@ -1142,14 +1142,45 @@ export class CitadelWorld extends World {
      * cool. Shadows land brown rather than violet, and the town stops looking
      * like it is lit through a bruise. */
     env.ambientColor = new THREE.Color(0xa8977f);
-    env.ambientIntensity = 0.7;
+    /* 0.7 -> 0.12, AND THE ENERGY GOES TO HEMISPHERE, NOT TO THE PROBE.
+     *
+     * Which term receives it is the whole decision here, and the note above is
+     * why. This world's fill is deliberately WARM so that shade over red-brown
+     * ground lands brown instead of violet. The probe is `getEnvMap('daylight')`
+     * - a SHARED mood (`gfx/Materials.js ENV_MOODS.daylight`) with a blue sky
+     * and a neutral 0x6a6247 ground, authored for no world in particular. The
+     * hemisphere term is this world's own `skyColor`/`groundColor` pair below,
+     * including the hot sand.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / % of pixels under 12:
+     *
+     *   souk-alley    base 36.8 / 11.8%  ->  env-heavy (h1.15/e1.75) 39.3 / 9.2%
+     *                                    ->  THIS      (h1.50/e1.35) 39.3 / 10.4%
+     *   ward-centre   base 82.8 / 4.6%   ->  THIS 83.9 / 4.0%
+     *   gate-spawn    base 71.9 / 3.7%   ->  THIS 73.9 / 2.9%
+     *   desert-overv. base 110.8 / 0.1%  ->  THIS 111.5 / 0.0%
+     *
+     * The env-heavy variant scores marginally better on the alley's crush and
+     * was REJECTED on the picture: it pulled the shade side of the plaster and
+     * the alley floor toward the probe's blue, which is the exact purple-shadow
+     * failure the paragraph above documents. Same energy through the warm
+     * hemisphere keeps the shade brown and still models, because a hemisphere
+     * separates the corbel's lit top face from its shaded underside and a
+     * constant cannot. Zero shader programs: 103 across all candidates. */
+    env.ambientIntensity = 0.12;
     env.skyColor = new THREE.Color(0xa8c6e6);
     env.groundColor = new THREE.Color(0xc9a173);   // hot sand bouncing upward
-    env.hemiIntensity = 1.15;
+    // 1.15 -> 1.50: most of the 0.58 taken off ambient, as a term with a
+    // direction. See `ambientIntensity` above for the measurement.
+    env.hemiIntensity = 1.50;
     env.sunColor = new THREE.Color(0xffddA6);
     env.sunIntensity = 5.9;
     env.sunDirection = new THREE.Vector3(0.55, 0.42, 0.72).normalize();
-    env.envMapIntensity = 1.0;
+    // 1.0 -> 1.35. The smaller share of the ambient collapse: enough that the
+    // stone and the brasswork pick up a sky direction, held below the point
+    // where the shared `daylight` mood's blue starts tinting the shade.
+    env.envMapIntensity = 1.35;
     env.bloom = { strength: 0.42, radius: 0.5, threshold: 0.92 };
     env.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
   }

@@ -1,10 +1,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 /* The chamfer, shared with the station kit rather than restated. `StationKit`
- * imports nothing but three and one flag module, so this stays as portable as
- * the header above claims - and `dock/ShipKit.js` already reaches for the same
- * geometry helpers from here. */
+ * imports nothing but three, one flag module and the quality tier - all three
+ * DOM-free and node-importable - so this stays as portable as the header above
+ * claims, and `dock/ShipKit.js` already reaches for the same geometry helpers
+ * from here. */
 import { bevelBox } from './station/StationKit.js';
+/* The radial-segment multiplier for the tier in force, for `vcyl`. Same leaf
+ * import, reaching the same module `StationKit` does. */
+import { tessSegments } from '../gfx/QualityTier.js';
 
 /** Smallest dimension a prop is chamfered from; see `InteriorKit#vbox`. */
 const PROP_BEVEL_MIN = 0.12;
@@ -200,9 +204,17 @@ export class InteriorKit {
     this._push(matKey, g);
   }
 
-  /** Visual cylinder (merged), aligned to Y. */
+  /**
+   * Visual cylinder (merged), aligned to Y.
+   *
+   * `seg` is the authored count and 10 is the authored default; `tessSegments`
+   * raises it to the quality tier and never lowers it. A room is the one place
+   * in the game read from a metre away - the same argument that chamfers
+   * `vbox` - so a barrel and a font here are exactly the silhouettes a desktop
+   * tier is worth spending on.
+   */
   vcyl(matKey, cx, cy, cz, rTop, rBot, h, seg = 10) {
-    const g = new THREE.CylinderGeometry(rTop, rBot, h, seg);
+    const g = new THREE.CylinderGeometry(rTop, rBot, h, tessSegments(seg));
     g.translate(cx, cy, cz);
     this._push(matKey, g);
   }

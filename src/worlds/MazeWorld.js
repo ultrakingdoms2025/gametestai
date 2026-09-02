@@ -439,12 +439,42 @@ export class MazeWorld extends World {
     this.environment.fogNear = 20;
     this.environment.fogFar = 160;
     this.environment.ambientColor = new THREE.Color(0x6f7f68);
-    /* Raised from 0.7. Levels 0-2 are ROOFED by the floor above - inherent to
-     * stacking four levels nine metres apart - so almost no sun reaches them
-     * and the maze read as very dark. The candles do the local work; this
-     * lifts the floor so a corridor between two of them is gloomy rather than
-     * black. */
-    this.environment.ambientIntensity = 1.25;
+    /* 1.25 -> 0.12, AND THE ROOFED LEVELS CAME OUT BRIGHTER, NOT DARKER.
+     *
+     * The 1.25 was the paint roller the probe below was added to replace: a
+     * constant added to every fragment regardless of normal, so a hedge's two
+     * faces at a corner sat at the same value and the corner did not read.
+     * @see World.js `ambientIntensity` for why that is definitional.
+     *
+     * BRIGHTNESS-MATCHED A/B, one booted session, same maze seed (3436772362),
+     * three uniforms rewritten between shots. Frame mean luma / % of pixels
+     * under 12 (the "gone to black" floor):
+     *
+     *   corridor  (roofed)  base 39.1 / 0.5%   ->  this 39.6 / 0.4%
+     *   lift-car  (roofed)  base 39.7 / 1.3%   ->  this 41.2 / 1.1%
+     *   above-entrance      base 142.2 / 0%    ->  this 142.2 / 0%
+     *
+     * So the roofed levels this 1.25 existed for are held or improved, and the
+     * open top level does not move at all - up there the sun owns the frame
+     * and the fill terms are noise. The naive version of this change, dropping
+     * ambient and replacing nothing (a=0.15, hemi and env untouched), IS the
+     * trap: corridor 31.9 and lift-car crush 3.5%, which is the pitch-black
+     * maze. The energy has to go somewhere, and 0.75 of `envMapIntensity` is
+     * where it went.
+     *
+     * What that buys, and it is the whole point: at equal mean luma the
+     * overhanging floor slab in `lift-car` now has a lit top edge and a
+     * distinctly darker soffit, and the shaft walls carry a vertical gradient
+     * toward the sky. At 1.25 both were one flat tan.
+     *
+     * Zero shader programs: 107 before and after, all four candidates. */
+    this.environment.ambientIntensity = 0.12;
+    /* 0.45, and stated rather than inherited. The hedge tops want a little
+     * more sky than the floor gets, but the maze's real fill is the probe -
+     * a hemisphere term only separates up from down, and a corridor is
+     * vertical walls. Measured as the weakest of the three redistributions
+     * tried (hemi-heavy h=1.10/e=1.00 came back at corridor 38.3, below base). */
+    this.environment.hemiIntensity = 0.45;
     this.environment.sunColor = new THREE.Color(0xfff2d8);
     this.environment.sunIntensity = 2.2;
     this.environment.sunDirection = new THREE.Vector3(-0.3, 0.9, -0.25).normalize();
@@ -462,14 +492,18 @@ export class MazeWorld extends World {
      * overcast blue-grey and the sun comes almost straight down. `'space'`
      * would put a starfield in the puddles of a daylit hedge maze.
      *
-     * This does NOT touch `ambientIntensity` above. That 1.25 is a paint
-     * roller over the roofed levels and it is a coordinated retune to move
-     * energy out of it and into this probe; the probe has to exist first.
+     * The coordinated retune this note asked for has now happened: the 1.25
+     * paint roller above is 0.12 and this probe carries the difference at
+     * `envMapIntensity` 1.75. The probe had to exist first, and it did.
      * `?? undefined` in the sibling worlds meant "keep whatever was there",
      * which is the bug; `?? null` is "no probe", which is what a headless
      * build with a stub material library should honestly get.
      * @see gfx/Materials.js `getEnvMap` */
     this.environment.envMap = this.materials?.getEnvMap?.('daylight') ?? null;
+    /* 1.0 -> 1.75: the 1.13 of flat ambient removed above, arriving as a term
+     * that knows which way a surface faces. See `ambientIntensity` for the
+     * brightness-matched measurement that fixed the exchange rate. */
+    this.environment.envMapIntensity = 1.75;
   }
 
   /**

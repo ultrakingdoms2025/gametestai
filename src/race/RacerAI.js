@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { DRAGON_RACE } from './RaceRings.js';
 
@@ -649,16 +670,16 @@ class RacerAssets {
 
     this.tyreMat = materials?.has?.('mount.tyre')
       ? materials.get('mount.tyre')
-      : new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.95, metalness: 0 });
+      : microSurface(new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.95, metalness: 0 }), 'matte', 0.4);
     this.alloyMat = materials?.has?.('mount.alloy')
       ? materials.get('mount.alloy')
-      : new THREE.MeshStandardMaterial({ color: 0x8e97a4, roughness: 0.3, metalness: 0.9 });
+      : microSurface(new THREE.MeshStandardMaterial({ color: 0x8e97a4, roughness: 0.3, metalness: 0.9 }), 'polished', 0.5);
     this.glassMat = materials?.has?.('mount.carglass')
       ? materials.get('mount.carglass')
       : new THREE.MeshPhysicalMaterial({ color: 0x223642, transparent: true, opacity: 0.34, roughness: 0.08 });
     this.trimMat = materials?.has?.('mount.cartrim')
       ? materials.get('mount.cartrim')
-      : new THREE.MeshStandardMaterial({ color: 0x121417, roughness: 0.8, metalness: 0.05 });
+      : microSurface(new THREE.MeshStandardMaterial({ color: 0x121417, roughness: 0.8, metalness: 0.05 }), 'painted', 0.5);
     this.tailMat = new THREE.MeshBasicMaterial({ color: 0xff3b26, toneMapped: false });
     this._materials = materials ?? null;
   }
@@ -668,7 +689,7 @@ class RacerAssets {
     if (this._materials?.has?.('mount.carpaint')) {
       return this._materials.tinted('mount.carpaint', color, `race.paint#${color.toString(16)}`);
     }
-    return new THREE.MeshStandardMaterial({ color, roughness: 0.25, metalness: 0.8 });
+    return microSurface(new THREE.MeshStandardMaterial({ color, roughness: 0.25, metalness: 0.8 }), 'painted', 2);
   }
 
   dispose() {
@@ -784,7 +805,7 @@ export class RacerAI {
     this.dragon.visible = false;
     this.dragon.position.y = 0.2;
     const dragonMat = assets.paint(this.color);
-    const bellyMat = new THREE.MeshStandardMaterial({ color: 0x2b1840, roughness: 0.7, metalness: 0.05 });
+    const bellyMat = microSurface(new THREE.MeshStandardMaterial({ color: 0x2b1840, roughness: 0.7, metalness: 0.05 }), 'matte', 1);
     const dBody = new THREE.Mesh(assets.dragonBody, dragonMat);
     dBody.scale.set(0.72, 0.42, 1.7);
     dBody.castShadow = true;

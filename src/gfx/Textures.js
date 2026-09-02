@@ -936,3 +936,181 @@ export function makeDetailNormal(o = {}) {
   }
   return makeNormalFromHeight(height, size, { strength, repeat, name: `detail.${kind}` });
 }
+
+/* ------------------------------------------------------------------ */
+/* The shared micro-surface                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A single tiling micro-detail normal, shared by every otherwise-flat
+ * material in the game.
+ *
+ * WHY THIS EXISTS. `gfx/Materials.js` states the rule at the top of the file -
+ * "a material with a flat colour and no normal is a bug, not a style" - and
+ * the library honours it, but 108 of the 203 PBR construction sites in the
+ * tree bypass the library entirely and hand `MeshStandardMaterial` a colour
+ * and a roughness scalar and nothing else. A material like that returns one
+ * uniform specular lobe across the whole prop: move a light across it and the
+ * highlight slides without ever breaking up. That single missing cue is most
+ * of what separates "CG plastic" from "a surface". `SportsWorld._metal`
+ * already says as much in prose about painted rails, and paid for a whole
+ * authored surface to fix it for that one family.
+ *
+ * WHY ONE TEXTURE AND NOT 108. Two reasons, and the first is the expensive one:
+ *
+ * 1. PROGRAMS. A material that gains a `normalMap` gains `USE_NORMALMAP`,
+ *    `USE_NORMALMAP_TANGENTSPACE` and `normalMapUv`, so it moves to a new
+ *    shader-program cache key (WebGLPrograms.js lines 223-229 and 276). It is
+ *    a *move* and not a multiplication ONLY as long as every material that
+ *    makes the trip gains the SAME slot set. Give one of them a
+ *    `roughnessMap` as well and it lands in a bucket of its own. So this
+ *    attaches exactly one slot - `normalMap` - and never a second, whatever
+ *    the surface is.
+ * 2. MEMORY. 512^2 RGBA with mips is 1.33 MB. Per-material detail maps would
+ *    have been ~140 MB of near-identical noise.
+ *
+ * Per-material variation is therefore carried entirely by `normalScale` and by
+ * `repeat`, neither of which is in the program cache key. `repeat` needs a
+ * distinct `THREE.Texture` per value, but a clone shares its `Source`, so the
+ * whole ladder is one GPU allocation - the same trick
+ * `MaterialLibrary.scaled()` relies on.
+ *
+ * WHY NOT `aoMap` OR `roughnessMap` AS WELL. Both would be a second slot, and
+ * a shared roughness map has nothing true to say: it would have to be centred
+ * on 1.0 to leave each material's authored scalar alone, at which point it is
+ * a 1 MB no-op that costs a permutation.
+ */
+
+/* 4 cm. Chosen because it is the scale at which sanding grain and orange peel
+ * stop being individually legible and start reading as a finish - below about
+ * 2 cm the map minifies to flat before the player is close enough to see it,
+ * above about 8 cm it reads as dirt painted on the albedo instead of as
+ * surface. */
+const MICRO_TILE_METERS = 0.04;
+
+/* The repeat ladder. Quantised so the clone cache stays at four entries no
+ * matter how many materials ask; the snap at worst doubles the tile size,
+ * which is still inside the 2-8 cm band above. */
+const MICRO_REPEATS = [4, 8, 16, 32];
+
+/**
+ * `normalScale` per surface family.
+ *
+ * Measured against the baked map: at the authored strength of 2.0 the base
+ * normals have a mean tilt of 12.3 degrees off the surface (max 61.1), so the
+ * multipliers below land each family where its real-world equivalent sits.
+ * These are not arbitrary - a detail normal at the wrong strength reads as
+ * dirt or as sandpaper, which is worse than the flat material it replaced.
+ *
+ * - `glass`    ~0.6 deg. A window is a mirror; all this does is stop the
+ *              reflection being geometrically perfect.
+ * - `polished` ~1.5 deg. Chrome and anodised trim: orange peel only.
+ * - `painted`  ~3.7 deg. Sprayed steel, car panels, gates, moulded plastic
+ *              shells - the family the whole idea is aimed at.
+ * - `matte`    ~6.2 deg. Rubber, unfinished plastic, cloth, foliage.
+ * - `coarse`  ~10.5 deg. Concrete, rock, bark, packed ground.
+ */
+export const MICRO_SURFACE = {
+  glass: 0.05,
+  polished: 0.12,
+  painted: 0.30,
+  matte: 0.50,
+  coarse: 0.85,
+};
+
+/* Authored once, at the strength the strongest family wants, and scaled down
+ * from there. Baking weak and scaling UP would have amplified the 8-bit
+ * quantisation of the normal instead of the surface. */
+const MICRO_STRENGTH = 2.0;
+const MICRO_SIZE = 512;
+
+let _microBase = null;
+const _microClones = new Map();
+
+/** Fine scratches, sanding grain and a little orange peel, as a height field. */
+function microHeight(u, v) {
+  // 16-64 cycles: the slow swell every sprayed or moulded surface has.
+  const peel = fbm01(u, v, 16, 16, 3, 8081, 0.5);
+  // 64-128 cycles: sanding grain. This is what puts the fizz in a highlight.
+  // Held below 128 on a 512 map (4 px per cycle) because Perlin at Nyquist
+  // bakes aliasing into mip 0 permanently and no filter takes it back out.
+  const grain = fbm01(u, v, 64, 64, 2, 3121, 0.5);
+  // Ridged noise stretched 12:1 reads as lines rather than as blobs; the 10th
+  // power then keeps only the sharpest few of them, so a surface gets a
+  // handful of scratches instead of a uniform brushed grain. Subtracted, not
+  // added: a scratch is a groove.
+  const scratch = ridgedFbm2D(u, v, 72, 6, 3, 5527) ** 10;
+  return peel * 0.60 + grain * 0.32 - scratch * 0.45;
+}
+
+/**
+ * The shared micro-detail normal map, at one of the ladder repeats.
+ *
+ * Baked lazily on first use - measured at 76 ms on this machine, 65 ms of
+ * noise and 11 ms of Sobel - and then never again for the life of the page. A
+ * world that never asks pays nothing, and the game pays it once for all of
+ * them rather than once per world.
+ *
+ * @param {number} [repeat=8] tiles across one UV unit; snapped to the ladder
+ * @returns {THREE.Texture}
+ */
+export function microSurfaceNormal(repeat = 8) {
+  if (!_microBase) {
+    const height = new Float32Array(MICRO_SIZE * MICRO_SIZE);
+    const inv = 1 / MICRO_SIZE;
+    for (let y = 0; y < MICRO_SIZE; y++) {
+      const v = (y + 0.5) * inv;
+      for (let x = 0; x < MICRO_SIZE; x++) {
+        height[y * MICRO_SIZE + x] = microHeight((x + 0.5) * inv, v);
+      }
+    }
+    _microBase = makeNormalFromHeight(height, MICRO_SIZE, {
+      strength: MICRO_STRENGTH, name: 'micro.surface',
+    });
+  }
+
+  let best = MICRO_REPEATS[0];
+  for (const r of MICRO_REPEATS) if (Math.abs(r - repeat) < Math.abs(best - repeat)) best = r;
+  let tex = _microClones.get(best);
+  if (!tex) {
+    // A clone shares `source`, so the ladder is four Texture objects and one
+    // 1.33 MB upload. Only `repeat` differs, and `repeat` is a uniform.
+    tex = _microBase.clone();
+    tex.repeat.set(best, best);
+    tex.name = `micro.surface:${best}`;
+    _microClones.set(best, tex);
+  }
+  return tex;
+}
+
+/**
+ * Give an otherwise-flat PBR material a micro-surface.
+ *
+ * Attaches the shared detail normal and nothing else, so every material that
+ * goes through here shares one program bucket rather than taking one each. A
+ * material that already has a `normalMap` is left alone - it has an authored
+ * surface and this would only fight it.
+ *
+ * On geometry with no `uv` attribute this degrades to a no-op rather than to
+ * garbage. Three derives its tangent frame from UV derivatives, and
+ * `getTangentFrame` guards the degenerate case explicitly -
+ * `float scale = ( det == 0.0 ) ? 0.0 : inversesqrt( det );` in
+ * normalmap_pars_fragment.glsl.js - so a constant UV yields
+ * `tbn * mapN == N * mapN.z` and the interpolated vertex normal survives
+ * untouched. It costs the permutation and buys nothing on such a mesh, but it
+ * cannot break one.
+ *
+ * @param {THREE.Material} material
+ * @param {keyof typeof MICRO_SURFACE} [family='painted']
+ * @param {number} [uvMeters=0.5] world size one UV unit spans on the geometry
+ *   this material dresses - a prop face, a wall panel, a court. Sets `repeat`
+ *   so the detail lands near {@link MICRO_TILE_METERS} whatever the prop size.
+ * @returns {THREE.Material} the same material, for chaining
+ */
+export function microSurface(material, family = 'painted', uvMeters = 0.5) {
+  if (!material || material.normalMap) return material;
+  material.normalMap = microSurfaceNormal(uvMeters / MICRO_TILE_METERS);
+  const s = MICRO_SURFACE[family] ?? MICRO_SURFACE.painted;
+  material.normalScale = new THREE.Vector2(s, s);
+  return material;
+}

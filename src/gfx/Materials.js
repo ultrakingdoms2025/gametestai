@@ -17,7 +17,12 @@ import {
  *   map drives the real values (glTF workflow). Multiplying by 1 keeps the map
  *   authoritative and makes every surface tunable from one texture.
  * - `map`, `normalMap` and the ORM map are non-negotiable. A material with a
- *   flat colour and no normal is a bug, not a style.
+ *   flat colour and no normal is a bug, not a style. Worlds that build their
+ *   own props outside this library cannot always afford a full authored
+ *   surface each; `microSurface()` in gfx/Textures.js is the floor those sites
+ *   are held to - one shared 512^2 detail normal, one map slot, so a hundred
+ *   flat props cost one texture and a program-bucket move rather than a
+ *   permutation apiece.
  * - UV tiling is left at `repeat = 1` on the base material and each material
  *   publishes `userData.tileMeters` - the world-space size one UV tile is
  *   authored for. Worlds call {@link MaterialLibrary#scaled} (or use the

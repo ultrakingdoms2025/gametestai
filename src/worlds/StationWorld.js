@@ -1,4 +1,25 @@
 import * as THREE from 'three';
+/* THE FLAT MATERIALS IN THIS FILE GET A MICRO-SURFACE.
+ *
+ * A colour and a roughness scalar with no maps returns one uniform specular
+ * lobe across a whole prop: the highlight slides as a light moves and never
+ * breaks up, which is most of what reads as CG plastic rather than as a
+ * surface. `microSurface` attaches the ONE shared detail normal baked in
+ * gfx/Textures.js - fine scratches, sanding grain, a little orange peel at
+ * roughly 4 cm - and varies only `normalScale` (by surface family) and
+ * `repeat` (by how much world space one UV unit spans).
+ *
+ * ONE texture and ONE map slot on every material that takes it, deliberately:
+ * a `normalMap` moves a material to a new shader-program cache key, so this
+ * is a bucket MOVE rather than a permutation per prop only as long as nothing
+ * here gains a SECOND slot and nothing in a converted family is left behind.
+ * The families deliberately left flat are the transparent ones (a 0.05 scale
+ * on glass is ~0.6 degrees of perturbation - below what an 8-bit normal
+ * resolves, and it would split a bucket against materials outside this file)
+ * and the emissive fittings (a normal perturbs the lit term, and those
+ * surfaces are ~0.05 albedo under a 2-3x emissive: there is nothing for it to
+ * do). */
+import { microSurface } from '../gfx/Textures.js';
 /* Lights are born HIDDEN: one frame with a world's own lights live re-links
  * every program on screen. gfx/WorldLight.js has the whole of it. */
 import { pointLight, spotLight, dirLight } from '../gfx/WorldLight.js';
@@ -2686,17 +2707,17 @@ export class StationWorld extends World {
     });
 
     // 0x14171d at close range is indistinguishable from a missing material.
-    M.rubber = new THREE.MeshStandardMaterial({
+    M.rubber = microSurface(new THREE.MeshStandardMaterial({
       color: 0x2a3038, metalness: 0.22, roughness: 0.82, envMapIntensity: 1.2,
-    });
+    }), 'matte', 0.5);
     M.copper = new THREE.MeshStandardMaterial({
       map: T.panel.map,
       normalMap: T.panel.normalMap,
       color: 0x9a5a34, metalness: 0.85, roughness: 0.42, envMapIntensity: 1.8,
     });
-    M.mirror = new THREE.MeshStandardMaterial({
+    M.mirror = microSurface(new THREE.MeshStandardMaterial({
       color: 0x9fb4c8, metalness: 1.0, roughness: 0.09, envMapIntensity: 3.0,
-    });
+    }), 'polished', 1);
 
     /* --- Authored roughness tiers -------------------------------------
      *
@@ -12310,7 +12331,30 @@ export class StationWorld extends World {
      * rather than as a grey wash.
      */
     env.ambientColor = new THREE.Color(0x46617d);
-    env.ambientIntensity = 0.20;
+    /* 0.20 -> 0.10, and the combined fill went DOWN, not up.
+     *
+     * The rule two paragraphs up is "ambient + hemi must stay under ~1.0
+     * combined". This is 0.10 + 0.44 = 0.54, against 0.56 before, so the rule
+     * is honoured with room to spare - and the frame still got lighter in the
+     * shadows, because the half-unit that moved is now spent on terms that
+     * know which way a surface faces rather than on one that does not.
+     * @see World.js `ambientIntensity`.
+     *
+     * Measured, one booted session, three uniforms rewritten between shots.
+     * Frame mean luma / % of pixels under 12:
+     *
+     *   zone-canteen  base 28.5 / 32.8%  ->  30.5 / 28.4%
+     *   dome-inside   base 23.9 / 32.1%  ->  25.5 / 28.2%
+     *   hab-lobby     base 30.8 / 26.6%  ->  32.0 / 23.6%
+     *   plaza-wide    base 45.9 /  6.9%  ->  46.6 /  6.0%
+     *   street-level  base 63.4 /  5.3%  ->  66.4 /  4.3%
+     *   window-apron  base 57.0 /  4.2%  ->  59.7 /  3.5%
+     *
+     * p95 moves by at most 2 (street-level 163 -> 165, plaza-wide 155 -> 155),
+     * so the spots, the window rake and the practicals still own the top two
+     * stops exactly as the rule requires. Zero shader programs: 149 either
+     * side. */
+    env.ambientIntensity = 0.10;
     env.skyColor = new THREE.Color(0x54759c);
     /* Ground bounce.
      *
@@ -12325,7 +12369,7 @@ export class StationWorld extends World {
     // Hemisphere still carries more of the fill than ambient does - it is
     // directional, so it separates up-facing from down-facing geometry instead
     // of flattening everything - but at a level a key light can beat.
-    env.hemiIntensity = 0.36;
+    env.hemiIntensity = 0.44;
     env.sunColor = new THREE.Color(0xdcefff);
     /* The scene sun is main.js's, and main.js aims its shadow frustum at the
      * player. On a pressurised interior that is the worst of both worlds: the
@@ -12339,9 +12383,18 @@ export class StationWorld extends World {
     // Matched to the deck key so the world tells one story about where the
     // light comes from - raked in from the window wall on +X/+Z.
     env.sunDirection = new THREE.Vector3(0.45, 0.62, 0.64).normalize();
-    // A 200 m deck with a full-strength starfield probe on it is a mirror, and
-    // an unshadowed one: IBL is the other term a cast shadow has to beat.
-    env.envMapIntensity = 0.68;
+    /* A 200 m deck with a full-strength starfield probe on it is a mirror, and
+     * an unshadowed one: IBL is the other term a cast shadow has to beat.
+     *
+     * 0.68 -> 0.95 in the ambient collapse, and that warning is why it stopped
+     * at 0.95 rather than going where the other worlds went (1.35-1.75). It is
+     * still under full strength, and the photograph says the deck reads as
+     * brushed metal with its seams and plate joints back rather than as
+     * chrome. What it is beating is not the cast shadow - p95 across six
+     * framings moved by at most 2 - it is the flat 0.10 of ambient that used
+     * to sit on the same plates and tell them nothing about their normal.
+     * See `ambientIntensity` above for the measurement. */
+    env.envMapIntensity = 0.95;
     // NOTE: there is deliberately no `env.bloom` here. It was a second,
     // competing declaration at threshold 1.05 - below the luminance of a lit
     // deck plate, so under any code path that consumed it every panel in the

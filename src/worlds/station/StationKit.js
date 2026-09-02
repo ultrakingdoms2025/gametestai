@@ -3,6 +3,11 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 /* The editor's opt-out flag, imported rather than restated: `markRampProxy`
  * below is the only place these three properties are set together. */
 import { NOT_EDITABLE } from '../../systems/mapEditable.js';
+/* The radial-segment multiplier for the tier in force, for `cylGeo`.
+ * `gfx/QualityTier.js` imports nothing at all - no three, no DOM at module
+ * scope - so this stays a leaf import and keeps this file as portable as its
+ * header claims. It reads 1 unless a real boot has latched a tier. */
+import { tessSegments } from '../../gfx/QualityTier.js';
 
 /**
  * Shared vocabulary for the Aether Nexus Station and everything bolted onto it.
@@ -1069,10 +1074,23 @@ export function cylUV(geo, rTop, rBottom, height, radialSegs, tile, heightSegs =
   return geo;
 }
 
-/** CylinderGeometry with world-correct texel density in one call. */
+/**
+ * CylinderGeometry with world-correct texel density in one call.
+ *
+ * `radialSegs` is the count the station was AUTHORED at; `tessSegments` is the
+ * quality tier's multiplier on it, and it only ever raises (1 on `low` and
+ * `medium`, and in any headless build). Resolved ONCE and handed to both calls
+ * below, because `cylUV` derives its side/cap split from the radial count -
+ * building at one number and UV-ing at another stretches every cap.
+ *
+ * `cylUV` itself takes the count it is given and is left alone: it is also
+ * reachable with a geometry a caller built by hand, and a helper that silently
+ * disagreed with the geometry handed to it would be the worse trap.
+ */
 export function cylGeo(rTop, rBottom, height, radialSegs, tile, openEnded = false) {
-  const g = new THREE.CylinderGeometry(rTop, rBottom, height, radialSegs, 1, openEnded);
-  return cylUV(g, rTop, rBottom, height, radialSegs, tile ?? 2);
+  const segs = tessSegments(radialSegs);
+  const g = new THREE.CylinderGeometry(rTop, rBottom, height, segs, 1, openEnded);
+  return cylUV(g, rTop, rBottom, height, segs, tile ?? 2);
 }
 
 /** Remap a quad's UVs onto one cell of a cols x rows atlas. */

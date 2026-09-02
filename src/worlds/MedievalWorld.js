@@ -69,6 +69,12 @@ import { GrassResidency } from './medieval/GrassResidency.js';
 import { loadBeastAssets } from './medieval/BeastAssets.js';
 import { medievalObjectives } from './medieval/Objectives.js';
 import { loadFrameAssets, framePart, FRAME_WELDABLE } from './medieval/FrameAssets.js';
+/* Authored PBR for the five surfaces the square framing puts within touching
+ * distance. An OVERRIDE, not a dependency: it swaps texture objects in slots
+ * `_std` has already bound, so a missing file leaves the world exactly as the
+ * procedural bake made it and costs no shader program. See the header of
+ * `medieval/MedievalSurfaces.js` for why that last clause is true. */
+import { loadMedievalSurfaces, dressMedievalSurfaces } from './medieval/MedievalSurfaces.js';
 
 /**
  * ALDERMOOR VALE - the medieval world.
@@ -1515,8 +1521,27 @@ export class MedievalWorld extends World {
      * bytes, and what a player on a bad connection gets. */
     const frameAssets = loadFrameAssets();
 
+    /* The authored surface sets, started here and awaited immediately after
+     * the materials exist - which is the earliest moment they can be bound
+     * and the latest one before anything is drawn with them.
+     *
+     * Started rather than awaited because the texture bake below is the
+     * second-longest phase in this build and a manifest fetch has no business
+     * sitting in front of it. `loadMedievalSurfaces` never rejects: a 404 -
+     * which is what every session gets until the KTX2 files are produced -
+     * resolves to an empty map, `dressMedievalSurfaces` then dresses nothing
+     * and the vale renders exactly as it did before this pass. That is also
+     * what `node --test` builds, which has no `fetch` and no renderer. */
+    const surfaceAssets = loadMedievalSurfaces(this.engine?.renderer);
+
     await step(0.02, 'Mixing pigments', this._buildTextures);
     await step(0.18, 'Tempering materials', this._buildMaterials);
+    /* Not a `step`: dressing is a handful of property writes on materials
+     * that already exist, so it needs no progress tick and no frame yield.
+     * It is deliberately AFTER `_buildMaterials` rather than inside it -
+     * `_std` stays the one place a material is configured, and this stays a
+     * pure override of four texture slots on top of whatever it produced. */
+    dressMedievalSurfaces(this._mats, await surfaceAssets);
     await step(0.26, 'Raising the vale', this._buildTerrain);
     await step(0.4, 'Kindling the evening sky', this._buildSky);
     await step(0.47, 'Letting the river run', this._buildWater);

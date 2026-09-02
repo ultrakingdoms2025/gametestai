@@ -1,0 +1,27 @@
+{
+  "comment": "Authored PBR surfaces for Aldermoor Vale - the texture half of the pipeline `maze/MazeAssets.js` proved, riding the shared core in `src/worlds/assets/AuthoredAssets.js`. Its own file rather than an addition to `manifest.json` (the beasts) or `frame-manifest.json` (the carpentry) because those two are GEOMETRY bound to BeastBody and to the village GeoBatch, and this is TEXTURES bound to a material table: one file per contract is what has kept those two from having to know about each other. `src/worlds/medieval/MedievalSurfaces.js` loads ONLY what `assets` declares; `scripts/tests/medieval-surfaces.test.mjs` holds every entry to the licence allow-list in `docs/assets/LICENCES.md` and to its byte count on disk. Texture entries carry `surface` (which `MedievalWorld._mats` key they dress) and `slot` (map | normalMap | ormMap); albedo is sRGB-encoded in the KTX2 file itself, normal and ORM are linear, and the KTX2 container records which so the loader never guesses. ORM follows the glTF packing - R=AO, G=roughness, B=metalness - and is bound to BOTH `roughnessMap` and `aoMap`, which is slot-for-slot identical to the four maps `_std` already binds, so dressing a surface adds no shader program.",
+  "promotion": "`assets` is what the loader reads. `pending` is what has been DECLARED and not yet produced, and the loader never sees it - so today no fetch is issued, no set is complete, and the vale renders exactly as it did before this manifest existed. The generator that writes the .ktx2 files (`scripts/make-world-tex.mjs`) prints an entry carrying `id`, `file`, `kind`, `surface`, `slot`, `licence`, `source` and `bytes`; promoting a set is pasting those five entries in here in place of the pending ones, which is why the ids and filenames below are already the ones that generator emits for a set with `idPrefix` of `surf` and an `out` of `public/assets/medieval/tex`. The last three fields are facts about a file and there is no file yet, which is why the pending entries carry none of them. `size` is the reverse: declared intent while there is nothing to measure, and dropped on promotion because the KTX2 header then carries it and `MEDIEVAL_AUTHORED_SURFACES` is the one place it is declared. The test enforces both halves: a `pending` entry must NOT carry them and must NOT have a file on disk, and an `assets` entry must carry all three, must have a ledger line in docs/assets/LICENCES.md, and its `bytes` must equal the file's size exactly - so a silent re-export cannot drift from its declaration and a produced file cannot sit un-gated in `pending`.",
+  "size": "1024 texels per side for all five. Every one of these surfaces is procedurally baked at 512 today, so 1024 is already a doubling of texel density; 2048 is four times the download for a surface read at a metre rather than at ten centimetres, and download is a real cost - public/ is 20 MB today and the maze's five surfaces are 17 MB of it. A 2048 set here needs a texel-density argument written on its entry.",
+  "assets": [],
+  "pending": [
+    { "id": "surf-daub-albedo",   "file": "tex/daub-albedo.ktx2",   "kind": "texture", "surface": "daub",   "slot": "map",       "size": 1024 },
+    { "id": "surf-daub-normal",   "file": "tex/daub-normal.ktx2",   "kind": "texture", "surface": "daub",   "slot": "normalMap", "size": 1024 },
+    { "id": "surf-daub-orm",      "file": "tex/daub-orm.ktx2",      "kind": "texture", "surface": "daub",   "slot": "ormMap",    "size": 1024 },
+
+    { "id": "surf-beam-albedo",   "file": "tex/beam-albedo.ktx2",   "kind": "texture", "surface": "beam",   "slot": "map",       "size": 1024 },
+    { "id": "surf-beam-normal",   "file": "tex/beam-normal.ktx2",   "kind": "texture", "surface": "beam",   "slot": "normalMap", "size": 1024 },
+    { "id": "surf-beam-orm",      "file": "tex/beam-orm.ktx2",      "kind": "texture", "surface": "beam",   "slot": "ormMap",    "size": 1024 },
+
+    { "id": "surf-plank-albedo",  "file": "tex/plank-albedo.ktx2",  "kind": "texture", "surface": "plank",  "slot": "map",       "size": 1024 },
+    { "id": "surf-plank-normal",  "file": "tex/plank-normal.ktx2",  "kind": "texture", "surface": "plank",  "slot": "normalMap", "size": 1024 },
+    { "id": "surf-plank-orm",     "file": "tex/plank-orm.ktx2",     "kind": "texture", "surface": "plank",  "slot": "ormMap",    "size": 1024 },
+
+    { "id": "surf-thatch-albedo", "file": "tex/thatch-albedo.ktx2", "kind": "texture", "surface": "thatch", "slot": "map",       "size": 1024 },
+    { "id": "surf-thatch-normal", "file": "tex/thatch-normal.ktx2", "kind": "texture", "surface": "thatch", "slot": "normalMap", "size": 1024 },
+    { "id": "surf-thatch-orm",    "file": "tex/thatch-orm.ktx2",    "kind": "texture", "surface": "thatch", "slot": "ormMap",    "size": 1024 },
+
+    { "id": "surf-cobble-albedo", "file": "tex/cobble-albedo.ktx2", "kind": "texture", "surface": "cobble", "slot": "map",       "size": 1024 },
+    { "id": "surf-cobble-normal", "file": "tex/cobble-normal.ktx2", "kind": "texture", "surface": "cobble", "slot": "normalMap", "size": 1024 },
+    { "id": "surf-cobble-orm",    "file": "tex/cobble-orm.ktx2",    "kind": "texture", "surface": "cobble", "slot": "ormMap",    "size": 1024 }
+  ]
+}

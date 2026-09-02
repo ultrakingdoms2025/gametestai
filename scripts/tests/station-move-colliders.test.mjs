@@ -62,34 +62,42 @@ import { MapOverlay } from '../../src/systems/MapOverlay.js';
  * Three names, one collider each, and no name crossed the -1 boundary - which
  * is the outcome this table exists to distinguish a real change from.
  *
- * -- Re-taken 2026-09-02: 207 names, and THREE DID cross -----------------
+ * -- 2026-09-02: three names crossed, and crossed back the same day ------
  *
- *   plaza-props:glassWindow   200 -> -1
- *   commercial:emAmber        195 -> -1
- *   commercial:panel          184 -> -1
+ *   plaza-props:glassWindow   200 -> -1 -> 200
+ *   commercial:emAmber        195 -> -1 -> 195
+ *   commercial:panel          184 -> -1 -> 184
  *
- * These three can no longer be dragged in the map editor. Nothing else
- * crossed, and no name went the other way (-1 -> a number), so no
- * district-scale drag became possible.
+ * Kept in the ledger because a name losing its drag is the outcome this file
+ * exists to notice, and because the round trip is the evidence for the claim
+ * the fixture now makes: the fixture is byte-for-byte the pre-chamfer one
+ * again, all 756 rows, so nothing about this system was traded away to get
+ * those three back.
  *
- * The cause is not in this system. `StationKit.boxGeo` now chamfers boxes at
- * or over a metre in every axis, `StationWorld._solidifyStructure` derives
- * collision from the DRAWN geometry, and the station's collision therefore
- * went 8,763 -> 11,203 chunks and 26,757 -> 29,197 colliders. More collider
- * centres fall inside any given name's bounds, so the geometric guess counts
- * higher for 207 names; three of them were already sitting at 92-100% of the
- * cap (200, 195, 184) and the extra tipped them over.
+ * The cause was never in this system. `StationKit.boxGeo` learned to chamfer
+ * boxes at or over a metre in every axis, `StationWorld._solidifyStructure`
+ * derives collision from the DRAWN geometry, and the station's collision
+ * therefore went 8,763 -> 11,203 chunks and 26,757 -> 29,197 colliders. More
+ * collider centres fall inside any given name's bounds, so the geometric guess
+ * counted higher for 207 names; three of them were already sitting at 92-100%
+ * of the cap (200, 195, 184) and the extra tipped them over.
  *
- * A LOWER CHAMFER IS NOT THE FIX, and this was measured rather than assumed:
+ * A LOWER CHAMFER WAS NOT THE FIX, and that was measured rather than assumed:
  * at a 1.6 m threshold the table churn halves to 104 names and half the
- * chamfer is lost, and all three still cross. The only dial that rescues them
- * is `MAX_MOVE_COLLIDERS` itself, which is a deliberate safety envelope for
- * an admin tool - a box holding thousands of collider centres is a district,
- * not a prop - so raising it is a decision about how much a mis-drag may
- * destroy, not a number to nudge to keep a fixture quiet. LEFT AS IS
- * PENDING THAT DECISION: refusing is the safe outcome (nothing moves, the
- * admin is told, and the move reports `span`), and it is pinned here so the
- * decision is made in the open rather than discovered by an admin.
+ * chamfer is lost, and all three still crossed. The fix was to stop colliding
+ * the chamfer at all - a chamfer only ever cuts material away from a box's
+ * corners, so the square box it came from is a conservative collider for it,
+ * and `_collisionSoup` now substitutes that box for the piece's 108 triangles
+ * (`StationKit.squareBoxCorners`). Collision is back at 8,763 chunks and
+ * 26,757 colliders with the chamfer still drawn, and all 207 counts here
+ * followed it back.
+ *
+ * `MAX_MOVE_COLLIDERS` is therefore still untouched, and the decision it was
+ * waiting on is still open rather than answered: it is a deliberate safety
+ * envelope for an admin tool - a box holding thousands of collider centres is
+ * a district, not a prop - and these three names sit at 92-100% of it on a
+ * world nobody chamfered. The next thing that adds collision anywhere near
+ * them will take them out again.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

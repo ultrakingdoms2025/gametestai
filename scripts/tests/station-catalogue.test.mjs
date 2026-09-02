@@ -345,40 +345,51 @@ test('the collision the world derives from its own geometry is unchanged', async
    *   not geometry, and `boxed` rises because a heap that is collided where
    *   it is drawn swallows more of the dirt drawn on it.
    *
-   * -- RE-TAKEN 2026-09-02: the kit learned to chamfer --------------------
-   * 372792 -> 551953 found, 170485 -> 294873 boxed, 202307 -> 257080 kept,
-   * 8763 -> 11203 chunks, 26757 -> 29197 colliders, planting 1361 unchanged.
-   * The largest entry in this list by an order of magnitude, and it is the
-   * one this file exists to make somebody look at.
+   * -- 2026-09-02: THE KIT LEARNED TO CHAMFER AND THIS DID NOT MOVE -------
+   * The world gained 330,624 drawn triangles (3,468,968 -> 3,799,592, +9.5%)
+   * and every figure on this line is unchanged to the triangle. That is the
+   * entry, and it is here because "unchanged" is the surprising answer.
    *
    * `StationKit.boxGeo` now chamfers any box whose smallest dimension reaches
    * BEVEL_MIN (1.0 m), which is 3,469 pieces on this world - 2,724 merged
    * parts and 745 instances. A chamfered box is 108 triangles against a plain
-   * box's 12, so +96 each: 3,469 x 96 = +332,928 drawn, against the +330,624
-   * measured on the whole-world walk (the difference is pieces the walk sees
-   * once that the batcher merges).
+   * box's 12, so +96 each.
    *
-   * THIS PASS CHARGES THOSE TRIANGLES TWICE, and that is why `found` rises
-   * 179,161 for 330,624 drawn. `StationWorld._solidifyStructure` derives
-   * collision FROM THE DRAWN GEOMETRY, so every chamfered corner is soup to
-   * be extracted as well as pixels to be shaded. It is also why `boxed` rises
-   * almost as fast as `found` (+124,388 of the +179,161): a chamfer cuts the
-   * corner off a box that is standing inside another box's footprint, and the
-   * cut corner is still inside it. Only +54,773 reaches `kept`, which is the
-   * number that matters here - it is the surface a player can actually walk
-   * into, and it grew 27.1% for a 9.5% rise in drawn triangles.
+   * For one day this pass CHARGED THOSE TRIANGLES TWICE. It landed at 551,953
+   * found, 294,873 boxed, 257,080 kept, 11,203 chunks and 29,197 colliders -
+   * +179,161 soup, +54,773 kept (+27.1%) and +2,440 colliders for a 9.5% rise
+   * in what is drawn - because `_solidifyStructure` derives collision FROM THE
+   * DRAWN GEOMETRY, so every chamfered corner was soup to be extracted as well
+   * as pixels to be shaded. It cost 70.8 ms on the third station repeat in
+   * `frame-gaps`, which crossed the 250 ms gate.
    *
-   * The threshold was chosen on this arithmetic and not modelled: 0.55 m (the
-   * citadel's number) grows kept collision 42.6% and was refused for it. The
-   * measured curve at 0.55/0.80/1.00/1.20/1.60 is in the `BEVEL_MIN` comment
-   * in `StationKit.js`, which is the single dial if this is ever too much.
+   * It is not charged twice any more. A chamfer only ever cuts material AWAY
+   * from a box's corners, so the square box it was cut from is a conservative
+   * collider for it - very slightly larger at eight corners, which is the safe
+   * direction and is what the player walked into before the chamfer existed.
+   * `GeoBatch.add` records that box (`StationKit.squareBoxCorners`) and
+   * `_collisionSoup` substitutes it for the piece's 108 triangles, which is
+   * what `ShipKit` has always done by authoring its colliders instead of
+   * deriving them: "cbox draws through box and collides the FULL box".
+   *
+   * The substitute uses three's own quad diagonals, read off a
+   * `BoxGeometry(2,2,2)` rather than authored - see `SQUARE_BOX_TRIS`. That is
+   * why this line reads UNCHANGED rather than nearly unchanged: a hand-cut
+   * diagonal has the same four corners and two different triples, and
+   * `_dropEnclosedTriangles` asks about triples. Measured, it moved 3
+   * triangles of 202,307 between `boxed` and `kept`.
+   *
+   * The chamfer's own budget argument still stands and the threshold is still
+   * the single dial: the measured curve at 0.55/0.80/1.00/1.20/1.60 is in the
+   * `BEVEL_MIN` comment in `StationKit.js`. Its collision column is now the
+   * cost of a chamfer that IS collided, which none of them is.
    */
   assert.deepEqual(
     { found, boxed, kept, planting },
-    { found: 551953, boxed: 294873, kept: 257080, planting: 1361 },
+    { found: 372792, boxed: 170485, kept: 202307, planting: 1361 },
     'the geometry-derived collision changed - these are the triangles a player walks into'
   );
-  assert.equal(chunks, 11203, 'the chunking changed');
+  assert.equal(chunks, 8763, 'the chunking changed');
   /* 26771 -> 26940 on 2026-08-30, +169, with the near-field occupancy nudge.
    * A prop that stood inside a planter shared a collision column with it and
    * was boxed together; nudged clear it needs a box of its own. Same cause as
@@ -447,15 +458,15 @@ test('the collision the world derives from its own geometry is unchanged', async
    * Total found is UNCHANGED, which is the check that this removed colliders
    * and not geometry.
    *
-   * -- And 2,440 more on 2026-09-02, from the chamfer ---------------------
-   * 26757 -> 29197. Same cause as the +179,161 found triangles recorded
-   * against the deepEqual above: more soup makes more chunks (8,763 ->
-   * 11,203) and a chunk carries colliders. No collider here is a new PROP -
-   * the mesh count, the material count and the named-node set are all
-   * unchanged - it is the same structure packed into more boxes because its
-   * corners are no longer square.
+   * -- And the chamfer costs NOTHING here: 26757, 2026-09-02 --------------
+   * It cost 2,440 for one day (26,757 -> 29,197): more soup made more chunks
+   * (8,763 -> 11,203) and a chunk carries colliders. The chamfer is still on
+   * and this is back at 26,757, because the soup no longer contains it - see
+   * the deepEqual above. Nothing about the drawn world was undone; the mesh
+   * count, the material count and the named-node set never moved in either
+   * direction.
    */
-  assert.equal(physics.colliders.length, 29197, 'the collider total changed');
+  assert.equal(physics.colliders.length, 26757, 'the collider total changed');
 });
 
 test('every reported position is finite', async () => {

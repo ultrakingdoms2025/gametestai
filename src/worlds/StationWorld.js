@@ -28,6 +28,7 @@ import {
   mulberry32, hashi, tnoise, tfbm,
   boxUV, uvScale, cylUV, cylGeo, atlasUV, signUV, boxGeo,
   instanced, GeoBatch, chunkTriangles, chunkTrianglesBySpan,
+  SQUARE_BOX_TRIS, squareBoxCorners,
   roadPos, faceRoadYaw, zoneCentre, zoneLocal, zoneYaw,
   ROAD_ANGLES_DEG,
   STRIP_ACROSS, STRIP_HALF_W, DECAL_SIZE, DECAL_GAP,
@@ -3497,6 +3498,42 @@ export class StationWorld extends World {
       if (o.isMesh && !o.isInstancedMesh && o.visible) meshes.push(o);
     });
 
+    /* One triangle's worth of the filter chain, called with `a`/`b`/`c` already
+     * in world space. A function rather than three copies of the same five
+     * lines, because the square-box substitution below has to be judged by
+     * EXACTLY the rules its triangles would have been - a second copy that
+     * drifted would put collision where the walk says there is none. */
+    const emit = (owner) => {
+      const cy = (a.y + b.y + c.y) / 3;
+      if (cy < -2) return;
+      const cx = (a.x + b.x + c.x) / 3;
+      const cz = (a.z + b.z + c.z) / 3;
+      /* One question answers both "does collision apply here" and "how high
+       * does it apply": the hub deck to 62, each zone deck to 62, each link
+       * corridor to 12, and `-Infinity` everywhere else - the dome, the apron
+       * and the space between the arms. See `collideCeilingAt`. */
+      if (cy > collideCeilingAt(cx, cz)) return;
+      if (this._insideSelfCollided(cx, cy, cz)) return;
+      tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      if (ownerOut) ownerOut.push(owner);
+    };
+
+    /* The eight corners of one square box, in world space. Scratch: a box is
+     * transformed, drained into `tris` and forgotten before the next. */
+    const corners = new Float32Array(24);
+    const emitSquare = (local, base, matrixWorld, owner) => {
+      for (let i = 0; i < 24; i += 3) {
+        a.set(local[base + i], local[base + i + 1], local[base + i + 2]).applyMatrix4(matrixWorld);
+        corners[i] = a.x; corners[i + 1] = a.y; corners[i + 2] = a.z;
+      }
+      for (let t = 0; t < SQUARE_BOX_TRIS.length; t += 3) {
+        a.fromArray(corners, SQUARE_BOX_TRIS[t] * 3);
+        b.fromArray(corners, SQUARE_BOX_TRIS[t + 1] * 3);
+        c.fromArray(corners, SQUARE_BOX_TRIS[t + 2] * 3);
+        emit(owner);
+      }
+    };
+
     for (const o of meshes) {
       const m = Array.isArray(o.material) ? o.material[0] : o.material;
       if (!m || m.transparent || m.depthWrite === false || m.blending === THREE.AdditiveBlending) continue;
@@ -3516,28 +3553,56 @@ export class StationWorld extends World {
       const pos = geo.getAttribute('position');
       if (!pos) continue;
       await breathe();
+
+      /* ── THE CHAMFER IS NOT COLLIDED ───────────────────────────────────
+       * A chamfer exists to catch a highlight on an edge, and it only ever
+       * cuts material AWAY from a box's corners. Colliding its 108 triangles
+       * instead of the 12 its square box would have cost this pass 372,792 ->
+       * 551,953 triangles extracted, 202,307 -> 257,080 kept, 8,763 -> 11,203
+       * chunks and 26,757 -> 29,197 colliders, for surface a player cannot
+       * feel: the square box is a few centimetres LARGER at eight corners,
+       * which is the safe direction and is what the player walked into before
+       * the kit learned to chamfer. `ShipKit` has always done this - "cbox
+       * draws through box and collides the FULL box" - and gets it for free by
+       * authoring its colliders; this world derives them, so `GeoBatch.add`
+       * records the box and this substitutes it. See `squareBoxCorners`.
+       *
+       * `parts.squareAt` names the merged pieces that carry one; a mesh drawn
+       * outside a batch answers for itself. */
+      const parts = o.userData.parts;
+      const squares = parts?.squares ?? null;
+      const sqParts = [];
+      if (squares) {
+        for (let k = 0; k < parts.squareAt.length; k++) if (parts.squareAt[k] >= 0) sqParts.push(k);
+      }
+      const solo = squares ? null : squareBoxCorners(geo);
+      if (solo) {
+        emitSquare(solo, 0, o.matrixWorld, owner);
+        continue;
+      }
+
       const idx = geo.getIndex();
       const n = idx ? idx.count : pos.count;
+      let sp = 0;
       for (let i = 0; i < n; i += 3) {
+        /* Both walks run in increasing index order - `packParts` records parts
+         * in `add` order and `mergeGeometries` concatenates in that same order,
+         * asserted by `geo-batch-parts.test.mjs` - so one pointer follows the
+         * substituted spans and the skip is a comparison, not a search. */
+        while (sp < sqParts.length && i >= parts.start[sqParts[sp]] + parts.count[sqParts[sp]]) sp++;
+        if (sp < sqParts.length && i >= parts.start[sqParts[sp]]) continue;
         const i0 = idx ? idx.getX(i) : i;
         const i1 = idx ? idx.getX(i + 1) : i + 1;
         const i2 = idx ? idx.getX(i + 2) : i + 2;
         a.fromBufferAttribute(pos, i0).applyMatrix4(o.matrixWorld);
         b.fromBufferAttribute(pos, i1).applyMatrix4(o.matrixWorld);
         c.fromBufferAttribute(pos, i2).applyMatrix4(o.matrixWorld);
-        const cy = (a.y + b.y + c.y) / 3;
-        if (cy < -2) continue;
-        const cx = (a.x + b.x + c.x) / 3;
-        const cz = (a.z + b.z + c.z) / 3;
-        /* One question answers both "does collision apply here" and "how high
-         * does it apply": the hub deck to 62, each zone deck to 62, each link
-         * corridor to 12, and `-Infinity` everywhere else - the dome, the apron
-         * and the space between the arms. See `collideCeilingAt`. */
-        if (cy > collideCeilingAt(cx, cz)) continue;
-        if (this._insideSelfCollided(cx, cy, cz)) continue;
-        tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-        if (ownerOut) ownerOut.push(owner);
+        emit(owner);
       }
+      /* Appended after the mesh's own triangles, which keeps every triangle of
+       * one owner contiguous - what lets `_solidifyStructure` slice owner runs
+       * rather than sort them. A batch mesh is one owner throughout. */
+      for (const k of sqParts) emitSquare(squares, parts.squareAt[k] * 24, o.matrixWorld, owner);
     }
     return new Float32Array(tris);
   }

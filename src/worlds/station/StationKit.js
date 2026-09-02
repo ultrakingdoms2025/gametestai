@@ -1141,47 +1141,62 @@ const BEVEL = 0.06;
  *   >= 1.20 m   +262,944   (+7.6%)  +44,943  (+22.2%)      10,804   8.5 MB
  *   >= 1.60 m   +146,112   (+4.2%)  +26,788  (+13.2%)       9,819   7.9 MB
  *
- * There is no knee in that curve - it is close to linear in pieces chamfered -
- * so this is a budget call and not an optimum, and it is made against two
- * budgets rather than one. The station is already the heaviest world in the
- * game (framings measure 2.12M-3.41M drawn), and `_solidifyStructure` builds
- * its collision out of the DRAWN geometry, so every triangle added to a box is
- * charged a second time: to the soup, to the enclosure drop that filters it,
- * to the chunk count and to every raycast against them. That second column is
- * why 0.55 - the number `CitadelWorld` uses, on a world with no such pass - is
- * refused here.
+ * THE THREE RIGHT-HAND COLUMNS ARE NO LONGER PAID, AT ANY THRESHOLD. They were
+ * for one day, and they are left here because they are what the number was
+ * chosen against and because they are the measurement that motivated the fix.
+ * `_solidifyStructure` derives the station's collision from the DRAWN geometry,
+ * so a chamfer was charged twice - to the soup, to the enclosure drop that
+ * filters it, to the chunk count and to every raycast against them. It is now
+ * charged once: a chamfer only ever cuts material AWAY from a box's corners, so
+ * `_collisionSoup` substitutes the square box the piece was cut from for its
+ * 108 triangles, and the whole row reads `202,307 / 8,763 / 6.9 MB` again with
+ * the chamfer still drawn. See `squareBoxCorners` below.
  *
- * 1.0 m holds the geometry under +10% and the soup under +2 MB while still
- * chamfering 3,469 pieces, and a metre in EVERY axis is a readable line: it is
- * a mass a body could stand on - crate, kiosk body, planter, pillar base,
- * machine housing - rather than trim, sills, rails and treads, which sit a
- * hand's width from a surface that already carries the highlight and would
- * have been 1,225 more pieces at 0.8.
+ * So the choice now stands on the left-hand column alone. There is no knee in
+ * that curve - it is close to linear in pieces chamfered - so this is a budget
+ * call and not an optimum. The station is already the heaviest world in the
+ * game (framings measure 2.12M-3.41M drawn), and 1.0 m holds the geometry under
+ * +10% while still chamfering 3,469 pieces. A metre in EVERY axis is also a
+ * readable line: it is a mass a body could stand on - crate, kiosk body,
+ * planter, pillar base, machine housing - rather than trim, sills, rails and
+ * treads, which sit a hand's width from a surface that already carries the
+ * highlight and would have been 1,225 more pieces at 0.8.
+ *
+ * 0.55 - the number `CitadelWorld` uses - is still refused, but on +19.5% of
+ * the heaviest world in the game rather than on the collision column that used
+ * to be the decisive argument. If that budget is ever re-opened with a GPU
+ * measurement in hand, this is a one-line dial and nothing downstream of it
+ * moves except drawn triangles.
  *
  * The frame-time consequence of +9.5% is NOT measured here; there is no
- * headless GPU. What is measured is the geometry, the collision and the build,
- * and the build pass costs +199 ms of the +2.0 s a full station build gains.
+ * headless GPU. What is measured is the geometry, the collision and the build.
+ * The build gained +2.0 s when the chamfer landed, of which the collision pass
+ * was +199 ms; taking the chamfer back out of the soup returns 191 ms of that
+ * (965 -> 774 ms median over ten interleaved headless builds) and the rest is
+ * the cost of building 9x the vertices, which is the chamfer itself.
  *
- * -- WHAT THIS MOVES ON THE EDITOR SIDE, AND WHAT IT DOES NOT BUY ----------
- * More collision chunks means more collider centres inside any given name's
- * bounds, so `station-move-colliders`' table moves for 207 names and three of
- * them cross `_moveColliders`' cap of 200 into the refuse-with-span outcome:
- * `plaza-props:glassWindow` 200, `commercial:emAmber` 195 and
- * `commercial:panel` 184. Those three were already sitting at 92-100% of the
- * cap, and raising this threshold does NOT rescue them - measured at 1.6 m,
- * which halves the table churn to 104 names and loses half the chamfer, all
- * three still cross. So the editor cost is not something a threshold can buy
- * back, and it is not an argument for a number above 1.0.
+ * -- WHAT THIS MOVES ON THE EDITOR SIDE ------------------------------------
+ * Nothing, now. It moved `station-move-colliders`' table for 207 names while
+ * the chamfer was in the soup, and three of them crossed `_moveColliders`' cap
+ * of 200 into refuse-with-span - `plaza-props:glassWindow` 200,
+ * `commercial:emAmber` 195, `commercial:panel` 184. All 207 came back with the
+ * collision, and that fixture is byte-for-byte its pre-chamfer self. Worth
+ * knowing anyway: raising THIS threshold never rescued those three (measured at
+ * 1.6 m, which halves the churn to 104 names and loses half the chamfer, all
+ * three still crossed), so the cap is what they sit against and they sit at
+ * 92-100% of it on a world nobody chamfered.
  *
- * The catalogue anchors move too, by 2 to 26 mm across 33 names with none
- * minted or retired: an anchor is the centre of a batch's BOUNDS, and a
- * chamfer trims the corner off a box, which is the extreme point of a box the
- * batch placed at an angle. No axis-aligned box changes its bounds at all -
- * the flat centre of every face still reaches `w/2`.
+ * The catalogue anchors DO still move, by 2 to 26 mm across 33 names with none
+ * minted or retired, because an anchor is the centre of a batch's BOUNDS and
+ * that is a fact about what is drawn: a chamfer trims the corner off a box,
+ * which is the extreme point of a box the batch placed at an angle. No
+ * axis-aligned box changes its bounds at all - the flat centre of every face
+ * still reaches `w/2`, which is also what makes `squareBoxCorners` able to read
+ * the square box straight off the bounds.
  *
- * The three fixtures this obliges a re-take of, all of which say so in their
- * own headers: `station-catalogue.json`, `station-move-colliders.json`,
- * `dock-catalogue.json` (one name, `yard:tarp`), plus the collision line
+ * So the fixtures this obliges a re-take of are the two that measure drawn
+ * bounds - `station-catalogue.json` and `dock-catalogue.json` (one name,
+ * `yard:tarp`) - and not `station-move-colliders.json` or the collision line
  * pinned inline in `station-catalogue.test.mjs`.
  *
  * The rule is on the SMALLEST dimension on purpose, and that is why the tiling
@@ -1320,7 +1335,77 @@ function chamferBox(w, h, d, radius) {
   geo.attributes.position.needsUpdate = true;
   geo.attributes.normal.needsUpdate = true;
   geo.attributes.uv.needsUpdate = true;
+  /* THE BOX THIS WAS CUT FROM, KEPT FOR THE COLLISION PATH.
+   *
+   * A chamfer only ever REMOVES material from a box's corners, so the square
+   * box it started as is a conservative collider for it - very slightly larger
+   * than the mesh, which is the safe direction and is exactly what the player
+   * already walked into before the kit learned to chamfer. `ShipKit` gets this
+   * for free because it authors its colliders (`cbox` draws through `box` and
+   * collides the FULL box); `StationWorld._solidifyStructure` does not, it
+   * derives collision FROM THE DRAWN GEOMETRY, so it has to be told. See
+   * `squareBoxCorners` and `GeoBatch.add`. */
+  geo.userData.squareBox = { w, h, d };
   return geo;
+}
+
+/* Two triangles a face, over the eight corners `squareBoxCorners` emits. Bit 0
+ * of a corner index is +x, bit 1 is +y, bit 2 is +z.
+ *
+ * READ OFF `new THREE.BoxGeometry(2, 2, 2)` rather than authored, and that is
+ * the whole point of the table: this is what the collision pass would have
+ * extracted from the plain box before the kit learned to chamfer, so the
+ * substitution has to agree with three's SPLIT and not merely with its corners.
+ * It does not, quite, if you pick the diagonals yourself - a quad cut the other
+ * way has the same four corners but two different triples, and
+ * `_dropEnclosedTriangles` asks about triples. Measured with a hand-authored
+ * table: 3 triangles of 202,307 changed sides. Three triangles is nothing to a
+ * player and everything to a pin, which has to be able to say "unchanged".
+ */
+export const SQUARE_BOX_TRIS = [
+  7, 5, 3, 5, 1, 3,  // +x
+  2, 0, 6, 0, 4, 6,  // -x
+  2, 6, 3, 6, 7, 3,  // +y
+  4, 0, 5, 0, 1, 5,  // -y
+  6, 4, 7, 4, 5, 7,  // +z
+  3, 1, 2, 1, 0, 2,  // -z
+];
+
+/**
+ * The eight corners of the plain box a chamfered geometry was cut from, in the
+ * geometry's own frame - or null when this is not one, or is no longer one.
+ *
+ * Read off the BOUNDS rather than off the recorded `w/h/d` at the origin,
+ * because 48 call sites in this kit chain `.translate()` onto a `boxGeo` before
+ * handing it over and the bounds move with the box where a remembered centre
+ * would not. The bounds ARE the plain box while the piece is still axis-
+ * aligned: `chamferBox` leaves the flat centre of every face at exactly w/2,
+ * so a chamfered box measures w x h x d to the float.
+ *
+ * That identity is also the check. A geometry that has been rotated or scaled
+ * since it was chamfered measures something else, and is refused rather than
+ * given a box that would be an axis-aligned crate around a yawed piece - a
+ * collider LARGER than the mesh in the one direction that is not safe. Nothing
+ * in the kit rotates a `boxGeo` today (the batch does that with its own
+ * matrix); the check is what makes that a fact rather than an assumption.
+ */
+export function squareBoxCorners(geo) {
+  const box = geo.userData?.squareBox;
+  if (!box) return null;
+  geo.computeBoundingBox();
+  const b = geo.boundingBox;
+  if (
+    Math.abs(b.max.x - b.min.x - box.w) > 1e-4 ||
+    Math.abs(b.max.y - b.min.y - box.h) > 1e-4 ||
+    Math.abs(b.max.z - b.min.z - box.d) > 1e-4
+  ) return null;
+  const out = new Float32Array(24);
+  for (let i = 0; i < 8; i++) {
+    out[i * 3] = (i & 1) ? b.max.x : b.min.x;
+    out[i * 3 + 1] = (i & 2) ? b.max.y : b.min.y;
+    out[i * 3 + 2] = (i & 4) ? b.max.z : b.min.z;
+  }
+  return out;
 }
 
 /**
@@ -1572,9 +1657,19 @@ function packParts(recs) {
   const siteIx = new Map([[null, 0]]);
   const ownerOf = new Uint16Array(n), pieceOf = new Uint16Array(n), siteOf = new Uint16Array(n);
   const start = new Uint32Array(n), count = new Uint32Array(n);
+  /* The square-collider side table. Only the chamfered parts carry one - 2,724
+   * of the station's ~30,000 - so it is a sparse index rather than a flag: -1
+   * for "collide my triangles", otherwise the row of `squares` holding my
+   * plain box's eight corners. See `squareBoxCorners`. */
+  let nsq = 0;
+  for (let i = 0; i < n; i++) if (recs[i].square) nsq++;
+  const squares = nsq ? new Float32Array(nsq * 24) : null;
+  const squareAt = nsq ? new Int32Array(n).fill(-1) : null;
+  let sq = 0;
   let at = 0;
   for (let i = 0; i < n; i++) {
     const r = recs[i];
+    if (r.square) { squares.set(r.square, sq * 24); squareAt[i] = sq++; }
     let oi = ownerIx.get(r.owner);
     if (oi === undefined) { oi = owners.push(r.owner) - 1; ownerIx.set(r.owner, oi); }
     let pi = pieceIx.get(r.piece);
@@ -1588,7 +1683,7 @@ function packParts(recs) {
     count[i] = r.n;
     at += r.n;
   }
-  return { owners, pieces, sites, ownerOf, pieceOf, siteOf, start, count, indices: at };
+  return { owners, pieces, sites, ownerOf, pieceOf, siteOf, start, count, squares, squareAt, indices: at };
 }
 
 export class GeoBatch {
@@ -1614,6 +1709,27 @@ export class GeoBatch {
 
   /** @param {string} key material key @param {THREE.BufferGeometry} geo owned by the batch */
   add(key, geo, matrix) {
+    /* ── THE SQUARE-COLLIDER HALF ───────────────────────────────────────
+     * Read BEFORE the matrix goes on, because the check that makes it safe
+     * is that the piece is still axis-aligned in its own frame, and the
+     * batch's matrix is exactly what stops being true of.
+     *
+     * `StationWorld._solidifyStructure` derives the station's collision from
+     * the DRAWN geometry, so a chamfer - which exists only to catch a
+     * highlight on an edge - was being charged twice, once as triangles and
+     * again as collision: 372,792 -> 551,953 triangles extracted and 26,757
+     * -> 29,197 colliders for a 9.5% rise in what is drawn. A chamfer only
+     * ever cuts material AWAY from a box's corners, so the square box is a
+     * conservative collider for it and is what the player already walked
+     * into. Recorded here, in the batch's frame, and substituted for the
+     * part's 108 triangles by `_collisionSoup`. */
+    const square = squareBoxCorners(geo);
+    if (square && matrix) {
+      for (let i = 0; i < 24; i += 3) {
+        _v1.set(square[i], square[i + 1], square[i + 2]).applyMatrix4(matrix);
+        square[i] = _v1.x; square[i + 1] = _v1.y; square[i + 2] = _v1.z;
+      }
+    }
     if (matrix) geo.applyMatrix4(matrix);
     // mergeGeometries refuses to mix indexed and non-indexed sources, and the
     // polyhedra (Octahedron/Icosahedron) arrive unindexed. Normalise here so
@@ -1645,6 +1761,7 @@ export class GeoBatch {
       piece: this._piece,
       site: TRACE_CALL_SITES ? callSite() : null,
       n: geo.getIndex().count,
+      square,
     });
     return geo;
   }
@@ -1679,6 +1796,12 @@ export class GeoBatch {
    *   parts.start[i] / parts.count[i]   range into `geometry.index`
    *   parts.owners[parts.ownerOf[i]]    the build step, zone or link
    *   parts.pieces[parts.pieceOf[i]]    a finer label, or null
+   *   parts.squareAt[i]                 -1, or the row of `parts.squares`
+   *                                     holding the eight corners of the plain
+   *                                     box this chamfered piece was cut from
+   *
+   * `squares`/`squareAt` are null on a batch that chamfered nothing, which is
+   * every batch outside the station's own scale.
    *
    * Entry 0 of both string tables is `null`, so an unlabelled piece costs no
    * table row. `start` is a running sum of source index counts, which is

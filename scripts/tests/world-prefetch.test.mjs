@@ -188,6 +188,32 @@ test('the boot runs the eager chain only when asked, and the lazy poller otherwi
     + 'player next to a gateway never gets its world prepared');
 });
 
+test('switching the lazy poller off also lifts the resident cap, because nothing else can re-prepare', async () => {
+  const src = await readCode('src/main.js');
+  /* THE COUPLING, AND WHY IT IS NOT OPTIONAL.
+   *
+   * `WorldManager._evictStale` disposes a built world that is not active, not
+   * recent, and not near a gateway. That is only safe because `WorldPrefetch`
+   * brings it back when the player walks within PREFETCH_RANGE again. Both
+   * `?prefetch=off` and `?prefetch=all` switch that poller off — so under
+   * either flag an evicted world has NOTHING that can re-prepare it, and the
+   * next entry pays a full build inside a gameplay frame.
+   *
+   * Measured on an RTX 5080 before this line existed, with `?prefetch=all`:
+   * entry:citadel linked 275 new shader programs against a baseline of 0, and
+   * entry:race 42. The frame-gap counter gate failed on both with "was NOT
+   * built when the player entered it". Neither flag is a player path, so the
+   * VRAM bound the cap exists for is untouched by lifting it here. */
+  const off = src.indexOf("if (overrides.prefetch === 'off' || overrides.prefetch === 'all')");
+  assert.ok(off > 0, 'the prefetch overrides no longer disable the poller in one place');
+  const block = src.slice(off, off + 1400);
+  assert.match(block, /worldPrefetch\.enabled\s*=\s*false/,
+    'the overrides no longer switch the lazy poller off');
+  assert.match(block, /worldManager\.residentCap\s*=\s*Infinity/,
+    'the poller is switched off but the resident cap is left in force - an evicted world '
+    + 'can then never be re-prepared, and every later entry pays a full build in a gameplay frame');
+});
+
 test('the per-world step claims the gateways before the sliced warm and releases them in a finally', async () => {
   const src = await readCode('src/main.js');
   const from = src.indexOf('function prepareWorld(id)');

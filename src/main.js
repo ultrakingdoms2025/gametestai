@@ -468,7 +468,26 @@ const worldPrefetch = new WorldPrefetch({
   prepare: (id) => prepareWorld(id),
   isVolatile: (id) => worldManager.isVolatile(id),
 });
-if (overrides.prefetch === 'off' || overrides.prefetch === 'all') worldPrefetch.enabled = false;
+if (overrides.prefetch === 'off' || overrides.prefetch === 'all') {
+  worldPrefetch.enabled = false;
+  /* AND THE RESIDENT CAP GOES WITH IT. The LRU in `WorldManager._evictStale`
+   * is safe only because `WorldPrefetch` re-prepares a world when the player
+   * walks back within range of its gateway. Both overrides above switch that
+   * poller OFF — so an evicted world has nothing left that can bring it back,
+   * and the next entry pays a FULL BUILD inside a gameplay frame.
+   *
+   * Measured on an RTX 5080 with `?prefetch=all`: entry:citadel linked 275 new
+   * shader programs against a recorded baseline of 0, and entry:race 42 — the
+   * frame-gap counter gate caught both. `prefetch=all` asks for every world to
+   * be resident; evicting them is the cap contradicting the flag rather than
+   * serving it.
+   *
+   * The cap exists to bound a session's VRAM (worlds were never disposed at
+   * all, ~300-400 MB over a four-world tour). Neither override is a player
+   * path — they are instrument and debug flags — so nothing a player does is
+   * un-bounded by this line. */
+  worldManager.residentCap = Infinity;
+}
 /* The maze's M map. It owns its own keydown listener rather than going through
  * `input.pressed`, like the other panels, and shares the `map` action with the
  * mount wheel above - `mapActionOwner` decides which of them M means in the

@@ -73,10 +73,21 @@ const DEFAULT_PACE = 0.42;
 const DEFAULT_GRACE = 8;
 const DEFAULT_SECONDS = 240;
 
-/** How far from the depot a run may be started. */
-const DEPOT_R = 6.0;
+/**
+ * How far from the depot a run may be started.
+ *
+ * EXPORTED because the world has to publish the same number as the venue's
+ * OFFER gate. `MinigameManager` used to offer "Start the Concourse Round"
+ * anywhere inside the containment disc - which has to hold the whole route or
+ * `LEAVE_GRACE_S` abandons every run - so the prompt appeared 50 m from the
+ * kiosk, took the E key off every NPC on the deck, and then `createDeliveryRun`
+ * refused with "loads at the depot, 47 m away". The words and the key can only
+ * agree if the venue's gate IS this one, so `StationWorld` reads it from here
+ * rather than copying the figure.
+ */
+export const DEPOT_R = 6.0;
 /** Vertical band on that gate. */
-const DEPOT_BAND = 3.0;
+export const DEPOT_BAND = 3.0;
 
 /** mm:ss.t */
 function clockText(t) {

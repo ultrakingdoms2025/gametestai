@@ -58,10 +58,16 @@ const DEFAULT_DECAY = 1.8;
 const DEFAULT_BONUS = 6;
 const DEFAULT_SECONDS = 75;
 
-/** How far from the access node a splice may be started. */
-const ACCESS_R = 6.0;
+/**
+ * How far from the access node a splice may be started.
+ *
+ * EXPORTED for the same reason as `DeliveryRun`'s `DEPOT_R`: the venue's OFFER
+ * gate has to be this gate, or the prompt claims E somewhere this factory will
+ * refuse. `StationWorld` reads it from here rather than copying the figure.
+ */
+export const ACCESS_R = 6.0;
 /** Vertical band on that gate. */
-const ACCESS_BAND = 3.0;
+export const ACCESS_BAND = 3.0;
 
 /** mm:ss.t */
 function clockText(t) {

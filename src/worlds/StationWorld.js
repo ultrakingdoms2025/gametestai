@@ -66,6 +66,11 @@ import { buildControlTower } from './station/ControlTower.js';
 import { DistanceLod } from './lod/DistanceLod.js';
 import { loadHeroAssets } from '../npc/HeroAssets.js';
 import { settlePoints, discFor } from '../minigames/VenueGround.js';
+/* The two contests' OWN start gates. Imported rather than copied: the venue's
+ * offer gate has to be the gate the game module enforces, or the prompt claims
+ * the E key somewhere the factory then refuses. See `_fillVenue`. */
+import { DEPOT_R, DEPOT_BAND } from '../minigames/DeliveryRun.js';
+import { ACCESS_R, ACCESS_BAND } from '../minigames/DroneHack.js';
 
 /**
  * AETHER NEXUS - "Aether Nexus Station", the entry world.
@@ -12238,11 +12243,30 @@ export class StationWorld extends World {
     v.centre = disc.centre;
     v.radius = disc.radius;
     v.yTolerance = disc.yTolerance;
+    /* ---- and the OFFER gate, which is NOT that disc ----
+     *
+     * The disc above is containment, and it spans the concourse. Used as the
+     * offer as well - which is what `MinigameManager._pollNear` did - it read
+     * "E - Start the Concourse Round" from one side of the hub deck to the
+     * other, took E off all seven talkable NPCs standing inside it, and then
+     * `createDeliveryRun` refused the start with "loads at the depot, 47 m
+     * away". Reported from real play as "I can not talk to people".
+     *
+     * `DEPOT_R` and `ACCESS_R` are the modules' own answers to "how far from
+     * the start may this be started", read from the modules so the two can
+     * never drift apart. `station-minigames.test.mjs` asserts they are the
+     * same number. */
     if (spec.shape === 'nodes') {
       v.config = { ...spec.config, nodes: points };
+      v.start = points[0];
+      v.startRadius = ACCESS_R;
+      v.startBand = ACCESS_BAND;
     } else {
       const [depot, ...drops] = points;
       v.config = { ...spec.config, depot, depotLabel: depot.label, drops };
+      v.start = depot;
+      v.startRadius = DEPOT_R;
+      v.startBand = DEPOT_BAND;
     }
     return v;
   }

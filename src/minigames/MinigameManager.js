@@ -309,6 +309,79 @@ const RESULT_HOLD_S = 14;
  */
 const LEAVE_GRACE_S = 9;
 
+/**
+ * The OFFER gate a venue may publish, and why it is not the containment disc.
+ *
+ * ── THE TWO JOBS ONE RADIUS WAS DOING ─────────────────────────────────────
+ *
+ * `centre`/`radius`/`yTolerance` are CONTAINMENT: `fixedUpdate` abandons a
+ * running contest `LEAVE_GRACE_S` after the player leaves that disc, so it has
+ * to hold the WHOLE route. `CitadelWorld._fillVenue`, `RooftopTrial.venueBounds`
+ * and `SportsWorld`'s ski and track venues all record the same requirement, and
+ * `citadel_skyline` is the recorded failure of getting it wrong: a start-line
+ * disc self-aborts every run nine seconds after it reaches the far end.
+ *
+ * `_pollNear` then used that same disc to decide where the venue OFFERS itself,
+ * and those are not the same question. Measured on the station hub deck: the
+ * Concourse Round's disc spans the concourse, so the prompt read "E - Start the
+ * Concourse Round" everywhere on it, E belonged to the venue everywhere on it
+ * (`HUD._updateInput` stands its chat branch down while a venue prompt is up),
+ * and the seven ordinary NPCs standing inside it could not be talked to at all.
+ * Worse, E did not even start anything: `createDeliveryRun` refuses beyond
+ * `DEPOT_R` = 6 m with "loads at the depot, 47 m away". The words, the key and
+ * the game all disagreed.
+ *
+ * ── WHAT A GATE IS ────────────────────────────────────────────────────────
+ *
+ * A venue MAY publish `start` (a point), `startRadius` and `startBand`. When it
+ * does, the venue only claims the prompt and the key within that gate;
+ * containment is untouched and still governs abandonment. When it does not -
+ * every venue in sports, the dock, the race world, the medieval charter and the
+ * citadel - the disc remains the offer, exactly as before. That default is
+ * deliberate rather than lazy: the ski slope and the 400 m are WIDE offers with
+ * module-enforced start gates (`SportsWorld` records both), and shrinking them
+ * would break contests that work.
+ *
+ * ── WHY THE HYSTERESIS LIVES INSIDE THE GATE ──────────────────────────────
+ *
+ * `PROMPT_HYSTERESIS` exists so a player on a boundary does not make the prompt
+ * - and the meaning of E - flicker every frame. Applied the usual way it would
+ * push the OFFER 2.5 m past the gate the game module enforces, which is the
+ * same words-and-key disagreement in miniature: a prompt that appears where E
+ * only earns a warning toast. So the published radius is a HARD CEILING and the
+ * hysteresis band sits inside it - armed at `startArm`, released at
+ * `startRadius`. Sharp on the way in, forgiving on the way out, and never a
+ * frame of "Start" outside the place a start is possible.
+ *
+ * @param {any} raw the world's venue descriptor
+ * @param {number} yTolerance the containment band, used when no `startBand` is
+ *   published
+ * @returns {object} the gate fields, or `{ start: null }` for no gate
+ */
+function readStartGate(raw, yTolerance) {
+  const s = raw?.start ?? null;
+  const x = Number(s?.x);
+  const y = Number(s?.y);
+  const z = Number(s?.z);
+  const r = Number(raw?.startRadius);
+  // A half-published gate is a bug in the world, and a bug in the world must
+  // degrade to the behaviour every other venue has - never to a venue that can
+  // be seen and never entered.
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return { start: null };
+  if (!Number.isFinite(r) || r <= 0) return { start: null };
+  const rawBand = Number(raw?.startBand);
+  const band = Number.isFinite(rawBand) && rawBand > 0 ? rawBand : yTolerance;
+  return { start: { x, y, z }, startRadius: r, startBand: band };
+}
+
+/**
+ * The radius a gate ARMS at, given the radius it releases at.
+ *
+ * Never below half the gate: a gate narrower than the hysteresis band would
+ * otherwise arm at zero and never show at all.
+ */
+const armRadius = (r) => Math.max(r * 0.5, r - PROMPT_HYSTERESIS);
+
 export class MinigameManager {
   /**
    * @param {{ bus:any, player:any, economy?:any, input?:any, worldManager?:any }} ctx
@@ -768,16 +841,18 @@ export class MinigameManager {
     if (!Number.isFinite(radius) || radius <= 0) return null;
 
     const reward = Number(raw.reward);
+    /* The pool basin floor is 3 m below its deck and the ski slope will be
+     * 50 m above its lodge, so a planar radius alone would either miss the
+     * swimmer or offer a race to somebody on a gantry overhead. */
+    const yTolerance = Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8;
     return {
       id,
       kind,
       label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : id,
       centre: { x: cx, y: Number.isFinite(cy) ? cy : 0, z: cz },
       radius,
-      /* The pool basin floor is 3 m below its deck and the ski slope will be
-       * 50 m above its lodge, so a planar radius alone would either miss the
-       * swimmer or offer a race to somebody on a gantry overhead. */
-      yTolerance: Number.isFinite(Number(raw.yTolerance)) ? Number(raw.yTolerance) : 8,
+      yTolerance,
+      ...readStartGate(raw, yTolerance),
       /* Resolved HERE and not at payout, so `consolationFor` - which derives
        * the participation floor as a share of the prize - sees the credits the
        * win actually pays rather than the legacy rung. See `venuePrize`. */
@@ -804,6 +879,34 @@ export class MinigameManager {
     return Math.hypot(dx, dz) < v.radius + slack;
   }
 
+  /**
+   * Is the player AT the venue - close enough that starting it would work?
+   *
+   * True for every venue that publishes no gate, which keeps the disc as the
+   * offer for the four worlds that were built that way. See `readStartGate`
+   * for why the hysteresis band sits INSIDE the published radius rather than
+   * outside it.
+   *
+   * @param {object} v
+   * @param {number} slack 0 while approaching, `PROMPT_HYSTERESIS` once armed
+   */
+  _atStart(v, slack = 0) {
+    if (!v) return false;
+    /* Derived here rather than cached on the venue, so this answers the same
+     * for a world's RAW descriptor as for a normalised one. The tests reach for
+     * both, and a gate that silently reads `undefined` off the raw object would
+     * refuse everywhere while looking like it worked. */
+    if (!v.start || !(Number(v.startRadius) > 0)) return true;
+    const p = this.player?.position;
+    if (!p) return false;
+    const held = slack > 0;
+    const band = Number(v.startBand) > 0 ? Number(v.startBand) : v.yTolerance;
+    if (Math.abs(p.y - v.start.y) > (held ? band : armRadius(band))) return false;
+    const dx = p.x - v.start.x;
+    const dz = p.z - v.start.z;
+    return Math.hypot(dx, dz) < (held ? v.startRadius : armRadius(v.startRadius));
+  }
+
   _pollNear() {
     if (!this._venues.length) {
       this._near = null;
@@ -818,6 +921,11 @@ export class MinigameManager {
       // on the way in and forgiving on the way out.
       const slack = this._near?.id === v.id ? PROMPT_HYSTERESIS : 0;
       if (!this._inVenue(v, slack)) continue;
+      /* Being INSIDE a venue is not being AT one. Containment is the
+       * abandonment test and has to hold the whole route; the offer is a
+       * separate, smaller question, and conflating them made every NPC on the
+       * station concourse unreachable. `readStartGate` has the measurements. */
+      if (!this._atStart(v, slack)) continue;
       const d = Math.hypot(p.x - v.centre.x, p.z - v.centre.z);
       if (d < bestD) {
         bestD = d;

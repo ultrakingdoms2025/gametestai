@@ -2130,8 +2130,33 @@ export class SportsWorld extends World {
    *
    * `holeRects` are world-space `{x0,z0,x1,z1}` boxes to leave open, for the
    * places the ground genuinely has no floor - the swimming basin and the skate
-   * bowl. A cell is dropped when its *centre* falls inside one, so ground
-   * continues right up to the opening instead of retreating a cell from it.
+   * bowl. A cell is dropped only when it lies ENTIRELY inside one, which is the
+   * same rule `_heightMesh` applies to the quads it draws over the same rects
+   * on the same 2.6 m grid. That identity is the whole point: wherever the lawn
+   * is drawn there is a floor under it, and the collider is open only where the
+   * lawn is open.
+   *
+   * It used to drop a cell whose *CENTRE* fell inside a rect, on the reasoning
+   * that ground should continue right up to the opening rather than retreat a
+   * cell from it. It does the opposite. A cell straddling the rect edge with
+   * its centre just inside is dropped whole, so the opening SPILLS up to half a
+   * cell OUT of the rect - past the slabs that were laid to replace the ground
+   * inside it, into ground the lawn mesh is still drawing. Two live holes came
+   * from that, both reported as the player falling through visible grass:
+   *
+   *   - the pool's north verge, x 26..75.4 by z 98.8..100.0 (1.2 m wide, 49 m
+   *     long), between the lido hedge at z 98.6 and the deck slab at z 100 -
+   *     "in sporting area near the pool i fall through the ground 37.4, 0, 98.9";
+   *   - the pool's east verge, x 75.0..75.4 by z 98.8..124.8 (0.4 m by 26 m);
+   *   - the skate pad's south verge, x -124.8..-26.0 at z 75.0..75.4 (0.4 m by
+   *     98 m), which nobody had walked into yet.
+   *
+   * Containment cannot produce that failure at all: the opening is always a
+   * subset of the rect the author asked for, on any grid, for any rect. What it
+   * can do is leave up to a cell of ground INSIDE the rect, so a hole rect must
+   * stay at least one cell clear of the drop it is opening - POOL's edge is 3 m
+   * from the basin's north wall and PAD's is 20 m from the bowl, against a
+   * 2.6 m cell.
    */
   _addHeightCollision(fn, x0, z0, x1, z1, res, holeRects = null) {
     const nqx = Math.max(1, Math.ceil((x1 - x0) / res));
@@ -2153,12 +2178,14 @@ export class SportsWorld extends World {
     if (holeRects && holeRects.length) {
       holes = new Uint8Array(nqx * nqz);
       for (let j = 0; j < nqz; j++) {
-        const cz = z0 + (j + 0.5) * stepZ;
+        const za = z0 + j * stepZ;
+        const zb = za + stepZ;
         for (let i = 0; i < nqx; i++) {
-          const cx = x0 + (i + 0.5) * stepX;
+          const xa = x0 + i * stepX;
+          const xb = xa + stepX;
           for (let r = 0; r < holeRects.length; r++) {
             const h = holeRects[r];
-            if (cx > h.x0 && cx < h.x1 && cz > h.z0 && cz < h.z1) {
+            if (xa >= h.x0 && xb <= h.x1 && za >= h.z0 && zb <= h.z1) {
               holes[j * nqx + i] = 1;
               break;
             }

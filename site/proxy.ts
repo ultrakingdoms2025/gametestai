@@ -1,7 +1,12 @@
 import { auth } from '@/lib/auth';
-import { launchCookieName, verifyLaunchCookieValue } from '@/lib/gameLaunch';
+import {
+  createLaunchCookieValue,
+  launchCookieMaxAge,
+  launchCookieName,
+  verifyLaunchCookieValue,
+} from '@/lib/gameLaunch';
 import { isGameAssetPath, isGatedGamePath } from '@/lib/gatePaths';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 /*
  * `/admin` is here as DEFENCE IN DEPTH, not as the gate.
@@ -16,10 +21,10 @@ import { NextResponse } from 'next/server';
  */
 const PROTECTED = ['/play', '/checkout', '/store', '/account', '/admin'];
 
-export default auth(async (req) => {
+export async function proxy(req: NextRequest) {
   const { nextUrl } = req;
   const path = nextUrl.pathname;
-  const session = req.auth;
+  const session = await auth(req as never);
 
   /* Hashed build artefacts leave immediately, before any crypto runs.
    *
@@ -38,7 +43,18 @@ export default auth(async (req) => {
     const launchCookie = req.cookies.get(launchCookieName())?.value;
     const ok = await verifyLaunchCookieValue(launchCookie, userId);
     if (!ok) {
-      return NextResponse.redirect(new URL('/', nextUrl.origin));
+      /* A valid session is enough to issue a fresh launch pass. The iframe can
+       * otherwise lose the first Set-Cookie redirect and strand the player at
+       * the public home page on the next request. */
+      const res = NextResponse.redirect(new URL('/game/index.html', nextUrl.origin), 307);
+      res.cookies.set(launchCookieName(), await createLaunchCookieValue(userId), {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
+        maxAge: launchCookieMaxAge(),
+      });
+      return res;
     }
 
     return NextResponse.next();
@@ -52,7 +68,7 @@ export default auth(async (req) => {
   }
 
   return NextResponse.next();
-});
+}
 
 /*
  * `game/assets` and `game/vendor` are excluded so the function is never invoked

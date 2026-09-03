@@ -6,7 +6,7 @@ import {
   verifyLaunchCookieValue,
 } from '@/lib/gameLaunch';
 import { isGameAssetPath, isGatedGamePath } from '@/lib/gatePaths';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /*
  * `/admin` is here as DEFENCE IN DEPTH, not as the gate.
@@ -21,10 +21,10 @@ import { NextRequest, NextResponse } from 'next/server';
  */
 const PROTECTED = ['/play', '/checkout', '/store', '/account', '/admin'];
 
-export async function proxy(req: NextRequest) {
+export default auth(async (req) => {
   const { nextUrl } = req;
   const path = nextUrl.pathname;
-  const session = await auth(req as never);
+  const session = req.auth;
 
   /* Hashed build artefacts leave immediately, before any crypto runs.
    *
@@ -68,7 +68,7 @@ export async function proxy(req: NextRequest) {
   }
 
   return NextResponse.next();
-}
+});
 
 /*
  * `game/assets` and `game/vendor` are excluded so the function is never invoked

@@ -63,23 +63,31 @@ export async function createLaunchCookieValue(userId: string): Promise<string> {
   return `${encodeBody(body)}.${await hmac(body)}`;
 }
 
-export async function verifyLaunchCookieValue(raw: string | undefined, userId: string): Promise<boolean> {
-  if (!raw) return false;
+/** Verify a launch pass and return the user it was issued for. */
+export async function launchCookieUserId(raw: string | undefined): Promise<string | null> {
+  if (!raw) return null;
   const dot = raw.lastIndexOf('.');
-  if (dot <= 0) return false;
+  if (dot <= 0) return null;
 
   const body = decodeBody(raw.slice(0, dot));
   const sig = raw.slice(dot + 1);
-  if (!body) return false;
-  if (sig !== await hmac(body)) return false;
+  if (!body) return null;
+  if (sig !== await hmac(body)) return null;
 
   try {
     const parsed = JSON.parse(body) as { u?: unknown; exp?: unknown };
-    return parsed.u === userId
+    return typeof parsed.u === 'string'
+      && parsed.u.length > 0
       && typeof parsed.exp === 'number'
       && Number.isFinite(parsed.exp)
-      && Date.now() < parsed.exp;
+      && Date.now() < parsed.exp
+      ? parsed.u
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function verifyLaunchCookieValue(raw: string | undefined, userId: string): Promise<boolean> {
+  return (await launchCookieUserId(raw)) === userId;
 }

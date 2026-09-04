@@ -192,7 +192,7 @@ export async function bakeMarketplaceArt({
   limit?: number;
   pauseMs?: number;
   onProgress?: (done: number, total: number, name: string, ok: boolean) => void;
-} = {}): Promise<{ total: number; baked: number; failed: number }> {
+} = {}): Promise<{ total: number; baked: number; failed: number; items: number }> {
   const { rows } = await query<Record<string, unknown>>(
     `SELECT id, name, description, category, world_name
      FROM marketplace_items
@@ -205,40 +205,67 @@ export async function bakeMarketplaceArt({
     [limit]
   );
 
+  /* ONE RENDER PER ITEM, NOT PER ROW.
+   *
+   * The catalogue carries every item once per world - measured, 790 rows over
+   * 174 distinct items, so about four and a half rows share each picture. A
+   * render takes ~37 s, so baking per ROW is an eight-hour job and baking per
+   * ITEM is under two, for the same result: a Rifle Round Pack is the same
+   * object whether it is sold on the station or in the vale, and giving it four
+   * different pictures was never a feature, only a consequence of the seed
+   * keying its prompt on the world.
+   *
+   * Grouped on name+category because that is what the prompt is actually built
+   * from; the world contributes only a style word. The first row of a group
+   * supplies the prompt and every row in it gets the same bytes. */
+  const groups = new Map<string, { rows: Record<string, unknown>[] }>();
+  for (const row of rows) {
+    const key = `${String(row.name ?? '').toLowerCase()}|${String(row.category ?? '').toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { rows: [] });
+    groups.get(key)!.rows.push(row);
+  }
+
   let baked = 0;
   let failed = 0;
-  for (const [i, row] of rows.entries()) {
-    const category = String(row.category ?? 'tools').toLowerCase();
-    const world = String(row.world_name ?? 'station').toLowerCase();
-    const name = String(row.name ?? 'Marketplace item');
+  let done = 0;
+  for (const { rows: group } of groups.values()) {
+    const head = group[0];
+    const category = String(head.category ?? 'tools').toLowerCase();
+    const world = String(head.world_name ?? 'station').toLowerCase();
+    const name = String(head.name ?? 'Marketplace item');
     const url = buildMarketplaceAiImageUrl({
       name,
-      description: String(row.description ?? ''),
+      description: String(head.description ?? ''),
       category: (MARKETPLACE_CATEGORIES.includes(category as MarketplaceCategory)
         ? category
         : 'tools') as MarketplaceCategory,
       world: (MARKETPLACE_WORLDS.includes(world as MarketplaceWorld)
         ? world
         : 'station') as MarketplaceWorld,
-      sourceKey: String(row.id ?? ''),
+      /* Keyed on the ITEM, not the row, so the seed is stable across worlds and
+       * a re-bake of the same item reproduces the same picture. */
+      sourceKey: `${name}:${category}`,
     });
 
     const dataUri = await fetchMarketplaceArtDataUri(url);
     if (dataUri) {
-      await query(`UPDATE marketplace_items SET image = $1, updated_at = NOW() WHERE id = $2`, [
-        dataUri,
-        row.id,
-      ]);
-      baked += 1;
+      /* Every row in the group in ONE statement - 790 individual UPDATEs each
+       * opening its own connection is its own kind of slow. */
+      await query(
+        `UPDATE marketplace_items SET image = $1, updated_at = NOW() WHERE id = ANY($2::uuid[])`,
+        [dataUri, group.map((r) => String(r.id))]
+      );
+      baked += group.length;
     } else {
-      failed += 1;
+      failed += group.length;
     }
-    onProgress?.(i + 1, rows.length, name, Boolean(dataUri));
-    if (pauseMs > 0 && i < rows.length - 1) {
+    done += 1;
+    onProgress?.(done, groups.size, `${name} (${group.length} rows)`, Boolean(dataUri));
+    if (pauseMs > 0 && done < groups.size) {
       await new Promise((r) => setTimeout(r, pauseMs));
     }
   }
-  return { total: rows.length, baked, failed };
+  return { total: rows.length, baked, failed, items: groups.size };
 }
 
 /**

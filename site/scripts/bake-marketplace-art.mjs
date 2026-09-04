@@ -85,7 +85,8 @@ const result = await bakeMarketplaceArt({
 
 const secs = Math.round((Date.now() - started) / 1000);
 console.log(
-  `\nDone in ${secs}s — ${result.baked} baked, ${result.failed} failed, ${result.total} attempted.`
+  `\nDone in ${secs}s — ${result.items} images rendered, filling ${result.baked} rows` +
+    ` (${result.failed} rows still unbaked, of ${result.total} attempted).`
 );
 if (result.failed) {
   console.log('Failed rows keep an empty image and show the placeholder. Re-run to retry them.');

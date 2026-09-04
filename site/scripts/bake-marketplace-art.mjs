@@ -53,7 +53,7 @@ function arg(name, fallback) {
   return i === -1 ? fallback : Number(process.argv[i + 1]);
 }
 
-const limit = arg('limit', 500);
+const limit = arg('limit', 100000);
 const pauseMs = arg('pause', 750);
 
 /* Imported through tsx/next's TS pipeline is overkill for one function; the

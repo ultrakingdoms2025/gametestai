@@ -185,7 +185,7 @@ async function syncMarketplaceSeedItems() {
  * @returns counts, so a caller can report rather than guess
  */
 export async function bakeMarketplaceArt({
-  limit = 500,
+  limit = 100000,
   pauseMs = 750,
   onProgress,
 }: {

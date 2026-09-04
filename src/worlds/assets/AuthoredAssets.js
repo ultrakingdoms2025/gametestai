@@ -158,11 +158,39 @@ export function createAuthoredAssets({
   function load(renderer) {
     if (_assets) return Promise.resolve(_assets);
     if (_loading) return _loading;
-    _loading = loadAll(renderer).then((map) => {
-      _assets = map;
-      _loading = null;
-      return map;
-    });
+    /* `_loading` IS CLEARED ON REJECTION AS WELL AS FULFILMENT.
+     *
+     * It used to be nulled only inside the `then`, with no `catch` and no
+     * `finally`. The header two hundred lines up promises "Never rejects" and
+     * "every failure path resolves", and that holds today only because every
+     * statement in `loadAll` happens to sit inside a `try` - nothing enforces
+     * it, and the trailing `getMaxAnisotropy()`, `ktx2?.dispose()` and the
+     * `entries.filter(...)` are outside the per-entry guards.
+     *
+     * The moment one of those throws, `_loading` becomes a PERMANENTLY
+     * rejected promise that every later call returns. `MazeWorld.build` awaits
+     * this inside a `Promise.all`, so the maze build rejects, `_runBuild`
+     * rejects, `_activate` rejects, and `world:changed` is never emitted -
+     * which leaves the crossing to be ended by the HUD's 45 s safety timer
+     * instead. Retrying the gateway then fails identically FOR THE LIFE OF THE
+     * PAGE, because the cache is keyed on nothing but this variable. A reload
+     * is the only cure, and the player is given no reason to think one would
+     * help.
+     *
+     * Clearing it on rejection makes a failure cost that one crossing rather
+     * than the session: the next entry re-runs the load and can succeed, which
+     * is what a transient fetch failure deserves. */
+    _loading = loadAll(renderer).then(
+      (map) => {
+        _assets = map;
+        _loading = null;
+        return map;
+      },
+      (err) => {
+        _loading = null;
+        throw err;
+      }
+    );
     return _loading;
   }
 

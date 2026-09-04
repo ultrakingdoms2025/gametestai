@@ -1502,7 +1502,33 @@ export class SaveGame {
       }
       await wm.build(id);
       await wm.activate(id);
-      return { ok: true, exact: true, world: id };
+      /* A VOLATILE WORLD IS NEVER AN EXACT RESTORE.
+       *
+       * `exact` decides whether `load()` hands the stored coordinates to
+       * `_restorePlayer`, and its own docstring already states the rule this
+       * needs: null is passed "when the world did not resolve exactly, because
+       * the stored coordinates describe a world that is not the one now
+       * standing". That is the maze's permanent condition. It is the one
+       * volatile world, `MazeWorld.build` rolls a fresh random seed on every
+       * build, and the seed is NOT in the save - so the layout the player
+       * stood in cannot be reproduced even in principle, and the stored x/y/z
+       * name a spot in a maze that no longer exists.
+       *
+       * Restoring them anyway drops the player wherever that coordinate now
+       * falls: inside a hedge, inside a wall, or under the floor. Nothing
+       * catches it - there is no spawn-safety or de-penetration pass here, and
+       * at the moment of the teleport the district colliders around the new
+       * position have not streamed in, so the physics step has nothing to push
+       * them out of either. The result is a player who cannot move, in a view
+       * that shows no world, on every single reload, because the same stale
+       * save is restored each time.
+       *
+       * `exact: false` keeps the world and drops the coordinates, so the maze's
+       * own entrance spawn - where `activate()` has already put them, and the
+       * only position that means anything in a freshly generated maze - is
+       * what stands. */
+      const exact = !wm.isVolatile?.(id);
+      return { ok: true, exact, world: id };
     } catch (err) {
       console.warn(`[SaveGame] could not activate world "${id}":`, err);
       return { ok: false, exact: false, world: live() };

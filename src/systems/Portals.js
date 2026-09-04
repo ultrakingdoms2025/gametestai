@@ -937,6 +937,15 @@ export class PortalSystem {
     this._offBus = [];
     if (this.bus?.on) {
       this._offBus.push(this.bus.on('player:spawned', () => this._disarmAll()));
+      /* The HUD's 45 s wipe timer is the only deadline anywhere on a crossing,
+       * and until now it only took the black slabs away - it repaired none of
+       * the state behind them. `enter()` has the player's input, `_transition`
+       * is still set (so every later `enter()` returns false and the gateway
+       * is dead for the rest of the page), and the warp overlay is still in
+       * the scene. Standing all three down is the difference between "that
+       * took too long, try again" and a session the player has to reload out
+       * of. Idempotent, and a no-op when no crossing is running. */
+      this._offBus.push(this.bus.on('portal:stuck', () => this.abortTransition()));
     }
 
     this._buildPreviewRig();
@@ -3517,6 +3526,44 @@ export class PortalSystem {
    */
   stepTransition(dt) {
     if (this._transition) this._updateTransition(dt);
+  }
+
+  /**
+   * Give up on a crossing that never completed, and hand everything back.
+   *
+   * The failure this exists for is a destination whose build never resolves or
+   * rejects outright: `world:changed` is never emitted, so nothing ends the
+   * transition, and `enter()`'s very first line - `if (!portal ||
+   * this._transition) return false` - then refuses every future crossing at
+   * every gateway for the life of the page. The player keeps their HUD, keeps
+   * Esc and the sheets, and has no movement and no way out.
+   *
+   * Restores the three things `enter()` took: the input, the warp overlay, and
+   * the transition slot itself. Deliberately does NOT touch the world - if the
+   * build is still running it may yet finish, and it will simply find no
+   * transition waiting for it, which is the correct outcome for a crossing the
+   * player has already been told to retry.
+   *
+   * Idempotent and safe to call with nothing in flight.
+   */
+  abortTransition() {
+    if (!this._transition) return false;
+    const { portal } = this._transition;
+    this._transition = null;
+    if (portal) portal.state = 'stabilising';
+    const u = this._warpMat?.uniforms;
+    if (u) {
+      u.uFlash.value = 0;
+      u.uProgress.value = 0;
+      u.uRing.value = -1;
+    }
+    if (this._warpMesh) {
+      this._warpMesh.visible = false;
+      if (this._warpMesh.parent) this._warpMesh.parent.remove(this._warpMesh);
+    }
+    this.input?.setEnabled?.(true);
+    console.warn('[Portals] crossing abandoned after the wipe deadline; input restored');
+    return true;
   }
 
   /**

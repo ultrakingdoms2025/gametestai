@@ -4208,9 +4208,30 @@ export class HUD {
     this.wipe.classList.add('run');
     this._wipeHolding = true;
 
-    // Safety net: if `world:changed` never arrives the player must not be left
-    // behind a black slab for ever.
-    this._wipeTimer = setTimeout(() => this._endWipe(), 45000);
+    /* Safety net: if `world:changed` never arrives the player must not be left
+     * behind a black slab for ever.
+     *
+     * IT MUST ALSO SAY SO. Opening the slabs on their own used to be the whole
+     * of this timer, and that produced the worst picture in the game: a live
+     * HUD over a world that never swapped, the DEPARTURE world's gateway still
+     * standing there, and `Portals.enter`'s `input.setEnabled(false)` still
+     * owning the player's input with no one left to give it back. Every menu
+     * key answered and no movement key did, so it read as "the world did not
+     * load and I cannot move" - with nothing on screen admitting anything had
+     * gone wrong, because the only thing that had been saying "still working"
+     * was the slab this timer removes.
+     *
+     * The timer is a symptom-hider, so it now reports instead of pretending.
+     * `portal:stuck` is the one signal that a crossing overran; the systems
+     * that own the transition listen for it and stand themselves back down. */
+    this._wipeTimer = setTimeout(() => {
+      this._endWipe();
+      this.bus?.emit?.('portal:stuck', { to: toId });
+      this.notify?.(
+        'That world is taking too long to generate — try the gateway again',
+        'warn'
+      );
+    }, 45000);
   }
 
   /** Open the slabs again. Idempotent — `world:changed` can arrive twice. */

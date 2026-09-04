@@ -24,9 +24,31 @@ import { genPool } from '../workers/GenPool.js';
 
 const _v1 = new THREE.Vector3();
 
-/** Resolve on the next animation frame so a loading bar can actually paint. */
+/**
+ * Resolve on the next animation frame so a loading bar can actually paint.
+ *
+ * RACED WITH A TIMER, because `requestAnimationFrame` DOES NOT FIRE IN A
+ * BACKGROUNDED OR HIDDEN TAB. The maze build awaits this six times, and the
+ * maze is the longest generation in the game - so the player most likely to
+ * alt-tab away is the one generating it, and a bare rAF would suspend their
+ * build until they came back and then leave the crossing half-finished. The
+ * sibling in `gfx/Textures.js` already races a `setTimeout` for exactly this
+ * reason; this one did not, and nothing tied the pair together.
+ *
+ * The timeout is the FALLBACK, not the schedule: when the tab is visible the
+ * rAF always wins and the loading bar still paints between slices.
+ */
 function yieldFrame() {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 32);
+  });
 }
 
 /** Shared "nothing to wait for", so a slice that does not yield allocates nothing. */
@@ -446,7 +468,28 @@ export class WorldManager {
       if (keep.has(id) || !world._built) continue;
       if (world.group.parent) world.group.parent.remove(world.group);
       world.dispose();
-      prefetch?.forget?.(id);
+      /* A VOLATILE WORLD IS NOT RE-OFFERED TO THE PREFETCH POLLER.
+       *
+       * `forget` deletes the id from the poller's `started` set, which is the
+       * only thing that stops it preparing that world again. For a DURABLE
+       * world that is right: it was evicted, so it genuinely has to be rebuilt
+       * before the player can walk into it.
+       *
+       * For the maze - the one volatile world - it opens a treadmill. Its
+       * build is thrown away on entry by design, `pickPrefetchTarget`
+       * deprioritises it so it is prepared last, and its gateway is the
+       * NEAREST one to the station spawn (WorldPrefetch's own header records
+       * the 12.6 s measurement). So it is evicted, forgotten, re-prepared at
+       * full cost, evicted again - each pass a complete regeneration inside
+       * gameplay frames, for a world whose build nothing keeps.
+       *
+       * Before eviction existed every world the player entered stayed resident
+       * for the session (see this file's header) and the maze was prepared at
+       * most ONCE per page. Leaving it in `started` restores that: the maze is
+       * still evicted and still reclaims its memory, it simply is not queued
+       * for another speculative build. Entry rebuilds it behind the warp's
+       * white-out, exactly as `Portals.enter` has always done for it. */
+      if (!this.isVolatile(id)) prefetch?.forget?.(id);
       this.evictions.worlds++;
       this.evictions.ids.push(id);
       console.info(`[WorldManager] evicted "${id}" (resident cap ${this.residentCap})`);

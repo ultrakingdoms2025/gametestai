@@ -18,6 +18,45 @@ import { NextResponse } from 'next/server';
  * meets the login page instead of a rendered shell; a signed-in non-admin still
  * gets the page's own locked banner, and neither ever reaches the data.
  */
+/**
+ * Paths where an anonymous visitor is sent to log in first.
+ *
+ * DEFENCE IN DEPTH, exactly as the note above says - never the gate. The gate
+ * is each page's and each route's own check, and this list must never be the
+ * reason something is safe.
+ *
+ * It was lost in `83dd984`, which decoupled this file from NextAuth so the
+ * proxy could answer without running session crypto on every matched request.
+ * That decoupling is right and is kept; dropping the redirect with it was not
+ * deliberate - the note above still described it, and
+ * `lib/adminRouteGuards.test.ts` still asserted it, for five route families
+ * that had quietly stopped redirecting.
+ */
+const PROTECTED = ['/play', '/checkout', '/store', '/account', '/admin'];
+
+/**
+ * Whether the request carries an Auth.js session cookie AT ALL.
+ *
+ * Presence, not validity, and that is the whole design. Verifying it here
+ * would put session crypto back on every matched request - the cost `83dd984`
+ * removed - to re-answer a question the page behind this is about to answer
+ * properly anyway. A forged cookie buys nothing: it reaches a page whose own
+ * `requireMarketplaceAdmin()` or `auth()` refuses it, which is precisely the
+ * "one request header away from being no gate at all" failure this file's note
+ * warns about. What the check DOES buy is that a visitor with no session at
+ * all meets the login page with a `callbackUrl`, instead of a rendered shell
+ * that then bounces them.
+ *
+ * Both Auth.js v5 cookie names, because the `__Secure-` prefix is used on
+ * HTTPS and the bare name in local development.
+ */
+function hasSessionCookie(req: import('next/server').NextRequest): boolean {
+  return Boolean(
+    req.cookies.get('authjs.session-token')?.value ||
+      req.cookies.get('__Secure-authjs.session-token')?.value
+  );
+}
+
 export default async function proxy(req: import('next/server').NextRequest) {
   const { nextUrl } = req;
   const path = nextUrl.pathname;
@@ -38,6 +77,15 @@ export default async function proxy(req: import('next/server').NextRequest) {
     }
 
     return NextResponse.next();
+  }
+
+  if (
+    PROTECTED.some((p) => path === p || path.startsWith(p + '/')) &&
+    !hasSessionCookie(req)
+  ) {
+    const loginUrl = new URL('/login', nextUrl.origin);
+    loginUrl.searchParams.set('callbackUrl', nextUrl.href);
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();

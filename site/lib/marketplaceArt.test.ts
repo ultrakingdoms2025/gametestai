@@ -95,9 +95,50 @@ describe('fetchMarketplaceArtDataUri', () => {
     expect(await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: html })).toBeNull();
   });
 
-  it('refuses a non-200', async () => {
-    const bad = vi.fn(async () => new Response('', { status: 429 })) as unknown as typeof fetch;
-    expect(await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: bad })).toBeNull();
+  /* Never actually wait in a test - the real backoff is 15 s and doubling. */
+  const noSleep = async () => {};
+
+  it('gives up on a refusal that will not change', async () => {
+    const gone = vi.fn(async () => new Response('', { status: 404 })) as unknown as typeof fetch;
+    expect(
+      await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: gone, sleep: noSleep })
+    ).toBeNull();
+    expect(gone, 'a 404 is permanent — retrying it only lengthens the run').toHaveBeenCalledTimes(1);
+  });
+
+  it('RETRIES a throttle instead of recording it as a failed row', async () => {
+    /* The generator admits one request at a time per IP and answers 429 in
+     * ~370 ms. Treating that as failure marched through the whole catalogue in
+     * seconds marking every row failed - which is what the first full run did. */
+    let n = 0;
+    const throttled = vi.fn(async () => {
+      n += 1;
+      return n < 3
+        ? new Response('{"error":"Too Many Requests"}', { status: 429 })
+        : new Response(png as unknown as BodyInit, {
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+          });
+    }) as unknown as typeof fetch;
+
+    const out = await fetchMarketplaceArtDataUri('https://x/y', {
+      fetchImpl: throttled,
+      sleep: noSleep,
+    });
+    expect(out, 'the third attempt succeeded, so the row is baked').toBeTruthy();
+    expect(throttled).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports WHY it failed, so a throttle is not mistaken for a broken row', async () => {
+    const seen: string[] = [];
+    const throttled = vi.fn(async () => new Response('', { status: 429 })) as unknown as typeof fetch;
+    await fetchMarketplaceArtDataUri('https://x/y', {
+      fetchImpl: throttled,
+      sleep: noSleep,
+      retries: 2,
+      onAttempt: ({ reason }) => seen.push(reason),
+    });
+    expect(seen).toEqual(['throttled', 'throttled']);
   });
 
   it('refuses an empty body and an oversized one', async () => {
@@ -119,7 +160,7 @@ describe('fetchMarketplaceArtDataUri', () => {
       throw new Error('network');
     }) as unknown as typeof fetch;
     await expect(
-      fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: boom })
+      fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: boom, sleep: noSleep, retries: 2 })
     ).resolves.toBeNull();
   });
 });

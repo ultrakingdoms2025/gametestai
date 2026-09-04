@@ -112,23 +112,67 @@ export const MAX_ART_BYTES = 400_000;
  */
 export async function fetchMarketplaceArtDataUri(
   url: string,
-  { timeoutMs = 90_000, maxBytes = MAX_ART_BYTES, fetchImpl = fetch }: {
+  {
+    timeoutMs = 90_000,
+    maxBytes = MAX_ART_BYTES,
+    fetchImpl = fetch,
+    retries = 5,
+    backoffMs = 15_000,
+    onAttempt,
+    sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+  }: {
     timeoutMs?: number;
     maxBytes?: number;
     fetchImpl?: typeof fetch;
+    retries?: number;
+    backoffMs?: number;
+    onAttempt?: (info: { attempt: number; status: number | null; reason: string }) => void;
+    sleep?: (ms: number) => Promise<unknown>;
   } = {}
 ): Promise<string | null> {
-  try {
-    const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return null;
-    const type = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!type.startsWith('image/')) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (!buf.byteLength || buf.byteLength > maxBytes) return null;
-    return `data:${type};base64,${Buffer.from(buf).toString('base64')}`;
-  } catch {
-    return null;
+  /* RETRY ON A THROTTLE, GIVE UP ON A REFUSAL.
+   *
+   * The generator admits exactly ONE request at a time per IP and answers 429
+   * with "Queue full for IP ... 1 requests already queued (max: 1)" the instant
+   * a second arrives - or when a sustained run has earned a cooldown. Measured:
+   * a throttled request comes back in ~370 ms, so a bake that treats 429 as
+   * failure marches through the whole catalogue in seconds marking every row
+   * failed, which is exactly what it looked like.
+   *
+   * 429 and 5xx are TEMPORARY and worth waiting out; a 404 or a non-image is
+   * not, and retrying it only lengthens the run. The wait doubles each time
+   * because the queue clears on its own schedule, not ours.
+   */
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    let status: number | null = null;
+    let reason = 'unknown';
+    try {
+      const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+      status = res.status;
+      if (res.ok) {
+        const type = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!type.startsWith('image/')) {
+          onAttempt?.({ attempt, status, reason: `not an image (${type || 'no type'})` });
+          return null;
+        }
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (!buf.byteLength || buf.byteLength > maxBytes) {
+          onAttempt?.({ attempt, status, reason: `bad size (${buf.byteLength}B)` });
+          return null;
+        }
+        return `data:${type};base64,${Buffer.from(buf).toString('base64')}`;
+      }
+      reason = res.status === 429 ? 'throttled' : `http ${res.status}`;
+    } catch (err) {
+      reason = String((err as Error)?.name === 'TimeoutError' ? 'timeout' : 'network');
+    }
+
+    const retryable = status === null || status === 429 || status >= 500;
+    onAttempt?.({ attempt, status, reason });
+    if (!retryable || attempt === retries) return null;
+    await sleep(backoffMs * 2 ** (attempt - 1));
   }
+  return null;
 }
 
 export function isLegacyTextImage(value: string): boolean {

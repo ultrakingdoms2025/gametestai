@@ -247,7 +247,17 @@ export async function bakeMarketplaceArt({
       sourceKey: `${name}:${category}`,
     });
 
-    const dataUri = await fetchMarketplaceArtDataUri(url);
+    let lastReason = '';
+    const dataUri = await fetchMarketplaceArtDataUri(url, {
+      onAttempt: ({ attempt, reason }) => {
+        lastReason = reason;
+        /* Said out loud, because a silent throttle is indistinguishable from a
+         * broken row and that is precisely how the first full run looked. */
+        if (reason === 'throttled') {
+          console.warn(`  throttled (attempt ${attempt}) — the generator allows one request at a time; waiting`);
+        }
+      },
+    });
     if (dataUri) {
       /* Every row in the group in ONE statement - 790 individual UPDATEs each
        * opening its own connection is its own kind of slow. */
@@ -260,7 +270,12 @@ export async function bakeMarketplaceArt({
       failed += group.length;
     }
     done += 1;
-    onProgress?.(done, groups.size, `${name} (${group.length} rows)`, Boolean(dataUri));
+    onProgress?.(
+      done,
+      groups.size,
+      `${name} (${group.length} rows)${dataUri ? '' : ` — ${lastReason}`}`,
+      Boolean(dataUri)
+    );
     if (pauseMs > 0 && done < groups.size) {
       await new Promise((r) => setTimeout(r, pauseMs));
     }

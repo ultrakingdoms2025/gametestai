@@ -62,9 +62,46 @@ import type { NextConfig } from 'next';
  *                                 the bundled game's requirement only — but the
  *                                 game is served from this origin, so it is
  *                                 this origin's policy.)
- *   `img-src data: blob:`         The game's inline SVG favicon is a `data:`
+ *   `img-src data: blob: https:`  The game's inline SVG favicon is a `data:`
  *                                 URI, and canvas-generated textures are read
  *                                 back as blobs.
+ *
+ *                                 `https:` is for MARKETPLACE ITEM ART, which
+ *                                 is the one thing this origin serves that is
+ *                                 NOT same-origin. `item.image` is stored by
+ *                                 the admin API as a free-form string
+ *                                 (`String(body.image ?? '')`) and rendered
+ *                                 straight into an `<img src>` by
+ *                                 `MarketplaceUI._renderMktArt`, so the host
+ *                                 is whatever an operator typed and cannot be
+ *                                 allow-listed ahead of time. Reported as
+ *                                 "when opening a merchant items for sale the
+ *                                 images do not load": every one of them was
+ *                                 refused, and the panel fell back to its
+ *                                 category emoji, which is exactly what that
+ *                                 fallback looks like when it fires for the
+ *                                 whole catalogue.
+ *
+ *                                 The "everything the game fetches is
+ *                                 same-origin" premise below was true when
+ *                                 this policy was written; the marketplace
+ *                                 arrived after it and nothing re-read this
+ *                                 list. Scheme-limited on purpose: `https:`
+ *                                 alone still refuses `http:`, so no item URL
+ *                                 can downgrade the page to mixed content.
+ *
+ *                                 What it costs: anyone who can write an
+ *                                 item's `image` field can make a viewer's
+ *                                 browser fetch an arbitrary HTTPS host, which
+ *                                 is a weak exfiltration channel (the URL, and
+ *                                 the fact that it loaded). Images execute
+ *                                 nothing, so that is the whole of it. The
+ *                                 tighter alternative - proxying art through
+ *                                 this origin and keeping `'self'` - trades
+ *                                 that for an SSRF surface to get right, and
+ *                                 is the correct move if item art ever becomes
+ *                                 player-supplied rather than operator-
+ *                                 supplied.
  *   `connect-src`                 Everything the game fetches is same-origin:
  *                                 its own assets, `/api/*`, telemetry. `blob:`
  *                                 and `data:` cover loaders reading back what
@@ -95,7 +132,7 @@ const csp = [
   `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:${isDev ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob:",
+  "img-src 'self' data: blob: https:",
   "media-src 'self' data: blob:",
   `connect-src 'self' blob: data:${isDev ? ' ws: wss:' : ''}`,
   "worker-src 'self' blob:",

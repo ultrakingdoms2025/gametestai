@@ -2980,6 +2980,18 @@ let _prevPlayerZ = null;
 engine.onFrameUpdate((dt, elapsed) => {
   const uiPaused = gameplayBlocked();
   materials.update?.(dt, elapsed);
+  /* A CROSSING IN FLIGHT STEPS WHATEVER THE UI IS DOING. See
+   * `PortalSystem.stepTransition` for the deadlock this closes: `enter()`
+   * takes the player's input away, only the transition's own completion gives
+   * it back, and every other caller of that completion sits inside the block
+   * below. Any one of the fifteen gameplay blocks - `standby` off a lost
+   * pointer lock is the one that happens by accident - would otherwise strand
+   * the player in a world that renders, answers Esc, and accepts no movement
+   * key for the life of the page.
+   *
+   * Guarded on `uiPaused` so the transition is stepped exactly once per frame:
+   * `portals.update` inside the block does it on every unpaused frame. */
+  if (uiPaused) portals.stepTransition(dt);
   if (!uiPaused) {
     player.update(dt, elapsed);
     // The rig reads the player's final position, and the avatar and mounts then

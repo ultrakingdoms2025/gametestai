@@ -3481,6 +3481,45 @@ export class PortalSystem {
   }
 
   /**
+   * Advance an in-flight crossing even while the UI has gameplay paused.
+   *
+   * ── The deadlock this exists to close ─────────────────────────────────────
+   *
+   * `enter()` disables input for the length of a transition, and the ONLY
+   * re-enable on that path is the completion inside `_updateTransition`.
+   * `update()` - which is what steps it - is called from `main.js` INSIDE the
+   * `if (!uiPaused)` block. So any gameplay block raised while a crossing is
+   * in flight stops the crossing, and a stopped crossing never gives input
+   * back. There are fifteen such blocks (`standby`, `records`, `inventory`,
+   * `help`, `quests`, ...) and `gameplayBlocked()` is `size > 0`, so ANY ONE
+   * of them is enough.
+   *
+   * `standby` is the one that gets raised by accident: it is derived from the
+   * pointer lock, and the lock is trivially lost during the maze's generation,
+   * which is the longest in the game. That was the reported failure - the HUD
+   * and the gateway render, Esc and the sheets answer because they listen on
+   * `document`, and no movement key does anything because `Input.onKey` drops
+   * every one of them on the same disabled flag.
+   *
+   * Letting the click re-take the lock (see `Input._bind`'s `mousedown`) is
+   * necessary but NOT sufficient, and this method is why: measured end to end,
+   * clearing `standby` only for a HUD sheet to raise `records` in its place
+   * left the crossing exactly as stuck. A player who reaches for the keys that
+   * still work makes it worse, because each of those sheets is another block.
+   *
+   * A crossing is not gameplay. It is a state machine that owns the player's
+   * input and must be allowed to give it back, so it steps on its own clock
+   * regardless of what the UI is doing. `main.js` calls this when, and only
+   * when, it skipped `update()`, so the transition is stepped exactly once a
+   * frame either way.
+   *
+   * @param {number} dt
+   */
+  stepTransition(dt) {
+    if (this._transition) this._updateTransition(dt);
+  }
+
+  /**
    * Per-frame: shader time, proximity prompt, interaction, light pulse and the
    * throttled destination previews.
    */

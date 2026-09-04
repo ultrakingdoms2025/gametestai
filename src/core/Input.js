@@ -719,15 +719,46 @@ export class Input {
     );
 
     this.canvas.addEventListener('mousedown', (e) => {
-      if (!this._enabled || this._textCaptured) return;
+      if (this._textCaptured) return;
       /* Browsers fire a compatibility `mousedown` after a tap that was not
        * `preventDefault`ed, so on touch this handler would turn a look drag
        * into a shot. The touch layer owns firing; see `setPointerButton`. */
       if (this._touchMode) return;
+      /* RE-TAKING THE LOCK IS ALLOWED WHILE INPUT IS DISABLED. DELIBERATELY.
+       *
+       * This guard used to be `if (!this._enabled || this._textCaptured)` on
+       * the line above, which put the `_enabled` test in FRONT of the relock
+       * below - and that closed a deadlock with no way out of it:
+       *
+       *   1. `Portals.enter` disables input for the length of a transition.
+       *   2. The player loses the pointer lock while it runs - trivially easy
+       *      on the maze, whose generation is the longest in the game, and
+       *      which is exactly where this was reported from.
+       *   3. `main.js` derives the `standby` gameplay block from `locked`, so
+       *      the whole `if (!uiPaused)` frame block stops running.
+       *   4. `portals.update` lives INSIDE that block, so the transition never
+       *      finishes - and its completion is the ONLY `setEnabled(true)` on
+       *      the path. Input stays disabled.
+       *   5. The player clicks to re-engage, and the old guard returned here
+       *      before `requestLock()`. No lock, so `standby` never clears, so
+       *      step 4 never runs, so input is never re-enabled. Forever.
+       *
+       * The player is left with a game that renders, answers Esc and the HUD
+       * sheets (those listen on `document`, not through this class), and
+       * accepts no movement key - because `onKey` above drops every one of
+       * them on the same `_enabled` flag.
+       *
+       * Engagement is not gameplay. `_enabled` says "do not send the world
+       * fire, aim and movement"; it was never meant to say "refuse to let the
+       * player hand the canvas their mouse back", and that is the only reason
+       * the loop above could not be broken from inside. The fire/aim writes
+       * below stay gated, so a click during a transition re-engages and
+       * shoots nothing. */
       if (!this.locked) {
         this.requestLock();
         return;
       }
+      if (!this._enabled) return;
       if (e.button === 0) this.state.fire = true;
       if (e.button === 2) this.state.aim = true;
     });

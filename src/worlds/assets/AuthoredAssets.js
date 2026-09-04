@@ -230,70 +230,105 @@ export function createAuthoredAssets({
     if (!entries.length) return {};
 
     const out = {};
-    /* One loader of each kind for the batch, imported lazily so the parsers
-     * only ever download on the first build of a session that needs them -
-     * and never at all for a player who never enters this world. */
-    let loader = null;
-    let ktx2 = null;
     _textureEntries = entries.filter((e) => e.kind === 'texture');
+
+    /* ── ISSUED AS A BURST, NOT ONE AT A TIME ────────────────────────────────
+     *
+     * This was a `for (const entry of entries)` with the `await` INSIDE it, so
+     * the maze's fifteen KTX2 files - 17.5 MB - were fetched and transcoded
+     * strictly end to end: measured in a live page, one overlapping pair out of
+     * twenty. The comment at the foot of this function has always said the
+     * worker pool "exists to parallelise transcodes WITHIN a load burst", and
+     * the serial loop meant there was never a burst to parallelise. Every file
+     * paid a full round trip before the next one was asked for, which on a slow
+     * link is the difference between a maze that loads and one that trips the
+     * HUD's 45 s crossing deadline and never arrives at all.
+     *
+     * The browser caps concurrent requests per origin on its own (six, give or
+     * take), so this does not need a semaphore - handing it the whole list lets
+     * it keep that window full instead of leaving it one deep.
+     *
+     * The per-entry `try` stays exactly where it was: one bad file must cost
+     * its own entry and nothing else, which is what lets the world fall back to
+     * its procedural bake for that surface alone. `Promise.all` over tasks that
+     * never reject preserves that - the array is only a join, not a fate
+     * shared between entries. */
+    const geometryEntries = entries.filter((e) => e.kind === 'geometry');
     for (const entry of entries) {
-      if (entry.kind === 'texture') {
-        if (!renderer) {
-          warnOnce('ktx2:no-renderer',
-            'texture entries need a renderer for KTX2 transcoding and none was passed');
-          continue;
-        }
-        try {
-          if (ktx2 === null) {
-            const { KTX2Loader } = await import('three/examples/jsm/loaders/KTX2Loader.js');
-            /* The transcoder is VENDORED (public/vendor/basis/, its own
-             * commit) and its path built from the Vite base like every asset
-             * URL in this pipeline - the /game/ mount makes a leading-slash
-             * path the bug the suite greps for, in vendor/ exactly as in the
-             * asset dir. */
-            ktx2 = new KTX2Loader()
-              .setTranscoderPath(`${viteBase()}vendor/basis/`)
-              .detectSupport(renderer);
-          }
-          const tex = await ktx2.loadAsync(dir + entry.file);
-          /* World-scale UVs leave 0..1 immediately, so wrap is load-bearing;
-           * these KTX2 files are all POT, which WebGL2 compressed textures
-           * require for repeat. Colour space is recorded IN the container
-           * (albedo sRGB, normal/ORM linear) and KTX2Loader tags the texture
-           * from it; per-surface `repeat` is a MATERIAL decision and belongs
-           * to the world, which is the only thing that knows what a metre is
-           * worth in its own UVs. */
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.RepeatWrapping;
-          tex.anisotropy = getMaxAnisotropy();
-          tex.name = `${namespace}.${entry.surface}.${entry.slot}`;
-          tex.needsUpdate = true;
-          out[entry.id] = tex;
-        } catch (e) {
-          warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
-        }
-        continue;
-      }
-      if (entry.kind !== 'geometry') {
+      if (entry.kind !== 'texture' && entry.kind !== 'geometry') {
         warnOnce(`kind:${entry.id}`, `asset '${entry.id}' has unhandled kind '${entry.kind}'`);
-        continue;
-      }
-      try {
-        const res = await fetch(dir + entry.file);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buf = await res.arrayBuffer();
-        if (!loader) {
-          const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
-          loader = new GLTFLoader();
-        }
-        const gltf = await loader.parseAsync(buf, dir);
-        const geo = firstGeometry(gltf);
-        if (!geo) throw new Error('no mesh in scene');
-        out[entry.id] = geo;
-      } catch (e) {
-        warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
       }
     }
+
+    /* Both parsers imported lazily and ONCE for the batch, before the burst -
+     * the old code imported each on the first entry that needed it, which the
+     * serial loop made equivalent. They still only download for a session that
+     * actually enters a world carrying that kind. */
+    let ktx2 = null;
+    if (_textureEntries.length) {
+      if (!renderer) {
+        warnOnce('ktx2:no-renderer',
+          'texture entries need a renderer for KTX2 transcoding and none was passed');
+      } else {
+        const { KTX2Loader } = await import('three/examples/jsm/loaders/KTX2Loader.js');
+        /* The transcoder is VENDORED (public/vendor/basis/, its own commit) and
+         * its path built from the Vite base like every asset URL in this
+         * pipeline - the /game/ mount makes a leading-slash path the bug the
+         * suite greps for, in vendor/ exactly as in the asset dir. */
+        ktx2 = new KTX2Loader()
+          .setTranscoderPath(`${viteBase()}vendor/basis/`)
+          .detectSupport(renderer);
+      }
+    }
+    let loader = null;
+    if (geometryEntries.length) {
+      const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+      loader = new GLTFLoader();
+    }
+
+    const tasks = [];
+    if (ktx2) {
+      for (const entry of _textureEntries) {
+        tasks.push((async () => {
+          try {
+            const tex = await ktx2.loadAsync(dir + entry.file);
+            /* World-scale UVs leave 0..1 immediately, so wrap is load-bearing;
+             * these KTX2 files are all POT, which WebGL2 compressed textures
+             * require for repeat. Colour space is recorded IN the container
+             * (albedo sRGB, normal/ORM linear) and KTX2Loader tags the texture
+             * from it; per-surface `repeat` is a MATERIAL decision and belongs
+             * to the world, which is the only thing that knows what a metre is
+             * worth in its own UVs. */
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.anisotropy = getMaxAnisotropy();
+            tex.name = `${namespace}.${entry.surface}.${entry.slot}`;
+            tex.needsUpdate = true;
+            out[entry.id] = tex;
+          } catch (e) {
+            warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
+          }
+        })());
+      }
+    }
+    if (loader) {
+      for (const entry of geometryEntries) {
+        tasks.push((async () => {
+          try {
+            const res = await fetch(dir + entry.file);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buf = await res.arrayBuffer();
+            const gltf = await loader.parseAsync(buf, dir);
+            const geo = firstGeometry(gltf);
+            if (!geo) throw new Error('no mesh in scene');
+            out[entry.id] = geo;
+          } catch (e) {
+            warnOnce(`asset:${entry.id}`, `could not load asset '${entry.id}' (${entry.file}: ${e.message})`);
+          }
+        })());
+      }
+    }
+    await Promise.all(tasks);
     /* The KTX2 worker pool exists to parallelise transcodes WITHIN a load
      * burst; keeping it warm for a session that will never load another
      * texture is paying worker memory for nothing. The transcoded textures

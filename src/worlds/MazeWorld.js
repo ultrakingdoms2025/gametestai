@@ -263,6 +263,20 @@ const PATROL_STEPS = 28;
 /** Districts either side of the player. 2 gives the 5x5 block the spec calls for. */
 const RESIDENCY_RADIUS = 2;
 
+/**
+ * How long `build` waits for the authored KTX2 surfaces before generating the
+ * maze without them.
+ *
+ * Sized against the deadline it exists to stay inside: the HUD abandons a
+ * crossing at 45 s (`ui/HUD.js`), and generation itself has measured between
+ * 0.7 s warm and 12.6 s cold. Twelve seconds of download leaves the slowest
+ * measured generation room to finish and still arrive well inside that, while
+ * being long enough that any link which can serve 17.5 MB at all will make it.
+ * The load is raced, never cancelled, so a link that misses this budget still
+ * warms the cache for the next entry.
+ */
+const MAZE_ASSET_BUDGET_MS = 12000;
+
 // Scratch objects for the per-frame token instance-matrix update, reused
 // every call rather than allocated - see the note on MazeWorld.update.
 const _tokPos = new THREE.Vector3();
@@ -725,10 +739,30 @@ export class MazeWorld extends World {
      * rejects; a missing or unparseable file just leaves its id out of the
      * map, and every consumer of the map falls back to the procedural
      * prefab (see MazeAssets.js). */
+    /* THE AUTHORED SET IS AN UPGRADE, NOT A DEPENDENCY, SO IT GETS A DEADLINE.
+     *
+     * 17.5 MB of KTX2 sits behind this await, and the world underneath it is
+     * fully playable without a byte of it: `applyAuthoredSurfaces` keeps the
+     * procedural bake for every surface whose authored set is missing or
+     * incomplete, which is the never-a-hole rule this pipeline has carried
+     * since it shipped. Blocking the whole generation on it inverted that -
+     * on a slow link the download, not the maze, decided whether the player
+     * ever arrived, and overrunning the HUD's 45 s crossing deadline meant
+     * they did not arrive at all.
+     *
+     * So the load is raced, not abandoned: it keeps running, and because the
+     * pipeline caches into its module-scope closure the NEXT entry resolves
+     * from that cache instantly and dresses the maze in the authored surfaces.
+     * The cost of a slow first crossing is one procedural-looking maze, not a
+     * maze the player cannot reach. */
     const [mats, assets] = await Promise.all([
       /* Optional-chained: headless tests build worlds with no engine, and
        * loadMazeAssets treats an absent renderer as "skip textures". */
-      this._ensureMaterialsAsync(), loadMazeAssets(this.engine?.renderer),
+      this._ensureMaterialsAsync(),
+      Promise.race([
+        loadMazeAssets(this.engine?.renderer).catch(() => ({})),
+        new Promise((resolve) => setTimeout(() => resolve({}), MAZE_ASSET_BUDGET_MS)),
+      ]),
     ]);
     /* Task 9: dress the principal surfaces in whichever authored KTX2 sets
      * actually loaded - per material, everything else keeps its procedural

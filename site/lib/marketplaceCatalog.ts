@@ -1,4 +1,4 @@
-import { buildMarketplaceAiImageUrl } from './marketplaceImages';
+
 
 /* `'ships'` is the seventh, and it is added HERE AND IN `ALL_CATEGORIES`
  * (src/systems/Marketplace.js) or in neither.
@@ -2009,13 +2009,19 @@ export function buildMarketplaceSeedItems(): MarketplaceSeedItem[] {
         name: item.name,
         description: item.description,
         category: item.category,
-        image: buildMarketplaceAiImageUrl({
-          name: item.name,
-          description: item.description,
-          category: item.category,
-          world,
-          sourceKey: `${item.source_key}:${world}`,
-        }),
+        /* EMPTY, NOT A GENERATOR URL.
+         *
+         * This used to seed `buildMarketplaceAiImageUrl(...)`, which is a
+         * text-to-image RECIPE. Every player opening a merchant then asked the
+         * generator to render the catalogue live - measured, 122 requests, 7
+         * loaded, 115 refused, differently every visit.
+         *
+         * An empty image is the honest seed value: `_renderMktArt` draws a
+         * proper category placeholder for it, and `bakeMarketplaceArt` fetches
+         * the art ONCE and stores the bytes. The prompt is not lost - the baker
+         * rebuilds the same seeded URL from the row, so the art a row gets is
+         * identical to what this used to point at. */
+        image: '',
         game_action: item.game_action,
         action_config: item.action_config,
         quantity: item.quantity,

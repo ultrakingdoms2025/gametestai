@@ -16,7 +16,12 @@ import {
   type MarketplaceItemRecord,
   type MarketplaceWorld,
 } from './marketplaceCatalog';
-import { buildMarketplaceAiImageUrl } from './marketplaceImages';
+import {
+  ART_GENERATOR_HOST,
+  buildMarketplaceAiImageUrl,
+  fetchMarketplaceArtDataUri,
+  isGeneratedArtUrl,
+} from './marketplaceImages';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';
@@ -102,7 +107,21 @@ async function syncMarketplaceSeedItems() {
          SET name = EXCLUDED.name,
             description = EXCLUDED.description,
             category = EXCLUDED.category,
-            image = EXCLUDED.image,
+            -- BAKED ART SURVIVES A RESEED.
+            --
+            -- The seed carries an empty image by design (see
+            -- marketplaceCatalog), and this sync runs on every cold start. A
+            -- plain "image = EXCLUDED.image" would therefore erase every
+            -- picture bakeMarketplaceArt had stored, on the next deploy,
+            -- silently - so the catalogue would go back to placeholders and
+            -- the bake would have to be re-run forever. Stored bytes win; a
+            -- row with no art still takes whatever the seed offers.
+            image = CASE
+                      WHEN marketplace_items.image LIKE 'data:image/%'
+                        AND marketplace_items.image NOT LIKE 'data:image/svg+xml%'
+                      THEN marketplace_items.image
+                      ELSE EXCLUDED.image
+                    END,
             game_action = EXCLUDED.game_action,
             action_config = EXCLUDED.action_config,
             cost_buy = EXCLUDED.cost_buy,
@@ -131,38 +150,131 @@ async function syncMarketplaceSeedItems() {
   }
 }
 
-async function backfillMarketplaceImages() {
-  /* Platform rows only. An owner's item has an owner-supplied image and an
-   * owner-supplied world, and `buildMarketplaceAiImageUrl` only knows the
-   * platform's categories and worlds — so a backfill over owner rows would
-   * quietly replace their artwork with a generated placeholder for a world it
-   * had to substitute a default for. */
+/**
+ * Turn every un-baked platform row into a STORED image, one at a time.
+ *
+ * ── What this replaced ────────────────────────────────────────────────────
+ *
+ * `backfillMarketplaceImages` used to write `buildMarketplaceAiImageUrl(...)`
+ * straight into `image`, so the column held a text-to-image RECIPE rather than
+ * a picture. Every player opening a merchant then asked the generator to render
+ * the whole catalogue: measured in a live session, 122 requests, 7 loaded, 115
+ * refused. It looked like "the images load and then stop", it behaved
+ * differently for every player and every visit, and it put a free public AI
+ * service on the critical path of the store.
+ *
+ * ── Why it is not on the request path ─────────────────────────────────────
+ *
+ * The old backfill was cheap - it wrote strings - so it could live inside
+ * `ensureMarketplaceSchema`. This is not: it makes one network call per row
+ * against a generator that takes seconds to answer, so running it there would
+ * turn a cold start into a timeout. `ensureMarketplaceSchema` now only clears
+ * legacy placeholders, and baking is an explicit call
+ * (`site/scripts/bake-marketplace-art.mjs`).
+ *
+ * ── Serial, deliberately ──────────────────────────────────────────────────
+ *
+ * Parallelism is what caused the original symptom. The generator rate-limits,
+ * and 122 concurrent renders is precisely the shape it refuses. One at a time
+ * with a pause between is slower to run once and is the only version that
+ * finishes.
+ *
+ * A row that fails is LEFT ALONE - empty image, the placeholder the UI already
+ * draws, retried next run. Never a recipe, never a half-answer.
+ *
+ * @returns counts, so a caller can report rather than guess
+ */
+export async function bakeMarketplaceArt({
+  limit = 500,
+  pauseMs = 750,
+  onProgress,
+}: {
+  limit?: number;
+  pauseMs?: number;
+  onProgress?: (done: number, total: number, name: string, ok: boolean) => void;
+} = {}): Promise<{ total: number; baked: number; failed: number }> {
   const { rows } = await query<Record<string, unknown>>(
-    `SELECT id, name, category, world_name
+    `SELECT id, name, description, category, world_name
      FROM marketplace_items
      WHERE server_id IS NULL
        AND (COALESCE(TRIM(image), '') = ''
-            OR image LIKE 'data:image/svg+xml%')`
+            OR image LIKE 'data:image/svg+xml%'
+            OR image LIKE 'http%')
+     ORDER BY sort_order, name
+     LIMIT $1`,
+    [limit]
   );
 
-  for (const row of rows) {
+  let baked = 0;
+  let failed = 0;
+  for (const [i, row] of rows.entries()) {
     const category = String(row.category ?? 'tools').toLowerCase();
     const world = String(row.world_name ?? 'station').toLowerCase();
-    await query(
-      `UPDATE marketplace_items
-       SET image = $1, updated_at = NOW()
-       WHERE id = $2`,
-      [
-       buildMarketplaceAiImageUrl({
-         name: String(row.name ?? 'Marketplace item'),
-         category: (MARKETPLACE_CATEGORIES.includes(category as MarketplaceCategory) ? category : 'tools') as MarketplaceCategory,
-         world: (MARKETPLACE_WORLDS.includes(world as MarketplaceWorld) ? world : 'station') as MarketplaceWorld,
-         sourceKey: String(row.id ?? ''),
-       }),
-       String(row.id),
-      ]
-    );
+    const name = String(row.name ?? 'Marketplace item');
+    const url = buildMarketplaceAiImageUrl({
+      name,
+      description: String(row.description ?? ''),
+      category: (MARKETPLACE_CATEGORIES.includes(category as MarketplaceCategory)
+        ? category
+        : 'tools') as MarketplaceCategory,
+      world: (MARKETPLACE_WORLDS.includes(world as MarketplaceWorld)
+        ? world
+        : 'station') as MarketplaceWorld,
+      sourceKey: String(row.id ?? ''),
+    });
+
+    const dataUri = await fetchMarketplaceArtDataUri(url);
+    if (dataUri) {
+      await query(`UPDATE marketplace_items SET image = $1, updated_at = NOW() WHERE id = $2`, [
+        dataUri,
+        row.id,
+      ]);
+      baked += 1;
+    } else {
+      failed += 1;
+    }
+    onProgress?.(i + 1, rows.length, name, Boolean(dataUri));
+    if (pauseMs > 0 && i < rows.length - 1) {
+      await new Promise((r) => setTimeout(r, pauseMs));
+    }
   }
+  return { total: rows.length, baked, failed };
+}
+
+/**
+ * Clear art that is not a stored picture, so the UI draws its placeholder.
+ *
+ * ── This used to WRITE the generator URL, and that was the defect ─────────
+ *
+ * It filled every empty `image` with `buildMarketplaceAiImageUrl(...)` - a
+ * text-to-image recipe. The column then held instructions instead of a picture,
+ * and every player's browser executed them on every merchant open: 122 renders
+ * asked of a free public generator, of which 7 arrived and 115 were refused.
+ *
+ * Two things are wrong with doing it here and both are why the fetch moved out.
+ * This runs inside `ensureMarketplaceSchema`, on the request path, where a
+ * network call per row turns a cold start into a timeout. And a recipe is not
+ * art: whatever writes this column must write bytes. Baking is now
+ * `bakeMarketplaceArt`, run from `scripts/bake-marketplace-art.mjs`.
+ *
+ * What is left here is the cheap half, and it is still worth doing: a legacy
+ * SVG text placeholder or a stored RECIPE is worse than nothing, because
+ * `_renderMktArt` draws a proper category placeholder for an empty image and a
+ * broken one for a URL that will not load. Emptying those is a string update,
+ * no network, and it makes the catalogue honest until a bake runs.
+ *
+ * Platform rows only. An owner's item has owner-supplied art, and this must
+ * never reach across and empty it.
+ */
+async function backfillMarketplaceImages() {
+  await query(
+    `UPDATE marketplace_items
+        SET image = '', updated_at = NOW()
+      WHERE server_id IS NULL
+        AND (image LIKE 'data:image/svg+xml%'
+             OR image LIKE $1)`,
+    [`%${ART_GENERATOR_HOST}%`]
+  );
 }
 
 export type MarketplaceItemInput = {
@@ -227,6 +339,20 @@ function normalizeActionConfig(value: unknown): Record<string, unknown> {
 function normalizeImage(value: unknown): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
+  /* A GENERATOR RECIPE IS NOT ART, AND MUST NEVER REACH THIS COLUMN.
+   *
+   * `image` held `https://image.pollinations.ai/prompt/...` for the whole
+   * catalogue, so opening a merchant asked that host to render 122 images on
+   * the spot: 7 arrived, 115 were refused, and which ones differed per player
+   * and per visit. Stored art is fetched once by `bakeMarketplaceArt` and kept
+   * as bytes; anything still pointing at the generator is a recipe that was
+   * written where a picture belongs. Refused at the boundary rather than
+   * cleaned up afterwards, because the cleanup is what kept being forgotten. */
+  if (isGeneratedArtUrl(raw)) {
+    throw new Error(
+      'Image must be a stored picture, not a generator URL — bake it first (see bakeMarketplaceArt).'
+    );
+  }
   if (/^https?:\/\//i.test(raw)) return raw.slice(0, 4000);
   if (raw.startsWith('data:image/')) return raw.slice(0, 2_000_000);
   throw new Error('Image must be an http(s) URL or data:image/* data URI.');

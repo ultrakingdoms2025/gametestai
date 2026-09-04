@@ -1,0 +1,125 @@
+/**
+ * Art is STORED, never generated on demand.
+ *
+ * `marketplace_items.image` held a text-to-image URL for the whole catalogue,
+ * so opening a merchant asked a free public generator to render 122 images on
+ * the spot. Measured in a live session: 7 loaded, 115 refused, and which ones
+ * differed per player and per visit. The player-visible symptom was "the images
+ * load the first few and then they stop".
+ *
+ * These pin the three things that keep it from coming back: the seed does not
+ * carry a recipe, the column refuses one, and a bake stores bytes or nothing.
+ */
+import { describe, it, expect, vi } from 'vitest';
+
+import {
+  ART_GENERATOR_HOST,
+  MARKETPLACE_ART_SIZE,
+  buildMarketplaceAiImageUrl,
+  fetchMarketplaceArtDataUri,
+  isGeneratedArtUrl,
+} from './marketplaceImages';
+import { buildMarketplaceSeedItems } from './marketplaceCatalog';
+
+const A_RECIPE = buildMarketplaceAiImageUrl({
+  name: 'Fleetstep Spark',
+  category: 'spells',
+  world: 'station',
+});
+
+describe('the seed catalogue', () => {
+  it('never ships a generator URL as an item image', () => {
+    const seeded = buildMarketplaceSeedItems();
+    expect(seeded.length).toBeGreaterThan(50);
+
+    const recipes = seeded.filter((i) => isGeneratedArtUrl(String(i.image ?? '')));
+    expect(
+      recipes.map((r) => r.name).slice(0, 5),
+      'a seeded recipe is re-written into every row on each cold start'
+    ).toEqual([]);
+  });
+});
+
+describe('isGeneratedArtUrl', () => {
+  it('recognises the generator, and nothing else', () => {
+    expect(isGeneratedArtUrl(A_RECIPE)).toBe(true);
+    expect(isGeneratedArtUrl(`https://${ART_GENERATOR_HOST}/prompt/x`)).toBe(true);
+
+    expect(isGeneratedArtUrl('')).toBe(false);
+    expect(isGeneratedArtUrl('data:image/png;base64,iVBORw0KGgo=')).toBe(false);
+    expect(isGeneratedArtUrl('https://cdn.example.com/sword.png')).toBe(false);
+    // Must not be fooled by the host appearing somewhere other than the host.
+    expect(isGeneratedArtUrl(`https://evil.example/?u=${ART_GENERATOR_HOST}`)).toBe(false);
+    expect(isGeneratedArtUrl('not a url at all')).toBe(false);
+  });
+});
+
+describe('the generated-art URL', () => {
+  it('asks for an icon-sized image, not a poster', () => {
+    /* The art cell draws at 72 CSS px. 512 was up to 7x what any screen shows
+     * and every byte of it was paid for on the way into the database. */
+    expect(MARKETPLACE_ART_SIZE).toBeLessThanOrEqual(256);
+    const u = new URL(A_RECIPE);
+    expect(u.searchParams.get('width')).toBe(String(MARKETPLACE_ART_SIZE));
+    expect(u.searchParams.get('height')).toBe(String(MARKETPLACE_ART_SIZE));
+  });
+
+  it('is stable for a row, so a re-bake yields the same art', () => {
+    const once = buildMarketplaceAiImageUrl({
+      name: 'X', category: 'tools', world: 'station', sourceKey: 'k',
+    });
+    const twice = buildMarketplaceAiImageUrl({
+      name: 'X', category: 'tools', world: 'station', sourceKey: 'k',
+    });
+    expect(once).toBe(twice);
+    expect(new URL(once).searchParams.get('seed')).toBeTruthy();
+  });
+});
+
+describe('fetchMarketplaceArtDataUri', () => {
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ok = (body: Uint8Array, type = 'image/png') =>
+    vi.fn(async () =>
+      new Response(body as unknown as BodyInit, { status: 200, headers: { 'content-type': type } })
+    ) as unknown as typeof fetch;
+
+  it('returns a data URI carrying the bytes', async () => {
+    const out = await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: ok(png) });
+    expect(out).toBe(`data:image/png;base64,${Buffer.from(png).toString('base64')}`);
+  });
+
+  it('refuses a non-image, so an error page is never stored as art', async () => {
+    /* The generator answers HTML when it is rate-limiting. Storing that would
+     * put a permanently broken image in the database for every player. */
+    const html = ok(new TextEncoder().encode('<html>rate limited</html>'), 'text/html');
+    expect(await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: html })).toBeNull();
+  });
+
+  it('refuses a non-200', async () => {
+    const bad = vi.fn(async () => new Response('', { status: 429 })) as unknown as typeof fetch;
+    expect(await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: bad })).toBeNull();
+  });
+
+  it('refuses an empty body and an oversized one', async () => {
+    expect(
+      await fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: ok(new Uint8Array(0)) })
+    ).toBeNull();
+    expect(
+      await fetchMarketplaceArtDataUri('https://x/y', {
+        fetchImpl: ok(new Uint8Array(64)),
+        maxBytes: 8,
+      })
+    ).toBeNull();
+  });
+
+  it('returns null rather than throwing when the fetch fails', async () => {
+    /* A row that cannot be baked keeps its empty image and is retried. A bake
+     * that threw would abort the whole run partway through the catalogue. */
+    const boom = vi.fn(async () => {
+      throw new Error('network');
+    }) as unknown as typeof fetch;
+    await expect(
+      fetchMarketplaceArtDataUri('https://x/y', { fetchImpl: boom })
+    ).resolves.toBeNull();
+  });
+});

@@ -33,12 +33,17 @@ export class AdminCheats {
    * @param {{bus:any, input:any, loadout:any, player:any, economy:any,
    *          enabled?:boolean}} ctx
    */
-  constructor({ bus, input, loadout, player, economy, enabled = true } = {}) {
+  constructor({
+    bus, input, loadout, player, economy, worldManager, portals, enabled = true,
+  } = {}) {
     this.bus = bus ?? null;
     this.input = input ?? null;
     this.loadout = loadout ?? null;
     this.player = player ?? null;
     this.economy = economy ?? null;
+    /** For `reset`, the only code that leaves the world it was typed in. */
+    this.worldManager = worldManager ?? null;
+    this.portals = portals ?? null;
     this.enabled = enabled !== false;
 
     /** Rolling buffer of recent letter keys. */
@@ -53,6 +58,7 @@ export class AdminCheats {
     this.register('ammo', 'Resupply every weapon', () => this._resupply());
     this.register('heal', 'Restore health and stamina', () => this._heal());
     this.register('rich', 'Grant 5000 credits', () => this._credits(5000));
+    this.register('reset', 'Return to Aether Station', () => this._toStation());
 
     this._onKey = (e) => this._handleKey(e);
     if (typeof window !== 'undefined') window.addEventListener('keydown', this._onKey);
@@ -131,6 +137,61 @@ export class AdminCheats {
     if (!this.economy?.add) return 'No economy';
     this.economy.add(n, 'cheat');
     return `+${n} credits`;
+  }
+
+  /**
+   * The way out of anywhere: put the player back on Aether Station.
+   *
+   * ── Why this is not `K`, and does not duplicate it ────────────────────────
+   *
+   * `UnstuckSystem` is the rescue for being wedged in geometry and it works
+   * WITHIN a world - its last rung is that world's own spawn. It cannot help a
+   * player who is not stuck at all but simply lost, several hundred metres into
+   * a maze that regenerates its layout on every entry, with the only way out
+   * being a gateway they cannot find. That is what this is for, and the maze is
+   * the world that makes it necessary.
+   *
+   * ── Why it activates rather than entering a gateway ──────────────────────
+   *
+   * `portals.enterById` would give the warp and the wipe, but it can only use a
+   * gateway the CURRENT world publishes and only from within its aperture -
+   * neither of which a lost player has. Activation is world-agnostic and
+   * position-independent, which is the entire requirement. It builds the
+   * station first if the resident cap has evicted it, and drops the player at
+   * that world's own spawn.
+   *
+   * ── Not awaited, deliberately ────────────────────────────────────────────
+   *
+   * `run()` is called synchronously by `_handleKey` so it can show a toast, and
+   * a station build can take seconds. Returning the message immediately tells
+   * the player their keystroke registered - the alternative is a code that
+   * appears to do nothing for several seconds, which is a code people type
+   * again. A failure is reported through the same toast channel rather than
+   * being swallowed.
+   *
+   * Aborts any crossing still in flight first: `Portals.enter` owns the
+   * player's input for the length of a transition, and a `reset` typed by
+   * someone stuck mid-crossing must not leave that owner behind.
+   */
+  _toStation() {
+    const wm = this.worldManager;
+    if (!wm?.activate) return 'Cannot reach the station from here';
+
+    this.portals?.abortTransition?.();
+
+    if (wm.active?.id === 'station') {
+      this.bus?.emit('player:rescue', { reason: 'cheat:reset' });
+      return 'Already on Aether Station';
+    }
+
+    Promise.resolve(wm.activate('station')).then(
+      () => this._notify('Returned to Aether Station', 'good'),
+      (err) => {
+        console.error('[AdminCheats] "reset" could not reach the station:', err);
+        this._notify('Could not reach the station — see console', 'warn');
+      }
+    );
+    return 'Returning to Aether Station…';
   }
 
   dispose() {

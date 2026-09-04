@@ -696,8 +696,15 @@ const questBoard  = new QuestBoard({ root: uiRoot, bus, input, questSystem });
 
 const bugReport = new BugReport({ root: uiRoot, bus, input, player, worldManager });
 
-// Typed cheat codes: "ammo" resupplies every weapon, "heal", "rich".
-const cheats = new AdminCheats({ bus, input, loadout, player, economy });
+/* Typed cheat codes: "ammo" resupplies every weapon, "heal", "rich", and
+ * "reset" returns the player to the station from wherever they are.
+ *
+ * `reset` is the one that needs the world layer, and it is a RESCUE rather than
+ * a cheat: `K` (UnstuckSystem) recovers a player wedged in geometry but only
+ * ever within the world they are standing in, so it cannot help someone simply
+ * lost deep in the maze - the one world that regenerates its layout on every
+ * entry, so a remembered route is worth nothing. See `AdminCheats._toStation`. */
+const cheats = new AdminCheats({ bus, input, loadout, player, economy, worldManager, portals });
 
 // All sound is synthesised at runtime - see audio/AudioDirector.js for why
 // there is not a single audio file in this project.

@@ -125,22 +125,75 @@ import type { NextConfig } from 'next';
  * only, and the two extra tokens are exactly the two dev needs. */
 const isDev = process.env.NODE_ENV !== 'production';
 
-const csp = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:${isDev ? " 'unsafe-eval'" : ''}`,
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https:",
-  "media-src 'self' data: blob:",
-  `connect-src 'self' blob: data:${isDev ? ' ws: wss:' : ''}`,
-  "worker-src 'self' blob:",
-  "frame-src 'self'",
-  // 'self', not 'none' — see the docblock. The site frames its own game.
-  "frame-ancestors 'self'",
-  "form-action 'self'",
-].join('; ');
+/**
+ * `'unsafe-eval'`, and why exactly one path gets it.
+ *
+ * The KTX2 transcoder is Emscripten output. `embind` builds every one of its
+ * invoker functions with `new Function` (`craftInvokerFunction`; 25 `Function(`
+ * calls in `public/vendor/basis/basis_transcoder.js`), and `'wasm-unsafe-eval'`
+ * permits compiling WASM but NOT that. So on production the module dies during
+ * `callRuntimeCallbacks` with
+ *
+ *   EvalError: Evaluating a string as JavaScript violates the following
+ *   Content Security Policy directive ... 'unsafe-eval' is not an allowed source
+ *
+ * and every KTX2 texture fails to transcode. Nothing looks broken, because
+ * `AuthoredAssets` catches per entry and every surface falls back to its
+ * procedural bake - so the game downloads 17.5 MB of maze surfaces and throws
+ * all of it away, and has done since the day the pipeline shipped.
+ *
+ * IT WORKED ON EVERY DEVELOPER MACHINE. `isDev` adds `'unsafe-eval'` below, so
+ * this failed only in production, only for players - the exact shape
+ * `worlds/maze/MazeAssets.js` warns about in its own header, arriving through a
+ * security header instead of an asset path.
+ *
+ * Three ways out were weighed. Re-vendoring three's own copy fixes nothing: it
+ * is byte-different but carries the identical `craftInvokerFunction` and the
+ * same 25 `Function(` calls. Rebuilding Basis with `-sDYNAMIC_EXECUTION=0` is
+ * the RIGHT fix and is still worth doing - it removes the need for this
+ * entirely - but it needs an Emscripten toolchain that is not on this machine,
+ * and `scripts/lib/ktx2-roundtrip.mjs` exists to verify such a rebuild when
+ * somebody takes it on. Granting `'unsafe-eval'` to the whole origin to serve
+ * one vendored transcoder is the option actually refused here.
+ *
+ * So the allowance is scoped to `/game/`, and NOT as a second header. The
+ * docblock above is right that two policies on one response INTERSECT rather
+ * than override, which is why the two `source` patterns below are mutually
+ * exclusive: every response carries exactly one CSP. If that exclusivity ever
+ * breaks, both match, they intersect, and the strict policy wins - the
+ * transcoder stops again and the site stays locked down. It fails to TODAY'S
+ * behaviour, not to an open door, which is the only reason a path-scoped
+ * exception is acceptable here at all.
+ *
+ * What the game's own document may then do that the site's may not: evaluate a
+ * string as JavaScript. `/`, `/store`, `/checkout`, `/account` and `/admin` -
+ * everything holding a session or taking money - keep the strict policy.
+ */
+function cspFor({ allowEval }: { allowEval: boolean }): string {
+  const evalTokens = [
+    "'wasm-unsafe-eval'",
+    ...(allowEval || isDev ? ["'unsafe-eval'"] : []),
+  ].join(' ');
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    `script-src 'self' 'unsafe-inline' ${evalTokens} blob:`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob:",
+    `connect-src 'self' blob: data:${isDev ? ' ws: wss:' : ''}`,
+    "worker-src 'self' blob:",
+    "frame-src 'self'",
+    // 'self', not 'none' — see the docblock. The site frames its own game.
+    "frame-ancestors 'self'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+const csp = cspFor({ allowEval: false });
+const gameCsp = cspFor({ allowEval: true });
 
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: csp },
@@ -155,6 +208,18 @@ const securityHeaders = [
   },
 ];
 
+/**
+ * The same headers with the game's CSP substituted, for `/game/*` only.
+ *
+ * Derived from `securityHeaders` rather than written out again, so every
+ * non-CSP header (HSTS, nosniff, Referrer-Policy, Permissions-Policy,
+ * X-Frame-Options) stays identical by construction and cannot drift between
+ * the two entries.
+ */
+const gameSecurityHeaders = securityHeaders.map((h) =>
+  h.key === 'Content-Security-Policy' ? { ...h, value: gameCsp } : h
+);
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
@@ -168,10 +233,23 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        /* One entry, every path, one CSP. The cache rules below name disjoint
-         * header keys, so nothing here collides with them. */
-        source: '/:path*',
+        /* EVERY PATH EXCEPT THE GAME'S. One CSP per response, still - the two
+         * sources here are mutually exclusive, so no response ever collects
+         * both and there is no intersection to reason about. The cache rules
+         * below name disjoint header keys, so nothing collides with them.
+         *
+         * The negative lookahead is the load-bearing part and is pinned by
+         * `lib/cspScope.test.ts`: if it ever stops excluding `/game/`, both
+         * entries match, the browser intersects them, and the strict policy
+         * wins - the transcoder breaks again and nothing opens up. */
+        source: '/((?!game/).*)',
         headers: securityHeaders,
+      },
+      {
+        /* The game, and only the game, may evaluate a string as JavaScript -
+         * see `cspFor`. Same policy in every other respect. */
+        source: '/game/:path*',
+        headers: gameSecurityHeaders,
       },
       {
         source: '/game/assets/:path*',

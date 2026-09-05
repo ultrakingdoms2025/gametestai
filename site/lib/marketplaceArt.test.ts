@@ -135,10 +135,52 @@ describe('fetchMarketplaceArtDataUri', () => {
     await fetchMarketplaceArtDataUri('https://x/y', {
       fetchImpl: throttled,
       sleep: noSleep,
-      retries: 2,
+      throttleRetries: 2,
       onAttempt: ({ reason }) => seen.push(reason),
     });
     expect(seen).toEqual(['throttled', 'throttled']);
+  });
+
+  it('waits longer than a render before retrying a throttle, and does not double', async () => {
+    /* The queue admits one request at a time and a render takes ~37 s. A wait
+     * SHORTER than that sends the next attempt into a slot still occupied by
+     * the previous generation, so a run collides with itself and 429s from the
+     * first item to the last with nothing else on the network. That is exactly
+     * what a 15 s backoff did. Doubling from a correct base is also wrong here:
+     * it reaches half-hour sleeps over a queue that is merely busy. */
+    const waits: number[] = [];
+    const throttled = vi.fn(async () => new Response('', { status: 429 })) as unknown as typeof fetch;
+    await fetchMarketplaceArtDataUri('https://x/y', {
+      fetchImpl: throttled,
+      throttleRetries: 4,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+      },
+    });
+    expect(waits.every((w) => w >= 40_000), `waits were ${waits}`).toBe(true);
+    expect(new Set(waits).size, 'a throttle wait is flat, not exponential').toBe(1);
+  });
+
+  it('a busy queue does not consume the budget meant for real errors', async () => {
+    /* Sharing one budget meant a slow queue exhausted the retries and the row
+     * was recorded failed when nothing was wrong with it. */
+    let n = 0;
+    const thenOk = vi.fn(async () => {
+      n += 1;
+      return n <= 6
+        ? new Response('', { status: 429 })
+        : new Response(png as unknown as BodyInit, {
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+          });
+    }) as unknown as typeof fetch;
+
+    const out = await fetchMarketplaceArtDataUri('https://x/y', {
+      fetchImpl: thenOk,
+      sleep: noSleep,
+      retries: 2, // the ERROR budget, which six throttles must not spend
+    });
+    expect(out, 'six throttles then success must bake the row').toBeTruthy();
   });
 
   it('refuses an empty body and an oversized one', async () => {

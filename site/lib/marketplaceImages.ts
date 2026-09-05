@@ -117,7 +117,28 @@ export async function fetchMarketplaceArtDataUri(
     maxBytes = MAX_ART_BYTES,
     fetchImpl = fetch,
     retries = 5,
-    backoffMs = 15_000,
+    /**
+     * A THROTTLE WAIT MUST OUTLAST A GENERATION, or the run fights itself.
+     *
+     * The queue admits one request at a time per IP and a render takes ~37 s
+     * measured. A 15 s backoff therefore sent the next attempt while the slot
+     * was still occupied by a generation - our own, or one a previous run
+     * abandoned when its client timed out - so every retry was refused on
+     * arrival and a whole run could 429 from the first item to the last with
+     * nothing else on the network. The wait has to clear a render, not a
+     * round trip.
+     */
+    backoffMs = 60_000,
+    /**
+     * Throttling is not failure, so it gets its own, much larger budget.
+     *
+     * A 404 is answered once and believed. A 429 only means "not yet": the
+     * queue drains on its own and the only cost of waiting is time on a job
+     * that is already long and unattended. Sharing one small budget between
+     * the two meant a busy queue exhausted the retries meant for real errors
+     * and the row was recorded as failed when nothing was wrong with it.
+     */
+    throttleRetries = 20,
     onAttempt,
     sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
   }: {
@@ -126,6 +147,7 @@ export async function fetchMarketplaceArtDataUri(
     fetchImpl?: typeof fetch;
     retries?: number;
     backoffMs?: number;
+    throttleRetries?: number;
     onAttempt?: (info: { attempt: number; status: number | null; reason: string }) => void;
     sleep?: (ms: number) => Promise<unknown>;
   } = {}
@@ -143,7 +165,9 @@ export async function fetchMarketplaceArtDataUri(
    * not, and retrying it only lengthens the run. The wait doubles each time
    * because the queue clears on its own schedule, not ours.
    */
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
+  let throttleSpent = 0;
+  let errorSpent = 0;
+  for (let attempt = 1; attempt <= retries + throttleRetries; attempt += 1) {
     let status: number | null = null;
     let reason = 'unknown';
     try {
@@ -184,10 +208,26 @@ export async function fetchMarketplaceArtDataUri(
       reason = String((err as Error)?.name === 'TimeoutError' ? 'timeout' : 'network');
     }
 
-    const retryable = status === null || status === 429 || status >= 500;
+    const throttled = status === 429;
+    const retryable = throttled || status === null || status >= 500;
     onAttempt?.({ attempt, status, reason });
-    if (!retryable || attempt === retries) return null;
-    await sleep(backoffMs * 2 ** (attempt - 1));
+    if (!retryable) return null;
+
+    /* A throttle spends the throttle budget, an error spends the error one, and
+     * neither drains the other - see `throttleRetries`. The wait does NOT
+     * double for a throttle: `backoffMs` is already sized to outlast a render,
+     * and doubling from there reaches half-hour sleeps on a job whose only
+     * problem is that a queue is busy. Errors still back off exponentially,
+     * because a failing server wants to be left alone. */
+    if (throttled) {
+      throttleSpent += 1;
+      if (throttleSpent >= throttleRetries) return null;
+      await sleep(backoffMs);
+      continue;
+    }
+    errorSpent += 1;
+    if (errorSpent >= retries) return null;
+    await sleep(backoffMs * 2 ** (errorSpent - 1));
   }
   return null;
 }

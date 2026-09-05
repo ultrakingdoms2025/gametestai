@@ -16,9 +16,9 @@ import {
   ART_GENERATOR_HOST,
   MARKETPLACE_ART_SIZE,
   buildMarketplaceAiImageUrl,
-  fetchMarketplaceArtDataUri,
   isGeneratedArtUrl,
 } from './marketplaceImages';
+import { fetchMarketplaceArtDataUri } from './marketplaceArtServer';
 import { buildMarketplaceSeedItems } from './marketplaceCatalog';
 
 const A_RECIPE = buildMarketplaceAiImageUrl({

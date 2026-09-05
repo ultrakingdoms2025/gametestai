@@ -20,11 +20,13 @@ import {
   ART_GENERATOR_HOST,
   buildMarketplaceAiImageUrl,
   buildMarketplaceImagePrompt,
+  isGeneratedArtUrl,
+} from './marketplaceImages';
+import {
   downscaleArtDataUri,
   fetchMarketplaceArtDataUri,
   generateArtViaGateway,
-  isGeneratedArtUrl,
-} from './marketplaceImages';
+} from './marketplaceArtServer';
 
 function makeClient() {
   const connStr = process.env.POSTGRES_URL ?? '';

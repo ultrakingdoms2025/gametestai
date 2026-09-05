@@ -199,11 +199,13 @@ export async function bakeMarketplaceArt({
    * default so nobody spends by accident.
    */
   provider = 'pollinations',
+  model,
   onProgress,
 }: {
   limit?: number;
   pauseMs?: number;
   provider?: 'pollinations' | 'gateway';
+  model?: string;
   onProgress?: (done: number, total: number, name: string, ok: boolean) => void;
 } = {}): Promise<{ total: number; baked: number; failed: number; items: number }> {
   const { rows } = await query<Record<string, unknown>>(
@@ -285,7 +287,7 @@ export async function bakeMarketplaceArt({
                 ? world
                 : 'station') as MarketplaceWorld,
             }),
-            { onAttempt }
+            { onAttempt, ...(model ? { model } : {}) }
           )
         : await fetchMarketplaceArtDataUri(url, { onAttempt });
     if (dataUri) {

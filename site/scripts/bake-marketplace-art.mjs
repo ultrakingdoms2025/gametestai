@@ -65,6 +65,22 @@ const pauseMs = arg('pause', 750);
  * flag: nobody should spend by accident. Auth is the VERCEL_OIDC_TOKEN that
  * `vercel env pull` already writes - no key to manage - and it lasts about a
  * day, so re-pull before a long-delayed run. */
+/* `--model` picks which gateway image model renders.
+ *
+ * Every image model on the gateway is rate-limited on the FREE tier - measured,
+ * all five of `bfl/flux-pro-1.1`, `bfl/flux-2-klein-4b`, `bfl/flux-2-klein-9b`,
+ * `bytedance/seedream-5.0-lite` and `meta/muse-image-1.0` refused with "Free
+ * tier requests on this model are rate-limited" after a first small burst got
+ * through. So this flag is not about taste, it is about price once credits are
+ * on: the klein models are the cheap end of the same flux family and the pro
+ * one is the expensive end, and 115 icons is a small enough job that either
+ * costs a few dollars at most.
+ *
+ * Only models whose `modelType` is `image` work here; run
+ * `gateway.getAvailableModels()` to see the current list. */
+const modelArg = process.argv.indexOf('--model');
+const model = modelArg === -1 ? undefined : String(process.argv[modelArg + 1] ?? '');
+
 const providerArg = process.argv.indexOf('--provider');
 const provider = providerArg === -1 ? 'pollinations' : String(process.argv[providerArg + 1] ?? '');
 if (!['pollinations', 'gateway'].includes(provider)) {
@@ -103,6 +119,7 @@ const result = await bakeMarketplaceArt({
   limit,
   pauseMs,
   provider,
+  model,
   onProgress: (done, total, name, ok) => {
     const pct = String(Math.round((done / total) * 100)).padStart(3);
     console.log(`${pct}%  ${done}/${total}  ${ok ? 'baked ' : 'FAILED'}  ${name}`);

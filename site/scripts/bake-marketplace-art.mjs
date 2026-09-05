@@ -56,6 +56,29 @@ function arg(name, fallback) {
 const limit = arg('limit', 100000);
 const pauseMs = arg('pause', 750);
 
+/* `--provider gateway` renders through Vercel's AI Gateway instead of the free
+ * public endpoint. Measured on the same prompt: 1.6 s a render with no queue,
+ * against ~37 s and a one-request-at-a-time limit per IP that a
+ * catalogue-sized run turns into a cooldown nothing can wait out.
+ *
+ * It COSTS MONEY, which is why the free path stays the default and this is a
+ * flag: nobody should spend by accident. Auth is the VERCEL_OIDC_TOKEN that
+ * `vercel env pull` already writes - no key to manage - and it lasts about a
+ * day, so re-pull before a long-delayed run. */
+const providerArg = process.argv.indexOf('--provider');
+const provider = providerArg === -1 ? 'pollinations' : String(process.argv[providerArg + 1] ?? '');
+if (!['pollinations', 'gateway'].includes(provider)) {
+  console.error(`Unknown --provider "${provider}". Use "pollinations" (free, slow) or "gateway" (paid, fast).`);
+  process.exit(1);
+}
+if (provider === 'gateway' && !process.env.VERCEL_OIDC_TOKEN && !process.env.AI_GATEWAY_API_KEY) {
+  console.error(
+    'The gateway provider needs credentials. Run:\n  vercel env pull .env.local --yes\n' +
+      '(or set AI_GATEWAY_API_KEY). The OIDC token expires after about a day.'
+  );
+  process.exit(1);
+}
+
 /* Imported through tsx/next's TS pipeline is overkill for one function; the
  * lib is plain TypeScript with no JSX, so `tsx` handles it if present and we
  * fall back to a clear message rather than a stack trace if it is not. */
@@ -71,12 +94,15 @@ try {
   process.exit(1);
 }
 
-console.log(`Baking marketplace art (limit ${limit}, ${pauseMs}ms between rows)…`);
+console.log(
+  `Baking marketplace art via ${provider} (limit ${limit}, ${pauseMs}ms between rows)…`
+);
 
 const started = Date.now();
 const result = await bakeMarketplaceArt({
   limit,
   pauseMs,
+  provider,
   onProgress: (done, total, name, ok) => {
     const pct = String(Math.round((done / total) * 100)).padStart(3);
     console.log(`${pct}%  ${done}/${total}  ${ok ? 'baked ' : 'FAILED'}  ${name}`);

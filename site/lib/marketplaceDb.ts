@@ -19,7 +19,9 @@ import {
 import {
   ART_GENERATOR_HOST,
   buildMarketplaceAiImageUrl,
+  buildMarketplaceImagePrompt,
   fetchMarketplaceArtDataUri,
+  generateArtViaGateway,
   isGeneratedArtUrl,
 } from './marketplaceImages';
 
@@ -187,10 +189,21 @@ async function syncMarketplaceSeedItems() {
 export async function bakeMarketplaceArt({
   limit = 100000,
   pauseMs = 750,
+  /**
+   * Where the pictures come from.
+   *
+   * `pollinations` is free, unmetered, and admits ONE request at a time per IP;
+   * a catalogue-sized run earns a cooldown no backoff can wait out. `gateway`
+   * goes through Vercel's AI Gateway on the same flux family: measured 1.6 s a
+   * render against ~37 s, no queue, and it costs money. The free one stays the
+   * default so nobody spends by accident.
+   */
+  provider = 'pollinations',
   onProgress,
 }: {
   limit?: number;
   pauseMs?: number;
+  provider?: 'pollinations' | 'gateway';
   onProgress?: (done: number, total: number, name: string, ok: boolean) => void;
 } = {}): Promise<{ total: number; baked: number; failed: number; items: number }> {
   const { rows } = await query<Record<string, unknown>>(
@@ -248,16 +261,33 @@ export async function bakeMarketplaceArt({
     });
 
     let lastReason = '';
-    const dataUri = await fetchMarketplaceArtDataUri(url, {
-      onAttempt: ({ attempt, reason }) => {
-        lastReason = reason;
-        /* Said out loud, because a silent throttle is indistinguishable from a
-         * broken row and that is precisely how the first full run looked. */
-        if (reason === 'throttled') {
-          console.warn(`  throttled (attempt ${attempt}) — the generator allows one request at a time; waiting`);
-        }
-      },
-    });
+    const onAttempt = ({ attempt, reason }: { attempt: number; reason: string }) => {
+      lastReason = reason;
+      /* Said out loud, because a silent throttle is indistinguishable from a
+       * broken row and that is precisely how the first full run looked. */
+      if (reason === 'throttled') {
+        console.warn(`  throttled (attempt ${attempt}) — the generator allows one request at a time; waiting`);
+      }
+    };
+    /* Both providers answer the same way - a data URI or null - so everything
+     * downstream (the grouped update, the counts, the leave-it-empty-on-failure
+     * rule) is identical whichever rendered it. */
+    const dataUri =
+      provider === 'gateway'
+        ? await generateArtViaGateway(
+            buildMarketplaceImagePrompt({
+              name,
+              description: String(head.description ?? ''),
+              category: (MARKETPLACE_CATEGORIES.includes(category as MarketplaceCategory)
+                ? category
+                : 'tools') as MarketplaceCategory,
+              world: (MARKETPLACE_WORLDS.includes(world as MarketplaceWorld)
+                ? world
+                : 'station') as MarketplaceWorld,
+            }),
+            { onAttempt }
+          )
+        : await fetchMarketplaceArtDataUri(url, { onAttempt });
     if (dataUri) {
       /* Every row in the group in ONE statement - 790 individual UPDATEs each
        * opening its own connection is its own kind of slow. */

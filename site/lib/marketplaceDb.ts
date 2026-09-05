@@ -20,6 +20,7 @@ import {
   ART_GENERATOR_HOST,
   buildMarketplaceAiImageUrl,
   buildMarketplaceImagePrompt,
+  downscaleArtDataUri,
   fetchMarketplaceArtDataUri,
   generateArtViaGateway,
   isGeneratedArtUrl,
@@ -313,6 +314,65 @@ export async function bakeMarketplaceArt({
     }
   }
   return { total: rows.length, baked, failed, items: groups.size };
+}
+
+/**
+ * Re-compress art that is already in the database. Spends nothing.
+ *
+ * The bake stored whatever the generator returned, and flux returns far more
+ * than a 72 px cell needs: measured at 48 KB a row, 32.3 MB across the
+ * catalogue, and 7.0 MB to open the dock merchant. That is a worse deal for a
+ * player on a slow link than the broken images this began with.
+ *
+ * This works on BYTES, not on a generator, so fixing the rows already baked
+ * costs no credits and no renders - which is the whole reason it exists as a
+ * separate pass rather than a reason to re-bake. Rows are handled one at a time
+ * and each is written as it is done, so an interrupted run keeps its progress
+ * and re-running only finds what is still oversized.
+ *
+ * @returns what it changed and what it saved
+ */
+export async function recompressMarketplaceArt({
+  minBytes = 12_000,
+  size = 192,
+  onProgress,
+}: {
+  minBytes?: number;
+  size?: number;
+  onProgress?: (done: number, total: number, savedPct: number) => void;
+} = {}): Promise<{ total: number; shrunk: number; beforeMb: number; afterMb: number }> {
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT id, image FROM marketplace_items
+      WHERE image LIKE 'data:image/%'
+        AND image NOT LIKE 'data:image/svg+xml%'
+        AND LENGTH(image) > $1
+      ORDER BY LENGTH(image) DESC`,
+    [minBytes]
+  );
+
+  let before = 0;
+  let after = 0;
+  let shrunk = 0;
+  for (const [i, row] of rows.entries()) {
+    const original = String(row.image ?? '');
+    before += original.length;
+    const smaller = await downscaleArtDataUri(original, { size });
+    after += smaller.length;
+    if (smaller !== original) {
+      await query(`UPDATE marketplace_items SET image = $1, updated_at = NOW() WHERE id = $2`, [
+        smaller,
+        row.id,
+      ]);
+      shrunk += 1;
+    }
+    onProgress?.(i + 1, rows.length, before ? Math.round((1 - after / before) * 100) : 0);
+  }
+  return {
+    total: rows.length,
+    shrunk,
+    beforeMb: +(before / 1_048_576).toFixed(1),
+    afterMb: +(after / 1_048_576).toFixed(1),
+  };
 }
 
 /**

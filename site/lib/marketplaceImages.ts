@@ -147,7 +147,24 @@ export async function fetchMarketplaceArtDataUri(
     let status: number | null = null;
     let reason = 'unknown';
     try {
-      const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+      /* THE KEY GOES IN A HEADER, NEVER IN THE URL.
+       *
+       * The generator accepts either `?token=` or a bearer header - both
+       * measured working - and the header is the one that cannot leak. These
+       * URLs are logged by the bake, and an earlier version of this very
+       * feature wrote generator URLs into a database column that the game then
+       * served to every player. A token in the query string would have followed
+       * it there.
+       *
+       * Without a key the public queue admits ONE request at a time per IP and
+       * a sustained run earns a cooldown; with one, the same render measured
+       * 2.4 s against 37 s. Optional on purpose: no key still works, just
+       * slowly, so nothing here depends on a secret existing. */
+      const token = process.env.POLLINATIONS_API_KEY?.trim();
+      const res = await fetchImpl(url, {
+        signal: AbortSignal.timeout(timeoutMs),
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      });
       status = res.status;
       if (res.ok) {
         const type = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();

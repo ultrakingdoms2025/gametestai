@@ -2005,7 +2005,61 @@ let _iconSeq = 0;
  * @param {number} [size=32]
  * @returns {string} SVG markup
  */
+/**
+ * Catalogue artwork for bag items, keyed by item id. See `setItemArt`.
+ * @type {Map<string, string>}
+ */
+const _itemArt = new Map();
+
+/**
+ * Teach the icon renderer what the merchant's artwork for an item is.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ *
+ * Reported from play: "the inventory images are not the ones from the
+ * merchant". They never were. The two panels have always drawn from different
+ * places - the merchant renders `item.image` from the catalogue row, and every
+ * bag cell calls `itemIconSVG(id)`, which draws a procedural SVG from the
+ * item's `kind`. `ItemDefs` has no image field at all, so the bag had no way to
+ * reach the catalogue's art even in principle.
+ *
+ * It only became visible when the merchant started showing real pictures
+ * instead of a category emoji: the same Field Medkit is a photograph in the
+ * shop and a green cross in the bag.
+ *
+ * `Marketplace` owns the mapping - it is the only thing that knows a catalogue
+ * row grants `medkit` - so it pushes the map here once its catalogue is loaded
+ * rather than this module reaching across to fetch anything.
+ *
+ * @param {Map<string,string>|Record<string,string>} art item id -> image URL or data URI
+ */
+export function setItemArt(art) {
+  _itemArt.clear();
+  const entries = art instanceof Map ? art.entries() : Object.entries(art ?? {});
+  for (const [id, src] of entries) {
+    if (typeof id === 'string' && typeof src === 'string' && src) _itemArt.set(id, src);
+  }
+}
+
+/** What `setItemArt` knows, for the panels and for a test. */
+export function itemArtFor(id) {
+  return _itemArt.get(id) ?? null;
+}
+
 export function itemIconSVG(id, size = 32) {
+  /* CATALOGUE ART WINS WHERE THERE IS ANY, and the procedural icon is the
+   * fallback rather than the rule - so an item the shop has a picture for looks
+   * the same in the bag, and one it does not keeps the icon it always had. Both
+   * panels route through here, so the sell tab agrees with the grid for free.
+   *
+   * `object-fit: contain` because the cell is square and the art may not be,
+   * and no `loading="lazy"`: these are `data:` URIs already in memory, and a
+   * lazy attribute on them only delays a paint that costs nothing. */
+  const art = _itemArt.get(id);
+  if (art) {
+    return `<img class="inv-ico" src="${art}" width="${size}" height="${size}" alt="" `
+      + `style="object-fit:contain;border-radius:4px" aria-hidden="true">`;
+  }
   const key = ITEMS[id]?.icon ?? id;
   const accent = KIND_ACCENT[ITEMS[id]?.kind ?? 'ammo'] ?? '#52e9ff';
   const g = `ig${_iconSeq++}`;

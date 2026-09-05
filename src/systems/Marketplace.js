@@ -1,4 +1,4 @@
-import { ITEMS, itemDef, sellValue, setMarketWorld, skinIdFromItem } from './ItemDefs.js';
+import { ITEMS, itemDef, sellValue, setItemArt, setMarketWorld, skinIdFromItem } from './ItemDefs.js';
 import { offlineCatalog } from './MarketplaceOffline.js';
 import { WEAPON_POWERS } from './WeaponStats.js';
 import { activeShipRegistry } from '../ships/ShipRegistry.js';
@@ -386,9 +386,46 @@ export class Marketplace {
     } finally {
       if (requestId === this._catalogSeq) {
         this._catalogLoading = false;
+        this._publishItemArt();
         this.ui?.refresh?.();
       }
     }
+  }
+
+  /**
+   * Tell `ItemDefs` what each bag item looks like in the shop.
+   *
+   * Reported from play: "the inventory images are not the ones from the
+   * merchant". They never were - the merchant draws `item.image` from the
+   * catalogue row and every bag cell draws a procedural SVG from the item's
+   * kind, and nothing connected the two. `ItemDefs` has no image field, so the
+   * bag could not have found the art on its own.
+   *
+   * This class is the only thing that can make the link, because
+   * `_purchaseGrant` is what knows a catalogue row grants `medkit`. So the map
+   * is built here and pushed once per catalogue load, rather than `ItemDefs`
+   * reaching across for data it has no business fetching.
+   *
+   * Called from the `finally` so it runs on the offline catalogue too - a
+   * player whose API is down still gets consistent art, from whatever the
+   * bundled rows carry.
+   *
+   * Only rows that actually grant a bag item contribute: a mount power or a
+   * livery has artwork but no bag cell to put it in, and mapping those would
+   * paint the wrong picture on whatever item id happened to collide.
+   */
+  _publishItemArt() {
+    const art = new Map();
+    for (const item of this._catalog) {
+      const image = String(item?.image ?? '');
+      if (!image) continue;
+      const grant = this._purchaseGrant(item);
+      if (!grant?.itemId) continue;
+      /* First row wins. The same item is sold in several worlds and the rows
+       * carry the same picture, so a later duplicate would only churn. */
+      if (!art.has(grant.itemId)) art.set(grant.itemId, image);
+    }
+    setItemArt(art);
   }
 
   /* ====================================================================== */

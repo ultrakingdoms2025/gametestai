@@ -342,8 +342,15 @@ export async function recompressMarketplaceArt({
   onProgress?: (done: number, total: number, savedPct: number) => void;
 } = {}): Promise<{ total: number; shrunk: number; beforeMb: number; afterMb: number }> {
   const { rows } = await query<Record<string, unknown>>(
+    /* PLATFORM ROWS ONLY (`server_id IS NULL`), the same scope every other
+     * write in this file states. An owner's item carries artwork they supplied,
+     * and re-encoding somebody else's picture - even to a smaller, better one -
+     * is not a decision this pass gets to make on their behalf. Caught by
+     * `contentScoping.test.ts`, which asserts every read here names its scope;
+     * it was right, and the first version of this query was not. */
     `SELECT id, image FROM marketplace_items
-      WHERE image LIKE 'data:image/%'
+      WHERE server_id IS NULL
+        AND image LIKE 'data:image/%'
         AND image NOT LIKE 'data:image/svg+xml%'
         AND LENGTH(image) > $1
       ORDER BY LENGTH(image) DESC`,
